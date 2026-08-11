@@ -1,0 +1,27 @@
+{
+  "name": "ochiga-office",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Ochiga Office CRM and corporate operating system.",
+  "main": "lead-agents-server.js",
+  "scripts": {
+    "start": "node lead-agents-server.js",
+    "office:start": "node lead-agents-server.js",
+    "crm:apply-schema": "node scripts/apply-supabase-schema.js",
+    "check": "node scripts/check-repo.js",
+  "lint": "node scripts/lint-repo.js",
+  "build": "node scripts/build-office-assets.js",
+  "security:secrets": "node scripts/check-secrets.js",
+  "validate:release": "node scripts/validate-release.js",
+    "test": "npm run check",
+    "office:test": "node scripts/test-lead-agents.js",
+    "office:intake:test": "node scripts/test-office-intake.js",
+    "office:eval": "node scripts/run-lead-agents-evals.js"
+  },
+  "dependencies": {
+    "@vercel/analytics": "^2.0.1",
+    "axios": "^1.13.4",
+    "dotenv": "^17.2.4",
+    "pg": "^8.20.0"
+  }
+}

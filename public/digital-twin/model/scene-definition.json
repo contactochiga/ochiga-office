@@ -1,0 +1,624 @@
+{
+  "meta": {
+    "name": "Twin Demo Building",
+    "units": "meters",
+    "footprint": {
+      "width": 24,
+      "depth": 20,
+      "height": 3.4
+    },
+    "storeys": 4,
+    "floor_to_floor": 3.4,
+    "source_note": "Approximate structured redraw from the supplied floor-plan image. Coordinates should be refined from CAD or verified dimensions before delivery."
+  },
+  "shell": {
+    "floorElevation": 0,
+    "wallHeight": 3.2,
+    "footprint": {
+      "x": 0,
+      "z": 0,
+      "width": 24,
+      "depth": 20
+    },
+    "podium": {
+      "x": 0,
+      "z": -1.4,
+      "width": 28,
+      "depth": 26,
+      "height": 0.28
+    },
+    "roof": {
+      "parapetHeight": 0.85,
+      "slabHeight": 0.22
+    },
+    "facade": {
+      "wallThickness": 0.22,
+      "railHeight": 1.05,
+      "glazingColor": "#86a8c6",
+      "bodyColor": "#d9d2c5",
+      "trimColor": "#b7ad9b",
+      "coreColor": "#cfc7ba"
+    },
+    "balconies": [
+      {
+        "id": "balcony-west",
+        "label": "Balcony West",
+        "x": -8.4,
+        "z": 9.7,
+        "width": 5.4,
+        "depth": 1.2
+      },
+      {
+        "id": "balcony-east",
+        "label": "Balcony East",
+        "x": 8.4,
+        "z": 9.7,
+        "width": 5.4,
+        "depth": 1.2
+      }
+    ]
+  },
+  "rooms": [
+    {
+      "id": "lobby",
+      "label": "Main Lobby",
+      "type": "shared",
+      "x": 0,
+      "z": -8.1,
+      "width": 4,
+      "depth": 2.4,
+      "height": 3.2,
+      "color": "#dfe7ef"
+    },
+    {
+      "id": "central-corridor",
+      "label": "Central Corridor",
+      "type": "shared",
+      "x": 0,
+      "z": -0.4,
+      "width": 13.2,
+      "depth": 2.8,
+      "height": 3.2,
+      "color": "#e7eadf"
+    },
+    {
+      "id": "service-core",
+      "label": "Lift + Service Core",
+      "type": "core",
+      "x": 0,
+      "z": 4.7,
+      "width": 4.2,
+      "depth": 7.4,
+      "height": 3.2,
+      "color": "#f1ead8"
+    },
+    {
+      "id": "unit-a-living",
+      "label": "Unit A Living / Dining",
+      "type": "residential",
+      "x": -8.5,
+      "z": 4.1,
+      "width": 5.8,
+      "depth": 4.2,
+      "height": 3.2,
+      "color": "#f4f0ea"
+    },
+    {
+      "id": "unit-a-suite",
+      "label": "Unit A Master Suite",
+      "type": "residential",
+      "x": -8.5,
+      "z": 8.1,
+      "width": 5.8,
+      "depth": 3.8,
+      "height": 3.2,
+      "color": "#f9f5ef"
+    },
+    {
+      "id": "unit-b-living",
+      "label": "Unit B Living / Dining",
+      "type": "residential",
+      "x": -8.5,
+      "z": -4.2,
+      "width": 5.8,
+      "depth": 3.8,
+      "height": 3.2,
+      "color": "#f4f0ea"
+    },
+    {
+      "id": "unit-b-bedroom",
+      "label": "Unit B Bedroom",
+      "type": "residential",
+      "x": -8.5,
+      "z": -7.9,
+      "width": 5.8,
+      "depth": 3.4,
+      "height": 3.2,
+      "color": "#fbf8f3"
+    },
+    {
+      "id": "unit-c-living",
+      "label": "Unit C Living / Dining",
+      "type": "residential",
+      "x": 8.5,
+      "z": 4.1,
+      "width": 5.8,
+      "depth": 4.2,
+      "height": 3.2,
+      "color": "#eef4ef"
+    },
+    {
+      "id": "unit-c-suite",
+      "label": "Unit C Master Suite",
+      "type": "residential",
+      "x": 8.5,
+      "z": 8.1,
+      "width": 5.8,
+      "depth": 3.8,
+      "height": 3.2,
+      "color": "#f4faf4"
+    },
+    {
+      "id": "unit-d-living",
+      "label": "Unit D Living / Dining",
+      "type": "residential",
+      "x": 8.5,
+      "z": -4.2,
+      "width": 5.8,
+      "depth": 3.8,
+      "height": 3.2,
+      "color": "#eef4ef"
+    },
+    {
+      "id": "unit-d-bedroom",
+      "label": "Unit D Bedroom",
+      "type": "residential",
+      "x": 8.5,
+      "z": -7.9,
+      "width": 5.8,
+      "depth": 3.4,
+      "height": 3.2,
+      "color": "#f5fbf5"
+    }
+  ],
+  "openings": [
+    {
+      "id": "main-entry",
+      "type": "door",
+      "x": 0,
+      "z": -9.95,
+      "width": 1.8,
+      "height": 2.4,
+      "roomId": "lobby"
+    },
+    {
+      "id": "door-unit-a",
+      "type": "door",
+      "x": -3.2,
+      "z": 1.1,
+      "width": 1.1,
+      "height": 2.2,
+      "roomId": "unit-a-living"
+    },
+    {
+      "id": "door-unit-c",
+      "type": "door",
+      "x": 3.2,
+      "z": 1.1,
+      "width": 1.1,
+      "height": 2.2,
+      "roomId": "unit-c-living"
+    },
+    {
+      "id": "door-unit-b",
+      "type": "door",
+      "x": -3.4,
+      "z": -2,
+      "width": 1.1,
+      "height": 2.2,
+      "roomId": "unit-b-living"
+    },
+    {
+      "id": "door-unit-d",
+      "type": "door",
+      "x": 3.4,
+      "z": -2,
+      "width": 1.1,
+      "height": 2.2,
+      "roomId": "unit-d-living"
+    }
+  ],
+  "waypoints": [
+    {
+      "id": "approach",
+      "label": "Approach",
+      "position": {
+        "x": 0,
+        "y": 10.5,
+        "z": -31
+      },
+      "target": {
+        "x": 0,
+        "y": 5.2,
+        "z": 0
+      }
+    },
+    {
+      "id": "lobby",
+      "label": "Lobby",
+      "position": {
+        "x": 0,
+        "y": 4.8,
+        "z": -12.2
+      },
+      "target": {
+        "x": 0,
+        "y": 1.2,
+        "z": -8
+      }
+    },
+    {
+      "id": "core",
+      "label": "Lift Core",
+      "position": {
+        "x": 4.5,
+        "y": 8,
+        "z": -2
+      },
+      "target": {
+        "x": 0,
+        "y": 4.9,
+        "z": 4.7
+      }
+    },
+    {
+      "id": "corridor-l2",
+      "label": "Level 2 Corridor",
+      "position": {
+        "x": 6.4,
+        "y": 8.1,
+        "z": -4.6
+      },
+      "target": {
+        "x": 0,
+        "y": 4.9,
+        "z": -0.4
+      }
+    },
+    {
+      "id": "unit-a",
+      "label": "Unit A",
+      "position": {
+        "x": -14.4,
+        "y": 7.8,
+        "z": -1.4
+      },
+      "target": {
+        "x": -8.5,
+        "y": 4.9,
+        "z": 5.4
+      }
+    },
+    {
+      "id": "unit-c",
+      "label": "Unit C",
+      "position": {
+        "x": 14.4,
+        "y": 7.8,
+        "z": -1.4
+      },
+      "target": {
+        "x": 8.5,
+        "y": 4.9,
+        "z": 5.4
+      }
+    },
+    {
+      "id": "inside-unit-b",
+      "label": "Inside Unit B",
+      "position": {
+        "x": -5.6,
+        "y": 2.4,
+        "z": -6.1
+      },
+      "target": {
+        "x": -8.7,
+        "y": 1.15,
+        "z": -6.1
+      }
+    },
+    {
+      "id": "roof",
+      "label": "Overview",
+      "position": {
+        "x": 0,
+        "y": 19.5,
+        "z": -29
+      },
+      "target": {
+        "x": 0,
+        "y": 5.5,
+        "z": 0
+      }
+    }
+  ],
+  "devices": [
+    {
+      "id": "light-lobby",
+      "label": "Lobby Lighting",
+      "type": "light",
+      "roomId": "lobby",
+      "position": {
+        "x": 0,
+        "y": 1.4,
+        "z": -8.3
+      },
+      "focus": {
+        "position": {
+          "x": 1.6,
+          "y": 2.1,
+          "z": -10.7
+        },
+        "target": {
+          "x": 0,
+          "y": 1.4,
+          "z": -8.3
+        }
+      },
+      "actions": [
+        "toggle-power",
+        "dim-up",
+        "dim-down"
+      ]
+    },
+    {
+      "id": "light-corridor-west",
+      "label": "West Corridor Light",
+      "type": "light",
+      "roomId": "central-corridor",
+      "position": {
+        "x": -4.8,
+        "y": 1.4,
+        "z": -0.4
+      },
+      "focus": {
+        "position": {
+          "x": -7.6,
+          "y": 2.1,
+          "z": -3.2
+        },
+        "target": {
+          "x": -4.8,
+          "y": 1.4,
+          "z": -0.4
+        }
+      },
+      "actions": [
+        "toggle-power",
+        "dim-up",
+        "dim-down"
+      ]
+    },
+    {
+      "id": "light-corridor-east",
+      "label": "East Corridor Light",
+      "type": "light",
+      "roomId": "central-corridor",
+      "position": {
+        "x": 4.8,
+        "y": 1.4,
+        "z": -0.4
+      },
+      "focus": {
+        "position": {
+          "x": 7.6,
+          "y": 2.1,
+          "z": -3.2
+        },
+        "target": {
+          "x": 4.8,
+          "y": 1.4,
+          "z": -0.4
+        }
+      },
+      "actions": [
+        "toggle-power",
+        "dim-up",
+        "dim-down"
+      ]
+    },
+    {
+      "id": "door-main",
+      "label": "Main Entry Access",
+      "type": "door",
+      "roomId": "lobby",
+      "position": {
+        "x": 0,
+        "y": 1.2,
+        "z": -9.7
+      },
+      "focus": {
+        "position": {
+          "x": 0,
+          "y": 2.2,
+          "z": -13.5
+        },
+        "target": {
+          "x": 0,
+          "y": 1.1,
+          "z": -9.7
+        }
+      },
+      "actions": [
+        "lock",
+        "unlock",
+        "pulse-open"
+      ]
+    },
+    {
+      "id": "door-unit-a",
+      "label": "Unit A Access",
+      "type": "door",
+      "roomId": "unit-a-living",
+      "position": {
+        "x": -3.2,
+        "y": 1.2,
+        "z": 1.1
+      },
+      "focus": {
+        "position": {
+          "x": -6.5,
+          "y": 2.1,
+          "z": -1.2
+        },
+        "target": {
+          "x": -3.2,
+          "y": 1.1,
+          "z": 1.1
+        }
+      },
+      "actions": [
+        "lock",
+        "unlock",
+        "pulse-open"
+      ]
+    },
+    {
+      "id": "door-unit-c",
+      "label": "Unit C Access",
+      "type": "door",
+      "roomId": "unit-c-living",
+      "position": {
+        "x": 3.2,
+        "y": 1.2,
+        "z": 1.1
+      },
+      "focus": {
+        "position": {
+          "x": 6.5,
+          "y": 2.1,
+          "z": -1.2
+        },
+        "target": {
+          "x": 3.2,
+          "y": 1.1,
+          "z": 1.1
+        }
+      },
+      "actions": [
+        "lock",
+        "unlock",
+        "pulse-open"
+      ]
+    },
+    {
+      "id": "camera-entry",
+      "label": "Entry Camera",
+      "type": "camera",
+      "roomId": "lobby",
+      "position": {
+        "x": 0,
+        "y": 2.8,
+        "z": -9.2
+      },
+      "focus": {
+        "position": {
+          "x": 3.5,
+          "y": 2.6,
+          "z": -12.8
+        },
+        "target": {
+          "x": 0,
+          "y": 2.6,
+          "z": -9.2
+        }
+      },
+      "actions": [
+        "toggle-recording",
+        "snapshot"
+      ]
+    },
+    {
+      "id": "camera-core",
+      "label": "Core Camera",
+      "type": "camera",
+      "roomId": "service-core",
+      "position": {
+        "x": 0,
+        "y": 2.8,
+        "z": 2.8
+      },
+      "focus": {
+        "position": {
+          "x": -3.4,
+          "y": 2.8,
+          "z": 0.5
+        },
+        "target": {
+          "x": 0,
+          "y": 2.6,
+          "z": 2.8
+        }
+      },
+      "actions": [
+        "toggle-recording",
+        "snapshot"
+      ]
+    },
+    {
+      "id": "lift-core",
+      "label": "Passenger Lift",
+      "type": "lift",
+      "roomId": "service-core",
+      "position": {
+        "x": 0,
+        "y": 0.8,
+        "z": 5
+      },
+      "focus": {
+        "position": {
+          "x": 3.8,
+          "y": 2.3,
+          "z": 3.4
+        },
+        "target": {
+          "x": 0,
+          "y": 1.1,
+          "z": 5
+        }
+      },
+      "actions": [
+        "call-lift",
+        "set-service-mode",
+        "set-normal-mode"
+      ]
+    }
+  ],
+  "edge": {
+    "nodeId": "edge-agent-demo-01",
+    "transport": "mocked edge runtime",
+    "status": "staged",
+    "connectors": [
+      {
+        "id": "lighting",
+        "label": "Lighting Bus",
+        "status": "mocked"
+      },
+      {
+        "id": "access",
+        "label": "Access Control",
+        "status": "mocked"
+      },
+      {
+        "id": "surveillance",
+        "label": "CCTV / Video",
+        "status": "mocked"
+      },
+      {
+        "id": "lift",
+        "label": "Lift Interface",
+        "status": "mocked"
+      }
+    ]
+  }
+}

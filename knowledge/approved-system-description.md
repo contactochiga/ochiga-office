@@ -1,0 +1,3 @@
+Approved one-paragraph system description:
+
+Ochiga is an infrastructure technology company, and Oyi is its Infrastructure Operating System for estates, buildings, facilities, and connected communities. The system currently spans a facility control dashboard for operators, a consumer and mobile app for residents, public websites for positioning and deployment intake, an edge runtime for on-site device and camera connectivity, and an internal AI lead-agent stack for qualification and sales routing. Across these surfaces, Oyi is designed to coordinate access control, devices, visitor flows, maintenance, wallet and dues workflows, community communication, estate operations, digital-twin-aware oversight, and multi-site infrastructure management through one operating layer.

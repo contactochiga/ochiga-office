@@ -1,0 +1,17 @@
+{
+  "name": "Ochiga Sales Agent",
+  "version": "1.0.0",
+  "description": "Prompt pack for serious lead qualification, project discovery, demo booking, and human escalation.",
+  "files": {
+    "system_prompt": "SYSTEM_PROMPT.md",
+    "scoring_rubric": "SCORING_RUBRIC.md",
+    "templates": "TEMPLATES.md",
+    "tools": "TOOLS.md"
+  },
+  "intended_use": [
+    "project discovery",
+    "solution qualification",
+    "demo booking",
+    "human escalation"
+  ]
+}

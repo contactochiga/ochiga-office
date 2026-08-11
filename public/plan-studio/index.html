@@ -1,0 +1,1802 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Ochiga Plan Studio</title>
+    <style>
+      :root {
+        --bg: #0a1120;
+        --panel: #0f1727;
+        --panel-2: #121b2d;
+        --panel-3: #162134;
+        --line: rgba(255, 255, 255, 0.08);
+        --line-strong: rgba(255, 255, 255, 0.13);
+        --text: #edf2ff;
+        --muted: #95a3c4;
+        --muted-2: #71809f;
+        --purple: #6f61ff;
+        --purple-soft: rgba(111, 97, 255, 0.18);
+        --green: #2fd67d;
+        --amber: #f4b84d;
+        --red: #fb6f65;
+        --blue: #4d8dff;
+        --cyan: #31c6ff;
+        --shadow: 0 22px 62px rgba(0, 0, 0, 0.24);
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      html,
+      body {
+        margin: 0;
+        min-height: 100%;
+        background:
+          radial-gradient(circle at top, rgba(34, 52, 88, 0.58), transparent 26%),
+          linear-gradient(180deg, #0d1525 0%, var(--bg) 100%);
+        color: var(--text);
+        font-family: "Avenir Next", "Segoe UI", sans-serif;
+      }
+
+      button,
+      input,
+      select {
+        font: inherit;
+      }
+
+      button {
+        cursor: pointer;
+      }
+
+      .app {
+        min-height: 100vh;
+        display: grid;
+        grid-template-columns: 230px minmax(0, 1fr) 360px;
+        gap: 0;
+      }
+
+      .sidebar {
+        background: rgba(8, 14, 25, 0.96);
+        border-right: 1px solid var(--line);
+        padding: 18px 16px 16px;
+        display: flex;
+        flex-direction: column;
+        gap: 18px;
+      }
+
+      .main {
+        padding: 16px 16px 18px;
+        min-width: 0;
+      }
+
+      .rightbar {
+        padding: 16px 16px 18px 0;
+        min-width: 0;
+      }
+
+      .brand {
+        display: flex;
+        align-items: center;
+        padding: 8px 10px 18px;
+        border-bottom: 1px solid var(--line);
+      }
+
+      .brand img {
+        width: 156px;
+        display: block;
+      }
+
+      .nav-stack {
+        display: grid;
+        gap: 18px;
+      }
+
+      .nav-group {
+        display: grid;
+        gap: 6px;
+      }
+
+      .nav-label {
+        margin: 0 10px 4px;
+        color: var(--muted-2);
+        font-size: 11px;
+        letter-spacing: 0.13em;
+        text-transform: uppercase;
+      }
+
+      .nav-item {
+        width: 100%;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        border: 0;
+        border-radius: 12px;
+        background: transparent;
+        color: var(--text);
+        text-align: left;
+        padding: 10px 12px;
+        font-size: 14px;
+      }
+
+      .nav-item.active {
+        background: linear-gradient(135deg, rgba(111, 97, 255, 0.96), rgba(95, 107, 255, 0.76));
+        box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08);
+      }
+
+      .nav-icon {
+        width: 16px;
+        height: 16px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        color: inherit;
+        opacity: 0.95;
+      }
+
+      .nav-icon svg {
+        width: 16px;
+        height: 16px;
+        stroke: currentColor;
+        fill: none;
+        stroke-width: 1.8;
+        stroke-linecap: round;
+        stroke-linejoin: round;
+      }
+
+      .shell-card,
+      .sidebar-card {
+        background: rgba(15, 23, 39, 0.96);
+        border: 1px solid var(--line);
+        border-radius: 18px;
+        box-shadow: var(--shadow);
+      }
+
+      .sidebar-card {
+        padding: 16px;
+      }
+
+      .sidebar-card h3,
+      .sidebar-card p {
+        margin: 0;
+      }
+
+      .sidebar-card p {
+        margin-top: 8px;
+        color: var(--muted);
+        font-size: 13px;
+        line-height: 1.45;
+      }
+
+      .primary-btn,
+      .ghost-btn,
+      .chip-btn,
+      .icon-btn {
+        border-radius: 12px;
+      }
+
+      .primary-btn {
+        border: 0;
+        background: linear-gradient(135deg, var(--purple), #5d68ff);
+        color: #fff;
+        padding: 10px 16px;
+        font-size: 13px;
+        font-weight: 700;
+      }
+
+      .ghost-btn,
+      .chip-btn,
+      .icon-btn {
+        border: 1px solid var(--line);
+        background: rgba(255, 255, 255, 0.04);
+        color: var(--text);
+      }
+
+      .ghost-btn {
+        padding: 10px 14px;
+        font-size: 13px;
+        font-weight: 600;
+      }
+
+      .icon-btn {
+        width: 36px;
+        height: 36px;
+        display: grid;
+        place-items: center;
+      }
+
+      .icon-btn.active {
+        background: var(--purple-soft);
+        border-color: rgba(111, 97, 255, 0.3);
+        color: #fff;
+      }
+
+      .chip-btn {
+        padding: 9px 14px;
+        font-size: 13px;
+        font-weight: 600;
+      }
+
+      .chip-btn.active {
+        background: var(--purple-soft);
+        border-color: rgba(111, 97, 255, 0.3);
+      }
+
+      .topbar {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto auto;
+        gap: 16px;
+        align-items: center;
+        padding: 16px 18px;
+        margin-bottom: 14px;
+      }
+
+      .project-meta h1,
+      .project-meta p {
+        margin: 0;
+      }
+
+      .project-meta h1 {
+        font-size: 17px;
+        font-weight: 700;
+      }
+
+      .project-meta p {
+        margin-top: 6px;
+        color: var(--muted);
+        font-size: 13px;
+        display: flex;
+        gap: 8px;
+        align-items: center;
+      }
+
+      .dot {
+        width: 8px;
+        height: 8px;
+        border-radius: 999px;
+        background: var(--green);
+        display: inline-block;
+      }
+
+      .workflow {
+        display: inline-grid;
+        grid-template-columns: repeat(3, auto);
+        gap: 8px;
+        padding: 6px;
+        background: rgba(255, 255, 255, 0.04);
+        border: 1px solid var(--line);
+        border-radius: 999px;
+      }
+
+      .workflow-step {
+        padding: 8px 14px;
+        border-radius: 999px;
+        color: var(--muted);
+        font-size: 13px;
+        white-space: nowrap;
+      }
+
+      .workflow-step.active {
+        background: var(--purple-soft);
+        color: #fff;
+      }
+
+      .workflow-step.done {
+        color: #dfe5ff;
+      }
+
+      .action-row,
+      .tool-row,
+      .layer-row,
+      .summary-grid,
+      .project-list,
+      .recommend-list {
+        display: flex;
+        gap: 10px;
+        flex-wrap: wrap;
+      }
+
+      .plan-panel {
+        padding: 14px;
+      }
+
+      .plan-head {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto auto;
+        gap: 12px;
+        align-items: center;
+        margin-bottom: 12px;
+      }
+
+      .plan-head h2,
+      .plan-head p {
+        margin: 0;
+      }
+
+      .plan-head h2 {
+        font-size: 15px;
+      }
+
+      .plan-head p {
+        margin-top: 4px;
+        color: var(--muted);
+        font-size: 13px;
+      }
+
+      .plan-tool-icons {
+        display: flex;
+        gap: 8px;
+      }
+
+      .tool-icon {
+        width: 16px;
+        height: 16px;
+        stroke: currentColor;
+        fill: none;
+        stroke-width: 1.8;
+        stroke-linecap: round;
+        stroke-linejoin: round;
+      }
+
+      .layers-select {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+      }
+
+      .plan-stage {
+        position: relative;
+        min-height: 644px;
+        height: 644px;
+        background: #fff;
+        border-radius: 16px;
+        overflow: hidden;
+        border: 1px solid rgba(10, 17, 32, 0.08);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+
+      .plan-stage.clickable {
+        cursor: pointer;
+      }
+
+      .plan-stage.dark-surface {
+        background: #0b1322;
+        border-color: var(--line);
+      }
+
+      .plan-stage img {
+        width: 100%;
+        height: 100%;
+        object-fit: contain;
+        object-position: center;
+        display: block;
+      }
+
+      .empty-stage {
+        min-height: 644px;
+        display: grid;
+        place-items: center;
+        text-align: center;
+        padding: 36px;
+        background: linear-gradient(180deg, #ffffff, #f4f5f8);
+        color: #42506a;
+        position: absolute;
+        inset: 0;
+        z-index: 3;
+      }
+
+      .stage-view,
+      .preview-surface {
+        position: absolute;
+        inset: 0;
+      }
+
+      .stage-view[hidden],
+      .preview-surface[hidden] {
+        display: none;
+      }
+
+      .stage-iframe,
+      .preview-iframe {
+        width: 100%;
+        height: 100%;
+        border: 0;
+        display: block;
+        background: #0b1322;
+      }
+
+      .mini-plan {
+        position: relative;
+        width: 100%;
+        height: 100%;
+        background: #fff;
+      }
+
+      .mini-plan img {
+        width: 100%;
+        height: 100%;
+        object-fit: contain;
+        object-position: center;
+        display: block;
+      }
+
+      .mini-marker-layer {
+        position: absolute;
+        inset: 0;
+        pointer-events: none;
+      }
+
+      .mini-marker {
+        position: absolute;
+        width: 14px;
+        height: 14px;
+        transform: translate(-50%, -50%);
+        border-radius: 999px;
+        box-shadow: 0 4px 10px rgba(0, 0, 0, 0.18);
+      }
+
+      .mini-marker.cctv {
+        background: #8b5cf6;
+      }
+
+      .mini-marker.access {
+        background: #3b82f6;
+      }
+
+      .mini-marker.sensor {
+        background: #22c55e;
+      }
+
+      .mini-marker.fire {
+        background: #ef4444;
+      }
+
+      .mini-marker.light {
+        background: #f59e0b;
+      }
+
+      .mini-marker.power {
+        background: #fb923c;
+      }
+
+      .mini-marker.network {
+        background: #60a5fa;
+      }
+
+      .empty-stage h3,
+      .empty-stage p {
+        margin: 0;
+      }
+
+      .empty-stage p {
+        margin-top: 10px;
+        max-width: 430px;
+        line-height: 1.5;
+      }
+
+      .empty-stage .empty-actions {
+        margin-top: 18px;
+        display: flex;
+        justify-content: center;
+        gap: 10px;
+      }
+
+      .marker-layer {
+        position: absolute;
+        inset: 0;
+        pointer-events: none;
+        z-index: 2;
+      }
+
+      #plan-image {
+        position: absolute;
+        inset: 0;
+      }
+
+      .marker {
+        position: absolute;
+        width: 20px;
+        height: 20px;
+        border-radius: 999px;
+        display: grid;
+        place-items: center;
+        transform: translate(-50%, -50%);
+        color: #fff;
+        font-size: 10px;
+        font-weight: 800;
+        box-shadow: 0 6px 14px rgba(0, 0, 0, 0.18);
+      }
+
+      .marker.cctv,
+      .legend-dot.cctv {
+        background: #8b5cf6;
+      }
+
+      .marker.access,
+      .legend-dot.access {
+        background: #3b82f6;
+      }
+
+      .marker.sensor,
+      .legend-dot.sensor {
+        background: #22c55e;
+      }
+
+      .marker.fire,
+      .legend-dot.fire {
+        background: #ef4444;
+      }
+
+      .marker.light,
+      .legend-dot.light {
+        background: #f59e0b;
+      }
+
+      .marker.power,
+      .legend-dot.power {
+        background: #fb923c;
+      }
+
+      .marker.network,
+      .legend-dot.network {
+        background: #60a5fa;
+      }
+
+      .plan-zoom-rail {
+        position: absolute;
+        left: 14px;
+        bottom: 14px;
+        width: 42px;
+        border-radius: 12px;
+        background: rgba(14, 22, 38, 0.94);
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        padding: 6px;
+        display: grid;
+        gap: 6px;
+      }
+
+      .rail-btn {
+        width: 100%;
+        height: 36px;
+        border-radius: 10px;
+        border: 0;
+        background: transparent;
+        color: #fff;
+      }
+
+      .legend {
+        display: flex;
+        gap: 16px;
+        flex-wrap: wrap;
+        align-items: center;
+        padding: 12px 2px 0;
+        color: var(--muted);
+        font-size: 12px;
+      }
+
+      .legend-item {
+        display: inline-flex;
+        gap: 8px;
+        align-items: center;
+      }
+
+      .legend-dot {
+        width: 10px;
+        height: 10px;
+        border-radius: 999px;
+      }
+
+      .plan-filter-row {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        gap: 12px;
+        align-items: center;
+        margin: 10px 0 12px;
+      }
+
+      .filter-pills,
+      .scope-pills {
+        display: flex;
+        gap: 8px;
+        flex-wrap: wrap;
+      }
+
+      .plan-status {
+        color: var(--muted);
+        font-size: 12px;
+      }
+
+      .scope-btn {
+        border: 1px solid var(--line);
+        background: rgba(255, 255, 255, 0.04);
+        color: var(--muted);
+        border-radius: 999px;
+        padding: 7px 12px;
+        font-size: 12px;
+        font-weight: 700;
+      }
+
+      .scope-btn.active {
+        color: #fff;
+        background: var(--purple-soft);
+        border-color: rgba(111, 97, 255, 0.28);
+      }
+
+      .zone-layer,
+      .pathway-layer,
+      .opening-layer {
+        position: absolute;
+        inset: 0;
+        pointer-events: none;
+        z-index: 1;
+      }
+
+      .zone-box {
+        position: absolute;
+        border: 1px dashed rgba(111, 97, 255, 0.42);
+        background: rgba(111, 97, 255, 0.08);
+        border-radius: 12px;
+        pointer-events: auto;
+        cursor: move;
+      }
+
+      .zone-box.selected {
+        border: 2px solid rgba(111, 97, 255, 0.88);
+        background: rgba(111, 97, 255, 0.12);
+      }
+
+      .zone-label {
+        position: absolute;
+        left: 8px;
+        top: 8px;
+        border-radius: 999px;
+        background: rgba(15, 23, 39, 0.78);
+        color: #eef2ff;
+        font-size: 10px;
+        padding: 3px 7px;
+      }
+
+      .zone-handle {
+        position: absolute;
+        width: 12px;
+        height: 12px;
+        border-radius: 999px;
+        background: #fff;
+        border: 2px solid var(--purple);
+        box-shadow: 0 3px 8px rgba(0, 0, 0, 0.18);
+      }
+
+      .zone-handle.nw {
+        left: -6px;
+        top: -6px;
+        cursor: nwse-resize;
+      }
+
+      .zone-handle.ne {
+        right: -6px;
+        top: -6px;
+        cursor: nesw-resize;
+      }
+
+      .zone-handle.sw {
+        left: -6px;
+        bottom: -6px;
+        cursor: nesw-resize;
+      }
+
+      .zone-handle.se {
+        right: -6px;
+        bottom: -6px;
+        cursor: nwse-resize;
+      }
+
+      .pathway-line {
+        position: absolute;
+        height: 2px;
+        background: rgba(47, 214, 125, 0.75);
+        transform-origin: left center;
+        box-shadow: 0 0 0 1px rgba(47, 214, 125, 0.12);
+      }
+
+      .opening-mark {
+        position: absolute;
+        width: 16px;
+        height: 4px;
+        border-radius: 999px;
+        background: rgba(244, 184, 77, 0.9);
+        box-shadow: 0 0 0 1px rgba(244, 184, 77, 0.22);
+        transform: translate(-50%, -50%);
+      }
+
+      .opening-mark.vertical {
+        transform: translate(-50%, -50%) rotate(90deg);
+      }
+
+      .layer-summary {
+        color: var(--muted);
+        font-size: 12px;
+      }
+
+      .layer-bank {
+        margin-top: 14px;
+        padding: 14px;
+      }
+
+      .layer-bank h3,
+      .layer-bank p {
+        margin: 0;
+      }
+
+      .layer-bank h3 {
+        font-size: 15px;
+      }
+
+      .layer-bank p {
+        margin-top: 4px;
+        color: var(--muted);
+        font-size: 12px;
+      }
+
+      .layer-bank .layer-row {
+        margin-top: 12px;
+      }
+
+      .side-stack {
+        display: grid;
+        gap: 14px;
+      }
+
+      .rail-card {
+        padding: 14px;
+      }
+
+      .preview-card,
+      .summary-card,
+      .recommend-card,
+      .estimate-card {
+        padding: 14px;
+      }
+
+      .card-head {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        margin-bottom: 12px;
+      }
+
+      .card-head h3,
+      .card-head p {
+        margin: 0;
+      }
+
+      .card-head h3 {
+        font-size: 15px;
+      }
+
+      .card-head p {
+        margin-top: 4px;
+        color: var(--muted);
+        font-size: 12px;
+      }
+
+      .preview-frame {
+        height: 258px;
+        border-radius: 14px;
+        overflow: hidden;
+        border: 1px solid var(--line);
+        background: #0b1322;
+        position: relative;
+      }
+
+      .preview-frame iframe {
+        width: 100%;
+        height: 100%;
+        border: 0;
+      }
+
+      .preview-tabs {
+        display: inline-grid;
+        grid-template-columns: repeat(2, auto);
+        gap: 8px;
+        padding: 4px;
+        background: rgba(255, 255, 255, 0.04);
+        border: 1px solid var(--line);
+        border-radius: 999px;
+      }
+
+      .preview-tab {
+        border: 0;
+        border-radius: 999px;
+        background: transparent;
+        color: var(--muted);
+        padding: 7px 12px;
+        font-size: 12px;
+        font-weight: 700;
+      }
+
+      .preview-tab.active {
+        background: var(--purple-soft);
+        color: #fff;
+      }
+
+      .preview-expand {
+        position: absolute;
+        top: 10px;
+        right: 10px;
+        z-index: 2;
+      }
+
+      .summary-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 10px;
+      }
+
+      .summary-item {
+        background: rgba(255, 255, 255, 0.03);
+        border: 1px solid rgba(255, 255, 255, 0.04);
+        border-radius: 14px;
+        padding: 12px 10px;
+        text-align: center;
+      }
+
+      .summary-item strong,
+      .summary-item span {
+        display: block;
+      }
+
+      .summary-item strong {
+        font-size: 18px;
+      }
+
+      .summary-item span {
+        margin-top: 4px;
+        color: var(--muted);
+        font-size: 11px;
+      }
+
+      .recommend-item {
+        padding: 13px 14px;
+        border-radius: 14px;
+        background: rgba(255, 255, 255, 0.03);
+        border: 1px solid rgba(255, 255, 255, 0.04);
+      }
+
+      .recommend-item h4,
+      .recommend-item p {
+        margin: 0;
+      }
+
+      .recommend-item h4 {
+        font-size: 14px;
+      }
+
+      .recommend-item p {
+        margin-top: 6px;
+        color: var(--muted);
+        font-size: 12px;
+        line-height: 1.45;
+      }
+
+      .impact {
+        padding: 5px 9px;
+        border-radius: 999px;
+        font-size: 11px;
+        font-weight: 700;
+        white-space: nowrap;
+      }
+
+      .impact.high {
+        background: rgba(47, 214, 125, 0.16);
+        color: #86f0b4;
+      }
+
+      .impact.medium {
+        background: rgba(244, 184, 77, 0.16);
+        color: #ffd487;
+      }
+
+      .estimate {
+        display: flex;
+        justify-content: space-between;
+        gap: 14px;
+        align-items: center;
+      }
+
+      .estimate strong {
+        display: block;
+        font-size: 29px;
+        letter-spacing: -0.04em;
+      }
+
+      .estimate p {
+        margin: 10px 0 0;
+        color: var(--muted);
+        line-height: 1.45;
+        font-size: 13px;
+      }
+
+      .roi-ring {
+        width: 82px;
+        height: 82px;
+        border-radius: 999px;
+        border: 5px solid rgba(47, 214, 125, 0.22);
+        display: grid;
+        place-items: center;
+        color: #86f0b4;
+        font-weight: 800;
+        font-size: 14px;
+        flex: 0 0 auto;
+      }
+
+      .project-list {
+        display: grid;
+        gap: 8px;
+        margin-top: 12px;
+      }
+
+      .page,
+      .rail-page {
+        display: none;
+      }
+
+      .page.active,
+      .rail-page.active {
+        display: block;
+      }
+
+      .page-stack,
+      .rail-stack {
+        display: grid;
+        gap: 14px;
+      }
+
+      .metric-grid {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 14px;
+      }
+
+      .metric-card,
+      .info-card {
+        padding: 16px;
+      }
+
+      .metric-card strong {
+        display: block;
+        font-size: 26px;
+        letter-spacing: -0.04em;
+      }
+
+      .metric-card span,
+      .info-card p,
+      .info-card li {
+        color: var(--muted);
+        font-size: 13px;
+        line-height: 1.5;
+      }
+
+      .metric-card span {
+        display: block;
+        margin-top: 8px;
+      }
+
+      .info-card h3,
+      .info-card p,
+      .info-card ul,
+      .info-card li {
+        margin: 0;
+      }
+
+      .info-card ul {
+        padding-left: 18px;
+        margin-top: 10px;
+      }
+
+      .table-card {
+        padding: 0;
+        overflow: hidden;
+      }
+
+      .table-head,
+      .table-row {
+        display: grid;
+        grid-template-columns: 1.2fr 1fr 0.8fr 0.8fr;
+        gap: 12px;
+        padding: 14px 16px;
+      }
+
+      .table-head {
+        color: var(--muted-2);
+        font-size: 12px;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        border-bottom: 1px solid var(--line);
+      }
+
+      .table-row {
+        border-top: 1px solid rgba(255, 255, 255, 0.04);
+        font-size: 13px;
+      }
+
+      .table-row strong {
+        display: block;
+      }
+
+      .table-row span {
+        color: var(--muted);
+      }
+
+      .status-pill {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        border-radius: 999px;
+        padding: 4px 10px;
+        font-size: 11px;
+        font-weight: 700;
+      }
+
+      .status-pill.live {
+        background: rgba(47, 214, 125, 0.16);
+        color: #86f0b4;
+      }
+
+      .status-pill.review {
+        background: rgba(111, 97, 255, 0.16);
+        color: #c8c0ff;
+      }
+
+      .status-pill.warning {
+        background: rgba(244, 184, 77, 0.16);
+        color: #ffd487;
+      }
+
+      .discipline-hero {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) 140px;
+        gap: 18px;
+        align-items: center;
+      }
+
+      .discipline-hero h2,
+      .discipline-hero p {
+        margin: 0;
+      }
+
+      .discipline-hero p {
+        margin-top: 8px;
+        color: var(--muted);
+        line-height: 1.5;
+      }
+
+      .discipline-badge {
+        width: 112px;
+        height: 112px;
+        border-radius: 28px;
+        display: grid;
+        place-items: center;
+        justify-self: end;
+        background: rgba(255, 255, 255, 0.04);
+        border: 1px solid var(--line);
+      }
+
+      .discipline-badge svg {
+        width: 44px;
+        height: 44px;
+        stroke: currentColor;
+        fill: none;
+        stroke-width: 1.8;
+        stroke-linecap: round;
+        stroke-linejoin: round;
+      }
+
+      .discipline-list {
+        display: grid;
+        gap: 10px;
+      }
+
+      .form-stack {
+        display: grid;
+        gap: 12px;
+      }
+
+      .field label {
+        display: block;
+        margin-bottom: 6px;
+        font-size: 12px;
+        color: var(--muted);
+      }
+
+      .field textarea,
+      .field select,
+      .field input {
+        width: 100%;
+        border: 1px solid var(--line);
+        background: rgba(255, 255, 255, 0.04);
+        color: var(--text);
+        border-radius: 12px;
+        padding: 10px 12px;
+        font: inherit;
+      }
+
+      .field textarea {
+        min-height: 110px;
+        resize: vertical;
+      }
+
+      .field-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 10px;
+      }
+
+      .agent-thread {
+        display: grid;
+        gap: 10px;
+        max-height: 280px;
+        overflow: auto;
+      }
+
+      .agent-bubble {
+        border-radius: 14px;
+        padding: 12px 14px;
+        border: 1px solid rgba(255, 255, 255, 0.05);
+        line-height: 1.45;
+        font-size: 13px;
+      }
+
+      .agent-bubble.agent {
+        background: rgba(111, 97, 255, 0.08);
+      }
+
+      .agent-bubble.user {
+        background: rgba(255, 255, 255, 0.04);
+      }
+
+      .agent-actions {
+        display: flex;
+        gap: 8px;
+        flex-wrap: wrap;
+      }
+
+      .project-item {
+        width: 100%;
+        border: 1px solid transparent;
+        border-radius: 14px;
+        background: rgba(255, 255, 255, 0.03);
+        padding: 12px;
+        color: var(--text);
+        text-align: left;
+        transition: border-color 120ms ease, background 120ms ease;
+      }
+
+      .project-item h4,
+      .project-item p,
+      .project-item small {
+        margin: 0;
+      }
+
+      .project-item p {
+        margin-top: 4px;
+        color: var(--muted);
+        font-size: 13px;
+      }
+
+      .project-item small {
+        display: block;
+        margin-top: 8px;
+        color: var(--muted-2);
+      }
+
+      .project-item:hover {
+        border-color: var(--line-strong);
+      }
+
+      .project-item.active {
+        border-color: rgba(111, 97, 255, 0.34);
+        background: rgba(111, 97, 255, 0.11);
+      }
+
+      .project-item:disabled,
+      button:disabled {
+        cursor: not-allowed;
+        opacity: 0.58;
+      }
+
+      .overlay {
+        position: fixed;
+        inset: 0;
+        background: rgba(3, 8, 16, 0.82);
+        backdrop-filter: blur(8px);
+        -webkit-backdrop-filter: blur(8px);
+        display: none;
+        align-items: center;
+        justify-content: center;
+        padding: 28px;
+        z-index: 50;
+      }
+
+      .overlay.open {
+        display: flex;
+      }
+
+      .overlay-card {
+        width: min(1320px, 100%);
+        height: min(860px, 100%);
+        border-radius: 22px;
+        overflow: hidden;
+        background: #0b1322;
+        border: 1px solid rgba(255,255,255,0.08);
+        box-shadow: var(--shadow);
+        position: relative;
+      }
+
+      .overlay-close {
+        position: absolute;
+        top: 14px;
+        right: 14px;
+        z-index: 3;
+      }
+
+      .overlay-card iframe {
+        width: 100%;
+        height: 100%;
+        border: 0;
+      }
+
+      .upload-input {
+        display: none;
+      }
+
+      @media (max-width: 1320px) {
+        .app {
+          grid-template-columns: 230px 1fr;
+        }
+
+        .rightbar {
+          grid-column: 2;
+          padding: 0 16px 18px 16px;
+        }
+      }
+
+      @media (max-width: 1080px) {
+        .app {
+          display: block;
+        }
+
+        .sidebar,
+        .main,
+        .rightbar {
+          padding: 14px;
+        }
+
+        .topbar,
+        .plan-head {
+          grid-template-columns: 1fr;
+        }
+
+        .summary-grid {
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+
+        .metric-grid,
+        .table-head,
+        .table-row {
+          grid-template-columns: 1fr;
+        }
+      }
+
+      @media (max-width: 1500px) and (min-width: 1321px) {
+        .summary-grid {
+          grid-template-columns: repeat(3, minmax(0, 1fr));
+        }
+      }
+    </style>
+    <script defer src="/_vercel/insights/script.js"></script>
+
+  </head>
+  <body>
+    <div class="app">
+      <aside class="sidebar">
+        <div class="brand">
+          <img src="/assets/ochiga-logo.png" alt="Ochiga" />
+        </div>
+
+        <div class="nav-stack">
+          <div class="nav-group">
+            <div class="nav-label">Main</div>
+            <button class="nav-item" data-page="dashboard"><span class="nav-icon"><svg viewBox="0 0 24 24"><path d="M3 11.5 12 4l9 7.5"/><path d="M5 10.5V20h14v-9.5"/></svg></span><span>Dashboard</span></button>
+            <button class="nav-item active" data-page="projects"><span class="nav-icon"><svg viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="2"/><path d="M9 4v16"/><path d="M4 10h16"/></svg></span><span>Projects</span></button>
+            <button class="nav-item" data-page="plans"><span class="nav-icon"><svg viewBox="0 0 24 24"><path d="M4 6h16v12H4z"/><path d="M9 6v12"/><path d="M14 6v12"/><path d="M4 12h16"/></svg></span><span>Plans</span></button>
+            <button class="nav-item" data-page="analytics"><span class="nav-icon"><svg viewBox="0 0 24 24"><path d="M5 19V9"/><path d="M12 19V5"/><path d="M19 19v-7"/><path d="M3 19h18"/></svg></span><span>Analytics</span></button>
+            <button class="nav-item" data-page="compliance"><span class="nav-icon"><svg viewBox="0 0 24 24"><path d="M12 3 5 6v6c0 4.5 3 7.8 7 9 4-1.2 7-4.5 7-9V6l-7-3Z"/><path d="m9.5 12 1.8 1.8 3.7-3.8"/></svg></span><span>Compliance</span></button>
+            <button class="nav-item" data-page="library"><span class="nav-icon"><svg viewBox="0 0 24 24"><path d="M5 5h12a2 2 0 0 1 2 2v12H7a2 2 0 0 0-2 2"/><path d="M5 5v14a2 2 0 0 1 2-2h12"/></svg></span><span>Library</span></button>
+          </div>
+
+          <div class="nav-group">
+            <div class="nav-label">Smart Infrastructure</div>
+            <button class="nav-item" data-page="electrical"><span class="nav-icon"><svg viewBox="0 0 24 24"><path d="m13 2-7 11h5l-1 9 8-12h-5z"/></svg></span><span>Electrical</span></button>
+            <button class="nav-item" data-page="security"><span class="nav-icon"><svg viewBox="0 0 24 24"><path d="M12 3 5 6v6c0 4.5 3 7.8 7 9 4-1.2 7-4.5 7-9V6l-7-3Z"/><path d="M12 9v3"/><path d="M12 16h.01"/></svg></span><span>Security</span></button>
+            <button class="nav-item" data-page="hvac"><span class="nav-icon"><svg viewBox="0 0 24 24"><path d="M12 3v6"/><path d="M12 15v6"/><path d="M4.9 7.5 10 10.5"/><path d="m14 13.5 5.1 3"/><path d="m4.9 16.5 5.1-3"/><path d="m14 10.5 5.1-3"/></svg></span><span>HVAC</span></button>
+            <button class="nav-item" data-page="lighting"><span class="nav-icon"><svg viewBox="0 0 24 24"><path d="M9 18h6"/><path d="M10 22h4"/><path d="M8 14c-1.2-1-2-2.5-2-4a6 6 0 1 1 12 0c0 1.5-.8 3-2 4l-1 2h-6z"/></svg></span><span>Lighting</span></button>
+            <button class="nav-item" data-page="fire-safety"><span class="nav-icon"><svg viewBox="0 0 24 24"><path d="M12 3c2 2.2 3.5 4.2 3.5 6.4A3.5 3.5 0 0 1 12 13a3.5 3.5 0 0 1-3.5-3.6C8.5 7.2 10 5.2 12 3Z"/><path d="M12 13c3.3 1.6 5 4 5 6a5 5 0 0 1-10 0c0-2 1.7-4.4 5-6Z"/></svg></span><span>Fire Safety</span></button>
+            <button class="nav-item" data-page="iot-sensors"><span class="nav-icon"><svg viewBox="0 0 24 24"><path d="M12 12h.01"/><path d="M8.5 8.5a5 5 0 0 1 7 0"/><path d="M5 5a10 10 0 0 1 14 0"/><path d="M2 2a14.5 14.5 0 0 1 20 0"/></svg></span><span>IoT Sensors</span></button>
+            <button class="nav-item" data-page="network"><span class="nav-icon"><svg viewBox="0 0 24 24"><path d="M4 8h16"/><path d="M4 16h16"/><path d="M8 4v16"/><path d="M16 4v16"/></svg></span><span>Network</span></button>
+            <button class="nav-item" data-page="access-control"><span class="nav-icon"><svg viewBox="0 0 24 24"><rect x="4" y="3" width="16" height="18" rx="2"/><path d="M9 12h6"/><path d="M15 9l3 3-3 3"/></svg></span><span>Access Control</span></button>
+          </div>
+        </div>
+
+        <div class="sidebar-card">
+          <h3>Project Intake</h3>
+          <p>Upload a screenshot or plan file, save it, run analysis, and move it into one smart-infrastructure workflow.</p>
+          <div style="margin-top:14px">
+            <button id="sidebar-upload" class="primary-btn">Upload Plan</button>
+          </div>
+        </div>
+
+        <div class="sidebar-card" style="margin-top:auto">
+          <h3>Saved Projects</h3>
+          <p>Recent uploads available for testing and review.</p>
+          <div id="project-list" class="project-list"></div>
+        </div>
+      </aside>
+
+      <main class="main">
+        <section id="page-projects" class="page active">
+          <section class="shell-card topbar">
+            <div class="project-meta">
+              <h1 id="project-name">Ochiga Planning Workspace</h1>
+              <p><span class="dot"></span><span id="project-status">Awaiting plan upload</span></p>
+            </div>
+            <div class="workflow">
+              <div class="workflow-step done" id="step-upload">1 Upload</div>
+              <div class="workflow-step" id="step-analyze">2 Analyze</div>
+              <div class="workflow-step" id="step-design">3 Design Plan</div>
+            </div>
+            <div class="action-row">
+              <button id="top-upload" class="ghost-btn">Upload</button>
+              <button id="reanalyze" class="ghost-btn">Analyze</button>
+              <button id="export-report" class="primary-btn">Export Report</button>
+            </div>
+          </section>
+
+          <section class="shell-card plan-panel">
+            <div class="plan-head">
+              <div>
+                <h2>Ground Floor Plan</h2>
+                <p id="file-name">No plan uploaded yet</p>
+              </div>
+              <div class="tool-row">
+                <button id="view-2d" class="chip-btn active">2D View</button>
+                <button id="view-3d" class="chip-btn">3D View</button>
+              </div>
+              <div class="tool-row" style="justify-content:flex-end">
+                <div class="plan-tool-icons">
+                  <button id="tool-pan" class="icon-btn" aria-label="Pan"><svg class="tool-icon" viewBox="0 0 24 24"><path d="M12 2v8"/><path d="m8.5 5.5 3.5-3.5 3.5 3.5"/><path d="M12 22v-8"/><path d="m8.5 18.5 3.5 3.5 3.5-3.5"/><path d="M2 12h8"/><path d="m5.5 8.5-3.5 3.5 3.5 3.5"/><path d="M22 12h-8"/><path d="m18.5 8.5 3.5 3.5-3.5 3.5"/></svg></button>
+                  <button id="tool-target" class="icon-btn" aria-label="Target"><svg class="tool-icon" viewBox="0 0 24 24"><circle cx="12" cy="12" r="6"/><path d="M12 2v4"/><path d="M12 18v4"/><path d="M2 12h4"/><path d="M18 12h4"/></svg></button>
+                  <button id="tool-measure" class="icon-btn" aria-label="Measure"><svg class="tool-icon" viewBox="0 0 24 24"><path d="m4 20 16-16"/><path d="m14 4 2 2"/><path d="m10 8 2 2"/><path d="m6 12 2 2"/><path d="m4 16 2 2"/></svg></button>
+                  <button id="tool-annotate" class="icon-btn" aria-label="Annotate"><svg class="tool-icon" viewBox="0 0 24 24"><path d="m4 20 4.5-1 9-9-3.5-3.5-9 9z"/><path d="m13 5 3.5 3.5"/><path d="M4 20h4"/></svg></button>
+                  <button id="tool-inspect" class="icon-btn active" aria-label="Inspect"><svg class="tool-icon" viewBox="0 0 24 24"><circle cx="11" cy="11" r="6"/><path d="m20 20-4.2-4.2"/></svg></button>
+                </div>
+                <div class="layers-select">
+                  <button id="layers-toggle" class="ghost-btn">Layers ▾</button>
+                </div>
+              </div>
+            </div>
+
+            <div class="plan-filter-row">
+              <div id="plan-tool-status" class="plan-status">Inspect mode active. Select a zone or marker to review details.</div>
+              <div id="plan-scope-pills" class="scope-pills">
+                <button class="scope-btn active" data-scope="markers">Devices</button>
+                <button class="scope-btn active" data-scope="zones">Zones</button>
+                <button class="scope-btn active" data-scope="pathways">Paths</button>
+              </div>
+            </div>
+
+            <div class="plan-stage" id="plan-stage">
+              <div id="stage-2d" class="stage-view">
+                <div class="empty-stage" id="empty-stage">
+                  <div>
+                    <h3>Upload a building screenshot or floor plan</h3>
+                    <p>The system will save the project, run infrastructure analysis, render the plan overlay, and prepare it for infrastructure design review.</p>
+                    <div class="empty-actions">
+                      <button id="stage-upload" class="primary-btn">Upload Plan</button>
+                    </div>
+                  </div>
+                </div>
+                <img id="plan-image" alt="" hidden />
+                <div id="zone-layer" class="zone-layer"></div>
+                <div id="pathway-layer" class="pathway-layer"></div>
+                <div id="opening-layer" class="opening-layer"></div>
+                <div id="marker-layer" class="marker-layer"></div>
+                <div class="plan-zoom-rail">
+                  <button id="zoom-fit" class="rail-btn" aria-label="Fit to screen">⌕</button>
+                  <button id="zoom-in" class="rail-btn" aria-label="Zoom in">⊕</button>
+                  <button id="zoom-out" class="rail-btn" aria-label="Zoom out">⊖</button>
+                  <button id="zoom-focus" class="rail-btn" aria-label="Focus selection">⤢</button>
+                </div>
+              </div>
+
+              <div id="stage-3d" class="stage-view" hidden>
+                <iframe class="stage-iframe" src="/digital-twin"></iframe>
+              </div>
+            </div>
+
+            <div id="legend" class="legend"></div>
+          </section>
+        </section>
+
+        <section id="page-dashboard" class="page">
+          <div class="page-stack">
+            <section class="shell-card topbar">
+              <div class="project-meta">
+                <h1>Operations Dashboard</h1>
+                <p><span class="dot"></span><span>Live portfolio and intake pipeline</span></p>
+              </div>
+              <div class="action-row">
+                <button class="ghost-btn">Review Queue</button>
+                <button class="primary-btn">Create Project</button>
+              </div>
+            </section>
+            <div class="metric-grid">
+              <section class="shell-card metric-card"><strong id="metric-project-count">0</strong><span>Projects under review</span></section>
+              <section class="shell-card metric-card"><strong id="metric-discipline-count">0</strong><span>Discipline-ready projects</span></section>
+              <section class="shell-card metric-card"><strong id="metric-sla">0%</strong><span>Planning SLA this week</span></section>
+            </div>
+            <section class="shell-card info-card">
+              <h3>Program Status</h3>
+              <p id="dashboard-status-text">The dashboard tracks intake, planning review, twin generation, and infrastructure signoff for every building project entering the system.</p>
+              <ul>
+                <li id="dashboard-list-1">Upload and triage new plans from clients.</li>
+                <li id="dashboard-list-2">Route electrical, security, HVAC, and network reviews.</li>
+                <li id="dashboard-list-3">Move approved projects into implementation and operations.</li>
+              </ul>
+            </section>
+          </div>
+        </section>
+
+        <section id="page-plans" class="page">
+          <div class="page-stack">
+            <section class="shell-card topbar">
+              <div class="project-meta">
+                <h1>Plans Workspace</h1>
+                <p><span class="dot"></span><span>Room, pathway, and layer coordination</span></p>
+              </div>
+              <div class="action-row">
+                <button class="ghost-btn">Open Latest Plan</button>
+                <button class="ghost-btn">Create Layer Set</button>
+              </div>
+            </section>
+            <section class="shell-card info-card">
+              <h3>Design Standards</h3>
+              <p>Use this view to manage drawing packages, room zoning standards, naming rules, and routing conventions before the twin and smart infrastructure layers are finalized.</p>
+            </section>
+            <section class="shell-card table-card">
+              <div class="table-head"><div>Package</div><div>Discipline</div><div>Status</div><div>Owner</div></div>
+              <div class="table-row"><div><strong>Ground Floor Intake</strong><span>Primary plan package</span></div><div>Architecture</div><div><span class="status-pill live">Ready</span></div><div>Design Team</div></div>
+              <div class="table-row"><div><strong>Security Layer Set</strong><span>Coverage and control points</span></div><div>Security</div><div><span class="status-pill review">Review</span></div><div>Protection Team</div></div>
+              <div class="table-row"><div><strong>Network Backbone</strong><span>LAN, Wi-Fi, risers</span></div><div>Network</div><div><span class="status-pill warning">Pending</span></div><div>ICT Team</div></div>
+            </section>
+          </div>
+        </section>
+
+        <section id="page-analytics" class="page">
+          <div class="page-stack">
+            <section class="shell-card topbar">
+              <div class="project-meta">
+                <h1>Analytics</h1>
+                <p><span class="dot"></span><span>Planning intelligence and deployment trends</span></p>
+              </div>
+            </section>
+            <div class="metric-grid">
+              <section class="shell-card metric-card"><strong id="analytics-roi">0%</strong><span>Average ROI projection</span></section>
+              <section class="shell-card metric-card"><strong id="analytics-sensors">0</strong><span>Average sensors per project</span></section>
+              <section class="shell-card metric-card"><strong id="analytics-recommendations">0</strong><span>Recommendations per project</span></section>
+            </div>
+            <section class="shell-card info-card">
+              <h3>Analysis Coverage</h3>
+              <p id="analytics-coverage-text">Analytics consolidates recommendation quality, layer density, and projected deployment cost to help the team tune design standards across projects.</p>
+            </section>
+          </div>
+        </section>
+
+        <section id="page-compliance" class="page">
+          <div class="page-stack">
+            <section class="shell-card topbar">
+              <div class="project-meta">
+                <h1>Compliance</h1>
+                <p><span class="dot"></span><span>Standards, audits, and approval tracking</span></p>
+              </div>
+            </section>
+            <section class="shell-card table-card">
+              <div class="table-head"><div>Checklist</div><div>Scope</div><div>Status</div><div>Reviewer</div></div>
+              <div class="table-row"><div><strong>Life Safety Review</strong><span id="compliance-life-safety">Detectors, paths, alarms</span></div><div>Fire Safety</div><div><span id="compliance-life-status" class="status-pill review">Review</span></div><div>Safety Lead</div></div>
+              <div class="table-row"><div><strong>Power Segmentation</strong><span id="compliance-power">Critical vs non-critical loads</span></div><div>Electrical</div><div><span id="compliance-power-status" class="status-pill live">Approved</span></div><div>MEP Team</div></div>
+              <div class="table-row"><div><strong>Access Zoning</strong><span id="compliance-access">Entrances and lift control</span></div><div>Security</div><div><span id="compliance-access-status" class="status-pill warning">Pending</span></div><div>Security Lead</div></div>
+            </section>
+          </div>
+        </section>
+
+        <section id="page-library" class="page">
+          <div class="page-stack">
+            <section class="shell-card topbar">
+              <div class="project-meta">
+                <h1>Library</h1>
+                <p><span class="dot"></span><span>Reusable standards, details, and device templates</span></p>
+              </div>
+            </section>
+            <section class="shell-card info-card">
+              <h3>Infrastructure Library</h3>
+              <p>Store standard camera packages, lighting groups, network rack templates, riser strategies, and device naming conventions for reuse across projects.</p>
+            </section>
+          </div>
+        </section>
+
+        <section id="page-discipline" class="page">
+          <div class="page-stack">
+            <section class="shell-card topbar">
+              <div class="project-meta">
+                <h1 id="discipline-title">Discipline Workspace</h1>
+                <p><span class="dot"></span><span id="discipline-subtitle">Focused planning review</span></p>
+              </div>
+              <div class="action-row">
+                <button id="discipline-open-project" class="ghost-btn">Open Active Project</button>
+                <button id="discipline-generate-report" class="primary-btn">Generate Scope</button>
+              </div>
+            </section>
+            <section class="shell-card info-card">
+              <div class="discipline-hero">
+                <div>
+                  <h2 id="discipline-hero-title">Discipline Design</h2>
+                  <p id="discipline-description">Review layer density, recommended placements, and project readiness for this discipline.</p>
+                </div>
+                <div id="discipline-badge" class="discipline-badge"></div>
+              </div>
+            </section>
+            <div class="metric-grid">
+              <section class="shell-card metric-card"><strong id="discipline-active-projects">0</strong><span>Projects with this layer</span></section>
+              <section class="shell-card metric-card"><strong id="discipline-layer-points">0</strong><span>Relevant control points</span></section>
+              <section class="shell-card metric-card"><strong id="discipline-budget">₦0</strong><span>Indicative budget influence</span></section>
+            </div>
+            <section class="shell-card table-card">
+              <div class="table-head"><div>Workstream</div><div>Project Focus</div><div>Status</div><div>Owner</div></div>
+              <div id="discipline-workstreams"></div>
+            </section>
+            <section class="shell-card info-card">
+              <h3>Discipline Review</h3>
+              <div class="form-stack" style="margin-top:12px">
+                <div class="field">
+                  <label for="discipline-approval">Approval State</label>
+                  <select id="discipline-approval">
+                    <option value="pending">Pending</option>
+                    <option value="review">In Review</option>
+                    <option value="approved">Approved</option>
+                  </select>
+                </div>
+                <div class="field">
+                  <label for="discipline-decisions">Design Decisions</label>
+                  <input id="discipline-decisions" type="text" placeholder="Comma-separated decisions" />
+                </div>
+                <div class="field">
+                  <label for="discipline-notes">Notes</label>
+                  <textarea id="discipline-notes" placeholder="Add discipline notes, constraints, and implementation decisions."></textarea>
+                </div>
+                <div class="action-row">
+                  <button id="discipline-save-review" class="primary-btn">Save Review</button>
+                  <span id="discipline-review-status" class="layer-summary">No saved review yet.</span>
+                </div>
+              </div>
+            </section>
+          </div>
+        </section>
+      </main>
+
+      <aside class="rightbar">
+        <div id="rail-projects" class="rail-page active">
+          <div class="side-stack">
+            <section class="shell-card rail-card info-card">
+              <div class="card-head">
+                <div>
+                  <h3>AI Planner</h3>
+                  <p>Automatic plan explanation and smart-integration guidance</p>
+                </div>
+              </div>
+              <div id="agent-thread" class="agent-thread"></div>
+              <div class="agent-actions" style="margin-top:12px">
+                <button class="ghost-btn" data-agent-prompt="Explain this plan in plain English.">Explain Plan</button>
+                <button class="ghost-btn" data-agent-prompt="Show smart infrastructure opportunities for this building.">Smart Opportunities</button>
+                <button class="ghost-btn" data-agent-prompt="List the next design decisions we should make.">Next Decisions</button>
+              </div>
+              <div class="form-stack" style="margin-top:12px">
+                <div class="field">
+                  <label for="agent-input">Ask The Planner</label>
+                  <textarea id="agent-input" placeholder="Ask about the plan, rooms, smart upgrades, or design changes."></textarea>
+                </div>
+                <div class="action-row">
+                  <button id="agent-send" class="primary-btn">Ask Planner</button>
+                  <span id="agent-status" class="layer-summary">Upload a plan to start the live planner.</span>
+                </div>
+              </div>
+            </section>
+
+            <section class="shell-card rail-card info-card">
+              <h3>Geometry Review</h3>
+              <p id="geometry-review-summary">Parser review will appear here after a plan is uploaded.</p>
+              <div class="form-stack" style="margin-top:12px">
+                <div class="field">
+                  <label for="zone-label-input">Selected Zone Label</label>
+                  <input id="zone-label-input" type="text" placeholder="Select a zone on the plan" />
+                </div>
+                <div class="field">
+                  <label for="zone-kind-input">Zone Kind</label>
+                  <select id="zone-kind-input">
+                    <option value="room">Room</option>
+                    <option value="unit">Unit</option>
+                    <option value="corridor">Corridor</option>
+                    <option value="core">Core</option>
+                    <option value="entry">Entry</option>
+                    <option value="service">Service</option>
+                  </select>
+                </div>
+                <div class="field-grid">
+                  <div class="field">
+                    <label for="zone-x-input">X</label>
+                    <input id="zone-x-input" type="number" step="0.001" />
+                  </div>
+                  <div class="field">
+                    <label for="zone-y-input">Y</label>
+                    <input id="zone-y-input" type="number" step="0.001" />
+                  </div>
+                  <div class="field">
+                    <label for="zone-width-input">Width</label>
+                    <input id="zone-width-input" type="number" step="0.001" />
+                  </div>
+                  <div class="field">
+                    <label for="zone-height-input">Height</label>
+                    <input id="zone-height-input" type="number" step="0.001" />
+                  </div>
+                </div>
+                <div class="action-row">
+                  <button id="apply-zone-edit" class="ghost-btn">Apply Edit</button>
+                  <button id="save-geometry-truth" class="primary-btn">Save Truth</button>
+                  <button id="reset-geometry-truth" class="ghost-btn">Reset</button>
+                </div>
+                <div id="geometry-save-status" class="layer-summary">No manual corrections saved yet.</div>
+              </div>
+            </section>
+
+            <section class="shell-card rail-card preview-card">
+              <div class="card-head">
+                <div>
+                  <h3>3D Preview</h3>
+                  <p>Planning view</p>
+                </div>
+                <div class="preview-tabs">
+                  <button id="preview-tab-3d" class="preview-tab active">3D</button>
+                  <button id="preview-tab-2d" class="preview-tab">2D</button>
+                </div>
+              </div>
+              <div class="preview-frame">
+                <button id="expand-preview" class="icon-btn preview-expand">⤢</button>
+                <div id="preview-3d" class="preview-surface">
+                  <iframe class="preview-iframe" src="/digital-twin?embed=1"></iframe>
+                </div>
+                <div id="preview-2d" class="preview-surface" hidden>
+                  <div class="mini-plan">
+                    <img id="mini-plan-image" alt="" hidden />
+                    <div id="mini-marker-layer" class="mini-marker-layer"></div>
+                  </div>
+                </div>
+              </div>
+            </section>
+
+            <section class="shell-card rail-card">
+              <div class="card-head">
+                <div>
+                  <h3>Infrastructure Layers</h3>
+                  <p>Discipline overlays for the active plan</p>
+                </div>
+              </div>
+              <div id="layer-summary" class="layer-summary" style="margin-bottom:10px">All layers visible.</div>
+              <div id="layer-pills" class="layer-row"></div>
+            </section>
+
+            <section class="shell-card rail-card summary-card">
+              <div class="card-head">
+                <div>
+                  <h3>Smart Infrastructure Summary</h3>
+                  <p>Generated from the uploaded project</p>
+                </div>
+              </div>
+              <div id="summary-grid" class="summary-grid"></div>
+            </section>
+
+            <section class="shell-card rail-card recommend-card">
+              <div class="card-head">
+                <div>
+                  <h3>Recommendations</h3>
+                  <p>Ochiga planning suggestions</p>
+                </div>
+              </div>
+              <div id="recommend-list" class="recommend-list"></div>
+            </section>
+
+            <section class="shell-card rail-card estimate-card">
+              <div class="card-head">
+                <div>
+                  <h3>Estimated Investment</h3>
+                  <p>Working range for infrastructure rollout</p>
+                </div>
+              </div>
+              <div id="estimate-box" class="estimate"></div>
+            </section>
+          </div>
+        </div>
+
+        <div id="rail-dashboard" class="rail-page">
+          <div class="rail-stack">
+            <section class="shell-card rail-card info-card"><h3>Executive Snapshot</h3><p>Use the dashboard rail for active alerts, project intake velocity, and discipline workload across the portfolio.</p></section>
+            <section class="shell-card rail-card info-card"><h3>Today</h3><ul><li>2 projects awaiting security review</li><li>1 twin export ready for client delivery</li><li>4 discipline approvals due today</li></ul></section>
+          </div>
+        </div>
+
+        <div id="rail-plans" class="rail-page">
+          <div class="rail-stack">
+            <section class="shell-card rail-card info-card"><h3>Plan Controls</h3><p>Coordinate layer packages, room naming, and drawing status before final infrastructure placement.</p></section>
+            <section class="shell-card rail-card info-card"><h3>Open Packages</h3><ul><li>Architecture base plan</li><li>Security routing overlay</li><li>Network backbone draft</li></ul></section>
+          </div>
+        </div>
+
+        <div id="rail-analytics" class="rail-page">
+          <div class="rail-stack">
+            <section class="shell-card rail-card info-card"><h3>Trend Notes</h3><p>Analytics surfaces recurring blind spots, cost drift, and discipline conflicts across uploaded properties.</p></section>
+          </div>
+        </div>
+
+        <div id="rail-compliance" class="rail-page">
+          <div class="rail-stack">
+            <section class="shell-card rail-card info-card"><h3>Compliance Notes</h3><p>Track approval status by discipline and maintain a clear signoff trail before implementation starts.</p></section>
+          </div>
+        </div>
+
+        <div id="rail-library" class="rail-page">
+          <div class="rail-stack">
+            <section class="shell-card rail-card info-card"><h3>Library Contents</h3><p>Reusable device bundles, standards, checklists, and riser strategies live here for every future project.</p></section>
+          </div>
+        </div>
+
+        <div id="rail-discipline" class="rail-page">
+          <div class="rail-stack">
+            <section class="shell-card rail-card info-card">
+              <h3 id="discipline-rail-title">Discipline Summary</h3>
+              <p id="discipline-rail-text">Track layer readiness, scope notes, and rollout priorities for the selected infrastructure discipline.</p>
+            </section>
+            <section class="shell-card rail-card info-card">
+              <h3>Priority Tasks</h3>
+              <ul id="discipline-priority-list" class="discipline-list"></ul>
+            </section>
+            <section class="shell-card rail-card info-card">
+              <h3>Active Project</h3>
+              <p id="discipline-active-project-text">Open a project from the project list to apply current plan data to this discipline workspace.</p>
+            </section>
+          </div>
+        </div>
+      </aside>
+    </div>
+
+    <div id="preview-overlay" class="overlay">
+      <div class="overlay-card">
+        <button id="close-preview" class="icon-btn overlay-close">✕</button>
+        <iframe src="/digital-twin"></iframe>
+      </div>
+    </div>
+
+    <input id="upload-input" class="upload-input" type="file" accept="image/*" />
+    <script type="module" src="/plan-studio/app.js"></script>
+  </body>
+</html>

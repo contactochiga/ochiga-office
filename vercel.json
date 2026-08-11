@@ -1,0 +1,38 @@
+{
+  "cleanUrls": true,
+  "trailingSlash": false,
+  "rewrites": [
+    {
+      "source": "/",
+      "destination": "/dashboard/"
+    },
+    {
+      "source": "/dashboard.js",
+      "destination": "/dashboard/dashboard.js"
+    },
+    {
+      "source": "/widget.js",
+      "destination": "/widget/oma-widget.js"
+    },
+    {
+      "source": "/api/lead-agents/:path*",
+      "destination": "https://ochiga-lead-agents.onrender.com/api/lead-agents/:path*"
+    },
+    {
+      "source": "/api/digital-twin/:path*",
+      "destination": "https://ochiga-lead-agents.onrender.com/api/digital-twin/:path*"
+    },
+    {
+      "source": "/api/plan-studio/:path*",
+      "destination": "https://ochiga-lead-agents.onrender.com/api/plan-studio/:path*"
+    },
+    {
+      "source": "/webhooks/:path*",
+      "destination": "https://ochiga-lead-agents.onrender.com/webhooks/:path*"
+    },
+    {
+      "source": "/healthz",
+      "destination": "https://ochiga-lead-agents.onrender.com/healthz"
+    }
+  ]
+}

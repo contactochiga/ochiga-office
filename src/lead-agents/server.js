@@ -1,0 +1,4230 @@
+require("dotenv").config();
+require("dotenv").config({ path: ".env.lead-agents.local", override: true });
+const http = require("http");
+const path = require("path");
+const crypto = require("crypto");
+const axios = require("axios");
+const { createConfig } = require("./config");
+const { log } = require("./logger");
+const { createStore } = require("./store-factory");
+const { OpenAIResponsesClient } = require("./openai");
+const { ToolExecutor } = require("./tools");
+const { LeadAgentRuntime } = require("./runtime");
+const { WebhookDispatcher } = require("./webhooks");
+const {
+  authorizePermission,
+  clearSessionCookie,
+  createAdminSessionToken,
+  createSessionCookie,
+  enforceAuth,
+  hashPassword,
+  permissionsForRole,
+  readAdminSession,
+  verifyPassword,
+} = require("./auth");
+const { MemoryRateLimiter } = require("./rate-limit");
+const { FileKnowledgeBase } = require("./knowledge-base");
+const { normalizeEmail, normalizeLeadInput, normalizeLeadPatch } = require("./normalize-lead");
+const {
+  findExistingIntakeLead,
+  leadInputFromIntake,
+  normalizeOfficeIntakeEnvelope,
+} = require("./office-intake");
+const { WhatsAppCloudAdapter } = require("./whatsapp");
+const { buildCalendarLinks, parsePreferredSchedule } = require("./scheduling");
+const { buildProposal, inferCommercialFacts } = require("./commercial");
+const { PIPELINE_STAGES, qualifyLead } = require("./commercial-ops");
+const { createDigitalTwinRuntime } = require("./digital-twin");
+const { createPlanStudioRuntime } = require("./plan-studio");
+const { createOfficeSyncService } = require("./office-sync");
+const { appendAuditRecord } = require("./audit");
+const { PERMISSION_KEYS, ROLE_PERMISSIONS } = require("./permissions");
+const { createRealtimeHub } = require("./realtime");
+const { createStorageService } = require("./storage");
+const {
+  passwordResetEmail,
+  sendOfficeEmail,
+  staffInviteEmail,
+} = require("./email");
+const { credentialPayloadForUser, qrSvg } = require("./qr");
+const {
+  createRequestContext,
+  getPathname,
+  json,
+  methodNotAllowed,
+  notFound,
+  readJsonBody,
+  serveFile,
+  setCorsHeaders,
+} = require("./http");
+
+function validateConfig(config) {
+  if (!config.openaiApiKey) {
+    throw new Error("Missing OPENAI_API_KEY for lead agents backend");
+  }
+}
+
+function parseBoolean(value, fallback = false) {
+  if (value === undefined) return fallback;
+  return String(value).toLowerCase() === "true";
+}
+
+function secureCompare(left, right) {
+  const a = Buffer.from(String(left || ""));
+  const b = Buffer.from(String(right || ""));
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
+}
+
+function getEdgeToken(req) {
+  const authHeader = String(req.headers.authorization || "");
+  if (authHeader.startsWith("Bearer ")) {
+    return authHeader.slice("Bearer ".length).trim();
+  }
+  return String(req.headers["x-edge-token"] || req.headers["x-oyi-edge-token"] || "").trim();
+}
+
+function tryEdgeAuth(req, config) {
+  const token = getEdgeToken(req);
+  if (!token || !Array.isArray(config.edgeAgentTokens) || config.edgeAgentTokens.length === 0) {
+    return null;
+  }
+  const allowed = config.edgeAgentTokens.some((candidate) => secureCompare(candidate, token));
+  if (!allowed) return null;
+  return {
+    type: "edge_token",
+    role: "ai_agent",
+    email: "edge-agent@oyi.local",
+    userId: "oyi_edge_agent",
+    permissions: permissionsForRole("ai_agent", ["twin.control", "devices.control"]),
+  };
+}
+
+function loginAttemptKey(req, email) {
+  const forwarded = String(req.headers["x-forwarded-for"] || "")
+    .split(",")[0]
+    .trim();
+  const ip = forwarded || req.socket.remoteAddress || "unknown";
+  return `${normalizeEmail(email) || "unknown"}:${ip}`;
+}
+
+function requireObject(body, name) {
+  if (!body || typeof body !== "object" || Array.isArray(body)) {
+    const error = new Error(`${name} must be an object`);
+    error.statusCode = 400;
+    throw error;
+  }
+}
+
+function customerServiceWindowExpiry(timestampSeconds) {
+  const baseMs = Number(timestampSeconds || 0) * 1000 || Date.now();
+  return new Date(baseMs + 24 * 60 * 60 * 1000).toISOString();
+}
+
+function generateOpaqueToken() {
+  return crypto.randomBytes(24).toString("hex");
+}
+
+function hashOpaqueToken(token) {
+  return crypto.createHash("sha256").update(String(token || "")).digest("hex");
+}
+
+function parseDataUrl(value) {
+  const match = String(value || "").match(/^data:([^;,]+)?(;base64)?,([\s\S]*)$/);
+  if (!match) return null;
+  const mimeType = match[1] || "application/octet-stream";
+  const isBase64 = Boolean(match[2]);
+  const body = match[3] || "";
+  return {
+    mimeType,
+    buffer: isBase64 ? Buffer.from(body, "base64") : Buffer.from(decodeURIComponent(body), "utf8"),
+  };
+}
+
+function extensionForAudioMime(mimeType) {
+  const clean = String(mimeType || "").toLowerCase();
+  if (clean.includes("mp4") || clean.includes("m4a")) return ".m4a";
+  if (clean.includes("mpeg") || clean.includes("mp3")) return ".mp3";
+  if (clean.includes("wav")) return ".wav";
+  if (clean.includes("ogg")) return ".ogg";
+  if (clean.includes("webm")) return ".webm";
+  return ".webm";
+}
+
+function statusLabel(configured, productionReady, hasError = false, payloadIncomplete = false) {
+  if (hasError) return "error";
+  if (productionReady) return "production_ready";
+  if (payloadIncomplete) return "configured_payload_incomplete";
+  if (configured) return "configured_needs_validation";
+  return "missing_credentials";
+}
+
+function authHeadersFromConfig(config, keyName) {
+  const headers = {};
+  if (config[`${keyName}ApiKey`]) {
+    headers["x-api-key"] = config[`${keyName}ApiKey`];
+  }
+  if (config[`${keyName}BearerToken`]) {
+    headers.authorization = `Bearer ${config[`${keyName}BearerToken`]}`;
+  }
+  return headers;
+}
+
+function collectionPayload(payload) {
+  if (!payload || typeof payload !== "object") return {};
+  return payload.collections && typeof payload.collections === "object" ? payload.collections : payload;
+}
+
+function payloadSupport(payload, requiredKeys, domain) {
+  const collections = collectionPayload(payload);
+  const completeness = payload && typeof payload === "object" && payload.completeness && typeof payload.completeness === "object"
+    ? payload.completeness
+    : {};
+  const domainCompleteness = domain && completeness[domain] && typeof completeness[domain] === "object"
+    ? completeness[domain]
+    : {};
+  const missing = requiredKeys.filter((key) => {
+    if (Object.prototype.hasOwnProperty.call(domainCompleteness, key)) {
+      return !domainCompleteness[key];
+    }
+    if (key === "users" && Object.prototype.hasOwnProperty.call(domainCompleteness, "residents")) {
+      return !domainCompleteness.residents;
+    }
+    if (key === "support_mappings" && Object.prototype.hasOwnProperty.call(domainCompleteness, "support")) {
+      return !domainCompleteness.support;
+    }
+    return !Object.prototype.hasOwnProperty.call(collections, key);
+  });
+  return {
+    checked: Boolean(payload && typeof payload === "object"),
+    complete: missing.length === 0,
+    supported: requiredKeys.filter((key) => !missing.includes(key)),
+    missing,
+  };
+}
+
+async function probeEndpoint(baseUrl, pathName, options = {}) {
+  if (!baseUrl) {
+    return { checked: false, ok: false, status: "missing_base_url" };
+  }
+  try {
+    const client = axios.create({
+      baseURL: String(baseUrl).replace(/\/$/, ""),
+      timeout: Math.min(Number(options.timeoutMs || 3500), 5000),
+      headers: options.headers || {},
+      validateStatus: () => true,
+    });
+    const response = await client.get(pathName || "/health");
+    const ok = response.status >= 200 && response.status < 300;
+    return {
+      checked: true,
+      ok,
+      status: ok ? "active" : "failed",
+      http_status: response.status,
+      payload: ok ? response.data : null,
+    };
+  } catch (error) {
+    return {
+      checked: true,
+      ok: false,
+      status: "failed",
+      error: error.code || error.name || "request_failed",
+    };
+  }
+}
+
+async function integrationStatus(config, options = {}) {
+  const missingKeys = (rows) => rows.filter(([, value]) => !value).map(([key]) => key);
+  const hasFacilityAuth = Boolean(config.officeFacilityApiKey || config.officeFacilityBearerToken);
+  const hasConsumerAuth = Boolean(config.officeConsumerApiKey || config.officeConsumerBearerToken);
+  const hasBackendAuth = Boolean(config.officeBackendApiKey || config.edgeAgentTokens.length);
+  const appStoreCredentialReady = Boolean(
+    config.appStoreConnectIssuerId &&
+      config.appStoreConnectKeyId &&
+      config.appStoreConnectPrivateKey &&
+      config.appStoreAppId
+  );
+  const facilityMetrics = [
+    "estates",
+    "buildings",
+    "homes",
+    "devices",
+    "wallets",
+    "analytics",
+    "documents",
+    "support_mappings",
+    "visitors",
+    "rooms",
+    "users",
+    "meta",
+    "maintenance",
+    "incidents",
+    "edge_heartbeats",
+    "utility_events",
+  ];
+  const consumerMetrics = [
+    "homes",
+    "rooms",
+    "users",
+    "devices",
+    "wallets",
+    "visitors",
+    "analytics",
+    "support_mappings",
+    "meta",
+    "community",
+    "support",
+    "automations",
+    "notifications",
+    "device_telemetry",
+  ];
+  const backendHealthPromise = probeEndpoint(config.officeBackendBaseUrl, "/health", {
+    headers: config.officeBackendApiKey ? { "x-api-key": config.officeBackendApiKey } : {},
+  });
+  const facilityProbePromise = config.officeFacilityBaseUrl && hasFacilityAuth
+    ? probeEndpoint(config.officeFacilityBaseUrl, config.officeFacilityExportPath || "/office/export", {
+        headers: authHeadersFromConfig(config, "officeFacility"),
+      })
+    : { checked: false, ok: false, status: "not_configured", payload: null };
+  const consumerProbePromise = config.officeConsumerBaseUrl && hasConsumerAuth
+    ? probeEndpoint(config.officeConsumerBaseUrl, config.officeConsumerExportPath || "/office/export", {
+        headers: authHeadersFromConfig(config, "officeConsumer"),
+      })
+    : { checked: false, ok: false, status: "not_configured", payload: null };
+  const externalTwin = Boolean(config.officeDigitalTwinBaseUrl);
+  const twinSceneProbePromise = externalTwin
+    ? probeEndpoint(config.officeDigitalTwinBaseUrl, "/api/digital-twin/scene", {
+        headers: config.officeDigitalTwinApiKey ? { "x-api-key": config.officeDigitalTwinApiKey } : {},
+      })
+    : {
+        checked: true,
+        ok: Boolean(options.digitalTwinRuntime),
+        status: options.digitalTwinRuntime ? "active" : "pending",
+        same_origin: true,
+      };
+  const twinStateProbePromise = config.officeDigitalTwinStatePath
+    ? externalTwin
+      ? probeEndpoint(config.officeDigitalTwinBaseUrl, config.officeDigitalTwinStatePath, {
+          headers: config.officeDigitalTwinApiKey ? { "x-api-key": config.officeDigitalTwinApiKey } : {},
+        })
+      : { checked: true, ok: true, status: "same_origin", same_origin: true }
+    : { checked: false, ok: false, status: externalTwin ? "pending" : "same_origin_scene_only" };
+  const [backendHealth, facilityProbe, consumerProbe, twinSceneProbe, twinStateProbe] = await Promise.all([
+    backendHealthPromise,
+    facilityProbePromise,
+    consumerProbePromise,
+    twinSceneProbePromise,
+    twinStateProbePromise,
+  ]);
+  const facilityPayload = payloadSupport(facilityProbe.payload, facilityMetrics, "facility");
+  const consumerPayload = payloadSupport(consumerProbe.payload, consumerMetrics, "consumer");
+  const webhookHistoryAvailable = Boolean(
+    facilityProbe.payload?.completeness?.webhooks?.delivery_history ||
+      consumerProbe.payload?.completeness?.webhooks?.delivery_history ||
+      facilityProbe.payload?.meta?.webhook_delivery?.available ||
+      consumerProbe.payload?.meta?.webhook_delivery?.available
+  );
+  const twinControlPermissionReady = PERMISSION_KEYS.includes("twin.control");
+  const statuses = {
+    facility: {
+      key: "facility",
+      name: "Oyi Facility API",
+      configured: Boolean(config.officeFacilityBaseUrl),
+      production_ready: Boolean(config.officeFacilityBaseUrl && hasFacilityAuth && facilityProbe.ok && facilityPayload.complete),
+      status: statusLabel(
+        Boolean(config.officeFacilityBaseUrl && hasFacilityAuth),
+        Boolean(config.officeFacilityBaseUrl && hasFacilityAuth && facilityProbe.ok && facilityPayload.complete),
+        facilityProbe.checked && !facilityProbe.ok,
+        facilityProbe.ok && !facilityPayload.complete
+      ),
+      base_url: config.officeFacilityBaseUrl || "",
+      export_path: config.officeFacilityExportPath || "/office/export",
+      auth: config.officeFacilityBearerToken ? "bearer" : config.officeFacilityApiKey ? "api_key" : "none",
+      sync_target: "facility",
+      required_metrics: facilityMetrics,
+      endpoint_health: { checked: facilityProbe.checked, ok: facilityProbe.ok, status: facilityProbe.status, http_status: facilityProbe.http_status || null },
+      payload: facilityPayload,
+      missing: missingKeys([
+        ["OFFICE_FACILITY_BASE_URL", config.officeFacilityBaseUrl],
+        ["OFFICE_FACILITY_API_KEY or OFFICE_FACILITY_BEARER_TOKEN", hasFacilityAuth],
+      ]),
+    },
+    consumer: {
+      key: "consumer",
+      name: "Consumer Smart Building API",
+      configured: Boolean(config.officeConsumerBaseUrl),
+      production_ready: Boolean(config.officeConsumerBaseUrl && hasConsumerAuth && consumerProbe.ok && consumerPayload.complete),
+      status: statusLabel(
+        Boolean(config.officeConsumerBaseUrl && hasConsumerAuth),
+        Boolean(config.officeConsumerBaseUrl && hasConsumerAuth && consumerProbe.ok && consumerPayload.complete),
+        consumerProbe.checked && !consumerProbe.ok,
+        consumerProbe.ok && !consumerPayload.complete
+      ),
+      base_url: config.officeConsumerBaseUrl || "",
+      export_path: config.officeConsumerExportPath || "/office/export",
+      auth: config.officeConsumerBearerToken ? "bearer" : config.officeConsumerApiKey ? "api_key" : "none",
+      sync_target: "consumer",
+      required_metrics: consumerMetrics,
+      endpoint_health: { checked: consumerProbe.checked, ok: consumerProbe.ok, status: consumerProbe.status, http_status: consumerProbe.http_status || null },
+      payload: consumerPayload,
+      missing: missingKeys([
+        ["OFFICE_CONSUMER_BASE_URL", config.officeConsumerBaseUrl],
+        ["OFFICE_CONSUMER_API_KEY or OFFICE_CONSUMER_BEARER_TOKEN", hasConsumerAuth],
+      ]),
+    },
+    email: {
+      key: "email",
+      name: "Office Email",
+      configured: Boolean(config.officeEmailProvider && config.resendApiKey),
+      production_ready: Boolean(config.officeEmailProvider && config.resendApiKey && config.officeEmailFrom),
+      status: config.officeEmailProvider && config.resendApiKey ? "connected" : "pending_integration",
+      provider: config.officeEmailProvider || "none",
+      from: config.officeEmailFrom,
+      missing: missingKeys([
+        ["OFFICE_EMAIL_PROVIDER", config.officeEmailProvider],
+        ["RESEND_API_KEY", config.resendApiKey],
+        ["OFFICE_EMAIL_FROM", config.officeEmailFrom],
+      ]),
+    },
+    storage: {
+      key: "storage",
+      name: "Office Storage",
+      configured: Boolean(config.officeStorageDir),
+      production_ready: Boolean(config.officeStorageDriver && config.officeStorageDir),
+      status: config.officeStorageDriver && config.officeStorageDir ? "connected" : "pending_integration",
+      driver: config.officeStorageDriver || "local",
+      path: config.officeStorageDir,
+      missing: missingKeys([
+        ["OFFICE_STORAGE_DRIVER", config.officeStorageDriver],
+        ["OFFICE_STORAGE_DIR", config.officeStorageDir],
+      ]),
+    },
+    events: {
+      key: "events",
+      name: "Live Office Events",
+      configured: true,
+      production_ready: true,
+      status: "connected",
+      driver: "server_sent_events",
+      endpoint: "/api/lead-agents/admin/events",
+      events: [
+        "device.status.updated",
+        "visitor.created",
+        "wallet.funded",
+        "support.ticket.created",
+        "support.ticket.assigned",
+        "estate.updated",
+        "home.updated",
+        "edge.heartbeat",
+        "office.notification",
+        "audit.recorded",
+        "twin.state.updated",
+      ],
+      missing: [],
+    },
+    maps: {
+      key: "maps",
+      name: "Estate Map Provider",
+      configured: Boolean(config.mapboxPublicToken || config.googleMapsApiKey),
+      production_ready: Boolean(config.googleMapsApiKey || config.mapboxPublicToken),
+      status: config.googleMapsApiKey || config.mapboxPublicToken ? "connected" : "pending_integration",
+      provider: config.mapProvider || "static",
+      mapbox_ready: Boolean(config.mapboxPublicToken),
+      google_ready: Boolean(config.googleMapsApiKey),
+      missing: missingKeys([
+        ["GOOGLE_MAPS_API_KEY or MAPBOX_PUBLIC_TOKEN", config.googleMapsApiKey || config.mapboxPublicToken],
+      ]),
+    },
+    whatsapp: {
+      key: "whatsapp",
+      name: "WhatsApp Cloud",
+      configured: Boolean(
+        config.whatsappVerifyToken &&
+          config.whatsappAccessToken &&
+          config.whatsappPhoneNumberId &&
+          config.whatsappBusinessAccountId
+      ),
+      production_ready: Boolean(
+        config.whatsappVerifyToken &&
+          config.whatsappAccessToken &&
+          config.whatsappPhoneNumberId &&
+          config.whatsappBusinessAccountId
+      ),
+      status:
+        config.whatsappVerifyToken &&
+        config.whatsappAccessToken &&
+        config.whatsappPhoneNumberId &&
+        config.whatsappBusinessAccountId
+          ? "connected"
+          : "pending_integration",
+      provider: "meta",
+      webhook: "/webhooks/whatsapp",
+      api_version: config.whatsappApiVersion,
+      missing: missingKeys([
+        ["WHATSAPP_VERIFY_TOKEN", config.whatsappVerifyToken],
+        ["WHATSAPP_ACCESS_TOKEN", config.whatsappAccessToken],
+        ["WHATSAPP_PHONE_NUMBER_ID", config.whatsappPhoneNumberId],
+        ["WHATSAPP_BUSINESS_ACCOUNT_ID", config.whatsappBusinessAccountId],
+      ]),
+    },
+    meta: {
+      key: "meta",
+      name: "Meta App",
+      configured: Boolean(config.metaAppId && config.metaAppSecret),
+      production_ready: Boolean(config.metaAppId && config.metaAppSecret && config.metaAccessToken),
+      status:
+        config.metaAppId && config.metaAppSecret && config.metaAccessToken
+          ? "connected"
+          : "pending_integration",
+      provider: "meta",
+      app_ready: Boolean(config.metaAppId && config.metaAppSecret),
+      api_token_ready: Boolean(config.metaAccessToken),
+      instagram_ready: Boolean(
+        config.instagramBusinessAccountId &&
+          (config.instagramAccessToken || config.facebookPageAccessToken || config.metaAccessToken)
+      ),
+      facebook_page_ready: Boolean(config.facebookPageId && config.facebookPageAccessToken),
+      missing: missingKeys([
+        ["META_APP_ID", config.metaAppId],
+        ["META_APP_SECRET", config.metaAppSecret],
+        ["META_ACCESS_TOKEN", config.metaAccessToken],
+        ["INSTAGRAM_BUSINESS_ACCOUNT_ID", config.instagramBusinessAccountId],
+        ["INSTAGRAM_ACCESS_TOKEN or FACEBOOK_PAGE_ACCESS_TOKEN", config.instagramAccessToken || config.facebookPageAccessToken],
+        ["FACEBOOK_PAGE_ID", config.facebookPageId],
+        ["FACEBOOK_PAGE_ACCESS_TOKEN", config.facebookPageAccessToken],
+      ]),
+    },
+    linkedin: {
+      key: "linkedin",
+      name: "LinkedIn Marketing / Analytics",
+      configured: Boolean(config.linkedinClientId && config.linkedinClientSecret),
+      production_ready: Boolean(
+        config.linkedinClientId &&
+          config.linkedinClientSecret &&
+          config.linkedinOrganizationId &&
+          config.linkedinAccessToken
+      ),
+      status:
+        config.linkedinClientId &&
+        config.linkedinClientSecret &&
+        config.linkedinOrganizationId &&
+        config.linkedinAccessToken
+          ? "connected"
+          : "pending_integration",
+      provider: "linkedin",
+      app_ready: Boolean(config.linkedinClientId && config.linkedinClientSecret),
+      organization_ready: Boolean(config.linkedinOrganizationId),
+      api_token_ready: Boolean(config.linkedinAccessToken),
+      redirect_uri: config.linkedinRedirectUri || "",
+      missing: missingKeys([
+        ["LINKEDIN_CLIENT_ID", config.linkedinClientId],
+        ["LINKEDIN_CLIENT_SECRET", config.linkedinClientSecret],
+        ["LINKEDIN_ORGANIZATION_ID", config.linkedinOrganizationId],
+        ["LINKEDIN_ACCESS_TOKEN", config.linkedinAccessToken],
+      ]),
+    },
+    google_oauth: {
+      key: "google_oauth",
+      name: "Google OAuth",
+      configured: Boolean(config.googleOAuthClientId && config.googleOAuthClientSecret),
+      production_ready: Boolean(config.googleOAuthClientId && config.googleOAuthClientSecret),
+      status: config.googleOAuthClientId && config.googleOAuthClientSecret ? "connected" : "pending_integration",
+      provider: "google",
+      missing: missingKeys([
+        ["GOOGLE_OAUTH_CLIENT_ID", config.googleOAuthClientId],
+        ["GOOGLE_OAUTH_CLIENT_SECRET", config.googleOAuthClientSecret],
+      ]),
+    },
+    google_marketing: {
+      key: "google_marketing",
+      name: "Google Analytics / Ads",
+      configured: Boolean(
+        config.googleAdsDeveloperToken ||
+          config.googleAdsCustomerId ||
+          config.googleAnalyticsPropertyId ||
+          config.googleAnalyticsMeasurementId
+      ),
+      production_ready: Boolean(
+        (config.googleAdsDeveloperToken && config.googleAdsCustomerId) ||
+          config.googleAnalyticsPropertyId ||
+          config.googleAnalyticsMeasurementId
+      ),
+      status:
+        (config.googleAdsDeveloperToken && config.googleAdsCustomerId) ||
+        config.googleAnalyticsPropertyId ||
+        config.googleAnalyticsMeasurementId
+          ? "connected"
+          : "pending_integration",
+      provider: "google",
+      ads_ready: Boolean(config.googleAdsDeveloperToken && config.googleAdsCustomerId),
+      analytics_ready: Boolean(config.googleAnalyticsPropertyId || config.googleAnalyticsMeasurementId),
+      missing: missingKeys([
+        ["GOOGLE_ADS_DEVELOPER_TOKEN", config.googleAdsDeveloperToken],
+        ["GOOGLE_ADS_CUSTOMER_ID", config.googleAdsCustomerId],
+        ["GOOGLE_ANALYTICS_PROPERTY_ID", config.googleAnalyticsPropertyId],
+      ]),
+    },
+    edge: {
+      key: "edge",
+      name: "Oyi Edge / Backend Control Plane",
+      configured: Boolean(config.officeBackendBaseUrl || config.edgeAgentTokens.length),
+      production_ready: Boolean(config.officeBackendBaseUrl && hasBackendAuth && backendHealth.ok),
+      status: statusLabel(
+        Boolean(config.officeBackendBaseUrl && hasBackendAuth),
+        Boolean(config.officeBackendBaseUrl && hasBackendAuth && backendHealth.ok),
+        backendHealth.checked && !backendHealth.ok
+      ),
+      base_url: config.officeBackendBaseUrl || "",
+      health_endpoint: "/health",
+      backend_health: { checked: backendHealth.checked, ok: backendHealth.ok, status: backendHealth.status, http_status: backendHealth.http_status || null },
+      edge_token_present: Boolean(config.edgeAgentTokens.length),
+      missing: missingKeys([
+        ["OFFICE_BACKEND_BASE_URL", config.officeBackendBaseUrl],
+        ["OFFICE_BACKEND_API_KEY or OYI_EDGE_AGENT_TOKEN(S)", hasBackendAuth],
+      ]),
+      required_metrics: ["edge.heartbeat", "device.status.updated", "device.command.executed", "camera.snapshot.created"],
+    },
+    digital_twin: {
+      key: "digital_twin",
+      name: "Oyi Digital Twin Binding",
+      configured: Boolean(config.officeDigitalTwinBaseUrl || options.digitalTwinRuntime),
+      production_ready: Boolean(twinSceneProbe.ok && twinControlPermissionReady && (!externalTwin || config.officeDigitalTwinApiKey)),
+      status: statusLabel(
+        Boolean(config.officeDigitalTwinBaseUrl || options.digitalTwinRuntime),
+        Boolean(twinSceneProbe.ok && twinControlPermissionReady && (!externalTwin || config.officeDigitalTwinApiKey)),
+        twinSceneProbe.checked && !twinSceneProbe.ok
+      ),
+      base_url: config.officeDigitalTwinBaseUrl || "same-origin",
+      state_path: config.officeDigitalTwinStatePath || "/office/twin/state",
+      scene_endpoint: { checked: twinSceneProbe.checked, ok: twinSceneProbe.ok, status: twinSceneProbe.status, same_origin: Boolean(twinSceneProbe.same_origin), http_status: twinSceneProbe.http_status || null },
+      twin_state: { checked: twinStateProbe.checked, ok: twinStateProbe.ok, status: twinStateProbe.status, same_origin: Boolean(twinStateProbe.same_origin), http_status: twinStateProbe.http_status || null },
+      twin_control_permission: twinControlPermissionReady ? "active" : "missing",
+      event_supported: true,
+      missing: missingKeys([
+        ["OFFICE_DIGITAL_TWIN_API_KEY", externalTwin ? config.officeDigitalTwinApiKey : true],
+      ]),
+      required_metrics: ["twin.state.updated", "twin.objects", "twin.overlays", "twin.heatmap_events"],
+    },
+    webhooks: {
+      key: "webhooks",
+      name: "Provider Webhook Intake",
+      configured: Boolean(config.whatsappVerifyToken || config.officeEventWebhookSecret),
+      production_ready: Boolean(config.whatsappVerifyToken && config.officeEventWebhookSecret && webhookHistoryAvailable),
+      status:
+        config.whatsappVerifyToken && config.officeEventWebhookSecret && webhookHistoryAvailable
+          ? "connected"
+          : config.officeEventWebhookSecret
+            ? "configured_needs_validation"
+            : "pending_integration",
+      delivery_history_available: webhookHistoryAvailable,
+      missing: missingKeys([
+        ["WHATSAPP_VERIFY_TOKEN", config.whatsappVerifyToken],
+        ["OFFICE_EVENT_WEBHOOK_SECRET", config.officeEventWebhookSecret],
+        ["provider_webhook_events table/export", webhookHistoryAvailable],
+      ]),
+      required_events: ["whatsapp.message.received", "linkedin.lead.received", "meta.message.received", "provider.delivery.recorded"],
+    },
+    app_store: {
+      key: "app_store",
+      name: "Oyi Home App Store",
+      configured: Boolean(config.oyiHomeAppStoreUrl || config.oyiHomeBundleId || appStoreCredentialReady),
+      production_ready: Boolean(config.oyiHomeAppStoreUrl && appStoreCredentialReady),
+      status: config.oyiHomeAppStoreUrl && appStoreCredentialReady
+        ? "production_ready"
+        : config.oyiHomeAppStoreUrl
+          ? "listed_pending_metrics_credentials"
+          : appStoreCredentialReady
+            ? "credentials_ready_missing_app_url"
+            : "pending_integration",
+      app_listed: Boolean(config.oyiHomeAppStoreUrl),
+      metrics_adapter: appStoreCredentialReady ? "configured" : "pending_credentials",
+      bundle_id_present: Boolean(config.oyiHomeBundleId),
+      missing: missingKeys([
+        ["OYI_HOME_APP_STORE_URL", config.oyiHomeAppStoreUrl],
+        ["OYI_HOME_BUNDLE_ID", config.oyiHomeBundleId],
+        ["APP_STORE_CONNECT_ISSUER_ID", config.appStoreConnectIssuerId],
+        ["APP_STORE_CONNECT_KEY_ID", config.appStoreConnectKeyId],
+        ["APP_STORE_CONNECT_PRIVATE_KEY", config.appStoreConnectPrivateKey],
+        ["APP_STORE_APP_ID", config.appStoreAppId],
+      ]),
+      supported_future_metrics: ["app_availability", "version", "build_status", "downloads", "ratings_reviews"],
+    },
+    crm_support: {
+      key: "crm_support",
+      name: "CRM & Support Integration Visibility",
+      configured: true,
+      production_ready: Boolean(config.officeEventWebhookSecret && (config.whatsappVerifyToken || config.linkedinAccessToken || config.metaAccessToken)),
+      status: config.officeEventWebhookSecret
+        ? "configured_needs_validation"
+        : "missing_credentials",
+      website_lead_intake: "active",
+      app_onboarding_leads: config.officeConsumerBaseUrl ? "configured" : "pending_consumer_sync",
+      support_tickets: config.officeFacilityBaseUrl || config.officeConsumerBaseUrl ? "configured" : "pending_sync",
+      deployment_inquiries: "active",
+      provider_callbacks: config.officeEventWebhookSecret ? "secured" : "missing_secret",
+      webhook_events: config.officeEventWebhookSecret ? "ready" : "pending",
+      missing: missingKeys([["OFFICE_EVENT_WEBHOOK_SECRET", config.officeEventWebhookSecret]]),
+    },
+  };
+  statuses.whatsapp.webhook_configured = Boolean(config.whatsappVerifyToken);
+  statuses.webhooks.whatsapp_webhook = config.whatsappVerifyToken ? "configured" : "missing_verify_token";
+  statuses.webhooks.event_intake = config.officeEventWebhookSecret ? "ready" : "pending";
+  const productionChecks = Object.values(statuses).filter((item) => item && item.key !== "google_marketing" && !String(item.key).startsWith("__"));
+  const readyChecks = productionChecks.filter((item) => item.production_ready).length;
+  statuses.__readiness = {
+    key: "__readiness",
+    name: "Office Production Readiness",
+    total_checks: productionChecks.length,
+    ready_checks: readyChecks,
+    readiness_pct: productionChecks.length ? Math.round((readyChecks / productionChecks.length) * 100) : 0,
+    blockers: productionChecks
+      .filter((item) => !item.production_ready)
+      .map((item) => ({
+        key: item.key,
+        name: item.name,
+        missing: item.missing || [],
+        required_metrics: item.required_metrics || item.required_events || [],
+      })),
+  };
+  return statuses;
+}
+
+function publicMapConfig(config) {
+  return {
+    provider: config.mapProvider || "static",
+    mapbox: {
+      configured: Boolean(config.mapboxPublicToken),
+      public_token: config.mapboxPublicToken || "",
+    },
+    google_maps: {
+      configured: Boolean(config.googleMapsApiKey),
+      api_key: config.googleMapsApiKey || "",
+    },
+  };
+}
+
+function escapeHtmlText(value) {
+  return String(value || "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#039;");
+}
+
+function documentHtml(config, input) {
+  const type = String(input.document_type || input.type || "document").toUpperCase();
+  const title = String(input.title || `${type} Document`);
+  const amount = Number(input.amount || input.value || 0);
+  const currency = String(input.currency || "NGN");
+  const recipient = String(input.recipient || input.email_to || "Client");
+  const body = String(input.body || input.description || "Generated from Ochiga Office document studio.");
+  const safeTitle = escapeHtmlText(title);
+  const safeRecipient = escapeHtmlText(recipient);
+  const safeStatus = escapeHtmlText(input.status || "draft");
+  const safeRelated = escapeHtmlText(`${input.related_type || "office"} ${input.related_id || ""}`.trim());
+  const safeBody = escapeHtmlText(body).replace(/\n/g, "<br />");
+  return `<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>${safeTitle}</title>
+  <style>
+    body{font-family:Arial,sans-serif;margin:0;background:#f4f7fb;color:#101828}
+    .page{max-width:860px;margin:32px auto;background:white;border:1px solid #d8e0ea;border-radius:18px;overflow:hidden}
+    .head{background:#06111f;color:white;padding:34px}
+    .brand{font-size:13px;letter-spacing:.16em;color:#60a5fa;text-transform:uppercase}
+    h1{margin:10px 0 4px;font-size:34px}
+    .meta{display:grid;grid-template-columns:1fr 1fr;gap:18px;padding:28px 34px;border-bottom:1px solid #e5edf6}
+    .section{padding:28px 34px}
+    .amount{font-size:30px;font-weight:700}
+    table{width:100%;border-collapse:collapse;margin-top:18px}
+    th,td{padding:12px;border-bottom:1px solid #eef2f7;text-align:left}
+    .foot{padding:24px 34px;background:#f8fafc;color:#667085;font-size:13px}
+  </style>
+</head>
+<body>
+  <main class="page">
+    <section class="head">
+      <div class="brand">${config.officeDocumentBrandName}</div>
+      <h1>${safeTitle}</h1>
+      <div>${type} · ${new Date().toLocaleDateString("en-NG")}</div>
+    </section>
+    <section class="meta">
+      <div><strong>Recipient</strong><br />${safeRecipient}</div>
+      <div><strong>Status</strong><br />${safeStatus}</div>
+      <div><strong>Related Record</strong><br />${safeRelated}</div>
+      <div><strong>Amount</strong><br /><span class="amount">${currency} ${amount.toLocaleString("en-NG")}</span></div>
+    </section>
+    <section class="section">
+      <h2>Summary</h2>
+      <p>${safeBody}</p>
+      <table>
+        <thead><tr><th>Description</th><th>Amount</th></tr></thead>
+        <tbody><tr><td>${safeTitle}</td><td>${currency} ${amount.toLocaleString("en-NG")}</td></tr></tbody>
+      </table>
+    </section>
+    <section class="foot">Generated by Ochiga Office. Print this page to PDF or attach it through the configured email provider.</section>
+  </main>
+</body>
+</html>`;
+}
+
+function assetPatchForAction(kind, action, body) {
+  const now = new Date().toISOString();
+  const normalized = String(action || "").toLowerCase();
+  const patch = { updated_at: now };
+  if (["pause", "paused"].includes(normalized)) patch.status = "paused";
+  if (["suspend", "suspended"].includes(normalized)) patch.status = "suspended";
+  if (["disable", "disabled"].includes(normalized)) patch.status = "disabled";
+  if (["enable", "active", "resume"].includes(normalized)) patch.status = "active";
+  if (normalized === "reset") {
+    patch.status = kind === "device" ? "online" : "active";
+    patch.last_seen_at = kind === "device" ? now : undefined;
+  }
+  if (normalized === "assign") {
+    patch.building_id = body.building_id;
+    patch.home_id = body.home_id;
+    patch.metadata = { assigned_to: body.assigned_to || body.owner || "" };
+  }
+  patch.metadata = {
+    ...(patch.metadata || {}),
+    last_office_action: normalized,
+    action_reason: body.reason || "",
+    action_actor: body.actor || "",
+    action_at: now,
+  };
+  return Object.fromEntries(Object.entries(patch).filter(([, value]) => value !== undefined));
+}
+
+async function geocodeAddress(config, address) {
+  if (!config.googleMapsApiKey) {
+    const error = new Error("GOOGLE_MAPS_API_KEY is not configured");
+    error.statusCode = 400;
+    throw error;
+  }
+  const url = new URL("https://maps.googleapis.com/maps/api/geocode/json");
+  url.searchParams.set("address", address);
+  url.searchParams.set("key", config.googleMapsApiKey);
+  const response = await fetch(url);
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok || payload.status !== "OK") {
+    return {
+      ok: false,
+      status: payload.status || response.status,
+      error_message: payload.error_message || "",
+    };
+  }
+  const result = payload.results?.[0];
+  const location = result?.geometry?.location;
+  if (!location || !Number.isFinite(Number(location.lat)) || !Number.isFinite(Number(location.lng))) {
+    return { ok: false, status: "NO_LOCATION" };
+  }
+  return {
+    ok: true,
+    latitude: Number(location.lat),
+    longitude: Number(location.lng),
+    formatted_address: result.formatted_address || address,
+    place_id: result.place_id || "",
+  };
+}
+
+async function geocodeOfficeEstates({ config, store, limit = 50, force = false, country = "Nigeria" }) {
+  const estates = typeof store.listOfficeEstates === "function" ? await store.listOfficeEstates() : [];
+  const safeCountry = String(country || "Nigeria").trim();
+  const candidates = estates
+    .filter((estate) => {
+      if (
+        !force &&
+        estate.latitude !== null &&
+        estate.latitude !== undefined &&
+        estate.longitude !== null &&
+        estate.longitude !== undefined
+      ) {
+        return false;
+      }
+      return Boolean(String(estate.location || estate.name || "").trim());
+    })
+    .slice(0, Math.max(1, Math.min(Number(limit || 50), 100)));
+  const results = [];
+  for (const estate of candidates) {
+    const address = [estate.name, estate.location, safeCountry].filter(Boolean).join(", ");
+    const geocode = await geocodeAddress(config, address);
+    if (geocode.ok) {
+      const updated = await store.updateOfficeAsset("estate", estate.id, {
+        latitude: geocode.latitude,
+        longitude: geocode.longitude,
+        metadata: {
+          ...(estate.metadata || {}),
+          geocoded_address: geocode.formatted_address,
+          google_place_id: geocode.place_id,
+          geocoded_at: new Date().toISOString(),
+        },
+      });
+      results.push({
+        id: estate.id,
+        name: estate.name,
+        ok: true,
+        latitude: geocode.latitude,
+        longitude: geocode.longitude,
+        updated: Boolean(updated),
+      });
+    } else {
+      results.push({ id: estate.id, name: estate.name, ok: false, status: geocode.status, error_message: geocode.error_message });
+    }
+  }
+  return {
+    total_estates: estates.length,
+    total_candidates: candidates.length,
+    skipped: Math.max(0, estates.length - candidates.length),
+    updated: results.filter((item) => item.ok).length,
+    failed: results.filter((item) => !item.ok).length,
+    results,
+  };
+}
+
+function absoluteUrl(req, pathname, token) {
+  const proto = req.headers["x-forwarded-proto"] || "https";
+  const host = req.headers["x-forwarded-host"] || req.headers.host || "localhost";
+  const base = `${proto}://${host}${pathname}`;
+  if (!token) return base;
+  return `${base}${base.includes("?") ? "&" : "?"}token=${encodeURIComponent(token)}`;
+}
+
+function extractTextFromResponse(response) {
+  if (response && typeof response.output_text === "string" && response.output_text.trim()) {
+    return response.output_text.trim();
+  }
+  const messages = Array.isArray(response?.output)
+    ? response.output.filter((item) => item.type === "message")
+    : [];
+  const chunks = [];
+  for (const message of messages) {
+    for (const content of message.content || []) {
+      if (typeof content?.text === "string" && content.text.trim()) {
+        chunks.push(content.text.trim());
+      }
+    }
+  }
+  return chunks.join("\n").trim();
+}
+
+function extractJsonObject(text) {
+  const source = String(text || "").trim();
+  if (!source) return null;
+  const fenced = source.match(/```json\s*([\s\S]*?)```/i);
+  const candidate = fenced ? fenced[1].trim() : source;
+  const start = candidate.indexOf("{");
+  const end = candidate.lastIndexOf("}");
+  if (start === -1 || end === -1 || end <= start) return null;
+  try {
+    return JSON.parse(candidate.slice(start, end + 1));
+  } catch (error) {
+    return null;
+  }
+}
+
+async function enhancePlanStudioGeometry({ openaiClient, config, imageDataUrl, heuristicGeometry }) {
+  const response = await openaiClient.createResponse({
+    model: config.openaiModel,
+    input: [
+      {
+        role: "system",
+        content: [
+          {
+            type: "input_text",
+            text:
+              "You analyze architectural floor plan images. Return JSON only. Refine room segmentation, room names, openings, and circulation. Preserve normalized coordinates between 0 and 1. Prefer conservative corrections over invented detail.",
+          },
+        ],
+      },
+      {
+        role: "user",
+        content: [
+          {
+            type: "input_text",
+            text: [
+              "Given this floor plan image and the initial heuristic geometry, return a JSON object with keys:",
+              "confidence, content_bounds, zones, pathways, openings.",
+              "zones: array of {id,label,kind,x,y,width,height}",
+              "pathways: array of {id,label,kind,x1,y1,x2,y2}",
+              "openings: array of {id,label,kind,x,y,orientation}",
+              "Use OCR to read room names where possible.",
+              "Identify door openings explicitly when visible.",
+              "Split internal rooms such as baths, kitchens, stores, utility, corridor, core, bedrooms, living, dining where image evidence supports it.",
+              `Initial heuristic geometry: ${JSON.stringify(heuristicGeometry)}`,
+            ].join("\n"),
+          },
+          {
+            type: "input_image",
+            image_url: imageDataUrl,
+            detail: "high",
+          },
+        ],
+      },
+    ],
+    text: {
+      format: {
+        type: "json_schema",
+        name: "plan_studio_geometry",
+        schema: {
+          type: "object",
+          additionalProperties: false,
+          properties: {
+            confidence: { type: "number" },
+            content_bounds: {
+              type: "object",
+              additionalProperties: false,
+              properties: {
+                x: { type: "number" },
+                y: { type: "number" },
+                width: { type: "number" },
+                height: { type: "number" },
+              },
+              required: ["x", "y", "width", "height"],
+            },
+            zones: {
+              type: "array",
+              items: {
+                type: "object",
+                additionalProperties: false,
+                properties: {
+                  id: { type: "string" },
+                  label: { type: "string" },
+                  kind: { type: "string" },
+                  x: { type: "number" },
+                  y: { type: "number" },
+                  width: { type: "number" },
+                  height: { type: "number" },
+                },
+                required: ["id", "label", "kind", "x", "y", "width", "height"],
+              },
+            },
+            pathways: {
+              type: "array",
+              items: {
+                type: "object",
+                additionalProperties: false,
+                properties: {
+                  id: { type: "string" },
+                  label: { type: "string" },
+                  kind: { type: "string" },
+                  x1: { type: "number" },
+                  y1: { type: "number" },
+                  x2: { type: "number" },
+                  y2: { type: "number" },
+                },
+                required: ["id", "label", "kind", "x1", "y1", "x2", "y2"],
+              },
+            },
+            openings: {
+              type: "array",
+              items: {
+                type: "object",
+                additionalProperties: false,
+                properties: {
+                  id: { type: "string" },
+                  label: { type: "string" },
+                  kind: { type: "string" },
+                  x: { type: "number" },
+                  y: { type: "number" },
+                  orientation: { type: "string" },
+                },
+                required: ["id", "label", "kind", "x", "y", "orientation"],
+              },
+            },
+          },
+          required: ["confidence", "content_bounds", "zones", "pathways", "openings"],
+        },
+      },
+    },
+  });
+
+  const structured =
+    response?.output?.[0]?.content?.[0]?.json ||
+    extractJsonObject(extractTextFromResponse(response));
+  if (!structured || typeof structured !== "object") {
+    const error = new Error("Plan parsing did not return valid JSON");
+    error.statusCode = 502;
+    throw error;
+  }
+  structured.source = "openai-vision";
+  return structured;
+}
+
+function fallbackPlanStudioReply(project, question) {
+  const geometry = project.analysis?.geometry || {};
+  const summary = project.analysis?.summary || {};
+  const zones = Array.isArray(geometry.zones) ? geometry.zones : [];
+  const openings = Array.isArray(geometry.openings) ? geometry.openings : [];
+  const pathways = Array.isArray(geometry.pathways) ? geometry.pathways : [];
+  const importantZones = zones
+    .slice(0, 6)
+    .map((zone) => `${zone.label} (${zone.kind})`)
+    .join(", ");
+  const prompt = String(question || "").toLowerCase();
+
+  if (prompt.includes("opportunit") || prompt.includes("smart")) {
+    return [
+      `This plan currently exposes ${summary.cctv || 0} CCTV points, ${summary.access_points || 0} access points, ${summary.sensors || 0} sensors, and ${summary.power_outlets || 0} power outlets in the draft smart layer.`,
+      `The strongest smart-building opportunities are access control around the detected entry/core zones, CCTV on circulation junctions, occupancy-driven lighting, and structured network/PoE along the ${pathways.length} detected path${pathways.length === 1 ? "" : "s"}.`,
+      importantZones ? `The main parsed spaces are ${importantZones}.` : "",
+    ]
+      .filter(Boolean)
+      .join(" ");
+  }
+
+  if (prompt.includes("decision")) {
+    return [
+      `The next design decisions are to validate room names, confirm the ${openings.length} detected opening${openings.length === 1 ? "" : "s"}, approve corridor/core geometry, and decide which smart layers should be prioritized first for the project.`,
+      `After that, the team should lock device density for security, electrical, fire safety, HVAC, and network disciplines.`,
+    ].join(" ");
+  }
+
+  return [
+    `This uploaded plan has been parsed into ${zones.length} space zone${zones.length === 1 ? "" : "s"}, ${pathways.length} circulation path${pathways.length === 1 ? "" : "s"}, and ${openings.length} opening${openings.length === 1 ? "" : "s"}.`,
+    importantZones ? `The main detected spaces are ${importantZones}.` : "",
+    `The current smart-infrastructure draft suggests ${summary.cctv || 0} CCTV points, ${summary.access_points || 0} access points, ${summary.sensors || 0} sensors, and ${summary.power_outlets || 0} power outlets.`,
+  ]
+    .filter(Boolean)
+    .join(" ");
+}
+
+async function answerPlanStudioQuestion({ openaiClient, config, project, question }) {
+  const fallback = fallbackPlanStudioReply(project, question);
+  try {
+    const response = await openaiClient.createResponse({
+      model: config.openaiModel,
+      input: [
+        {
+          role: "system",
+          content: [
+            {
+              type: "input_text",
+              text:
+                "You are an expert smart-building planning agent. Explain plans in plain English, identify spaces, call out geometry uncertainty, and recommend realistic smart infrastructure layers. Keep answers concise but concrete.",
+            },
+          ],
+        },
+        {
+          role: "user",
+          content: [
+            {
+              type: "input_text",
+              text: [
+                `Project: ${project.name}`,
+                `Question: ${question}`,
+                `Geometry: ${JSON.stringify(project.analysis?.geometry || {})}`,
+                `Summary: ${JSON.stringify(project.analysis?.summary || {})}`,
+                `Recommendations: ${JSON.stringify(project.analysis?.recommendations || [])}`,
+                `Discipline reviews: ${JSON.stringify(project.discipline_reviews || {})}`,
+              ].join("\n"),
+            },
+            project.image_data_url
+              ? {
+                  type: "input_image",
+                  image_url: project.image_data_url,
+                  detail: "high",
+                }
+              : null,
+          ].filter(Boolean),
+        },
+      ],
+    });
+    return extractTextFromResponse(response) || fallback;
+  } catch (error) {
+    return fallback;
+  }
+}
+
+async function buildChannelOverview(store, config) {
+  const [leads, notifications] = await Promise.all([
+    store.listLeads ? store.listLeads() : [],
+    store.listNotifications ? store.listNotifications(500) : [],
+  ]);
+
+  function leadCount(match) {
+    return leads.filter(match).length;
+  }
+
+  function notificationCount(channel) {
+    return notifications.filter((notification) => {
+      return (
+        notification.type === "inbound_message" &&
+        (notification.status || "open") === "open" &&
+        String(notification.channel || notification.metadata?.source || "")
+          .toLowerCase()
+          .includes(channel)
+      );
+    }).length;
+  }
+
+  const whatsappReady = Boolean(
+    config.whatsappVerifyToken &&
+      config.whatsappAccessToken &&
+      config.whatsappPhoneNumberId &&
+      config.whatsappBusinessAccountId
+  );
+
+  return {
+    channels: [
+      {
+        key: "website",
+        name: "Website Widget",
+        status: "active",
+        lead_count: leadCount((lead) =>
+          ["website", "website_chat", "website_widget"].includes(
+            String(lead.primary_channel || lead.source || "").toLowerCase()
+          )
+        ),
+        open_notifications: notificationCount("website"),
+        description: "Live widget intake on Ochiga and Oyi websites.",
+        note: "Inbound widget chats create lead records, notifications, and live conversation threads.",
+      },
+      {
+        key: "whatsapp",
+        name: "WhatsApp Business",
+        status: whatsappReady ? "active" : "needs_config",
+        lead_count: leadCount(
+          (lead) =>
+            String(lead.primary_channel || "").toLowerCase() === "whatsapp" ||
+            Boolean(lead.whatsapp_phone)
+        ),
+        open_notifications: notificationCount("whatsapp"),
+        description: "Meta webhook intake, reply orchestration, and human takeover controls.",
+        note: whatsappReady
+          ? "Webhook and outbound credentials are configured. New inbound messages should notify and open the thread directly."
+          : "Webhook or outbound credentials are incomplete. Finish Meta configuration before go-live.",
+      },
+      {
+        key: "facebook",
+        name: "Facebook Messenger",
+        status: "staged",
+        lead_count: leadCount(
+          (lead) =>
+            String(lead.primary_channel || lead.source || "").toLowerCase() === "facebook"
+        ),
+        open_notifications: notificationCount("facebook"),
+        description: "Reserved pipeline area for Messenger direct message intake.",
+        note: "UI and CRM staging are ready. Adapter and webhook activation are still pending.",
+      },
+      {
+        key: "instagram",
+        name: "Instagram DM",
+        status: "staged",
+        lead_count: leadCount(
+          (lead) =>
+            String(lead.primary_channel || lead.source || "").toLowerCase() === "instagram"
+        ),
+        open_notifications: notificationCount("instagram"),
+        description: "Reserved pipeline area for Instagram DM intake.",
+        note: "UI and CRM staging are ready. Adapter and webhook activation are still pending.",
+      },
+    ],
+  };
+}
+
+async function appendAudit(store, authContext, action, targetType, targetId, metadata, req, status) {
+  return appendAuditRecord({
+    store,
+    authContext,
+    action,
+    resourceType: targetType,
+    resourceId: targetId || "",
+    metadata: metadata || {},
+    req,
+    status,
+  });
+}
+
+function backendAiHeaders(config) {
+  const headers = { accept: "application/json" };
+  if (config.officeBackendBearerToken) {
+    headers.authorization = `Bearer ${config.officeBackendBearerToken}`;
+  }
+  if (config.officeBackendApiKey) {
+    headers["x-api-key"] = config.officeBackendApiKey;
+  }
+  return headers;
+}
+
+async function fetchBackendAiOperations(config) {
+  const baseUrl = String(config.officeBackendBaseUrl || "").replace(/\/+$/, "");
+  if (!baseUrl) {
+    return {
+      available: false,
+      status: "pending_integration",
+      reason: "OFFICE_BACKEND_BASE_URL is missing",
+      tools: [],
+      executions: [],
+      confirmations: [],
+    };
+  }
+  if (!config.officeBackendBearerToken && !config.officeBackendApiKey) {
+    return {
+      available: false,
+      status: "missing_credentials",
+      reason: "OFFICE_BACKEND_BEARER_TOKEN or OFFICE_BACKEND_API_KEY is required for server-side AI Operations sync",
+      tools: [],
+      executions: [],
+      confirmations: [],
+    };
+  }
+  const headers = backendAiHeaders(config);
+  const get = async (path) => {
+    const response = await axios.get(`${baseUrl}${path}`, { headers, timeout: 8000 });
+    return response.data || {};
+  };
+  try {
+    const [toolsData, executionsData, confirmationsData] = await Promise.all([
+      get("/ai/tools"),
+      get("/ai/executions?limit=100"),
+      get("/ai/confirmations?limit=50"),
+    ]);
+    return {
+      available: true,
+      status: "active",
+      tools: toolsData.tools || [],
+      executions: executionsData.executions || [],
+      confirmations: confirmationsData.confirmations || [],
+    };
+  } catch (error) {
+    return {
+      available: false,
+      status: "error",
+      reason: error?.response?.data?.error || error?.message || "backend_ai_sync_failed",
+      tools: [],
+      executions: [],
+      confirmations: [],
+    };
+  }
+}
+
+function extractPublicLeadPatch(message) {
+  const text = String(message || "").trim();
+  const lower = text.toLowerCase();
+  const patch = {};
+  const inferred = inferCommercialFacts(text);
+
+  const emailMatch = text.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i);
+  if (emailMatch) {
+    patch.email = emailMatch[0];
+  }
+
+  const phoneMatch = text.match(/(?:\+?\d[\d\s().-]{7,}\d)/);
+  if (phoneMatch) {
+    patch.phone = phoneMatch[0];
+  }
+
+  const locationPatterns = [
+    /location\s+(?:is\s+)?(?:at|in)\s+([a-z0-9&,\- ]{4,})/i,
+    /project\s+(?:is\s+)?(?:at|in)\s+([a-z0-9&,\- ]{4,})/i,
+    /(?:at|in)\s+([a-z0-9&,\- ]{4,})/i,
+  ];
+  for (const pattern of locationPatterns) {
+    const match = text.match(pattern);
+    if (match && match[1]) {
+      patch.location = match[1].trim().replace(/\s+/g, " ");
+      break;
+    }
+  }
+
+  const unitMatch = lower.match(/(\d{1,5})\s+units?/);
+  const bedroomMatch = lower.match(/(\d(?:\s*&\s*\d)?)\s*bed/);
+  const fragments = [];
+  if (unitMatch) {
+    fragments.push(`${unitMatch[1]} units`);
+  }
+  if (bedroomMatch) {
+    fragments.push(`${bedroomMatch[1]} bedroom mix`);
+  }
+  if (patch.location) {
+    fragments.push(`location ${patch.location}`);
+  }
+
+  if (fragments.length) {
+    patch.summary = `Fallback project signals: ${fragments.join(", ")}.`;
+  }
+  if (inferred.unit_count) patch.unit_count = inferred.unit_count;
+  if (inferred.project_type) patch.project_type = inferred.project_type;
+
+  return patch;
+}
+
+async function ensurePublicFallbackLead(store, body) {
+  const existing =
+    body.lead_id && typeof body.lead_id === "string"
+      ? await store.getLead(body.lead_id)
+      : null;
+  const patch = extractPublicLeadPatch(body.message);
+
+  const existingByEmail =
+    !existing && body.profile?.email && store.findLeadByEmail
+      ? await store.findLeadByEmail(body.profile.email)
+      : null;
+  const existingByPhone =
+    !existing && !existingByEmail && body.profile?.phone && store.findLeadByPhone
+      ? await store.findLeadByPhone(body.profile.phone)
+      : null;
+  const matchedLead = existing || existingByEmail || existingByPhone;
+
+  if (matchedLead) {
+    return store.updateLead(matchedLead.id, {
+      ...body.profile,
+      ...patch,
+      source: body.source || matchedLead.source || "website_chat",
+    });
+  }
+
+  return store.createLead(
+    normalizeLeadInput(
+      {
+        ...body.profile,
+        ...patch,
+        source: body.source || "website_chat",
+        owner: "marketing_agent",
+        status: "new",
+        primary_channel: "website",
+        summary:
+          patch.summary || "Lead captured through public fallback response path.",
+      },
+      body.source || "website_chat"
+    )
+  );
+}
+
+function publicFallbackReply(message, lead) {
+  const text = String(message || "").toLowerCase();
+  const asksAboutCompany =
+    text.includes("what do you do") ||
+    text.includes("what does ochiga do") ||
+    text.includes("brief") ||
+    text.includes("company does") ||
+    text.includes("tell me about") ||
+    text.includes("what is oyi");
+
+  if (asksAboutCompany) {
+    return [
+      "Hi, I'm Oyi.",
+      "Ochiga builds infrastructure technology for estates, buildings, utilities, and connected communities.",
+      "Oyi is the operating and communication layer for that ecosystem: estate operations, access workflows, monitoring, resident services, support, payments, and facility coordination in one system.",
+      "For customers, it creates operational control. For partners and investors, it is the foundation for smart estate and city-scale infrastructure systems.",
+      "If you're working on a live project, share the location, number of units or buildings, and what you need most right now, and I'll guide the next step.",
+    ].join(" ");
+  }
+
+  const location = lead && lead.location ? lead.location : "";
+  const summary = lead && lead.summary ? lead.summary.toLowerCase() : "";
+  const hasScale = /\b\d+\s+units?\b/i.test(summary);
+  const hasContact = Boolean((lead && lead.email) || (lead && lead.phone));
+
+  if (location || hasScale) {
+    return [
+      "Thanks.",
+      `${location ? `I noted the project location as ${location}.` : "I noted the project scale details."}`,
+      "What do you need most right now: access control, monitoring, resident services, facility operations, or a broader estate operating system?",
+      hasContact
+        ? "Once I have that, I can route the next step properly."
+        : "If useful, you can also share the best contact email or phone for follow-up.",
+    ].join(" ");
+  }
+
+  return [
+    "Hi, I'm Oyi.",
+    "I can help with Ochiga and Oyi for estates, buildings, access workflows, monitoring, resident experience, facility operations, partnerships, and investment conversations.",
+    "Tell me your project location, approximate scale, and what you need most right now, and I'll point you correctly.",
+  ].join(" ");
+}
+
+async function resolveLeadForChannel(store, phone, source) {
+  const existing = await store.findLeadByPhone(phone);
+  if (existing) {
+    return existing;
+  }
+  return store.createLead({
+    phone,
+    whatsapp_phone: phone,
+    primary_channel: "whatsapp",
+    channel_last_seen_at: new Date().toISOString(),
+    source,
+    owner: "marketing_agent",
+    status: "new",
+    summary: "Lead created from WhatsApp inbound message.",
+  });
+}
+
+async function processWhatsAppEvent({ event, runtime, store, adapter, config, requestId }) {
+  if (event.kind === "status") {
+    await store.appendInboundEvent({
+      channel: "whatsapp",
+      provider: "meta",
+      event_type: `status:${event.status}`,
+      external_event_id: event.message_id,
+      payload: event.raw,
+    });
+    return {
+      kind: "status",
+      message_id: event.message_id,
+      status: event.status,
+    };
+  }
+
+  const lead = await resolveLeadForChannel(store, event.from, "whatsapp");
+  await store.updateLead(lead.id, {
+    whatsapp_phone: event.from,
+    primary_channel: "whatsapp",
+    channel_last_seen_at: new Date().toISOString(),
+  });
+  await store.appendInboundEvent({
+    channel: "whatsapp",
+    provider: "meta",
+    event_type: "message",
+    lead_id: lead.id,
+    external_event_id: event.message_id,
+    payload: event.raw,
+  });
+
+  const channelState = await store.upsertLeadChannelState(lead.id, "whatsapp", {
+    customer_service_window_expires_at: customerServiceWindowExpiry(event.timestamp),
+    last_external_message_id: event.message_id,
+    last_inbound_at: new Date(Number(event.timestamp || 0) * 1000 || Date.now()).toISOString(),
+    human_status: "auto",
+  });
+
+  if (channelState.ai_paused || ["human_active", "human_review"].includes(channelState.human_status)) {
+    return {
+      kind: "message",
+      lead_id: lead.id,
+      paused: true,
+    };
+  }
+
+  const result = await runtime.runChat({
+    agent: lead.owner === "sales_agent" || lead.status === "sales" ? "sales" : "marketing",
+    lead_id: lead.id,
+    source: "whatsapp",
+    channel: "whatsapp",
+    notify_inbound: true,
+    message: event.text || "",
+    external_message_id: event.message_id,
+    profile: {
+      phone: event.from,
+    },
+    request_id: requestId,
+  });
+
+  const sendResult = await adapter.sendTextMessage({
+    to: event.from,
+    body: result.assistant_message,
+    contextMessageId: event.message_id,
+  });
+
+  await store.upsertLeadChannelState(lead.id, "whatsapp", {
+    last_outbound_at: new Date().toISOString(),
+    last_external_message_id: sendResult.external_message_id || event.message_id,
+  });
+
+  return {
+    kind: "message",
+    lead_id: lead.id,
+    outbound: sendResult,
+  };
+}
+
+async function bootstrapAdminUser(store, config) {
+  if (!config.adminEmail || !config.adminPassword) {
+    return null;
+  }
+  return store.ensureAdminUser({
+    email: normalizeEmail(config.adminEmail),
+    password_hash: hashPassword(config.adminPassword),
+    role: config.adminRole || "admin",
+    display_name: config.adminEmail,
+    status: "active",
+  });
+}
+
+async function enrichAuthContext(authContext, store) {
+  if (!authContext || authContext.type !== "session") {
+    return authContext;
+  }
+  const user = await store.getAdminUserByEmail(authContext.email);
+  if (!user || user.status !== "active") {
+    const error = new Error("unauthorized");
+    error.statusCode = 401;
+    throw error;
+  }
+  return {
+    ...authContext,
+    user,
+    role: user.role || authContext.role,
+    permissionScopes: Array.isArray(user.permission_scopes) ? user.permission_scopes : [],
+    permissions: permissionsForRole(
+      user.role || authContext.role,
+      Array.isArray(user.permission_scopes) ? user.permission_scopes : []
+    ),
+  };
+}
+
+function buildServer({ config, store, runtime, rateLimiter, publicRateLimiter, loginRateLimiter, whatsappAdapter, openaiClient }) {
+  const startedAt = Date.now();
+  const widgetRateLimiter = publicRateLimiter || rateLimiter;
+  const adminLoginRateLimiter =
+    loginRateLimiter ||
+    new MemoryRateLimiter({
+      windowMs: config.loginRateLimitWindowMs || 15 * 60 * 1000,
+      maxRequests: config.loginRateLimitMaxAttempts || 10,
+    });
+  const eventBus = createRealtimeHub();
+  const storageService = createStorageService(config);
+  const digitalTwinRuntime = createDigitalTwinRuntime();
+  const planStudioRuntime = createPlanStudioRuntime({
+    storePath: path.join(process.cwd(), "data", "plan-studio-store.json"),
+  });
+  const officeSync = createOfficeSyncService({ config, store });
+  const widgetIndexPath = path.join(process.cwd(), "public", "widget", "index.html");
+  const widgetScriptPath = path.join(
+    process.cwd(),
+    "public",
+    "widget",
+    "oma-widget.js"
+  );
+  const dashboardIndexPath = path.join(
+    process.cwd(),
+    "public",
+    "dashboard",
+    "index.html"
+  );
+  const dashboardScriptPath = path.join(
+    process.cwd(),
+    "public",
+    "dashboard",
+    "dashboard.js"
+  );
+  const dashboardLogoPath = path.join(
+    process.cwd(),
+    "public",
+    "assets",
+    "ochiga-logo.png"
+  );
+  const digitalTwinIndexPath = path.join(
+    process.cwd(),
+    "public",
+    "digital-twin",
+    "index.html"
+  );
+  const digitalTwinScriptPath = path.join(
+    process.cwd(),
+    "public",
+    "digital-twin",
+    "app.js"
+  );
+  const digitalTwinModelDir = path.join(
+    process.cwd(),
+    "public",
+    "digital-twin",
+    "model"
+  );
+  const planStudioIndexPath = path.join(
+    process.cwd(),
+    "public",
+    "plan-studio",
+    "index.html"
+  );
+  const planStudioScriptPath = path.join(
+    process.cwd(),
+    "public",
+    "plan-studio",
+    "app.js"
+  );
+
+  return http.createServer(async (req, res) => {
+    const ctx = createRequestContext(req);
+    const pathname = getPathname(req);
+    const corsAccepted = setCorsHeaders(req, res, config.allowedOrigins);
+    let authContext = null;
+
+    if (req.method === "OPTIONS") {
+      if (!corsAccepted && config.allowedOrigins.length > 0) {
+        json(res, 403, { error: "origin_not_allowed" });
+        return;
+      }
+      res.writeHead(204);
+      res.end();
+      return;
+    }
+
+    if (!corsAccepted && config.allowedOrigins.length > 0) {
+      json(res, 403, { error: "origin_not_allowed" });
+      return;
+    }
+
+    try {
+      const isPublicWidgetPath =
+        pathname === "/widget" ||
+        pathname === "/widget/" ||
+        pathname === "/widget.js" ||
+        pathname === "/api/lead-agents/public/transcribe" ||
+        pathname === "/api/lead-agents/public/chat";
+      const isPublicDigitalTwinPath =
+        pathname === "/digital-twin" ||
+        pathname === "/digital-twin/" ||
+        pathname === "/digital-twin/app.js" ||
+        pathname === "/digital-twin/model/scene-definition.json" ||
+        pathname === "/digital-twin/model/twin.gltf" ||
+        pathname === "/digital-twin/model/twin.bin" ||
+        pathname === "/digital-twin/model/twin.glb" ||
+        pathname === "/api/digital-twin/scene";
+      const isPublicPlanStudioPath =
+        pathname === "/plan-studio" ||
+        pathname === "/plan-studio/" ||
+        pathname === "/plan-studio/app.js" ||
+        (pathname === "/api/plan-studio/projects" && req.method === "GET") ||
+        (pathname === "/api/plan-studio/project" && req.method === "GET");
+      const isPublicDashboardPath =
+        pathname === "/dashboard" ||
+        pathname === "/dashboard/" ||
+        pathname === "/dashboard.js" ||
+        pathname === "/assets/ochiga-logo.png";
+      const isPublicAdminSessionPath =
+        pathname === "/api/lead-agents/admin/session/login" ||
+        pathname === "/api/lead-agents/admin/session/logout" ||
+        pathname === "/api/lead-agents/admin/session/me";
+      const isPublicWhatsappPath = pathname === "/webhooks/whatsapp";
+
+      if (
+        pathname !== "/healthz" &&
+        !isPublicWidgetPath &&
+        !isPublicDigitalTwinPath &&
+        !isPublicPlanStudioPath &&
+        !isPublicDashboardPath &&
+        !isPublicAdminSessionPath &&
+        !isPublicWhatsappPath
+      ) {
+        authContext = tryEdgeAuth(req, config) || enforceAuth(req, config);
+        authContext = await enrichAuthContext(authContext, store);
+        const rateLimitState = widgetRateLimiter.check(req);
+        res.setHeader("x-ratelimit-remaining", String(rateLimitState.remaining));
+        res.setHeader(
+          "x-ratelimit-reset",
+          new Date(rateLimitState.resetAt).toISOString()
+        );
+      }
+
+      if (pathname === "/healthz") {
+        if (req.method !== "GET") {
+          methodNotAllowed(res, "GET");
+          return;
+        }
+        json(res, 200, {
+          ok: true,
+          uptime_ms: Date.now() - startedAt,
+          stats: await store.stats(),
+          environment: config.environment,
+          store_driver: config.storeDriver,
+          tier1: {
+            auth: {
+              mode: config.authMode,
+              session_cookie: config.sessionCookieName,
+            },
+            permissions: {
+              roles: Object.keys(ROLE_PERMISSIONS),
+              permission_count: PERMISSION_KEYS.length,
+            },
+            storage: storageService.health(),
+            realtime: eventBus.stats(),
+            database: {
+              store_driver: config.storeDriver,
+              connected: true,
+            },
+          },
+        });
+        return;
+      }
+
+      if (pathname === "/webhooks/whatsapp") {
+        if (req.method === "GET") {
+          const url = new URL(req.url, "http://localhost");
+          const challenge = whatsappAdapter.verifyWebhook(
+            url.searchParams.get("hub.mode"),
+            url.searchParams.get("hub.verify_token"),
+            url.searchParams.get("hub.challenge")
+          );
+          if (!challenge) {
+            json(res, 403, { error: "forbidden" });
+            return;
+          }
+          res.writeHead(200, { "content-type": "text/plain; charset=utf-8" });
+          res.end(String(challenge));
+          return;
+        }
+        if (req.method === "POST") {
+          const body = await readJsonBody(req);
+          const events = whatsappAdapter.extractEvents(body);
+          const results = [];
+          for (const event of events) {
+            results.push(
+              await processWhatsAppEvent({
+                event,
+                runtime,
+                store,
+                adapter: whatsappAdapter,
+                config,
+                requestId: ctx.requestId,
+              })
+            );
+          }
+          json(res, 200, { ok: true, results }, { "x-request-id": ctx.requestId });
+          return;
+        }
+        methodNotAllowed(res, "GET,POST");
+        return;
+      }
+
+      if (pathname === "/api/lead-agents/admin/session/login") {
+        if (req.method !== "POST") {
+          methodNotAllowed(res, "POST");
+          return;
+        }
+        const body = await readJsonBody(req);
+        const attemptKey = loginAttemptKey(req, body.email);
+        const adminUser = await store.getAdminUserByEmail(body.email);
+        const fallbackAllowed =
+          !adminUser &&
+          normalizeEmail(body.email) &&
+          config.apiKeys.includes(String(body.password || ""));
+        const credentialsValid =
+          fallbackAllowed ||
+          Boolean(adminUser && verifyPassword(body.password, adminUser.password_hash));
+        try {
+          const loginLimit = adminLoginRateLimiter.checkKey(attemptKey);
+          res.setHeader("x-login-ratelimit-remaining", String(loginLimit.remaining));
+          res.setHeader("x-login-ratelimit-reset", new Date(loginLimit.resetAt).toISOString());
+        } catch (error) {
+          if (credentialsValid) {
+            adminLoginRateLimiter.resetKey(attemptKey);
+          } else {
+            json(
+              res,
+              429,
+              {
+                error: "login_rate_limit_exceeded",
+                message: "Too many sign-in attempts. Please wait a few minutes and try again.",
+              },
+              {
+                "x-request-id": ctx.requestId,
+                "x-login-ratelimit-reset": error.rateLimit?.resetAt
+                  ? new Date(error.rateLimit.resetAt).toISOString()
+                  : "",
+              }
+            );
+            return;
+          }
+        }
+
+        if (adminUser && adminUser.status !== "active") {
+          json(res, 403, { error: "account_inactive", message: "This Office account is inactive." });
+          return;
+        }
+        if (!credentialsValid) {
+          json(res, 401, { error: "unauthorized", message: "Email or password is incorrect." });
+          return;
+        }
+
+        const sessionUser =
+          adminUser ||
+          (await store.ensureAdminUser({
+            email: normalizeEmail(body.email),
+            password_hash: hashPassword(body.password),
+            role: config.adminRole || "admin",
+            display_name: body.email,
+            status: "active",
+            last_login_at: new Date().toISOString(),
+          }));
+        await store.updateAdminUser(sessionUser.id, {
+          last_login_at: new Date().toISOString(),
+        });
+        adminLoginRateLimiter.resetKey(attemptKey);
+        await appendAudit(
+          store,
+          {
+            userId: sessionUser.id,
+            email: sessionUser.email,
+            role: sessionUser.role,
+          },
+          "session_login",
+          "admin_user",
+          sessionUser.id,
+          {}
+        );
+        const token = createAdminSessionToken(sessionUser, config);
+        json(
+          res,
+          200,
+          {
+            ok: true,
+            admin: {
+              id: sessionUser.id,
+              email: sessionUser.email,
+              role: sessionUser.role,
+              display_name: sessionUser.display_name || sessionUser.email,
+              status: sessionUser.status || "active",
+              permission_scopes: Array.isArray(sessionUser.permission_scopes)
+                ? sessionUser.permission_scopes
+                : [],
+              passport_photo_url: sessionUser.passport_photo_url || "",
+              qr_credential: sessionUser.qr_credential || "",
+              permissions: permissionsForRole(sessionUser.role, sessionUser.permission_scopes),
+            },
+          },
+          {
+            "set-cookie": createSessionCookie(token, config),
+            "x-request-id": ctx.requestId,
+          }
+        );
+        return;
+      }
+
+      if (pathname === "/api/lead-agents/admin/session/logout") {
+        if (req.method !== "POST") {
+          methodNotAllowed(res, "POST");
+          return;
+        }
+        json(
+          res,
+          200,
+          { ok: true },
+          {
+            "set-cookie": clearSessionCookie(config),
+            "x-request-id": ctx.requestId,
+          }
+        );
+        await appendAudit(store, authContext, "session_logout", "session", authContext?.userId || "", {});
+        return;
+      }
+
+      if (pathname === "/api/lead-agents/admin/session/me") {
+        if (req.method !== "GET") {
+          methodNotAllowed(res, "GET");
+          return;
+        }
+        const session = readAdminSession(req, config);
+        if (!session) {
+          json(res, 401, { error: "unauthorized" }, { "x-request-id": ctx.requestId });
+          return;
+        }
+        const currentUser = await store.getAdminUserByEmail(session.email);
+        if (!currentUser || currentUser.status !== "active") {
+          json(res, 401, { error: "unauthorized" }, { "x-request-id": ctx.requestId });
+          return;
+        }
+        json(
+          res,
+          200,
+          {
+            ok: true,
+            admin: {
+              id: currentUser.id,
+              email: currentUser.email,
+              role: currentUser.role,
+              display_name: currentUser.display_name || currentUser.email,
+              status: currentUser.status || "active",
+              permission_scopes: Array.isArray(currentUser.permission_scopes)
+                ? currentUser.permission_scopes
+                : [],
+              passport_photo_url: currentUser.passport_photo_url || "",
+              qr_credential: currentUser.qr_credential || "",
+              permissions: permissionsForRole(currentUser.role, currentUser.permission_scopes),
+            },
+          },
+          { "x-request-id": ctx.requestId }
+        );
+        return;
+      }
+
+      if (pathname === "/api/lead-agents/admin/session/password") {
+        if (req.method !== "POST") {
+          methodNotAllowed(res, "POST");
+          return;
+        }
+        authorizePermission(authContext, "change_password");
+        const body = await readJsonBody(req);
+        requireObject(body, "body");
+        if (!body.current_password || !body.new_password) {
+          json(res, 400, { error: "current_password and new_password are required" });
+          return;
+        }
+        const currentUser = await store.getAdminUserByEmail(authContext.email);
+        if (!currentUser || !verifyPassword(body.current_password, currentUser.password_hash)) {
+          json(res, 401, { error: "unauthorized" });
+          return;
+        }
+        const updated = await store.updateAdminUser(currentUser.id, {
+          password_hash: hashPassword(body.new_password),
+          password_changed_at: new Date().toISOString(),
+        });
+        await appendAudit(store, authContext, "password_changed", "admin_user", currentUser.id, {});
+        json(res, 200, { ok: true, user: updated }, { "x-request-id": ctx.requestId });
+        return;
+      }
+
+      if (pathname === "/api/lead-agents/admin/session/invite/accept") {
+        if (req.method !== "POST") {
+          methodNotAllowed(res, "POST");
+          return;
+        }
+        const body = await readJsonBody(req);
+        requireObject(body, "body");
+        if (!body.token || !body.password) {
+          json(res, 400, { error: "token and password are required" });
+          return;
+        }
+        const invite = await store.getAdminInviteByTokenHash(hashOpaqueToken(body.token));
+        if (!invite || invite.status !== "pending" || new Date(invite.expires_at).getTime() < Date.now()) {
+          json(res, 400, { error: "invalid_or_expired_invite" });
+          return;
+        }
+        const user = await store.ensureAdminUser({
+          email: invite.email,
+          password_hash: hashPassword(body.password),
+          role: invite.role || "viewer",
+          display_name: body.display_name || invite.display_name || invite.email,
+          status: "active",
+          password_changed_at: new Date().toISOString(),
+        });
+        await store.updateAdminInvite(invite.id, {
+          status: "accepted",
+          accepted_at: new Date().toISOString(),
+        });
+        await appendAudit(
+          store,
+          { userId: user.id, email: user.email, role: user.role },
+          "invite_accepted",
+          "admin_invite",
+          invite.id,
+          { email: invite.email }
+        );
+        const token = createAdminSessionToken(user, config);
+        json(
+          res,
+          200,
+          {
+            ok: true,
+            admin: {
+              id: user.id,
+              email: user.email,
+              role: user.role,
+              display_name: user.display_name || user.email,
+              status: user.status || "active",
+              permission_scopes: Array.isArray(user.permission_scopes) ? user.permission_scopes : [],
+              passport_photo_url: user.passport_photo_url || "",
+              qr_credential: user.qr_credential || "",
+              permissions: permissionsForRole(user.role, user.permission_scopes),
+            },
+          },
+          {
+            "set-cookie": createSessionCookie(token, config),
+            "x-request-id": ctx.requestId,
+          }
+        );
+        return;
+      }
+
+      if (pathname === "/api/lead-agents/admin/session/reset/confirm") {
+        if (req.method !== "POST") {
+          methodNotAllowed(res, "POST");
+          return;
+        }
+        const body = await readJsonBody(req);
+        requireObject(body, "body");
+        if (!body.token || !body.new_password) {
+          json(res, 400, { error: "token and new_password are required" });
+          return;
+        }
+        const reset = await store.getPasswordResetTokenByHash(hashOpaqueToken(body.token));
+        if (!reset || reset.status !== "pending" || new Date(reset.expires_at).getTime() < Date.now()) {
+          json(res, 400, { error: "invalid_or_expired_reset" });
+          return;
+        }
+        const user = await store.getAdminUserByEmail(reset.email);
+        if (!user) {
+          json(res, 404, { error: "user_not_found" });
+          return;
+        }
+        await store.updateAdminUser(user.id, {
+          password_hash: hashPassword(body.new_password),
+          password_changed_at: new Date().toISOString(),
+        });
+        await store.updatePasswordResetToken(reset.id, {
+          status: "used",
+          used_at: new Date().toISOString(),
+        });
+        await appendAudit(
+          store,
+          { userId: user.id, email: user.email, role: user.role },
+          "password_reset_completed",
+          "admin_user",
+          user.id,
+          {}
+        );
+        json(res, 200, { ok: true }, { "x-request-id": ctx.requestId });
+        return;
+      }
+
+      if (pathname === "/dashboard" || pathname === "/dashboard/") {
+        if (req.method !== "GET") {
+          methodNotAllowed(res, "GET");
+          return;
+        }
+        await serveFile(res, dashboardIndexPath);
+        return;
+      }
+
+      if (pathname === "/dashboard.js") {
+        if (req.method !== "GET") {
+          methodNotAllowed(res, "GET");
+          return;
+        }
+        await serveFile(res, dashboardScriptPath);
+        return;
+      }
+
+      if (pathname === "/assets/ochiga-logo.png") {
+        if (req.method !== "GET") {
+          methodNotAllowed(res, "GET");
+          return;
+        }
+        await serveFile(res, dashboardLogoPath);
+        return;
+      }
+
+      if (pathname === "/widget" || pathname === "/widget/") {
+        if (req.method !== "GET") {
+          methodNotAllowed(res, "GET");
+          return;
+        }
+        await serveFile(res, widgetIndexPath);
+        return;
+      }
+
+      if (pathname === "/widget.js") {
+        if (req.method !== "GET") {
+          methodNotAllowed(res, "GET");
+          return;
+        }
+        await serveFile(res, widgetScriptPath);
+        return;
+      }
+
+      if (pathname === "/digital-twin" || pathname === "/digital-twin/") {
+        if (req.method !== "GET") {
+          methodNotAllowed(res, "GET");
+          return;
+        }
+        await serveFile(res, digitalTwinIndexPath);
+        return;
+      }
+
+      if (pathname === "/digital-twin/app.js") {
+        if (req.method !== "GET") {
+          methodNotAllowed(res, "GET");
+          return;
+        }
+        await serveFile(res, digitalTwinScriptPath);
+        return;
+      }
+
+      if (pathname === "/plan-studio" || pathname === "/plan-studio/") {
+        if (req.method !== "GET") {
+          methodNotAllowed(res, "GET");
+          return;
+        }
+        await serveFile(res, planStudioIndexPath);
+        return;
+      }
+
+      if (pathname === "/plan-studio/app.js") {
+        if (req.method !== "GET") {
+          methodNotAllowed(res, "GET");
+          return;
+        }
+        await serveFile(res, planStudioScriptPath);
+        return;
+      }
+
+      if (pathname.startsWith("/digital-twin/model/")) {
+        if (req.method !== "GET") {
+          methodNotAllowed(res, "GET");
+          return;
+        }
+        const filename = pathname.slice("/digital-twin/model/".length);
+        const allowedFiles = new Set([
+          "scene-definition.json",
+          "twin.gltf",
+          "twin.bin",
+          "twin.glb",
+        ]);
+        if (!allowedFiles.has(filename)) {
+          notFound(res);
+          return;
+        }
+        await serveFile(res, path.join(digitalTwinModelDir, filename));
+        return;
+      }
+
+      if (pathname === "/api/digital-twin/scene") {
+        if (req.method !== "GET") {
+          methodNotAllowed(res, "GET");
+          return;
+        }
+        json(res, 200, digitalTwinRuntime.getScene(), {
+          "x-request-id": ctx.requestId,
+        });
+        return;
+      }
+
+      if (pathname === "/api/digital-twin/device-action") {
+        if (req.method !== "POST") {
+          methodNotAllowed(res, "POST");
+          return;
+        }
+        authorizePermission(authContext, "twin.control");
+        const body = await readJsonBody(req);
+        if (!body.device_id || !body.action) {
+          json(res, 400, { error: "device_id and action are required" });
+          return;
+        }
+        const result = digitalTwinRuntime.dispatchAction(body.device_id, body.action);
+        await appendAudit(store, authContext, "twin.device.action", "digital_twin_device", body.device_id, {
+          action: body.action,
+          source: "digital_twin",
+        }, req);
+        eventBus.publish("twin.state.updated", {
+          device_id: body.device_id,
+          action: body.action,
+          result,
+        });
+        json(res, 200, result, {
+          "x-request-id": ctx.requestId,
+        });
+        return;
+      }
+
+      if (pathname === "/api/digital-twin/edge-sync") {
+        if (req.method !== "POST") {
+          methodNotAllowed(res, "POST");
+          return;
+        }
+        authorizePermission(authContext, "devices.control");
+        const result = digitalTwinRuntime.syncEdge();
+        await appendAudit(store, authContext, "edge.heartbeat", "edge_agent", "digital_twin_edge", {
+          source: "digital_twin_edge_sync",
+          result,
+        }, req);
+        eventBus.publish("edge.heartbeat", {
+          source: "digital_twin_edge_sync",
+          result,
+        });
+        json(res, 200, result, {
+          "x-request-id": ctx.requestId,
+        });
+        return;
+      }
+
+      if (pathname === "/api/plan-studio/projects") {
+        if (req.method === "GET") {
+          const projects = await planStudioRuntime.listProjects();
+          json(res, 200, { projects }, { "x-request-id": ctx.requestId });
+          return;
+        }
+        if (req.method === "POST") {
+          authorizePermission(authContext, "planstudio.write");
+          const body = await readJsonBody(req, 12 * 1024 * 1024);
+          if (!body.image_data_url || !body.file_name) {
+            json(res, 400, { error: "image_data_url and file_name are required" });
+            return;
+          }
+          const project = await planStudioRuntime.saveProject(body);
+          await appendAudit(store, authContext, "plan.uploaded", "plan", project.id, {
+            file_name: project.file_name || body.file_name,
+            source: "plan_studio",
+          }, req);
+          json(res, 200, { project }, { "x-request-id": ctx.requestId });
+          return;
+        }
+        methodNotAllowed(res, "GET,POST");
+        return;
+      }
+
+      if (pathname === "/api/plan-studio/project") {
+        if (req.method !== "GET") {
+          methodNotAllowed(res, "GET");
+          return;
+        }
+        const url = new URL(req.url, "http://localhost");
+        const projectId = url.searchParams.get("id");
+        if (!projectId) {
+          json(res, 400, { error: "id is required" });
+          return;
+        }
+        const project = await planStudioRuntime.getProject(projectId);
+        if (!project) {
+          notFound(res);
+          return;
+        }
+        json(res, 200, { project }, { "x-request-id": ctx.requestId });
+        return;
+      }
+
+      if (pathname === "/api/plan-studio/analyze") {
+        if (req.method !== "POST") {
+          methodNotAllowed(res, "POST");
+          return;
+        }
+        authorizePermission(authContext, "planstudio.write");
+        const body = await readJsonBody(req);
+        if (!body.project_id) {
+          json(res, 400, { error: "project_id is required" });
+          return;
+        }
+        const project = await planStudioRuntime.analyzeProject(
+          body.project_id,
+          body.parsed_geometry
+        );
+        if (!project) {
+          notFound(res);
+          return;
+        }
+        json(res, 200, { project }, { "x-request-id": ctx.requestId });
+        return;
+      }
+
+      if (pathname === "/api/plan-studio/parse") {
+        if (req.method !== "POST") {
+          methodNotAllowed(res, "POST");
+          return;
+        }
+        authorizePermission(authContext, "planstudio.write");
+        const body = await readJsonBody(req, 12 * 1024 * 1024);
+        if (!body.image_data_url) {
+          json(res, 400, { error: "image_data_url is required" });
+          return;
+        }
+        const parsed_geometry = await enhancePlanStudioGeometry({
+          openaiClient,
+          config,
+          imageDataUrl: body.image_data_url,
+          heuristicGeometry: body.parsed_geometry || {},
+        });
+        json(res, 200, { parsed_geometry }, { "x-request-id": ctx.requestId });
+        return;
+      }
+
+      if (pathname === "/api/plan-studio/agent") {
+        if (req.method !== "POST") {
+          methodNotAllowed(res, "POST");
+          return;
+        }
+        authorizePermission(authContext, "planstudio.read");
+        const body = await readJsonBody(req, 12 * 1024 * 1024);
+        if (!body.project_id || !body.question) {
+          json(res, 400, { error: "project_id and question are required" });
+          return;
+        }
+        const project = await planStudioRuntime.getProject(body.project_id);
+        if (!project) {
+          notFound(res);
+          return;
+        }
+        const reply = await answerPlanStudioQuestion({
+          openaiClient,
+          config,
+          project,
+          question: body.question,
+        });
+        json(res, 200, { reply }, { "x-request-id": ctx.requestId });
+        return;
+      }
+
+      if (pathname === "/api/plan-studio/discipline") {
+        if (req.method !== "POST") {
+          methodNotAllowed(res, "POST");
+          return;
+        }
+        authorizePermission(authContext, "planstudio.write");
+        const body = await readJsonBody(req);
+        if (!body.project_id || !body.discipline) {
+          json(res, 400, { error: "project_id and discipline are required" });
+          return;
+        }
+        const project = await planStudioRuntime.updateDisciplineReview(
+          body.project_id,
+          body.discipline,
+          body
+        );
+        if (!project) {
+          notFound(res);
+          return;
+        }
+        json(res, 200, { project }, { "x-request-id": ctx.requestId });
+        return;
+      }
+
+      if (pathname === "/api/plan-studio/geometry") {
+        if (req.method !== "POST") {
+          methodNotAllowed(res, "POST");
+          return;
+        }
+        authorizePermission(authContext, "planstudio.write");
+        const body = await readJsonBody(req, 12 * 1024 * 1024);
+        if (!body.project_id || !body.geometry_truth) {
+          json(res, 400, { error: "project_id and geometry_truth are required" });
+          return;
+        }
+        const project = await planStudioRuntime.updateGeometryTruth(body.project_id, body);
+        if (!project) {
+          notFound(res);
+          return;
+        }
+        json(res, 200, { project }, { "x-request-id": ctx.requestId });
+        return;
+      }
+
+      if (pathname === "/api/lead-agents/public/chat") {
+        const rateLimitState = rateLimiter.check(req);
+        res.setHeader("x-ratelimit-remaining", String(rateLimitState.remaining));
+        res.setHeader(
+          "x-ratelimit-reset",
+          new Date(rateLimitState.resetAt).toISOString()
+        );
+
+        if (req.method !== "POST") {
+          methodNotAllowed(res, "POST");
+          return;
+        }
+
+        const body = await readJsonBody(req);
+        if (body.website || body.company_url === "http://") {
+          json(res, 400, { error: "request_rejected" });
+          return;
+        }
+        if (!body.message || typeof body.message !== "string") {
+          json(res, 400, { error: "message is required" });
+          return;
+        }
+        if (body.message.length > config.publicWidgetMaxMessageChars) {
+          json(res, 413, { error: "message_too_large", max_chars: config.publicWidgetMaxMessageChars });
+          return;
+        }
+
+        await appendAudit(store, { userId: null, email: "", role: "guest" }, "ai.command.received", "public_widget", body.lead_id || "", { source: body.source || config.defaultLeadSource, prompt_excerpt: body.message.slice(0, 240) }, req);
+
+        let result;
+        try {
+          result = await runtime.runChat({
+            agent: "marketing",
+            lead_id: body.lead_id,
+            source: body.source || config.defaultLeadSource,
+            notify_inbound: true,
+            message: body.message,
+            profile: body.profile || {},
+          });
+        } catch (err) {
+          log("error", "lead_agents_server.public_chat_fallback", {
+            request_id: ctx.requestId,
+            error: err?.stack || err?.message || String(err),
+          });
+          const fallbackLead = await ensurePublicFallbackLead(store, body);
+          const fallbackAssistant = publicFallbackReply(body.message, fallbackLead);
+          await store.appendConversation({
+            lead_id: fallbackLead.id,
+            agent_name: "marketing_agent",
+            message_role: "user",
+            channel: "website",
+            content: body.message,
+          });
+          await store.appendConversation({
+            lead_id: fallbackLead.id,
+            agent_name: "marketing_agent",
+            message_role: "assistant",
+            channel: "website",
+            content: fallbackAssistant,
+          });
+          result = {
+            agent: "marketing_agent",
+            lead: fallbackLead,
+            trace_id: "",
+            lead_memory: null,
+            knowledge_hits: [],
+            assistant_message: fallbackAssistant,
+            tools: [],
+            conversations: await store.listConversationsForLead(
+              fallbackLead.id,
+              config.maxConversationMessages
+            ),
+            degraded: true,
+          };
+        }
+
+        await appendAudit(store, { userId: null, email: "", role: "guest" }, "ai.response.generated", "public_widget", result.lead?.id || body.lead_id || "", { source: body.source || config.defaultLeadSource, trace_id: result.trace_id || "", degraded: Boolean(result.degraded) }, req);
+        json(res, 200, result, {
+          "x-request-id": ctx.requestId,
+        });
+        return;
+      }
+
+      if (pathname === "/api/lead-agents/public/transcribe") {
+        const rateLimitState = widgetRateLimiter.check(req);
+        res.setHeader("x-ratelimit-remaining", String(rateLimitState.remaining));
+        res.setHeader(
+          "x-ratelimit-reset",
+          new Date(rateLimitState.resetAt).toISOString()
+        );
+
+        if (req.method !== "POST") {
+          methodNotAllowed(res, "POST");
+          return;
+        }
+
+        const body = await readJsonBody(req, 40 * 1024 * 1024);
+        if (body.website || body.company_url === "http://") {
+          json(res, 400, { error: "request_rejected" });
+          return;
+        }
+        const audio = parseDataUrl(body.audio_data_url || body.audioDataUrl || "");
+        if (!audio || !audio.buffer.length) {
+          json(res, 400, { error: "audio_data_url is required" });
+          return;
+        }
+        if (audio.buffer.length > 25 * 1024 * 1024) {
+          json(res, 413, { error: "audio_too_large", max_bytes: 25 * 1024 * 1024 });
+          return;
+        }
+
+        const mimeType = body.mime_type || body.mimeType || audio.mimeType || "audio/webm";
+        const filename =
+          body.file_name ||
+          body.fileName ||
+          `oyi-voice-note${extensionForAudioMime(mimeType)}`;
+        const durationMs = Number(body.duration_ms || body.durationMs || 0);
+        if (durationMs && durationMs > 120000) {
+          json(res, 413, { error: "audio_too_long", max_duration_ms: 120000 });
+          return;
+        }
+
+        try {
+          const transcription = await openaiClient.createTranscription({
+            buffer: audio.buffer,
+            filename,
+            mimeType,
+            language: body.language || "en",
+            prompt:
+              body.prompt ||
+              "Ochiga and Oyi smart estates, smart buildings, facility support, sales, and community conversations.",
+          });
+          const transcriptText = String(transcription.text || "").trim();
+          await appendAudit(store, { userId: null, email: "", role: "guest" }, "ai.voice.transcribed", "public_widget_voice", body.lead_id || "", { model: config.openaiTranscriptionModel, bytes: audio.buffer.length, mime_type: mimeType, text_length: transcriptText.length }, req);
+          json(
+            res,
+            200,
+            {
+              text: transcriptText,
+              transcription,
+              model: config.openaiTranscriptionModel,
+            },
+            { "x-request-id": ctx.requestId }
+          );
+        } catch (err) {
+          log("error", "lead_agents_server.public_transcribe_failed", {
+            request_id: ctx.requestId,
+            error: err?.stack || err?.message || String(err),
+          });
+          json(
+            res,
+            err.statusCode && err.statusCode >= 400 ? err.statusCode : 502,
+            {
+              error: "transcription_failed",
+              message: "Unable to transcribe this recording right now.",
+            },
+            { "x-request-id": ctx.requestId }
+          );
+        }
+        return;
+      }
+
+      if (pathname === "/api/lead-agents/chat") {
+        if (req.method !== "POST") {
+          methodNotAllowed(res, "POST");
+          return;
+        }
+        authorizePermission(authContext, "manage_leads");
+        const body = await readJsonBody(req);
+        if (!body.message || typeof body.message !== "string") {
+          json(res, 400, { error: "message is required" });
+          return;
+        }
+
+        const result = await runtime.runChat({
+          agent: body.agent,
+          lead_id: body.lead_id,
+          source: body.source,
+          notify_inbound: false,
+          message: body.message,
+          profile: body.profile || {},
+        });
+
+        json(res, 200, result, {
+          "x-request-id": ctx.requestId,
+        });
+        return;
+      }
+
+      if (pathname === "/api/lead-agents/admin/leads") {
+        if (req.method !== "POST") {
+          methodNotAllowed(res, "POST");
+          return;
+        }
+        authorizePermission(authContext, "manage_leads");
+        const body = await readJsonBody(req);
+        requireObject(body, "body");
+        if (!body.source || typeof body.source !== "string") {
+          json(res, 400, { error: "source is required" });
+          return;
+        }
+
+        const lead = await store.createLead(
+          normalizeLeadInput(
+            {
+              ...body,
+              status: body.status || "new",
+              owner: body.owner || "marketing_agent",
+            },
+            body.source
+          )
+        );
+
+        json(res, 201, { lead }, { "x-request-id": ctx.requestId });
+        return;
+      }
+
+      if (pathname === "/api/office/intake") {
+        if (req.method !== "POST") {
+          methodNotAllowed(res, "POST");
+          return;
+        }
+        authorizePermission(authContext, "manage_leads");
+        const body = await readJsonBody(req, 64 * 1024);
+        const envelope = normalizeOfficeIntakeEnvelope(body);
+        const existing = await findExistingIntakeLead(store, envelope.idempotency_key);
+        if (existing) {
+          json(res, 200, {
+            ok: true,
+            duplicate: true,
+            request_id: envelope.request_id,
+            idempotency_key: envelope.idempotency_key,
+            lead: existing,
+          }, { "x-request-id": ctx.requestId });
+          return;
+        }
+
+        const lead = await store.createLead(leadInputFromIntake(envelope));
+        await store.appendTimelineEvent({
+          lead_id: lead.id,
+          event_type: "office_intake_received",
+          actor: envelope.source_site,
+          title: "Office intake received",
+          body: `${envelope.business_unit} ${envelope.inquiry_type} intake received from ${envelope.source_site}.`,
+          metadata: {
+            request_id: envelope.request_id,
+            idempotency_key: envelope.idempotency_key,
+            source_channel: envelope.source_channel,
+            source_site: envelope.source_site,
+            source_page: envelope.source_page,
+            source_form: envelope.source_form,
+            business_unit: envelope.business_unit,
+            inquiry_type: envelope.inquiry_type,
+            campaign: envelope.campaign,
+            consent: envelope.consent,
+          },
+        });
+
+        json(res, 201, {
+          ok: true,
+          duplicate: false,
+          request_id: envelope.request_id,
+          idempotency_key: envelope.idempotency_key,
+          lead,
+        }, { "x-request-id": ctx.requestId });
+        return;
+      }
+
+      if (pathname === "/api/lead-agents/leads") {
+        if (req.method !== "GET") {
+          methodNotAllowed(res, "GET");
+          return;
+        }
+        authorizePermission(authContext, "view_dashboard");
+        json(
+          res,
+          200,
+          { leads: await store.listLeads() },
+          { "x-request-id": ctx.requestId }
+        );
+        return;
+      }
+
+      const memoryMatch = pathname.match(/^\/api\/lead-agents\/leads\/([^/]+)\/memory$/);
+      if (memoryMatch) {
+        if (req.method !== "GET") {
+          methodNotAllowed(res, "GET");
+          return;
+        }
+        authorizePermission(authContext, "view_dashboard");
+        const memory = await store.getLeadMemory(memoryMatch[1]);
+        json(res, 200, { memory }, { "x-request-id": ctx.requestId });
+        return;
+      }
+
+      const timelineMatch = pathname.match(/^\/api\/lead-agents\/leads\/([^/]+)\/timeline$/);
+      if (timelineMatch) {
+        if (req.method !== "GET") {
+          methodNotAllowed(res, "GET");
+          return;
+        }
+        authorizePermission(authContext, "view_dashboard");
+        json(
+          res,
+          200,
+          {
+            timeline: await store.listTimelineForLead(timelineMatch[1]),
+          },
+          { "x-request-id": ctx.requestId }
+        );
+        return;
+      }
+
+      const channelStateMatch = pathname.match(
+        /^\/api\/lead-agents\/leads\/([^/]+)\/channel-state\/([^/]+)$/
+      );
+      if (channelStateMatch) {
+        const leadId = channelStateMatch[1];
+        const channel = channelStateMatch[2];
+        if (req.method === "GET") {
+          authorizePermission(authContext, "view_dashboard");
+          json(
+            res,
+            200,
+            {
+              channel_state: await store.getLeadChannelState(leadId, channel),
+            },
+            { "x-request-id": ctx.requestId }
+          );
+          return;
+        }
+        if (req.method === "PATCH") {
+          authorizePermission(authContext, "manage_takeover");
+          const body = await readJsonBody(req);
+          requireObject(body, "body");
+          const updated = await store.upsertLeadChannelState(leadId, channel, {
+            ai_paused: body.ai_paused,
+            human_owner: body.human_owner,
+            human_status: body.human_status,
+            takeover_started_at: body.takeover_started_at,
+            takeover_reason: body.takeover_reason,
+            resume_mode: body.resume_mode,
+            customer_service_window_expires_at:
+              body.customer_service_window_expires_at,
+            last_external_message_id: body.last_external_message_id,
+            last_inbound_at: body.last_inbound_at,
+            last_outbound_at: body.last_outbound_at,
+          });
+          json(
+            res,
+            200,
+            {
+              channel_state: updated,
+            },
+            { "x-request-id": ctx.requestId }
+          );
+          return;
+        }
+        methodNotAllowed(res, "GET,PATCH");
+        return;
+      }
+
+      const leadMatch = pathname.match(/^\/api\/lead-agents\/leads\/([^/]+)$/);
+      if (leadMatch) {
+        if (req.method === "GET") {
+          authorizePermission(authContext, "view_dashboard");
+          const lead = await store.getLead(leadMatch[1]);
+          if (!lead) {
+            notFound(res);
+            return;
+          }
+          json(res, 200, { lead }, { "x-request-id": ctx.requestId });
+          return;
+        }
+        if (req.method === "PATCH") {
+          authorizePermission(authContext, "manage_leads");
+          const body = await readJsonBody(req);
+          requireObject(body, "body");
+        const updated = await store.updateLead(
+          leadMatch[1],
+          normalizeLeadPatch({
+              name: body.name,
+              company: body.company,
+              role: body.role,
+              email: body.email,
+              phone: body.phone,
+              source: body.source,
+              source_channel: body.source_channel,
+              location: body.location,
+              city: body.city,
+              country: body.country,
+              unit_count: body.unit_count,
+              project_type: body.project_type,
+              property_type: body.property_type,
+              property_size: body.property_size,
+              number_of_units: body.number_of_units,
+              pain_points: body.pain_points,
+              budget_range: body.budget_range,
+              timeline: body.timeline,
+              decision_maker_status: body.decision_maker_status,
+              interest_package: body.interest_package,
+              lead_score: body.lead_score,
+              qualification_status: body.qualification_status,
+              stage: body.stage,
+              status: body.status,
+              owner: body.owner,
+              commercial_stage: body.commercial_stage,
+              lost_reason: body.lost_reason,
+              score: body.score,
+              summary: body.summary,
+              next_action: body.next_action,
+              next_action_at: body.next_action_at,
+              last_contact_at: body.last_contact_at,
+              notes: body.notes,
+          })
+        );
+          if (!updated) {
+            notFound(res);
+            return;
+          }
+          json(res, 200, { lead: updated }, { "x-request-id": ctx.requestId });
+          return;
+        }
+        methodNotAllowed(res, "GET,PATCH");
+        return;
+      }
+
+      const qualifyMatch = pathname.match(/^\/api\/lead-agents\/leads\/([^/]+)\/qualify$/);
+      if (qualifyMatch) {
+        if (req.method !== "POST") {
+          methodNotAllowed(res, "POST");
+          return;
+        }
+        authorizePermission(authContext, "manage_leads");
+        const lead = await store.getLead(qualifyMatch[1]);
+        if (!lead) {
+          notFound(res);
+          return;
+        }
+        const body = await readJsonBody(req);
+        requireObject(body, "body");
+        const qualification = qualifyLead(lead, body);
+        const updated = store.qualifyLead
+          ? await store.qualifyLead(lead.id, qualification)
+          : await store.updateLead(lead.id, {
+              ...qualification.patch,
+              summary: qualification.summary,
+              next_action: qualification.recommended_next_action,
+            });
+        await appendAudit(store, authContext, "lead_qualified", "lead", lead.id, qualification);
+        json(res, 200, { lead: updated, qualification }, { "x-request-id": ctx.requestId });
+        return;
+      }
+
+      const buildingReviewMatch = pathname.match(/^\/api\/lead-agents\/leads\/([^/]+)\/building-review$/);
+      if (buildingReviewMatch) {
+        if (req.method !== "POST") {
+          methodNotAllowed(res, "POST");
+          return;
+        }
+        authorizePermission(authContext, "manage_demos");
+        const lead = await store.getLead(buildingReviewMatch[1]);
+        if (!lead) {
+          notFound(res);
+          return;
+        }
+        const body = await readJsonBody(req);
+        requireObject(body, "body");
+        const schedule = parsePreferredSchedule({
+          text: body.scheduled_for || "",
+          timezoneHint: body.timezone || "",
+        });
+        const reviewType = body.review_type || "building_review";
+        const demo = await store.createDemo({
+          lead_id: lead.id,
+          scheduled_for: schedule.scheduled_for,
+          status: body.status || (schedule.scheduled_for ? "confirmed" : "pending"),
+          notes: JSON.stringify({
+            review_type: reviewType,
+            label: reviewType === "site_visit" ? "Site Visit" : "Building Review",
+            notes: body.notes || "",
+            timezone: schedule.timezone || body.timezone || "",
+            preferred_time_text: body.scheduled_for || "",
+            display_time: schedule.display_text || "",
+          }),
+        });
+        const stage = reviewType === "site_visit" || reviewType === "technical_inspection"
+          ? "site_visit_scheduled"
+          : "discovery_scheduled";
+        const updatedLead = await store.updateLead(lead.id, {
+          stage,
+          commercial_stage: stage,
+          status: "booked",
+          owner: "sales_agent",
+          next_action: schedule.scheduled_for
+            ? `${reviewType === "site_visit" ? "Site Visit" : "Building Review"} scheduled for ${schedule.display_text}`
+            : `Confirm ${reviewType === "site_visit" ? "site visit" : "building review"} time`,
+          next_action_at: schedule.scheduled_for,
+        });
+        await appendAudit(store, authContext, "building_review_scheduled", "lead", lead.id, {
+          demo_id: demo.id,
+          review_type: reviewType,
+        });
+        json(res, 201, { review: demo, lead: updatedLead }, { "x-request-id": ctx.requestId });
+        return;
+      }
+
+      const approvalMatch = pathname.match(/^\/api\/lead-agents\/leads\/([^/]+)\/commercial-approval$/);
+      if (approvalMatch) {
+        if (req.method !== "POST") {
+          methodNotAllowed(res, "POST");
+          return;
+        }
+        authorizePermission(authContext, "manage_commercial");
+        const lead = await store.getLead(approvalMatch[1]);
+        if (!lead) {
+          notFound(res);
+          return;
+        }
+        const body = await readJsonBody(req);
+        requireObject(body, "body");
+        const updatedLead = await store.updateLead(lead.id, {
+          stage: body.approved === false ? "negotiation" : "commercial_approved",
+          commercial_stage: body.approved === false ? "negotiation" : "commercial_approved",
+          status: body.approved === false ? "sales" : "approved",
+          owner: "sales_agent",
+          next_action: body.approved === false ? "Resolve commercial blockers" : "Create deployment project and Facility workspace",
+          notes: body.notes,
+        });
+        await appendAudit(store, authContext, "commercial_approval_updated", "lead", lead.id, {
+          approved: body.approved !== false,
+          notes: body.notes || "",
+        });
+        json(res, 200, { lead: updatedLead }, { "x-request-id": ctx.requestId });
+        return;
+      }
+
+      const provisionMatch = pathname.match(/^\/api\/lead-agents\/leads\/([^/]+)\/provision-facility-workspace$/);
+      if (provisionMatch) {
+        if (req.method !== "POST") {
+          methodNotAllowed(res, "POST");
+          return;
+        }
+        authorizePermission(authContext, "manage_commercial");
+        const lead = await store.getLead(provisionMatch[1]);
+        if (!lead) {
+          notFound(res);
+          return;
+        }
+        const body = await readJsonBody(req);
+        requireObject(body, "body");
+        const [deployment, workspace] = await Promise.all([
+          store.createDeploymentProject({
+            lead_id: lead.id,
+            package_name: body.package_name || lead.interest_package,
+            property_name: body.property_name || lead.company,
+            actor: authContext?.email || "office",
+          }),
+          store.createFacilityWorkspace({
+            lead_id: lead.id,
+            facility_admin_email: body.facility_admin_email || lead.email,
+            customer_organization: body.customer_organization || lead.company,
+            estate_name: body.estate_name || body.property_name || lead.company,
+            actor: authContext?.email || "office",
+          }),
+        ]);
+        await appendAudit(store, authContext, "facility_workspace_requested", "lead", lead.id, {
+          deployment_id: deployment.id,
+          workspace_id: workspace.id,
+        });
+        json(res, 201, { deployment, workspace }, { "x-request-id": ctx.requestId });
+        return;
+      }
+
+      const conversationMatch = pathname.match(
+        /^\/api\/lead-agents\/leads\/([^/]+)\/conversations$/
+      );
+      if (conversationMatch) {
+        if (req.method !== "GET") {
+          methodNotAllowed(res, "GET");
+          return;
+        }
+        authorizePermission(authContext, "view_dashboard");
+        json(
+          res,
+          200,
+          {
+            conversations: await store.listConversationsForLead(conversationMatch[1]),
+          },
+          { "x-request-id": ctx.requestId }
+        );
+        return;
+      }
+
+      const proposalMatch = pathname.match(/^\/api\/lead-agents\/leads\/([^/]+)\/proposals$/);
+      if (proposalMatch) {
+        const leadId = proposalMatch[1];
+        if (req.method === "GET") {
+          authorizePermission(authContext, "view_dashboard");
+          json(
+            res,
+            200,
+            { proposals: await store.listProposalsForLead(leadId) },
+            { "x-request-id": ctx.requestId }
+          );
+          return;
+        }
+        if (req.method === "POST") {
+          authorizePermission(authContext, "manage_commercial");
+          const lead = await store.getLead(leadId);
+          if (!lead) {
+            notFound(res);
+            return;
+          }
+          const body = await readJsonBody(req);
+          requireObject(body, "body");
+          const inferred = inferCommercialFacts([lead.summary, lead.next_action, body.context || ""].join(" "));
+          const unitCount = body.unit_count || lead.unit_count || inferred.unit_count;
+          const projectType = body.project_type || lead.project_type || inferred.project_type;
+          const proposalPayload = buildProposal({
+            unitCount,
+            projectType,
+            leadName: lead.name,
+            company: lead.company,
+            packageName: body.package_name || lead.interest_package,
+            painPoints: body.pain_points || lead.pain_points || lead.summary,
+            timeline: body.timeline || lead.timeline,
+          });
+          const proposal = await store.createProposal({
+            lead_id: leadId,
+            ...proposalPayload,
+            status: body.status || "draft",
+            actor: authContext?.email || "system",
+          });
+          const proposalStatus = String(body.status || "draft").toLowerCase();
+          const updatedLead = await store.updateLead(leadId, {
+            unit_count: unitCount,
+            project_type: projectType,
+            commercial_stage:
+              proposalStatus === "accepted"
+                ? "won"
+                : proposalStatus === "declined"
+                ? "lost"
+                : proposalStatus === "sent"
+                ? "proposal_sent"
+                : lead.stage || lead.commercial_stage || "qualified",
+            status: proposalStatus === "accepted" ? "closed" : proposalStatus === "declined" ? "lost" : undefined,
+            stage:
+              proposalStatus === "sent"
+                ? "proposal_sent"
+                : proposalStatus === "accepted"
+                ? "won"
+                : proposalStatus === "declined"
+                ? "lost"
+                : undefined,
+            interest_package: proposalPayload.tier_name,
+            lost_reason: proposalStatus === "declined" ? "proposal_declined" : undefined,
+            next_action:
+              proposalStatus === "accepted"
+                ? "Prepare deployment plan"
+                : proposalStatus === "declined"
+                ? "Record loss and nurture if needed"
+                : "Review and send proposal",
+          });
+          await appendAudit(store, authContext, "proposal_created", "proposal", proposal.id, {
+            lead_id: leadId,
+            tier_name: proposal.tier_name,
+            status: proposal.status,
+          });
+          json(res, 201, { proposal, lead: updatedLead }, { "x-request-id": ctx.requestId });
+          return;
+        }
+        methodNotAllowed(res, "GET,POST");
+        return;
+      }
+
+      const demosMatch = pathname.match(/^\/api\/lead-agents\/leads\/([^/]+)\/demos$/);
+      if (demosMatch) {
+        if (req.method === "GET") {
+          authorizePermission(authContext, "view_dashboard");
+          json(
+            res,
+            200,
+            {
+              demos: await store.listDemosForLead(demosMatch[1]),
+            },
+            { "x-request-id": ctx.requestId }
+          );
+          return;
+        }
+        if (req.method === "POST") {
+          authorizePermission(authContext, "manage_demos");
+          const body = await readJsonBody(req);
+          requireObject(body, "body");
+          const lead = await store.getLead(demosMatch[1]);
+          if (!lead) {
+            notFound(res);
+            return;
+          }
+          const schedule = parsePreferredSchedule({
+            text: body.scheduled_for || "",
+            timezoneHint: body.timezone || "",
+          });
+          const calendarLinks = buildCalendarLinks({
+            title: "Ochiga Discovery Demo",
+            description: `Lead ${lead.name || ""} ${lead.company ? `(${lead.company})` : ""}`.trim(),
+            location: lead.location || "",
+            startIso: schedule.scheduled_for,
+            timezone: schedule.timezone,
+          });
+          const demo = await store.createDemo({
+            lead_id: demosMatch[1],
+            scheduled_for: schedule.scheduled_for,
+            status: body.status || (schedule.scheduled_for ? "confirmed" : "pending"),
+            notes: JSON.stringify({
+              notes: body.notes || "",
+              timezone: schedule.timezone || body.timezone || "",
+              preferred_time_text: body.scheduled_for || "",
+              display_time: schedule.display_text || "",
+              calendar_links: calendarLinks,
+            }),
+          });
+          if (parseBoolean(body.update_lead_status, true)) {
+            await store.updateLead(demosMatch[1], {
+              status: "booked",
+              owner: "sales_agent",
+              next_action: schedule.scheduled_for
+                ? `Confirmed demo for ${schedule.display_text}`
+                : "Confirm scheduled demo",
+            });
+          }
+          json(res, 201, { demo }, { "x-request-id": ctx.requestId });
+          return;
+        }
+        methodNotAllowed(res, "GET,POST");
+        return;
+      }
+
+      if (pathname === "/api/lead-agents/admin/demos") {
+        if (req.method !== "GET") {
+          methodNotAllowed(res, "GET");
+          return;
+        }
+        authorizePermission(authContext, "view_reports");
+        json(
+          res,
+          200,
+          { demos: await store.listDemos() },
+          { "x-request-id": ctx.requestId }
+        );
+        return;
+      }
+
+      if (pathname === "/api/lead-agents/admin/proposals") {
+        if (req.method !== "GET") {
+          methodNotAllowed(res, "GET");
+          return;
+        }
+        authorizePermission(authContext, "view_reports");
+        json(
+          res,
+          200,
+          { proposals: await store.listProposals() },
+          { "x-request-id": ctx.requestId }
+        );
+        return;
+      }
+
+      if (pathname === "/api/lead-agents/admin/commercial/pipeline") {
+        if (req.method !== "GET") {
+          methodNotAllowed(res, "GET");
+          return;
+        }
+        authorizePermission(authContext, "view_dashboard");
+        const leads = await store.listLeads();
+        const byStage = Object.fromEntries(PIPELINE_STAGES.map((stage) => [stage, []]));
+        leads.forEach((lead) => {
+          const stage = PIPELINE_STAGES.includes(lead.stage) ? lead.stage : lead.commercial_stage || lead.status || "new";
+          const key = PIPELINE_STAGES.includes(stage) ? stage : "new";
+          byStage[key].push(lead);
+        });
+        json(res, 200, { stages: PIPELINE_STAGES, by_stage: byStage }, { "x-request-id": ctx.requestId });
+        return;
+      }
+
+      if (pathname === "/api/lead-agents/admin/partners") {
+        if (req.method === "GET") {
+          authorizePermission(authContext, "view_dashboard");
+          json(res, 200, { partners: store.listPartners ? await store.listPartners() : [] }, { "x-request-id": ctx.requestId });
+          return;
+        }
+        if (req.method === "POST") {
+          authorizePermission(authContext, "manage_commercial");
+          const body = await readJsonBody(req);
+          requireObject(body, "body");
+          const partner = await store.createPartner(body);
+          await appendAudit(store, authContext, "partner_created", "partner", partner.id, partner);
+          json(res, 201, { partner }, { "x-request-id": ctx.requestId });
+          return;
+        }
+        methodNotAllowed(res, "GET,POST");
+        return;
+      }
+
+      if (pathname === "/api/lead-agents/admin/deployments") {
+        if (req.method === "GET") {
+          authorizePermission(authContext, "view_dashboard");
+          json(res, 200, { deployments: store.listDeploymentProjects ? await store.listDeploymentProjects() : [] }, { "x-request-id": ctx.requestId });
+          return;
+        }
+        if (req.method === "POST") {
+          authorizePermission(authContext, "manage_commercial");
+          const body = await readJsonBody(req);
+          requireObject(body, "body");
+          const deployment = await store.createDeploymentProject({
+            ...body,
+            actor: authContext?.email || "office",
+          });
+          await appendAudit(store, authContext, "deployment_project_created", "deployment", deployment.id, deployment);
+          json(res, 201, { deployment }, { "x-request-id": ctx.requestId });
+          return;
+        }
+        methodNotAllowed(res, "GET,POST");
+        return;
+      }
+
+      if (pathname === "/api/lead-agents/admin/facility-workspaces") {
+        if (req.method !== "GET") {
+          methodNotAllowed(res, "GET");
+          return;
+        }
+        authorizePermission(authContext, "view_dashboard");
+        json(res, 200, { workspaces: store.listFacilityWorkspaces ? await store.listFacilityWorkspaces() : [] }, { "x-request-id": ctx.requestId });
+        return;
+      }
+
+      const proposalAdminMatch = pathname.match(/^\/api\/lead-agents\/admin\/proposals\/([^/]+)$/);
+      if (proposalAdminMatch) {
+        if (req.method !== "PATCH") {
+          methodNotAllowed(res, "PATCH");
+          return;
+        }
+        authorizePermission(authContext, "manage_commercial");
+        const proposal = await store.getProposal(proposalAdminMatch[1]);
+        if (!proposal) {
+          notFound(res);
+          return;
+        }
+        const body = await readJsonBody(req);
+        requireObject(body, "body");
+        const updatedProposal = await store.updateProposal(proposal.id, {
+          status: body.status || proposal.status,
+          body: body.body || proposal.body,
+          metadata: body.metadata || proposal.metadata,
+        });
+        const proposalStatus = String(updatedProposal.status || "").toLowerCase();
+        const leadPatch = {
+          commercial_stage:
+            proposalStatus === "accepted"
+              ? "won"
+              : proposalStatus === "declined"
+              ? "lost"
+              : proposalStatus === "sent"
+              ? "proposal_sent"
+              : "proposal_sent",
+          status: proposalStatus === "accepted" ? "closed" : proposalStatus === "declined" ? "lost" : undefined,
+          stage: proposalStatus === "sent" ? "proposal_sent" : proposalStatus === "accepted" ? "won" : proposalStatus === "declined" ? "lost" : undefined,
+          lost_reason: proposalStatus === "declined" ? "proposal_declined" : undefined,
+          next_action:
+            proposalStatus === "accepted"
+              ? "Prepare deployment plan"
+              : proposalStatus === "declined"
+              ? "Record loss and nurture if needed"
+              : proposalStatus === "sent"
+              ? "Await proposal feedback"
+              : "Review proposal",
+        };
+        const updatedLead = await store.updateLead(proposal.lead_id, leadPatch);
+        await appendAudit(store, authContext, "proposal_updated", "proposal", proposal.id, {
+          status: updatedProposal.status,
+          lead_id: proposal.lead_id,
+        });
+        json(
+          res,
+          200,
+          { proposal: updatedProposal, lead: updatedLead },
+          { "x-request-id": ctx.requestId }
+        );
+        return;
+      }
+
+      if (pathname === "/api/lead-agents/admin/notify-founder") {
+        if (req.method !== "POST") {
+          methodNotAllowed(res, "POST");
+          return;
+        }
+        authorizePermission(authContext, "escalate_founder");
+        const body = await readJsonBody(req);
+        requireObject(body, "body");
+        if (!body.reason || !body.summary) {
+          json(res, 400, { error: "reason and summary are required" });
+          return;
+        }
+        const result = await runtime.toolExecutor.execute(
+          "notify_founder",
+          {
+            lead_id: body.lead_id,
+            urgency: body.urgency,
+            reason: body.reason,
+            summary: body.summary,
+          },
+          {
+            leadId: body.lead_id || null,
+            source: "admin",
+            agentName: "human",
+          }
+        );
+        json(res, 200, result, { "x-request-id": ctx.requestId });
+        return;
+      }
+
+      if (pathname === "/api/lead-agents/admin/traces") {
+        if (req.method !== "GET") {
+          methodNotAllowed(res, "GET");
+          return;
+        }
+        authorizePermission(authContext, "view_traces");
+        json(
+          res,
+          200,
+          {
+            traces: await store.listTraces(200, {
+              lead_id: req.headers["x-lead-id"] || "",
+            }),
+          },
+          { "x-request-id": ctx.requestId }
+        );
+        return;
+      }
+
+      if (pathname === "/api/lead-agents/admin/notifications") {
+        if (req.method !== "GET") {
+          methodNotAllowed(res, "GET");
+          return;
+        }
+        authorizePermission(authContext, "manage_notifications");
+        json(
+          res,
+          200,
+          {
+            notifications: await store.listNotifications(200),
+          },
+          { "x-request-id": ctx.requestId }
+        );
+        return;
+      }
+
+      const notificationMatch = pathname.match(
+        /^\/api\/lead-agents\/admin\/notifications\/([^/]+)$/
+      );
+      if (notificationMatch) {
+        if (req.method !== "PATCH") {
+          methodNotAllowed(res, "PATCH");
+          return;
+        }
+        authorizePermission(authContext, "manage_notifications");
+        const body = await readJsonBody(req);
+        requireObject(body, "body");
+        const notification = await store.updateNotification(notificationMatch[1], {
+          status: body.status,
+          delivered:
+            body.delivered === undefined ? undefined : parseBoolean(body.delivered, false),
+          response_code: body.response_code,
+          metadata: body.metadata,
+          summary: body.summary,
+        });
+        if (!notification) {
+          notFound(res);
+          return;
+        }
+        eventBus.publish("office.notification", {
+          actor: authContext?.email || "",
+          notification,
+        });
+        json(
+          res,
+          200,
+          {
+            notification,
+          },
+          { "x-request-id": ctx.requestId }
+        );
+        return;
+      }
+
+      if (pathname === "/api/lead-agents/admin/reports/summary") {
+        if (req.method !== "GET") {
+          methodNotAllowed(res, "GET");
+          return;
+        }
+        authorizePermission(authContext, "view_reports");
+        json(
+          res,
+          200,
+          {
+            report: await store.getReportingSummary(),
+          },
+          { "x-request-id": ctx.requestId }
+        );
+        return;
+      }
+
+      if (pathname === "/api/lead-agents/admin/office/overview") {
+        if (req.method !== "GET") {
+          methodNotAllowed(res, "GET");
+          return;
+        }
+        authorizePermission(authContext, "view_reports");
+        json(
+          res,
+          200,
+          {
+            office: await store.getOfficeSnapshot(),
+          },
+          { "x-request-id": ctx.requestId }
+        );
+        return;
+      }
+
+      if (pathname === "/api/lead-agents/admin/events") {
+        if (req.method !== "GET") {
+          methodNotAllowed(res, "GET");
+          return;
+        }
+        authorizePermission(authContext, "view_office");
+        res.writeHead(200, {
+          "content-type": "text/event-stream; charset=utf-8",
+          "cache-control": "no-cache, no-transform",
+          connection: "keep-alive",
+          "x-request-id": ctx.requestId,
+        });
+        const removeClient = eventBus.add(res, authContext);
+        const heartbeat = setInterval(() => {
+          res.write(`event: heartbeat\n`);
+          res.write(`data: ${JSON.stringify({ ts: new Date().toISOString() })}\n\n`);
+        }, 25000);
+        req.on("close", () => {
+          clearInterval(heartbeat);
+          removeClient();
+        });
+        return;
+      }
+
+      if (pathname === "/api/lead-agents/admin/office/sync") {
+        if (req.method !== "POST") {
+          methodNotAllowed(res, "POST");
+          return;
+        }
+        authorizePermission(authContext, "manage_office");
+        const body = await readJsonBody(req);
+        const target = String(body?.target || "all").toLowerCase();
+        let result;
+        if (target === "facility") {
+          result = await officeSync.syncFacility();
+        } else if (target === "consumer") {
+          result = await officeSync.syncConsumer();
+        } else {
+          result = await officeSync.syncAll();
+        }
+        await appendAudit(store, authContext, "office_sync_run", "office_sync", target, {
+          target,
+          result_summary: result?.collections || result?.results || {},
+        });
+        eventBus.publish("office.sync", {
+          target,
+          actor: authContext?.email || "",
+          result_summary: result?.collections || result?.results || {},
+        });
+        json(res, 200, { ok: true, result }, { "x-request-id": ctx.requestId });
+        return;
+      }
+
+      if (pathname === "/api/lead-agents/admin/office/import") {
+        if (req.method !== "POST") {
+          methodNotAllowed(res, "POST");
+          return;
+        }
+        authorizePermission(authContext, "manage_office");
+        const body = await readJsonBody(req);
+        requireObject(body, "body");
+        const source = String(body.source || "manual").toLowerCase();
+        const result = await officeSync.ingestCollections(
+          source,
+          body.payload || body.collections || body
+        );
+        await appendAudit(store, authContext, "office_import_ingested", "office_import", source, {
+          source,
+          collections: result.collections,
+        });
+        eventBus.publish("office.import", {
+          source,
+          actor: authContext?.email || "",
+          collections: result.collections,
+        });
+        json(res, 200, { ok: true, result }, { "x-request-id": ctx.requestId });
+        return;
+      }
+
+      if (pathname === "/api/lead-agents/admin/permissions") {
+        if (req.method !== "GET") {
+          methodNotAllowed(res, "GET");
+          return;
+        }
+        authorizePermission(authContext, "view_users");
+        json(
+          res,
+          200,
+          {
+            roles: {
+              ...Object.fromEntries(
+                Object.keys(ROLE_PERMISSIONS).map((role) => [role, permissionsForRole(role)])
+              ),
+              admin: permissionsForRole("admin"),
+              founder: permissionsForRole("founder"),
+              operator: permissionsForRole("operator"),
+              sales: permissionsForRole("sales"),
+              viewer: permissionsForRole("viewer"),
+            },
+            scopes: PERMISSION_KEYS,
+            legacy_scopes: permissionsForRole("admin").filter((scope) => !scope.includes(".")),
+          },
+          { "x-request-id": ctx.requestId }
+        );
+        return;
+      }
+
+      if (pathname === "/api/lead-agents/admin/integrations") {
+        if (req.method !== "GET") {
+          methodNotAllowed(res, "GET");
+          return;
+        }
+        authorizePermission(authContext, "view_integrations");
+        json(
+          res,
+          200,
+          {
+            integrations: await integrationStatus(config, { digitalTwinRuntime }),
+          },
+          { "x-request-id": ctx.requestId }
+        );
+        return;
+      }
+
+      if (pathname === "/api/lead-agents/admin/maps/config") {
+        if (req.method !== "GET") {
+          methodNotAllowed(res, "GET");
+          return;
+        }
+        authorizePermission(authContext, "view_estates");
+        json(res, 200, { maps: publicMapConfig(config) }, { "x-request-id": ctx.requestId });
+        return;
+      }
+
+      if (pathname === "/api/lead-agents/admin/maps/geocode") {
+        if (req.method !== "POST") {
+          methodNotAllowed(res, "POST");
+          return;
+        }
+        authorizePermission(authContext, "manage_estates");
+        const body = await readJsonBody(req);
+        requireObject(body, "body");
+        const result = await geocodeOfficeEstates({
+          config,
+          store,
+          force: parseBoolean(body.force, false),
+          limit: body.limit,
+          country: body.country || "Nigeria",
+        });
+        await appendAudit(store, authContext, "office_estates_geocoded", "office_maps", "google", {
+          provider: "google",
+          force: parseBoolean(body.force, false),
+          total_candidates: result.total_candidates,
+          updated: result.updated,
+          failed: result.failed,
+        });
+        eventBus.publish("office.maps", {
+          actor: authContext?.email || "",
+          provider: "google",
+          updated: result.updated,
+          failed: result.failed,
+        });
+        json(res, 200, { ok: true, result }, { "x-request-id": ctx.requestId });
+        return;
+      }
+
+      if (pathname === "/api/lead-agents/admin/storage") {
+        if (req.method !== "POST") {
+          methodNotAllowed(res, "POST");
+          return;
+        }
+        authorizePermission(authContext, "manage_storage");
+        const body = await readJsonBody(req, 16 * 1024 * 1024);
+        requireObject(body, "body");
+        const storedFile = await storageService.putDataUrl(body);
+        const file =
+          typeof store.createOfficeFile === "function"
+            ? await store.createOfficeFile(storedFile)
+            : storedFile;
+        await appendAudit(store, authContext, "office_file_uploaded", "office_file", file.id, {
+          filename: file.filename,
+          mime_type: file.mime_type,
+          size: file.size,
+          purpose: file.purpose,
+        });
+        eventBus.publish("office.storage", {
+          actor: authContext?.email || "",
+          file,
+        });
+        json(res, 201, { file }, { "x-request-id": ctx.requestId });
+        return;
+      }
+
+      if (pathname === "/api/lead-agents/admin/documents/generate") {
+        if (req.method !== "POST") {
+          methodNotAllowed(res, "POST");
+          return;
+        }
+        authorizePermission(authContext, "manage_documents");
+        const body = await readJsonBody(req, 2 * 1024 * 1024);
+        requireObject(body, "body");
+        if (!body.title) {
+          json(res, 400, { error: "title is required" });
+          return;
+        }
+        const id = `doc_${Date.now().toString(36)}_${crypto.randomBytes(5).toString("hex")}`;
+        const html = documentHtml(config, body);
+        const storedHtmlRaw = await storageService.putText({
+          purpose: "office_document",
+          extension: ".html",
+          mime_type: "text/html; charset=utf-8",
+          content: html,
+          resource_type: "office_document",
+          resource_id: id,
+        });
+        let storedHtml = storedHtmlRaw;
+        if (typeof store.createOfficeFile === "function") {
+          try {
+            storedHtml = await store.createOfficeFile(storedHtmlRaw);
+          } catch (error) {
+            storedHtml = {
+              ...storedHtmlRaw,
+              sync_status: "metadata_pending",
+              sync_warning: error?.response?.data?.message || error.message || "office_files metadata write failed.",
+            };
+          }
+        }
+        const documentRecord = await store.createOfficeDocument({
+          id,
+          title: body.title,
+          document_type: body.document_type || body.type || "document",
+          status: body.status || "draft",
+          owner: authContext?.email || body.owner || "Office",
+          related_type: body.related_type || "",
+          related_id: body.related_id || "",
+          amount: Number(body.amount || body.value || 0),
+          currency: body.currency || "NGN",
+          html_url: storedHtml.url,
+          file_url: storedHtml.url,
+          email_to: body.email_to || "",
+          metadata: {
+            recipient: body.recipient || "",
+            generated_format: "printable_html",
+            pdf_status: "print_ready",
+            source_file_url: body.file_url || "",
+          },
+        });
+        if (body.email_to) {
+          try {
+            const emailDelivery = await sendOfficeEmail(config, {
+              to: body.email_to,
+              subject: body.email_subject || body.title,
+              text: `Ochiga Office generated ${body.document_type || "document"}: ${body.title}\n\n${storedHtml.url}`,
+              html: `<p>Ochiga Office generated <strong>${body.document_type || "document"}</strong>: ${body.title}</p><p><a href="${storedHtml.url}">Open document</a></p>`,
+            });
+            documentRecord.email_delivery = emailDelivery;
+          } catch (error) {
+            documentRecord.email_delivery = {
+              ok: false,
+              error: error.message || "Email delivery failed after the document was generated.",
+            };
+          }
+        }
+        await appendAudit(store, authContext, "office_document_generated", "office_document", id, {
+          title: body.title,
+          document_type: body.document_type || body.type || "document",
+          html_url: storedHtml.url,
+        });
+        eventBus.publish("office.document", {
+          actor: authContext?.email || "",
+          document: documentRecord,
+        });
+        json(res, 201, { document: documentRecord, html_file: storedHtml }, { "x-request-id": ctx.requestId });
+        return;
+      }
+
+      const officeAssetActionMatch = pathname.match(
+        /^\/api\/lead-agents\/admin\/office\/assets\/(estate|building|device)\/([^/]+)\/action$/
+      );
+      if (officeAssetActionMatch) {
+        if (req.method !== "POST") {
+          methodNotAllowed(res, "POST");
+          return;
+        }
+        const kind = officeAssetActionMatch[1];
+        const assetId = decodeURIComponent(officeAssetActionMatch[2]);
+        const permission =
+          kind === "estate" ? "manage_estates" : kind === "building" ? "manage_buildings" : "manage_devices";
+        authorizePermission(authContext, permission);
+        const body = await readJsonBody(req);
+        requireObject(body, "body");
+        const action = String(body.action || "").trim().toLowerCase();
+        if (!action) {
+          json(res, 400, { error: "action is required" });
+          return;
+        }
+        if (!["pause", "suspend", "disable", "enable", "reset", "assign"].includes(action)) {
+          json(res, 400, { error: "unsupported_action" });
+          return;
+        }
+        const updated = await store.updateOfficeAsset(kind, assetId, assetPatchForAction(kind, action, {
+          ...body,
+          actor: authContext?.email || "",
+        }));
+        if (!updated) {
+          notFound(res);
+          return;
+        }
+        await appendAudit(store, authContext, `office_${kind}_${action}`, kind, assetId, {
+          action,
+          reason: body.reason || "",
+          patch_target: "office_table",
+        });
+        eventBus.publish("office.asset", {
+          actor: authContext?.email || "",
+          kind,
+          action,
+          asset: updated,
+        });
+        json(res, 200, { ok: true, kind, action, asset: updated }, { "x-request-id": ctx.requestId });
+        return;
+      }
+
+      const storageMatch = pathname.match(/^\/api\/lead-agents\/admin\/storage\/([^/]+)$/);
+      if (storageMatch) {
+        if (req.method !== "GET") {
+          methodNotAllowed(res, "GET");
+          return;
+        }
+        authorizePermission(authContext, "view_storage");
+        const filename = path.basename(decodeURIComponent(storageMatch[1]));
+        await serveFile(res, storageService.filePathFor(filename));
+        return;
+      }
+
+      const officeCollectionRoutes = {
+        "/api/lead-agents/admin/office/packages": "listOfficePackages",
+        "/api/lead-agents/admin/office/estates": "listOfficeEstates",
+        "/api/lead-agents/admin/office/buildings": "listOfficeBuildings",
+        "/api/lead-agents/admin/office/homes": "listOfficeHomes",
+        "/api/lead-agents/admin/office/devices": "listOfficeDevices",
+        "/api/lead-agents/admin/office/wallets": "listOfficeWallets",
+        "/api/lead-agents/admin/office/analytics": "listOfficeAnalytics",
+        "/api/lead-agents/admin/office/documents": "listOfficeDocuments",
+        "/api/lead-agents/admin/office/support-mappings": "listOfficeSupportMappings",
+      };
+      if (officeCollectionRoutes[pathname]) {
+        if (req.method !== "GET") {
+          methodNotAllowed(res, "GET");
+          return;
+        }
+        authorizePermission(authContext, "view_reports");
+        const methodName = officeCollectionRoutes[pathname];
+        const collection = typeof store[methodName] === "function" ? await store[methodName]() : [];
+        json(
+          res,
+          200,
+          {
+            collection,
+          },
+          { "x-request-id": ctx.requestId }
+        );
+        return;
+      }
+
+      if (pathname === "/api/lead-agents/admin/channels") {
+        if (req.method !== "GET") {
+          methodNotAllowed(res, "GET");
+          return;
+        }
+        authorizePermission(authContext, "view_reports");
+        json(
+          res,
+          200,
+          await buildChannelOverview(store, config),
+          { "x-request-id": ctx.requestId }
+        );
+        return;
+      }
+
+      if (pathname === "/api/lead-agents/admin/audit") {
+        if (req.method !== "GET") {
+          methodNotAllowed(res, "GET");
+          return;
+        }
+        authorizePermission(authContext, "view_audit");
+        json(
+          res,
+          200,
+          { audit: await store.listAuditEvents(200) },
+          { "x-request-id": ctx.requestId }
+        );
+        return;
+      }
+
+      if (pathname === "/api/lead-agents/admin/ai/operations") {
+        if (req.method !== "GET") {
+          methodNotAllowed(res, "GET");
+          return;
+        }
+        authorizePermission(authContext, "view_traces");
+        const operations = await fetchBackendAiOperations(config);
+        json(res, 200, { ai_operations: operations }, { "x-request-id": ctx.requestId });
+        return;
+      }
+
+      if (pathname === "/api/lead-agents/admin/users") {
+        if (req.method === "GET") {
+          authorizePermission(authContext, "view_users");
+          json(
+            res,
+            200,
+            {
+              users: await store.listAdminUsers(),
+            },
+            { "x-request-id": ctx.requestId }
+          );
+          return;
+        }
+        if (req.method === "POST") {
+          authorizePermission(authContext, "manage_users");
+          const body = await readJsonBody(req);
+          requireObject(body, "body");
+          if (!body.email || !body.password) {
+            json(res, 400, { error: "email and password are required" });
+            return;
+          }
+          const user = await store.ensureAdminUser({
+            email: normalizeEmail(body.email),
+            password_hash: hashPassword(body.password),
+            role: body.role || "viewer",
+            display_name: body.display_name || body.email,
+            status: body.status || "active",
+            passport_photo_url: body.passport_photo_url || "",
+            qr_credential: body.qr_credential || "",
+            permission_scopes: Array.isArray(body.permission_scopes) ? body.permission_scopes : [],
+          });
+          await appendAudit(store, authContext, "admin_user_created", "admin_user", user.id, {
+            email: user.email,
+            role: user.role,
+          });
+          eventBus.publish("office.staff", {
+            action: "created",
+            actor: authContext?.email || "",
+            user: {
+              id: user.id,
+              email: user.email,
+              role: user.role,
+              status: user.status,
+            },
+          });
+          json(res, 201, { user }, { "x-request-id": ctx.requestId });
+          return;
+        }
+        methodNotAllowed(res, "GET,POST");
+        return;
+      }
+
+      if (pathname === "/api/lead-agents/admin/users/qr") {
+        if (req.method !== "GET") {
+          methodNotAllowed(res, "GET");
+          return;
+        }
+        authorizePermission(authContext, "view_users");
+        const requestUrl = new URL(req.url, `http://${req.headers.host || "localhost"}`);
+        const svg = qrSvg(requestUrl.searchParams.get("data") || "ochiga-office", { size: 144 });
+        res.writeHead(200, {
+          "content-type": "image/svg+xml; charset=utf-8",
+          "cache-control": "private, max-age=300",
+          "x-request-id": ctx.requestId,
+        });
+        res.end(svg);
+        return;
+      }
+
+      if (pathname === "/api/lead-agents/admin/users/invite") {
+        if (req.method !== "POST") {
+          methodNotAllowed(res, "POST");
+          return;
+        }
+        authorizePermission(authContext, "manage_security");
+        const body = await readJsonBody(req);
+        requireObject(body, "body");
+        if (!body.email) {
+          json(res, 400, { error: "email is required" });
+          return;
+        }
+        const rawToken = generateOpaqueToken();
+        const invite = await store.createAdminInvite({
+          email: body.email,
+          role: body.role || "viewer",
+          display_name: body.display_name || "",
+          token_hash: hashOpaqueToken(rawToken),
+          status: "pending",
+          invited_by: authContext?.email || "",
+          expires_at: new Date(Date.now() + (Number(body.expires_in_hours || 72) * 60 * 60 * 1000)).toISOString(),
+        });
+        const inviteUrl = absoluteUrl(req, "/dashboard?mode=invite", rawToken);
+        const inviteMessage = staffInviteEmail({
+          displayName: invite.display_name || invite.email,
+          inviteUrl,
+          role: invite.role,
+        });
+        const emailDelivery = await sendOfficeEmail(config, {
+          to: invite.email,
+          ...inviteMessage,
+        });
+        await appendAudit(store, authContext, "admin_invite_created", "admin_invite", invite.id, {
+          email: invite.email,
+          role: invite.role,
+          email_delivery: emailDelivery,
+        });
+        eventBus.publish("office.staff", {
+          action: "invited",
+          actor: authContext?.email || "",
+          invite: {
+            id: invite.id,
+            email: invite.email,
+            role: invite.role,
+            status: invite.status,
+            email_delivery: emailDelivery,
+          },
+        });
+        json(
+          res,
+          201,
+          {
+            invite,
+            invite_token: rawToken,
+            invite_url: inviteUrl,
+            email_delivery: emailDelivery,
+          },
+          { "x-request-id": ctx.requestId }
+        );
+        return;
+      }
+
+      const adminUserMatch = pathname.match(/^\/api\/lead-agents\/admin\/users\/([^/]+)$/);
+      if (adminUserMatch) {
+        if (req.method !== "PATCH") {
+          methodNotAllowed(res, "PATCH");
+          return;
+        }
+        authorizePermission(authContext, "manage_users");
+        const body = await readJsonBody(req);
+        requireObject(body, "body");
+        const patch = {};
+        if (body.display_name !== undefined) patch.display_name = body.display_name;
+        if (body.role !== undefined) patch.role = body.role;
+        if (body.status !== undefined) patch.status = body.status;
+        if (body.passport_photo_url !== undefined) patch.passport_photo_url = body.passport_photo_url;
+        if (body.qr_credential !== undefined) patch.qr_credential = body.qr_credential;
+        if (Array.isArray(body.permission_scopes)) patch.permission_scopes = body.permission_scopes;
+        if (body.password) {
+          patch.password_hash = hashPassword(body.password);
+          patch.password_changed_at = new Date().toISOString();
+        }
+        const user = await store.updateAdminUser(adminUserMatch[1], patch);
+        if (!user) {
+          notFound(res);
+          return;
+        }
+        await appendAudit(store, authContext, "admin_user_updated", "admin_user", user.id, patch);
+        eventBus.publish("office.staff", {
+          action: "updated",
+          actor: authContext?.email || "",
+          user: {
+            id: user.id,
+            email: user.email,
+            role: user.role,
+            status: user.status,
+          },
+        });
+        json(res, 200, { user }, { "x-request-id": ctx.requestId });
+        return;
+      }
+
+      const adminUserPhotoMatch = pathname.match(/^\/api\/lead-agents\/admin\/users\/([^/]+)\/photo$/);
+      if (adminUserPhotoMatch) {
+        if (req.method !== "POST") {
+          methodNotAllowed(res, "POST");
+          return;
+        }
+        authorizePermission(authContext, "manage_users");
+        const body = await readJsonBody(req);
+        requireObject(body, "body");
+        let passportPhotoUrl = body.passport_photo_url || "";
+        if (!passportPhotoUrl && body.photo_data_url) {
+          const storedPhotoRaw = await storageService.putDataUrl({
+            data_url: body.photo_data_url,
+            purpose: "staff_photo",
+            mime_type: body.mime_type,
+            resource_type: "staff",
+            resource_id: adminUserPhotoMatch[1],
+          });
+          const storedPhoto =
+            typeof store.createOfficeFile === "function"
+              ? await store.createOfficeFile(storedPhotoRaw)
+              : storedPhotoRaw;
+          passportPhotoUrl = storedPhoto.url;
+        }
+        if (!passportPhotoUrl) {
+          json(res, 400, { error: "passport_photo_url or photo_data_url is required" });
+          return;
+        }
+        const user = await store.updateAdminUser(adminUserPhotoMatch[1], {
+          passport_photo_url: passportPhotoUrl,
+        });
+        if (!user) {
+          notFound(res);
+          return;
+        }
+        await appendAudit(store, authContext, "admin_user_photo_updated", "admin_user", user.id, {
+          email: user.email,
+        });
+        eventBus.publish("office.staff", {
+          action: "photo_updated",
+          actor: authContext?.email || "",
+          user: {
+            id: user.id,
+            email: user.email,
+            passport_photo_url: user.passport_photo_url,
+          },
+        });
+        json(res, 200, { user }, { "x-request-id": ctx.requestId });
+        return;
+      }
+
+      const adminUserResetMatch = pathname.match(/^\/api\/lead-agents\/admin\/users\/([^/]+)\/reset$/);
+      if (adminUserResetMatch) {
+        if (req.method !== "POST") {
+          methodNotAllowed(res, "POST");
+          return;
+        }
+        authorizePermission(authContext, "manage_security");
+        const user = await store.getAdminUserById(adminUserResetMatch[1]);
+        if (!user) {
+          notFound(res);
+          return;
+        }
+        const body = await readJsonBody(req);
+        const rawToken = generateOpaqueToken();
+        const reset = await store.createPasswordResetToken({
+          admin_user_id: user.id,
+          email: user.email,
+          token_hash: hashOpaqueToken(rawToken),
+          requested_by: authContext?.email || "",
+          expires_at: new Date(Date.now() + (Number(body?.expires_in_hours || 24) * 60 * 60 * 1000)).toISOString(),
+        });
+        const resetUrl = absoluteUrl(req, "/dashboard?mode=reset", rawToken);
+        const resetMessage = passwordResetEmail({
+          displayName: user.display_name || user.email,
+          resetUrl,
+        });
+        const emailDelivery = await sendOfficeEmail(config, {
+          to: user.email,
+          ...resetMessage,
+        });
+        await appendAudit(store, authContext, "password_reset_issued", "admin_user", user.id, {
+          email: user.email,
+          reset_id: reset.id,
+          email_delivery: emailDelivery,
+        });
+        eventBus.publish("office.staff", {
+          action: "password_reset_issued",
+          actor: authContext?.email || "",
+          user: {
+            id: user.id,
+            email: user.email,
+          },
+          email_delivery: emailDelivery,
+        });
+        json(
+          res,
+          201,
+          {
+            reset,
+            reset_token: rawToken,
+            reset_url: resetUrl,
+            email_delivery: emailDelivery,
+          },
+          { "x-request-id": ctx.requestId }
+        );
+        return;
+      }
+
+      notFound(res);
+    } catch (err) {
+      if (err?.statusCode === 403 || err?.message === "forbidden") {
+        try {
+          await appendAudit(
+            store,
+            authContext,
+            "permission.denied",
+            "route",
+            pathname,
+            { method: req.method },
+            req,
+            "denied"
+          );
+          eventBus.publish("audit.recorded", {
+            action: "permission.denied",
+            route: pathname,
+            actor: authContext?.email || "",
+          });
+        } catch (_) {}
+      }
+      log("error", "lead_agents_server.request_failed", {
+        request_id: ctx.requestId,
+        method: req.method,
+        pathname,
+        error: err?.stack || err?.message || String(err),
+        upstream_status: err?.response?.status,
+        upstream_data: config.environment === "production" ? undefined : err?.response?.data,
+      });
+
+      json(
+        res,
+        err.statusCode || 500,
+        {
+          error: err.message || "internal_server_error",
+          upstream_status: err?.response?.status,
+          upstream_data: config.environment === "production" ? undefined : err?.response?.data,
+          request_id: ctx.requestId,
+        },
+        { "x-request-id": ctx.requestId }
+      );
+    }
+  });
+}
+
+async function start() {
+  const config = createConfig();
+  validateConfig(config);
+
+  const store = createStore(config);
+  await store.init();
+  await bootstrapAdminUser(store, config);
+
+  const openaiClient = new OpenAIResponsesClient(config);
+  const webhooks = new WebhookDispatcher({ config });
+  const knowledgeBase = new FileKnowledgeBase(config.knowledgeDir);
+  await knowledgeBase.init();
+  const whatsappAdapter = new WhatsAppCloudAdapter(config);
+  const toolExecutor = new ToolExecutor({ store, config, log, webhooks });
+  const runtime = new LeadAgentRuntime({
+    config,
+    store,
+    openaiClient,
+    toolExecutor,
+    log,
+    knowledgeBase,
+  });
+  const rateLimiter = new MemoryRateLimiter({
+    windowMs: config.rateLimitWindowMs,
+    maxRequests: config.rateLimitMaxRequests,
+  });
+  const publicRateLimiter = new MemoryRateLimiter({
+    windowMs: config.publicWidgetRateLimitWindowMs,
+    maxRequests: config.publicWidgetRateLimitMaxRequests,
+  });
+  const loginRateLimiter = new MemoryRateLimiter({
+    windowMs: config.loginRateLimitWindowMs,
+    maxRequests: config.loginRateLimitMaxAttempts,
+  });
+
+  const server = buildServer({
+    config,
+    store,
+    runtime,
+    rateLimiter,
+    publicRateLimiter,
+    loginRateLimiter,
+    whatsappAdapter,
+    openaiClient,
+  });
+
+  await new Promise((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(config.port, config.host, () => {
+      server.off("error", reject);
+      resolve();
+    });
+  });
+
+  log("info", "lead_agents_server.started", {
+    host: config.host,
+    port: config.port,
+    store_path: config.storePath,
+    store_driver: config.storeDriver,
+    model: config.openaiModel,
+  });
+
+  const shutdown = () => {
+    log("info", "lead_agents_server.stopping");
+    server.close(() => {
+      log("info", "lead_agents_server.stopped");
+      process.exit(0);
+    });
+  };
+
+  process.on("SIGINT", shutdown);
+  process.on("SIGTERM", shutdown);
+
+  return server;
+}
+
+module.exports = {
+  start,
+};

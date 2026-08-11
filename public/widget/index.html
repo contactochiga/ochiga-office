@@ -1,0 +1,484 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Oyi AI Command Center</title>
+    <style>
+      :root {
+        --panel: rgba(255,255,255,.075);
+        --panel-strong: rgba(255,255,255,.12);
+        --line: rgba(255,255,255,.12);
+        --text: #f9fff9;
+        --muted: rgba(232,246,238,.68);
+        --gold: #f2c66d;
+        --green: #49e58d;
+        --blue: #58a6ff;
+        --danger: #ff416d;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        min-height: 100vh;
+        overflow: hidden;
+        font-family: "Avenir Next", "Segoe UI", sans-serif;
+        color: var(--text);
+        background:
+          radial-gradient(circle at 50% 28%, rgba(242,198,109,.2), transparent 18%),
+          radial-gradient(circle at 24% 18%, rgba(23,190,143,.18), transparent 28%),
+          radial-gradient(circle at 80% 12%, rgba(88,166,255,.12), transparent 24%),
+          linear-gradient(145deg, #050807 0%, #07110d 38%, #0d2f25 72%, #050807 100%);
+      }
+      body::before {
+        content: "";
+        position: fixed;
+        inset: 0;
+        pointer-events: none;
+        background:
+          linear-gradient(rgba(255,255,255,.035) 1px, transparent 1px),
+          linear-gradient(90deg, rgba(255,255,255,.035) 1px, transparent 1px);
+        background-size: 42px 42px;
+        mask-image: radial-gradient(circle at 50% 34%, black 0 44%, transparent 82%);
+      }
+      button, input { font: inherit; }
+      .oyi-screen {
+        min-height: 100vh;
+        width: 100vw;
+        padding: 28px;
+        display: grid;
+        grid-template-rows: auto 1fr auto;
+        gap: 18px;
+        position: relative;
+        z-index: 1;
+      }
+      .topbar { display: flex; align-items: center; justify-content: space-between; gap: 18px; }
+      .brand { display: flex; align-items: center; gap: 12px; color: var(--muted); }
+      .brand-mark { width: 36px; height: 36px; border-radius: 14px; display: grid; place-items: center; overflow: hidden; background: rgba(255,255,255,.08); border: 1px solid var(--line); }
+      .brand-mark img { width: 100%; height: 100%; object-fit: cover; }
+      .brand strong { display: block; color: #fff; font-weight: 600; }
+      .status-pill { display: inline-flex; align-items: center; gap: 8px; padding: 9px 13px; border-radius: 999px; background: var(--panel); border: 1px solid var(--line); color: var(--muted); font-size: 12px; backdrop-filter: blur(14px); cursor: pointer; }
+      .status-pill::before { content: ""; width: 7px; height: 7px; border-radius: 999px; background: var(--gold); box-shadow: 0 0 16px rgba(242,198,109,.7); }
+      .status-pill.active::before { background: var(--green); box-shadow: 0 0 16px rgba(73,229,141,.8); }
+      .main-stage { min-height: 0; display: grid; place-items: center; position: relative; perspective: 1000px; }
+      .orb-zone { position: relative; width: min(92vw, 780px); height: min(58vh, 560px); min-height: 390px; display: grid; place-items: center; }
+      .orb-zone::before {
+        content: "";
+        position: absolute;
+        width: min(68vw, 620px);
+        height: min(68vw, 620px);
+        max-height: 620px;
+        border-radius: 999px;
+        border: 1px solid rgba(226,255,235,.055);
+        background: radial-gradient(circle, transparent 54%, rgba(73,229,141,.035) 72%, transparent 73%);
+        filter: blur(.2px);
+        animation: rotateRing 42s linear infinite;
+      }
+      .agent-orb {
+        --planet-spin: 0deg;
+        --planet-shift: 0px;
+        --ring-drift: 0deg;
+        --wave-level: .18;
+        --state-glow: .18;
+        width: clamp(210px, 25vw, 336px);
+        height: clamp(210px, 25vw, 336px);
+        border-radius: 999px;
+        border: 0;
+        cursor: grab;
+        display: grid;
+        place-items: center;
+        color: #fff;
+        position: fixed;
+        left: 50%;
+        top: 50%;
+        transform: translate(-50%, -50%);
+        z-index: 20;
+        background: transparent;
+        box-shadow: none;
+        touch-action: none;
+        isolation: isolate;
+        animation: coreBreathe 5.8s ease-in-out infinite;
+        transition: width .55s ease, height .55s ease, left .55s ease, top .55s ease, filter .36s ease;
+      }
+      .agent-orb:active { cursor: grabbing; }
+      .agent-orb.docked { left: calc(100vw - 78px); top: calc(100vh - 230px); width: 70px; height: 70px; z-index: 30; }
+      .planet {
+        position: absolute;
+        inset: 9%;
+        border-radius: 999px;
+        overflow: hidden;
+        transform: scale(.985);
+        background:
+          radial-gradient(ellipse at 64% 68%, rgba(118,48,23,.82) 0 6%, rgba(226,138,62,.6) 7% 11%, rgba(47,25,16,.28) 12% 16%, transparent 17%),
+          radial-gradient(circle at 33% 22%, rgba(255,245,211,.42), transparent 18%),
+          repeating-linear-gradient(180deg,
+            #3c3026 0 12px,
+            #a47a4f 16px 25px,
+            #d9b27a 28px 38px,
+            #f3dfb4 41px 48px,
+            #6d4730 52px 65px,
+            #d99d5f 69px 82px,
+            #2f251e 88px 103px,
+            #b97843 108px 124px,
+            #efe0ba 128px 140px);
+        background-size: 150% 150%;
+        background-position: var(--planet-shift) 50%;
+        box-shadow:
+          inset -54px -18px 72px rgba(3,6,5,.72),
+          inset 34px 12px 50px rgba(255,241,180,.14),
+          0 0 calc(42px + var(--state-glow) * 80px) rgba(242,198,109,.18),
+          0 0 calc(78px + var(--state-glow) * 110px) rgba(39,136,89,.11);
+        filter: saturate(.9) brightness(.72) contrast(1.06);
+        transition: box-shadow .38s ease, filter .38s ease, transform .38s ease;
+      }
+      .planet::before {
+        content: "";
+        position: absolute;
+        inset: 0;
+        border-radius: inherit;
+        background:
+          linear-gradient(90deg, rgba(255,255,255,.08), transparent 24% 70%, rgba(0,0,0,.4)),
+          radial-gradient(ellipse at 44% 48%, rgba(20,18,14,.22), transparent 30%),
+          repeating-linear-gradient(180deg, rgba(255,244,199,.24) 0 4px, rgba(63,37,23,.2) 7px 12px, rgba(231,147,70,.13) 15px 23px);
+        mix-blend-mode: soft-light;
+        animation: jupiterBands 22s linear infinite;
+      }
+      .planet::after {
+        content: "";
+        position: absolute;
+        inset: -1px;
+        border-radius: inherit;
+        background: radial-gradient(circle at 31% 24%, rgba(255,255,255,.22), transparent 16%), radial-gradient(circle at 68% 68%, transparent 42%, rgba(0,0,0,.56) 82%), linear-gradient(90deg, rgba(255,255,255,.05), transparent 38%, rgba(0,0,0,.25));
+      }
+      .agent-orb > span:not(.planet):not(.orbit-ring):not(.brain-wave):not(.atmosphere) { position: relative; z-index: 4; opacity: .78; font-size: clamp(12px, 1.1vw, 14px); letter-spacing: .24em; text-transform: uppercase; text-shadow: 0 0 18px rgba(0,0,0,.72); pointer-events: none; }
+      .atmosphere {
+        position: absolute;
+        inset: 3%;
+        border-radius: 999px;
+        background: radial-gradient(circle at center, transparent 55%, rgba(242,198,109,calc(.08 + var(--state-glow) * .22)) 67%, rgba(73,229,141,calc(.04 + var(--state-glow) * .12)) 81%, transparent 84%);
+        box-shadow: 0 0 calc(34px + var(--state-glow) * 84px) rgba(242,198,109,.2), 0 0 calc(78px + var(--state-glow) * 130px) rgba(16,118,82,.14);
+        filter: blur(.2px);
+        pointer-events: none;
+        z-index: 2;
+        transition: opacity .28s ease, box-shadow .28s ease;
+      }
+      .orbit-ring {
+        position: absolute;
+        border-radius: 999px;
+        border: 1px solid rgba(231,255,238,.075);
+        pointer-events: none;
+        z-index: 1;
+        transform: rotateX(66deg) rotateZ(calc(var(--ring-drift) + var(--ring-offset, 0deg)));
+        box-shadow: 0 0 18px rgba(73,229,141,.035), inset 0 0 18px rgba(242,198,109,.026);
+      }
+      .orbit-ring::before {
+        content: "";
+        position: absolute;
+        inset: -1px;
+        border-radius: inherit;
+        border: 1px solid transparent;
+        border-top-color: rgba(242,198,109,calc(.08 + var(--state-glow) * .22));
+        border-right-color: rgba(73,229,141,calc(.05 + var(--state-glow) * .12));
+        opacity: .55;
+      }
+      .ring-one { inset: -18%; --ring-offset: 15deg; animation: orbitDrift 26s linear infinite; }
+      .ring-two { inset: -36%; --ring-offset: -22deg; animation: orbitDriftReverse 39s linear infinite; opacity: .74; }
+      .ring-three { inset: -55%; --ring-offset: 48deg; animation: orbitDrift 62s linear infinite; opacity: .44; }
+      .agent-orb.listening {
+        --state-glow: .86;
+      }
+      .agent-orb.listening .planet {
+        filter: saturate(1.04) brightness(1.05) contrast(1.08);
+        transform: scale(1);
+        box-shadow: inset -45px -14px 66px rgba(7,10,8,.52), inset 30px 12px 52px rgba(255,241,180,.2), 0 0 82px rgba(242,198,109,.34), 0 0 138px rgba(73,229,141,.18);
+      }
+      .agent-orb.thinking { --state-glow: .72; }
+      .agent-orb.thinking .planet {
+        filter: saturate(1.12) brightness(1.0) contrast(1.12);
+        transform: scale(1.01);
+        animation-duration: 20s;
+        box-shadow: inset -40px -12px 60px rgba(7,10,8,.52), inset 28px 12px 50px rgba(255,241,180,.22), 0 0 92px rgba(242,198,109,.3), 0 0 132px rgba(88,166,255,.16);
+      }
+      .agent-orb.speaking { --state-glow: 1; }
+      .agent-orb.speaking .planet {
+        filter: saturate(1.18) brightness(1.13) contrast(1.12);
+        transform: scale(1.015);
+        box-shadow: inset -38px -12px 60px rgba(7,10,8,.46), inset 30px 12px 52px rgba(255,241,180,.3), 0 0 104px rgba(242,198,109,.42), 0 0 150px rgba(73,229,141,.22);
+      }
+      .agent-orb.listening .orbit-ring, .agent-orb.thinking .orbit-ring, .agent-orb.speaking .orbit-ring { border-color: rgba(231,255,238,.18); }
+      .agent-orb.thinking .ring-one, .agent-orb.speaking .ring-one { animation-duration: 17s; }
+      .agent-orb.thinking .ring-two, .agent-orb.speaking .ring-two { animation-duration: 25s; }
+      .brain-wave {
+        position: absolute;
+        left: 50%;
+        top: 51.5%;
+        width: 78%;
+        height: 38px;
+        transform: translate(-50%, -50%) rotateX(64deg);
+        opacity: .08;
+        overflow: hidden;
+        pointer-events: none;
+        transition: opacity .2s ease, width .2s ease;
+        border-radius: 999px;
+        z-index: 5;
+        mask-image: linear-gradient(90deg, transparent, #000 10%, #000 90%, transparent);
+      }
+      .agent-orb.listening .brain-wave, .agent-orb.thinking .brain-wave { opacity: .78; width: calc(76% + var(--wave-level) * 12%); }
+      .agent-orb.speaking .brain-wave { opacity: 1; width: calc(98% + var(--wave-level) * 32%); height: calc(44px + var(--wave-level) * 32px); }
+      .brain-wave::before { content: ""; position: absolute; left: 0; right: 0; top: 50%; height: 1px; background: linear-gradient(90deg, transparent, rgba(255,245,205,.24), rgba(242,198,109,.68), rgba(73,229,141,.52), transparent); box-shadow: 0 0 16px rgba(242,198,109,.2); }
+      .brain-wave-track { position: absolute; left: -24%; top: 0; width: 148%; height: 100%; display: flex; align-items: center; justify-content: center; gap: 4px; animation: scanLine 1.45s linear infinite; }
+      .brain-wave i { width: 2px; height: var(--h, 3px); border-radius: 999px; background: rgba(255,250,225,.86); box-shadow: 0 0 10px rgba(242,198,109,.36); transition: height 70ms linear, opacity 70ms linear; opacity: calc(.35 + var(--wave-level) * .5); }
+      .brain-wave i:nth-child(3n) { --h: 5px; } .brain-wave i:nth-child(4n) { --h: 4px; } .brain-wave i:nth-child(5n) { --h: 7px; }
+      .agent-orb.speaking .brain-wave i, .agent-orb.thinking .brain-wave i { animation: bounceLine .84s ease-in-out infinite; }
+      .voice-aura {
+        position: absolute;
+        inset: -13%;
+        border-radius: 999px;
+        opacity: 0;
+        pointer-events: none;
+        z-index: 3;
+        filter: blur(.15px);
+        transition: opacity .28s ease, transform .28s ease;
+      }
+      .voice-aura::before,
+      .voice-aura::after {
+        content: "";
+        position: absolute;
+        left: 50%;
+        top: 50%;
+        width: calc(122% + var(--wave-level) * 30%);
+        height: calc(34% + var(--wave-level) * 16%);
+        border-radius: 999px;
+        transform: translate(-50%, -50%) rotate(0deg);
+        border: 1px solid rgba(242,198,109,.45);
+        box-shadow: 0 0 18px rgba(242,198,109,.28), inset 0 0 20px rgba(73,229,141,.12);
+        mask-image: linear-gradient(90deg, #000, transparent 47%, transparent 53%, #000);
+      }
+      .voice-aura::after {
+        width: calc(138% + var(--wave-level) * 38%);
+        height: calc(43% + var(--wave-level) * 18%);
+        border-color: rgba(73,229,141,.32);
+        transform: translate(-50%, -50%) rotate(3deg);
+        opacity: .7;
+      }
+      .agent-orb.speaking .voice-aura {
+        opacity: .96;
+        animation: voiceOrbit 1.35s ease-in-out infinite;
+      }
+      .agent-orb.listening .voice-aura {
+        opacity: .22;
+        transform: scale(.9);
+      }
+      @keyframes scanLine { from { transform: translateX(14%); } to { transform: translateX(-14%); } }
+      @keyframes bounceLine { 0%, 100% { height: 3px; opacity: .48; } 50% { height: var(--h, 13px); opacity: .95; } }
+      .window-layer { position: fixed; inset: 84px 24px 118px 24px; z-index: 18; pointer-events: none; }
+      .workspace { position: absolute; width: min(560px, calc(100vw - 72px)); height: min(500px, calc(100vh - 220px)); border: 1px solid var(--line); border-radius: 24px; background: rgba(3,10,8,.78); backdrop-filter: blur(24px); box-shadow: 0 34px 110px rgba(0,0,0,.38); overflow: hidden; display: grid; grid-template-rows: auto 1fr; opacity: 0; transform: translateY(16px) scale(.985); pointer-events: none; transition: opacity .28s ease, transform .28s ease; }
+      .workspace.open { opacity: 1; transform: translateY(0) scale(1); pointer-events: auto; }
+      .workspace.dragging { transition: none; user-select: none; }
+      .workspace-head { display: flex; justify-content: space-between; align-items: center; gap: 16px; padding: 18px 20px; border-bottom: 1px solid var(--line); }
+      .workspace-head { cursor: grab; }
+      .workspace.dragging .workspace-head { cursor: grabbing; }
+      .workspace-head h1 { margin: 0; font-size: 18px; font-weight: 600; }
+      .workspace-head p { margin: 4px 0 0; color: var(--muted); font-size: 13px; }
+      .window-actions { display: flex; gap: 8px; flex-wrap: wrap; justify-content: end; }
+      .chip-btn { border: 1px solid var(--line); background: var(--panel); color: #fff; border-radius: 999px; padding: 9px 12px; cursor: pointer; font-size: 12px; }
+      .window-body { min-height: 0; overflow: auto; padding: 18px; }
+      .grid { display: grid; gap: 14px; }
+      .metric-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(112px, 1fr)); gap: 10px; }
+      .metric, .card { padding: 14px; border-radius: 16px; background: var(--panel); border: 1px solid var(--line); }
+      .metric span, .card span { color: var(--muted); font-size: 12px; display: block; }
+      .metric strong { font-size: 22px; font-weight: 600; display: block; margin-top: 4px; }
+      .card strong { font-size: 14px; font-weight: 600; display: block; margin-bottom: 6px; }
+      .map-shell { min-height: 340px; border-radius: 20px; overflow: hidden; border: 1px solid var(--line); background: radial-gradient(circle at 32% 28%, rgba(73,229,141,.18), transparent 18%), radial-gradient(circle at 70% 55%, rgba(242,198,109,.16), transparent 22%), linear-gradient(145deg, rgba(10,32,47,.92), rgba(4,15,12,.92)); position: relative; }
+      .map-shell.live { background: #07101f; }
+      .map-shell > div { width: 100%; height: 100%; min-height: 340px; }
+      .static-map-label { position: absolute; transform: translate(-50%, -50%); padding: 8px 10px; border-radius: 12px; background: rgba(0,0,0,.58); border: 1px solid rgba(255,255,255,.12); font-size: 11px; color: #fff; white-space: nowrap; }
+      .static-map-label::before { content: ""; display: inline-block; width: 7px; height: 7px; margin-right: 6px; border-radius: 999px; background: var(--green); box-shadow: 0 0 12px rgba(73,229,141,.8); }
+      .list { display: grid; gap: 8px; }
+      .row { display: grid; grid-template-columns: 1fr auto; gap: 12px; align-items: center; padding: 12px 14px; border-radius: 16px; background: var(--panel); border: 1px solid var(--line); }
+      .row strong { font-weight: 600; } .row span { color: var(--muted); font-size: 12px; }
+      .badge { padding: 6px 9px; border-radius: 999px; color: #07110d; background: var(--green); font-size: 11px; }
+      .badge.warn { background: var(--gold); } .badge.danger { background: var(--danger); color: #fff; }
+      .camera-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; }
+      .camera-tile { min-height: 170px; border-radius: 18px; border: 1px solid var(--line); background: linear-gradient(145deg, rgba(5,12,16,.98), rgba(19,40,48,.78)); padding: 12px; position: relative; overflow: hidden; }
+      .camera-tile::before { content: ""; position: absolute; inset: 0; background: repeating-linear-gradient(0deg, rgba(255,255,255,.04), rgba(255,255,255,.04) 1px, transparent 1px, transparent 9px); opacity: .45; }
+      .camera-tile strong, .camera-tile span { position: relative; z-index: 1; }
+      .camera-tile strong { display: block; margin-bottom: 4px; font-weight: 600; }
+      .camera-tile span { display: block; color: var(--muted); font-size: 12px; line-height: 1.45; }
+      .dock { border: 1px solid var(--line); border-radius: 24px; background: rgba(3,10,8,.72); backdrop-filter: blur(20px); display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; gap: 10px; padding: 10px; z-index: 25; }
+      .dock-log { min-width: 0; display: grid; gap: 4px; }
+      .dock-log { display: none; }
+      .command-input { width: 100%; border: 1px solid var(--line); background: var(--panel); color: #fff; border-radius: 999px; padding: 13px 15px; outline: none; }
+      .round-btn { border: 0; min-width: 48px; height: 48px; border-radius: 999px; cursor: pointer; color: #07110d; background: linear-gradient(135deg, var(--gold), var(--green)); font-weight: 700; }
+      .round-btn.recording { background: linear-gradient(135deg, var(--danger), var(--gold)); }
+      .chat-drawer { position: fixed; right: 112px; bottom: 72px; width: min(430px, calc(100vw - 150px)); max-height: min(640px, calc(100vh - 120px)); border: 1px solid var(--line); border-radius: 24px; background: rgba(3,10,8,.86); backdrop-filter: blur(22px); box-shadow: 0 30px 90px rgba(0,0,0,.32); display: none; overflow: hidden; z-index: 29; }
+      .chat-drawer.open { display: grid; grid-template-rows: auto minmax(0, 1fr); }
+      .chat-drawer.dock-inside.open { grid-template-rows: auto minmax(0, 1fr) auto; }
+      .chat-head { padding: 14px 16px; border-bottom: 1px solid var(--line); display: flex; justify-content: space-between; align-items: center; }
+      .chat-head strong { font-weight: 600; }
+      .chat-log { padding: 14px; overflow: auto; display: grid; gap: 10px; }
+      .bubble { padding: 10px 12px; border-radius: 16px; background: var(--panel); color: var(--muted); line-height: 1.45; font-size: 13px; }
+      .bubble.user { background: rgba(242,198,109,.14); color: #fff; }
+      .chat-drawer .dock { margin: 0 12px 12px; border-radius: 20px; background: rgba(255,255,255,.065); }
+      .chat-drawer .command-input { background: rgba(255,255,255,.07); }
+      @keyframes coreBreathe { 0%,100% { filter: drop-shadow(0 0 26px rgba(242,198,109,.12)); } 50% { filter: drop-shadow(0 0 42px rgba(73,229,141,.14)); } }
+      @keyframes jupiterClouds { from { background-position: 0% 48%; } to { background-position: 150% 52%; } }
+      @keyframes jupiterBands { from { transform: translateX(0); } to { transform: translateX(-10%); } }
+      @keyframes voiceOrbit { 0%,100% { transform: scale(.98) rotate(-1deg); } 50% { transform: scale(calc(1 + var(--wave-level) * .08)) rotate(1deg); } }
+      @keyframes orbitDrift { to { transform: rotateX(66deg) rotateZ(calc(var(--ring-drift) + var(--ring-offset, 0deg) + 360deg)); } }
+      @keyframes orbitDriftReverse { to { transform: rotateX(66deg) rotateZ(calc(var(--ring-drift) + var(--ring-offset, 0deg) - 360deg)); } }
+      @keyframes rotateRing { to { transform: rotate(360deg); } }
+      @keyframes rotateRingReverse { to { transform: rotate(-360deg); } }
+      @media (max-width: 980px) { body { overflow: auto; } .oyi-screen { min-height: auto; padding: 18px; } .orb-zone { height: 54vh; min-height: 340px; } .window-layer { inset: 72px 14px 118px 14px; } .workspace { width: calc(100vw - 28px); height: min(64vh, 620px); } .metric-grid, .camera-grid { grid-template-columns: repeat(2, 1fr); } .dock { grid-template-columns: 1fr auto; } .dock-log { grid-column: 1 / -1; } .agent-orb.docked { left: calc(100vw - 58px); top: calc(100vh - 220px); } .chat-drawer { right: 82px; width: min(420px, calc(100vw - 108px)); } }
+      @media (max-width: 520px) { .brand span { display: none; } .status-pill { padding: 8px 11px; font-size: 11px; } .agent-orb { width: clamp(168px, 58vw, 230px); height: clamp(168px, 58vw, 230px); } .ring-three { display: none; } .dock { border-radius: 20px; padding: 8px; } .command-input { padding: 12px 13px; font-size: 13px; } .round-btn { min-width: 44px; height: 44px; } .chat-drawer { left: 12px; right: 12px; bottom: 88px; width: auto; max-height: min(640px, calc(100vh - 118px)); } .chat-drawer .dock { margin: 0 8px 8px; } }
+      @media (max-width: 260px) { .oyi-screen { padding: 10px; gap: 10px; } .topbar { justify-content: center; } .brand { display: none; } .agent-orb { width: 116px; height: 116px; } .ring-two, .ring-three { display: none; } .command-input { display: none; } .dock { justify-content: center; grid-template-columns: auto auto; } }
+    </style>
+    <script defer src="/_vercel/insights/script.js"></script>
+  </head>
+  <body>
+    <main class="oyi-screen">
+      <header class="topbar">
+        <div class="brand"><div class="brand-mark"><img src="/assets/ochiga-logo.png" alt="Oyi" /></div><div><strong>Oyi</strong><span>Internal Ochiga AI operating layer</span></div></div>
+        <button class="status-pill" id="wake-status" type="button">Talk to Oyi</button>
+      </header>
+      <section class="main-stage">
+        <div class="orb-zone">
+          <button class="agent-orb" id="oyi-orb" type="button" aria-label="Start Oyi communication">
+            <span class="orbit-ring ring-three" aria-hidden="true"></span>
+            <span class="orbit-ring ring-two" aria-hidden="true"></span>
+            <span class="orbit-ring ring-one" aria-hidden="true"></span>
+            <span class="atmosphere" aria-hidden="true"></span>
+            <span class="planet" aria-hidden="true"></span>
+            <span class="voice-aura" aria-hidden="true"></span>
+            <span>Oyi</span>
+            <span class="brain-wave" aria-hidden="true"><span class="brain-wave-track"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></span></span>
+          </button>
+        </div>
+      </section>
+      <div class="window-layer" id="window-layer" aria-label="Oyi floating command windows"></div>
+      <form class="dock" id="command-form"><div class="dock-log" aria-live="polite"><span id="oyi-state"></span><strong id="oyi-last"></strong></div><input class="command-input" id="command-input" placeholder="Ask Oyi to open maps, cameras, devices, alerts, reports..." autocomplete="off" /><button class="round-btn" id="speak-btn" type="button" aria-label="Speak to Oyi">🎙</button><button class="round-btn" type="submit" aria-label="Send command">↗</button></form>
+    </main>
+    <aside class="chat-drawer" id="chat-drawer"><div class="chat-head"><strong>Oyi conversation</strong><button class="chip-btn" id="close-chat" type="button">Close</button></div><div class="chat-log" id="chat-log"></div></aside>
+    <script>
+      const orb = document.getElementById("oyi-orb");
+      const windowLayer = document.getElementById("window-layer");
+      const wakeStatus = document.getElementById("wake-status");
+      const form = document.getElementById("command-form");
+      const input = document.getElementById("command-input");
+      const speakBtn = document.getElementById("speak-btn");
+      const oyiState = document.getElementById("oyi-state");
+      const oyiLast = document.getElementById("oyi-last");
+      const chatDrawer = document.getElementById("chat-drawer");
+      const chatLog = document.getElementById("chat-log");
+      let wakeCooldownUntil = 0, clapHits = [], leadId = window.localStorage.getItem("oyi_command_lead_id") || "", googleMapsPromise;
+      let mediaRecorder, mediaChunks = [], mediaStartedAt = 0, recordingMode = false, voiceStarting = false, windowSeq = 0, activeWindow = null, zIndexBase = 40, micAnalyser, micWaveFrame, speakWaveTimer, heardVoice = false, lastVoiceAt = 0, liveRecognition = null, liveTranscript = "";
+      const mainScreen = document.querySelector(".oyi-screen");
+      let orbSpin = 0, ringSpin = 0, orbVelocity = .035, ringVelocity = .018, spinFrame = 0, dragState = null, suppressOrbClick = false, tickAudioContext = null, lastTickAt = 0;
+
+      const fallback = {
+        estates: [
+          { id: "green", name: "Green Canopy Estate", location: "Lekki, Lagos", status: "active", health_status: "healthy", homes_count: 256, devices_count: 245, wallet_balance: 2840000, latitude: 6.4698, longitude: 3.5852 },
+          { id: "river", name: "Riverbank Estate", location: "Ikoyi, Lagos", status: "active", health_status: "healthy", homes_count: 198, devices_count: 184, wallet_balance: 2120000, latitude: 6.4549, longitude: 3.4346 },
+          { id: "vi", name: "Victoria Island Estate", location: "Victoria Island, Lagos", status: "warning", health_status: "warning", homes_count: 220, devices_count: 201, wallet_balance: 3320000, latitude: 6.4281, longitude: 3.4219 }
+        ],
+        devices: [
+          { name: "Gatehouse AI Camera", category: "CCTV surveillance", location: "Green Canopy Gate 1", status: "online", battery: "wired", last_seen: "live" },
+          { name: "Access Control Hub", category: "Access and security", location: "Riverbank Gate", status: "online", battery: "100%", last_seen: "2 min ago" },
+          { name: "Energy Meter Cluster", category: "Utilities", location: "VI Estate Utility Room", status: "warning", battery: "wired", last_seen: "8 min ago" }
+        ],
+        alerts: [
+          { title: "Camera offline risk", scope: "Block B camera group", severity: "warning" },
+          { title: "Support pressure rising", scope: "Green Canopy Estate", severity: "warning" },
+          { title: "Wallet activity spike", scope: "Estate wallets", severity: "healthy" }
+        ]
+      };
+
+      function setWakeStatus(text, active, buttonText) { wakeStatus.textContent = recordingMode ? "Stop recording" : (buttonText || "Talk to Oyi"); wakeStatus.classList.toggle("active", Boolean(active)); oyiState.textContent = text || ""; }
+      function addBubble(role, text) { const b = document.createElement("div"); b.className = `bubble ${role === "user" ? "user" : "oyi"}`; b.textContent = text; chatLog.appendChild(b); chatLog.scrollTop = chatLog.scrollHeight; }
+      function setOrbMode(mode) { orb.classList.toggle("listening", mode === "listening"); orb.classList.toggle("thinking", mode === "thinking"); orb.classList.toggle("speaking", mode === "speaking"); }
+      function tuneWave(level) { const normalized = Math.max(.08, Math.min(1, Number(level) || 0)); orb.style.setProperty("--wave-level", normalized.toFixed(2)); const bars = orb.querySelectorAll(".brain-wave i"); bars.forEach((bar, index) => { const shape = 3 + ((index * 5) % 8); const height = Math.max(3, Math.round(shape + normalized * (5 + (index % 5) * 3))); bar.style.setProperty("--h", `${height}px`); }); }
+      function tactileTick(force = .25) { const now = Date.now(); if (now - lastTickAt < 72) return; lastTickAt = now; if (navigator.vibrate) navigator.vibrate(Math.round(4 + force * 9)); try { tickAudioContext = tickAudioContext || new (window.AudioContext || window.webkitAudioContext)(); const osc = tickAudioContext.createOscillator(); const gain = tickAudioContext.createGain(); osc.type = "sine"; osc.frequency.value = 260 + force * 220; gain.gain.setValueAtTime(.0001, tickAudioContext.currentTime); gain.gain.exponentialRampToValueAtTime(.018 * force, tickAudioContext.currentTime + .008); gain.gain.exponentialRampToValueAtTime(.0001, tickAudioContext.currentTime + .055); osc.connect(gain); gain.connect(tickAudioContext.destination); osc.start(); osc.stop(tickAudioContext.currentTime + .06); } catch (_) {} }
+      function animateOrbSpin() { orbSpin += orbVelocity; ringSpin += ringVelocity + orbVelocity * .08; orbVelocity *= dragState ? .985 : .992; ringVelocity *= dragState ? .988 : .994; if (!dragState && Math.abs(orbVelocity) < .018) orbVelocity += .00032; orb.style.setProperty("--planet-spin", `${orbSpin.toFixed(2)}deg`); orb.style.setProperty("--planet-shift", `${(orbSpin * 1.8).toFixed(2)}px`); orb.style.setProperty("--ring-drift", `${ringSpin.toFixed(2)}deg`); spinFrame = requestAnimationFrame(animateOrbSpin); }
+      function clamp(n, min, max) { return Math.max(min, Math.min(max, n)); }
+      function orbPoint(event) { const rect = orb.getBoundingClientRect(); return { x: event.clientX - rect.left - rect.width / 2, y: event.clientY - rect.top - rect.height / 2 }; }
+      function handleOrbPointerDown(event) { if (event.button !== undefined && event.button !== 0) return; const rect = orb.getBoundingClientRect(); if (orb.classList.contains("docked")) { dragState = { mode: "move", pointerId: event.pointerId, dx: event.clientX - rect.left, dy: event.clientY - rect.top, moved: false }; } else { const point = orbPoint(event); dragState = { mode: "spin", pointerId: event.pointerId, lastAngle: Math.atan2(point.y, point.x), lastAt: performance.now(), moved: false }; } orb.setPointerCapture?.(event.pointerId); tactileTick(.18); }
+      function handleOrbPointerMove(event) { if (!dragState || dragState.pointerId !== event.pointerId) return; if (dragState.mode === "move") { const rect = orb.getBoundingClientRect(); const left = clamp(event.clientX - dragState.dx + rect.width / 2, rect.width / 2 + 10, window.innerWidth - rect.width / 2 - 10); const top = clamp(event.clientY - dragState.dy + rect.height / 2, rect.height / 2 + 74, window.innerHeight - rect.height / 2 - 28); if (Math.abs(left - rect.left - rect.width / 2) > 1 || Math.abs(top - rect.top - rect.height / 2) > 1) dragState.moved = true; orb.style.left = `${left}px`; orb.style.top = `${top}px`; return; } const point = orbPoint(event); const angle = Math.atan2(point.y, point.x); let delta = angle - dragState.lastAngle; if (delta > Math.PI) delta -= Math.PI * 2; if (delta < -Math.PI) delta += Math.PI * 2; const now = performance.now(); const dt = Math.max(16, now - dragState.lastAt); const degrees = delta * 180 / Math.PI; if (Math.abs(degrees) > .6) dragState.moved = true; orbVelocity = Math.max(-4.5, Math.min(4.5, degrees * .55)); ringVelocity += orbVelocity * .08; orbSpin += degrees; ringSpin += degrees * .16; orb.style.setProperty("--planet-spin", `${orbSpin.toFixed(2)}deg`); orb.style.setProperty("--planet-shift", `${(orbSpin * 1.8).toFixed(2)}px`); orb.style.setProperty("--ring-drift", `${ringSpin.toFixed(2)}deg`); tuneWave(Math.min(1, Math.abs(orbVelocity) / 4)); if (Math.abs(orbVelocity) > 1.35 || dt < 38) tactileTick(Math.min(1, Math.abs(orbVelocity) / 4)); dragState.lastAngle = angle; dragState.lastAt = now; }
+      function handleOrbPointerUp(event) { if (!dragState || dragState.pointerId !== event.pointerId) return; suppressOrbClick = dragState.moved; if (suppressOrbClick) setTimeout(() => { suppressOrbClick = false; }, 260); ringVelocity += orbVelocity * .11; dragState = null; try { orb.releasePointerCapture?.(event.pointerId); } catch (_) {} }
+      function stopSpeakWave() { clearInterval(speakWaveTimer); speakWaveTimer = null; }
+      function speak(text) { if (!("speechSynthesis" in window)) return; window.speechSynthesis.cancel(); stopSpeakWave(); const words = String(text || "").split(/\s+/).filter(Boolean); let cursor = 0; const u = new SpeechSynthesisUtterance(text); u.rate = .96; u.pitch = 1; u.onstart = () => { setOrbMode("speaking"); setWakeStatus("Oyi is speaking...", true); speakWaveTimer = setInterval(() => { const word = words[cursor % Math.max(words.length, 1)] || ""; const energy = Math.min(1, Math.max(.16, word.length / 12)); tuneWave(energy); orbVelocity += .012 + energy * .018; ringVelocity += .01 + energy * .012; cursor += 1; }, 120); }; u.onend = () => { stopSpeakWave(); setOrbMode("idle"); tuneWave(.18); setWakeStatus("", false, "Talk to Oyi"); }; window.speechSynthesis.speak(u); }
+      function moveCommandDockToChat() { if (form.parentElement !== chatDrawer) { chatDrawer.appendChild(form); chatDrawer.classList.add("dock-inside"); } }
+      function moveCommandDockHome() { if (form.parentElement !== mainScreen) { mainScreen.appendChild(form); chatDrawer.classList.remove("dock-inside"); } }
+      function openChatLayer() { moveCommandDockToChat(); chatDrawer.classList.add("open"); input.focus({ preventScroll: true }); }
+      function closeChatLayer() { chatDrawer.classList.remove("open"); if (!orb.classList.contains("docked")) moveCommandDockHome(); }
+      function dockOrb() { orb.classList.add("docked"); moveCommandDockToChat(); }
+      function undockOrbIfIdle() { if (!windowLayer.querySelector(".workspace")) { orb.classList.remove("docked"); orb.style.left = ""; orb.style.top = ""; moveCommandDockHome(); } }
+      function focusWindow(panel) { if (!panel) return; activeWindow = panel; panel.style.zIndex = String(++zIndexBase); }
+      function positionWindow(panel, index) { const layer = windowLayer.getBoundingClientRect(); const compact = layer.width >= 700; const w = compact ? Math.min(560, Math.max(360, Math.floor(layer.width * .47))) : Math.min(720, Math.max(320, layer.width - 24)); const h = compact ? Math.min(500, Math.max(340, layer.height - 70)) : Math.min(560, Math.max(320, layer.height - 24)); const positions = [{ x: Math.max(0, layer.width - w - 10), y: 8 }, { x: 10, y: 34 }, { x: Math.max(0, (layer.width - w) / 2), y: Math.max(8, (layer.height - h) / 2) }, { x: Math.max(0, layer.width - w - 54), y: Math.max(8, layer.height - h - 10) }]; const p = positions[index % positions.length]; panel.style.width = `${w}px`; panel.style.height = `${h}px`; panel.style.left = `${p.x}px`; panel.style.top = `${p.y}px`; }
+      function makeDraggable(panel, handle) { let drag = null; handle.addEventListener("pointerdown", (event) => { if (event.target.closest("button")) return; focusWindow(panel); const rect = panel.getBoundingClientRect(); const layer = windowLayer.getBoundingClientRect(); drag = { dx: event.clientX - rect.left, dy: event.clientY - rect.top, layer }; panel.classList.add("dragging"); handle.setPointerCapture(event.pointerId); }); handle.addEventListener("pointermove", (event) => { if (!drag) return; const x = Math.max(0, Math.min(drag.layer.width - panel.offsetWidth, event.clientX - drag.layer.left - drag.dx)); const y = Math.max(0, Math.min(drag.layer.height - panel.offsetHeight, event.clientY - drag.layer.top - drag.dy)); panel.style.left = `${x}px`; panel.style.top = `${y}px`; }); handle.addEventListener("pointerup", (event) => { if (!drag) return; drag = null; panel.classList.remove("dragging"); try { handle.releasePointerCapture(event.pointerId); } catch (_) {} }); }
+      function openWorkspace(title, subtitle) { dockOrb(); const panel = document.createElement("section"); const id = `oyi-window-${++windowSeq}`; panel.className = "workspace"; panel.dataset.windowId = id; panel.setAttribute("aria-label", title); panel.innerHTML = `<div class="workspace-head"><div><h1>${title}</h1><p>${subtitle}</p></div><div class="window-actions"><button class="chip-btn" data-command="open estate map" type="button">Map</button><button class="chip-btn" data-command="show cameras" type="button">Cameras</button><button class="chip-btn" data-command="show devices" type="button">Devices</button><button class="chip-btn" data-command="show alerts" type="button">Alerts</button><button class="chip-btn" data-window-close type="button">Close</button></div></div><div class="window-body"></div>`; windowLayer.appendChild(panel); positionWindow(panel, windowSeq - 1); makeDraggable(panel, panel.querySelector(".workspace-head")); panel.addEventListener("pointerdown", () => focusWindow(panel)); panel.querySelectorAll("[data-command]").forEach((btn) => btn.addEventListener("click", () => handleCommand(btn.dataset.command))); panel.querySelector("[data-window-close]").addEventListener("click", () => closeWindow(panel)); requestAnimationFrame(() => panel.classList.add("open")); focusWindow(panel); return panel.querySelector(".window-body"); }
+      function closeWindow(panel = activeWindow) { if (!panel) return; panel.classList.remove("open"); setTimeout(() => { panel.remove(); undockOrbIfIdle(); if (!windowLayer.querySelector(".workspace")) setOrbMode("idle"); }, 220); }
+      function closeWorkspace() { Array.from(windowLayer.querySelectorAll(".workspace")).forEach(closeWindow); }
+      function wakeOyi(trigger = "tap", options = {}) { if (Date.now() < wakeCooldownUntil) return; wakeCooldownUntil = Date.now() + 900; setWakeStatus("", true); const line = ""; oyiLast.textContent = line; orbVelocity += .08; ringVelocity += .04; tactileTick(.28); if (options.silent !== true) speak("I am here."); }
+      function api(path, options = {}) { return fetch(path, { credentials: "include", ...options }).then(async (r) => { const d = await r.json().catch(() => ({})); if (!r.ok) throw new Error(d.error || d.message || path); return d; }); }
+      async function loadCollection(path, fallbackRows) { try { const data = await api(path); return Array.isArray(data.collection) ? data.collection : fallbackRows; } catch (_) { return fallbackRows; } }
+      async function loadSnapshot() { try { return (await api("/api/lead-agents/admin/office/overview")).office || null; } catch (_) { return null; } }
+      function money(v) { const n = Number(v || 0); return `₦${(n / 1000000).toFixed(n >= 10000000 ? 0 : 1)}M`; }
+      function coord(e) { const m = e.metadata || {}; const lat = Number(e.latitude ?? e.lat ?? m.latitude ?? m.lat); const lng = Number(e.longitude ?? e.lng ?? m.longitude ?? m.lng); return Number.isFinite(lat) && Number.isFinite(lng) ? { lat, lng } : null; }
+      function loadGoogleMaps(apiKey) { if (window.google && window.google.maps) return Promise.resolve(window.google.maps); if (googleMapsPromise) return googleMapsPromise; googleMapsPromise = new Promise((resolve, reject) => { const s = document.createElement("script"); s.src = `https://maps.googleapis.com/maps/api/js?key=${encodeURIComponent(apiKey)}`; s.async = true; s.defer = true; s.onload = () => resolve(window.google.maps); s.onerror = () => reject(new Error("Google Maps could not load")); document.head.appendChild(s); }); return googleMapsPromise; }
+      function renderStaticMap(estates, mapId) { return `<div class="map-shell"><div id="${mapId}">${estates.slice(0,8).map((e,i) => `<div class="static-map-label" style="left:${[28,54,70,38,62,46,78,22][i] || 50}%;top:${[35,42,58,66,28,52,36,55][i] || 50}%">${e.name || "Estate"}</div>`).join("")}</div></div>`; }
+      async function renderLiveMap(estates, mapConfig, mapId) { const host = document.getElementById(mapId); const google = (mapConfig && mapConfig.google_maps) || {}; const records = estates.map((estate) => ({ estate, position: coord(estate) })).filter((x) => x.position); if (!host || String(mapConfig?.provider || "static").toLowerCase() !== "google" || !google.api_key || !records.length) return; const maps = await loadGoogleMaps(google.api_key); host.closest(".map-shell")?.classList.add("live"); host.innerHTML = ""; const map = new maps.Map(host, { center: records[0].position, zoom: records.length > 1 ? 10 : 14, mapTypeControl: false, streetViewControl: false, fullscreenControl: true, styles: [{ elementType: "geometry", stylers: [{ color: "#08111f" }] }, { elementType: "labels.text.fill", stylers: [{ color: "#d8e6ff" }] }, { elementType: "labels.text.stroke", stylers: [{ color: "#07101f" }] }, { featureType: "road", elementType: "geometry", stylers: [{ color: "#162641" }] }, { featureType: "water", elementType: "geometry", stylers: [{ color: "#06172f" }] }, { featureType: "poi", stylers: [{ visibility: "off" }] }] }); const bounds = new maps.LatLngBounds(); records.forEach(({ estate, position }) => { const status = String(estate.health_status || estate.status || "healthy").toLowerCase(); const fillColor = status.includes("critical") ? "#ff416d" : status.includes("warning") ? "#ffc247" : "#28e68d"; const marker = new maps.Marker({ position, map, title: estate.name || "Estate", icon: { path: maps.SymbolPath.CIRCLE, scale: 8, fillColor, fillOpacity: .96, strokeColor: "#07101f", strokeWeight: 2 } }); const info = new maps.InfoWindow({ content: `<strong>${estate.name || "Estate"}</strong><br>${estate.location || "Location pending"}<br>${status}` }); marker.addListener("click", () => info.open({ anchor: marker, map })); bounds.extend(position); }); if (records.length > 1) map.fitBounds(bounds, 56); }
+
+      async function openEstates() { const body = openWorkspace("Estate command map", "Live estate locations and operational status from Ochiga Office where permissions allow."); body.innerHTML = `<div class="card"><strong>Loading estates...</strong><span>Oyi is checking Office estate data and map configuration.</span></div>`; const [estates, mapsRes] = await Promise.all([loadCollection("/api/lead-agents/admin/office/estates", fallback.estates), api("/api/lead-agents/admin/maps/config").catch(() => ({ maps: {} }))]); const active = estates.filter((e) => String(e.status || e.subscription_status || "active").toLowerCase() !== "disabled"); const devices = estates.reduce((s,e) => s + Number(e.devices_count || 0), 0); const wallets = estates.reduce((s,e) => s + Number(e.wallet_balance || 0), 0); const mapId = `oyi-map-${Date.now()}-${windowSeq}`; body.innerHTML = `<div class="grid"><div class="metric-grid"><div class="metric"><span>Estates connected</span><strong>${estates.length}</strong></div><div class="metric"><span>Active estates</span><strong>${active.length}</strong></div><div class="metric"><span>Hardware devices</span><strong>${devices.toLocaleString()}</strong></div><div class="metric"><span>Wallet float</span><strong>${money(wallets)}</strong></div></div>${renderStaticMap(estates, mapId)}<div class="list">${estates.map((e) => `<div class="row"><div><strong>${e.name || "Estate"}</strong><br><span>${e.location || "Location pending"} · ${e.homes_count || 0} homes · ${e.devices_count || 0} hardware devices</span></div><div class="badge ${String(e.health_status || e.status).includes("warning") ? "warn" : ""}">${e.health_status || e.status || "active"}</div></div>`).join("")}</div></div>`; renderLiveMap(estates, mapsRes.maps || {}, mapId).catch(() => {}); const reply = `Estate layer open: ${estates.length} estates, ${active.length} active, ${devices} hardware devices.`; oyiLast.textContent = ""; addBubble("oyi", reply); speak(reply); }
+      async function openDevices() { const body = openWorkspace("Hardware device command", "Cumulative devices across estates, homes, access, utilities, sensors, and camera systems."); const devices = await loadCollection("/api/lead-agents/admin/office/devices", fallback.devices); const online = devices.filter((d) => /online|active|live/i.test(String(d.status || "online"))).length; const warnings = devices.filter((d) => /warn|offline|fault|critical/i.test(String(d.status || ""))).length; body.innerHTML = `<div class="grid"><div class="metric-grid"><div class="metric"><span>Total devices</span><strong>${devices.length}</strong></div><div class="metric"><span>Online</span><strong>${online}</strong></div><div class="metric"><span>Alerts</span><strong>${warnings}</strong></div><div class="metric"><span>Categories</span><strong>${new Set(devices.map((d)=>d.category || d.type || "device")).size}</strong></div></div><div class="list">${devices.map((d) => `<div class="row"><div><strong>${d.name || d.label || "Hardware device"}</strong><br><span>${d.category || d.type || "Device"} · ${d.location || d.estate_name || "Location pending"} · Last seen ${d.last_seen || d.updated_at || "live"}</span></div><div class="badge ${/warn|offline|fault|critical/i.test(String(d.status || "")) ? "warn" : ""}">${d.status || "online"}</div></div>`).join("")}</div></div>`; const reply = `Hardware window open: ${online} online, ${warnings} need attention.`; oyiLast.textContent = ""; addBubble("oyi", reply); speak(reply); }
+      async function openCameras() { const body = openWorkspace("AI camera command", "CCTV, edge camera previews, surveillance state, and camera-related alerts."); const devices = await loadCollection("/api/lead-agents/admin/office/devices", fallback.devices); const cameras = devices.filter((d) => /camera|cctv|surveillance/i.test(`${d.name || ""} ${d.category || ""} ${d.type || ""}`)); const rows = cameras.length ? cameras : fallback.devices.filter((d) => /camera|cctv/i.test(d.name + d.category)); body.innerHTML = `<div class="grid"><div class="metric-grid"><div class="metric"><span>Camera feeds</span><strong>${rows.length}</strong></div><div class="metric"><span>AI ready</span><strong>${rows.length}</strong></div><div class="metric"><span>Offline</span><strong>${rows.filter((d)=>/offline|fault/i.test(String(d.status || ""))).length}</strong></div><div class="metric"><span>Edge preview</span><strong>Ready</strong></div></div><div class="camera-grid">${rows.map((d) => `<div class="camera-tile"><strong>${d.name || "Camera feed"}</strong><span>${d.location || "Estate camera"}</span><span>Status: ${d.status || "online"}. Live stream connector will mount here when camera RTSP/HLS credentials are attached.</span></div>`).join("")}</div></div>`; const reply = `Camera layer open: ${rows.length} camera-capable feeds.`; oyiLast.textContent = ""; addBubble("oyi", reply); speak(reply); }
+      async function openAlerts() { const body = openWorkspace("Alerts and incidents", "Operational warnings across estates, support, devices, wallets, security, and integrations."); let alerts = fallback.alerts; try { const support = await loadCollection("/api/lead-agents/admin/office/support-mappings", []); alerts = alerts.concat(support.slice(0,5).map((s) => ({ title: s.title || s.category || "Support issue", scope: s.estate_name || s.estate_id || "Estate support", severity: s.priority || s.status || "warning" }))); } catch (_) {} body.innerHTML = `<div class="grid"><div class="metric-grid"><div class="metric"><span>Total alerts</span><strong>${alerts.length}</strong></div><div class="metric"><span>Warnings</span><strong>${alerts.filter((a)=>/warn|high|urgent/i.test(String(a.severity))).length}</strong></div><div class="metric"><span>Critical</span><strong>${alerts.filter((a)=>/critical/i.test(String(a.severity))).length}</strong></div><div class="metric"><span>Resolved today</span><strong>0</strong></div></div><div class="list">${alerts.map((a) => `<div class="row"><div><strong>${a.title}</strong><br><span>${a.scope}</span></div><div class="badge ${/critical/i.test(a.severity) ? "danger" : /warn|high|urgent/i.test(a.severity) ? "warn" : ""}">${a.severity}</div></div>`).join("")}</div></div>`; const reply = `Alerts window open: ${alerts.length} visible operational signals.`; oyiLast.textContent = ""; addBubble("oyi", reply); speak(reply); }
+      async function openOffice() { const body = openWorkspace("Ochiga Office overview", "Mothership summary across estates, devices, support, CRM, documents, and command activity."); const snapshot = await loadSnapshot(); const stats = snapshot?.stats || snapshot?.overview || {}; body.innerHTML = `<div class="grid"><div class="metric-grid"><div class="metric"><span>Estates</span><strong>${stats.estates || fallback.estates.length}</strong></div><div class="metric"><span>Buildings</span><strong>${stats.buildings || 0}</strong></div><div class="metric"><span>Homes</span><strong>${stats.homes || 0}</strong></div><div class="metric"><span>Hardware devices</span><strong>${stats.devices || fallback.devices.length}</strong></div></div><div class="list">${moduleCatalog.map((m) => `<div class="row"><div><strong>${m.label}</strong><br><span>${m.description}</span></div><div class="badge">ready</div></div>`).join("")}</div></div>`; const reply = "Office overview window open."; oyiLast.textContent = ""; addBubble("oyi", reply); speak(reply); }
+      function openGeneric(module) { const body = openWorkspace(module.label, module.description); body.innerHTML = `<div class="grid"><div class="metric-grid"><div class="metric"><span>Window</span><strong>Ready</strong></div><div class="metric"><span>Data source</span><strong>Office</strong></div><div class="metric"><span>Control</span><strong>Scoped</strong></div><div class="metric"><span>Status</span><strong>Live shell</strong></div></div><div class="card"><strong>${module.label}</strong><span>${module.details}</span></div></div>`; const reply = `${module.label} window open.`; oyiLast.textContent = ""; addBubble("oyi", reply); speak(reply); }
+
+      async function askOyiChat(command) { if (orb.classList.contains("docked")) openChatLayer(); else chatDrawer.classList.add("open"); setWakeStatus("", true); try { const r = await fetch("/api/lead-agents/public/chat", { method: "POST", headers: { "content-type": "application/json" }, credentials: "include", body: JSON.stringify({ lead_id: leadId || undefined, source: "oyi_command_center", message: command, profile: { role: "owner_admin", command_surface: "oyi_command_center" } }) }); const data = await r.json().catch(() => ({})); if (!r.ok) throw new Error(data.error || "Oyi chat failed"); if (data.lead?.id) { leadId = data.lead.id; localStorage.setItem("oyi_command_lead_id", leadId); } const reply = data.assistant_message || "I have received that. What should I do next?"; addBubble("oyi", reply); oyiLast.textContent = ""; speak(reply); } catch (_) { const reply = "I could not reach the agent layer right now, but I am still active on this command screen."; addBubble("oyi", reply); oyiLast.textContent = ""; speak(reply); } finally { if (!("speechSynthesis" in window) || !window.speechSynthesis.speaking) setWakeStatus("", false, "Talk to Oyi"); } }
+      async function handleCommand(raw) { const command = String(raw || "").trim(); if (!command) return; input.value = ""; addBubble("user", command); oyiLast.textContent = ""; setOrbMode("thinking"); tuneWave(.42); orbVelocity += .18; ringVelocity += .08; if (/close|hide|minimi[sz]e|remove/.test(command.toLowerCase()) && /window|map|panel|workspace/.test(command.toLowerCase())) return closeWorkspace(); const module = moduleCatalog.find((m) => m.match.test(command)); if (!module) return askOyiChat(command); if (module.key === "estates") return openEstates(); if (module.key === "devices") return openDevices(); if (module.key === "cameras") return openCameras(); if (module.key === "alerts") return openAlerts(); if (module.key === "office") return openOffice(); if (/pitch|investor|partner|customer|what.*ochiga|what.*oyi|explain|brief/i.test(command)) return askOyiChat(command); return openGeneric(module); }
+
+      const moduleCatalog = [
+        { key: "estates", label: "Estate facilities", match: /map|lagos|estate|estates|facility|facilities|location|connected systems/i, description: "Estate maps, package state, homes, wallets, communities, and facility activity.", details: "This window is for estate supervision, map markers, subscribed packages, buildings, homes, wallets, utility posture, community signals, and estate-specific drilldowns." },
+        { key: "cameras", label: "AI cameras / CCTV", match: /camera|cctv|footage|surveillance|security view|live view/i, description: "Camera preview, AI detection, offline feeds, and security monitoring.", details: "This window is where edge camera feeds, RTSP/HLS previews, detection alerts, privacy scopes, and estate security camera groups will mount." },
+        { key: "devices", label: "Hardware devices", match: /device|devices|hardware|sensor|hub|access|meter|utility|lock|gate/i, description: "Cumulative hardware devices across estates and smart buildings.", details: "This window supervises hubs, locks, access controls, meters, sensors, lighting, cameras, utility devices, and device actions like reset, assign, suspend, or inspect history." },
+        { key: "alerts", label: "Alerts and incidents", match: /alert|alerts|incident|warning|critical|offline|fault|pressure/i, description: "Operational warnings from devices, support, cameras, wallets, and estates.", details: "This window aggregates urgent system pressure, offline rates, support escalation, energy spikes, security events, and AI insights." },
+        { key: "digitalTwin", label: "Digital twin", match: /digital twin|building twin|3d|model|building view|twin/i, description: "3D building/digital twin viewer and edge control surface.", details: "This opens the digital twin layer for navigable building models, clickable rooms, mapped devices, floor controls, and live edge overlays." },
+        { key: "planStudio", label: "Plan studio", match: /plan|design|floor plan|architecture|blueprint|studio|draw/i, description: "Plan upload, analysis, geometry parsing, and design tooling.", details: "This opens the design tools layer for floor plans, 3D plans, uploaded drawings, parsed geometry, and AI design/engineering review." },
+        { key: "documents", label: "Documents", match: /document|invoice|contract|proposal|pdf|letter/i, description: "Contracts, invoices, proposals, PDF generation, and office documents.", details: "This opens the document studio for letterhead documents, proposals, invoices, contracts, uploads, and email-ready records." },
+        { key: "support", label: "Customer support", match: /support|ticket|complaint|customer|resolve/i, description: "Support pressure, tickets, estate requests, and resolution queues.", details: "This opens customer support operations: open tickets, assigned teams, support mappings, escalation state, and response workflows." },
+        { key: "website", label: "Website and CRM", match: /website|web presence|lead|crm|conversion|traffic|instagram|whatsapp|linkedin/i, description: "Web presence, channels, CRM, agents, leads, and conversion activity.", details: "This opens CRM/web intelligence for WhatsApp, Instagram, LinkedIn, Google, website widget leads, campaigns, pipeline, and agent performance." },
+        { key: "office", label: "Office overview", match: /office|overview|dashboard|summary|everything|system status|entire system/i, description: "Mothership summary for the Ochiga operating layer.", details: "This opens the complete Office overview across estates, smart buildings, devices, support, documents, CRM, staff, permissions, and governance." }
+      ];
+
+      function blobToDataUrl(blob) { return new Promise((resolve, reject) => { const reader = new FileReader(); reader.onload = () => resolve(String(reader.result || "")); reader.onerror = () => reject(reader.error || new Error("Unable to read audio")); reader.readAsDataURL(blob); }); }
+      function preferredAudioMime() { const types = ["audio/webm;codecs=opus", "audio/webm", "audio/mp4", "audio/ogg;codecs=opus"]; return types.find((type) => window.MediaRecorder?.isTypeSupported?.(type)) || ""; }
+      function audioExtension(type) { if (/mp4|mpeg/.test(type)) return ".m4a"; if (/ogg/.test(type)) return ".ogg"; return ".webm"; }
+      async function transcribeBlob(blob) { const dataUrl = await blobToDataUrl(blob); const mimeType = blob.type || "audio/webm"; const r = await fetch("/api/lead-agents/public/transcribe", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ audio_data_url: dataUrl, mime_type: mimeType, file_name: `oyi-command${audioExtension(mimeType)}`, language: "en" }) }); const data = await r.json().catch(() => ({})); if (!r.ok) throw new Error(data.message || data.error || "Transcription failed"); return String(data.text || "").trim(); }
+      function startLiveTranscript() { stopLiveTranscript(); liveTranscript = ""; const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition; if (!SpeechRecognition) return; liveRecognition = new SpeechRecognition(); liveRecognition.lang = "en-NG"; liveRecognition.continuous = true; liveRecognition.interimResults = true; liveRecognition.onresult = (event) => { const text = Array.from(event.results || []).map((result) => result[0] ? result[0].transcript : "").join(" ").trim(); if (text) liveTranscript = text; }; liveRecognition.onerror = () => {}; liveRecognition.onend = () => { if (recordingMode) { try { liveRecognition.start(); } catch (_) {} } }; try { liveRecognition.start(); } catch (_) {} }
+      function stopLiveTranscript() { if (!liveRecognition) return; const recognition = liveRecognition; liveRecognition = null; try { recognition.onend = null; recognition.stop(); } catch (_) {} }
+      function startMicWave(stream) { stopMicWave(); heardVoice = false; lastVoiceAt = 0; const AudioContext = window.AudioContext || window.webkitAudioContext; if (!AudioContext) return; const context = new AudioContext(); const source = context.createMediaStreamSource(stream); micAnalyser = context.createAnalyser(); micAnalyser.fftSize = 256; source.connect(micAnalyser); const samples = new Uint8Array(micAnalyser.fftSize); const tick = () => { if (!micAnalyser) return; micAnalyser.getByteTimeDomainData(samples); let sum = 0; for (let i = 0; i < samples.length; i += 1) { const centered = (samples[i] - 128) / 128; sum += centered * centered; } const rms = Math.sqrt(sum / samples.length); const now = Date.now(); if (rms > .035) { heardVoice = true; lastVoiceAt = now; } const energy = Math.min(1, rms * 7); tuneWave(energy); orbVelocity += energy * .006; ringVelocity += energy * .004; if (recordingMode && mediaRecorder?.state === "recording") { const elapsed = now - mediaStartedAt; if ((heardVoice && elapsed > 1700 && now - lastVoiceAt > 1400) || elapsed > 15000) stopRecordingCommand(); } micWaveFrame = requestAnimationFrame(tick); }; tick(); }
+      function stopMicWave() { if (micWaveFrame) cancelAnimationFrame(micWaveFrame); micWaveFrame = null; micAnalyser = null; }
+      async function startRecordingCommand() { if (!navigator.mediaDevices || !window.MediaRecorder) { voiceStarting = false; return startCommandRecognition(); } if ("speechSynthesis" in window) window.speechSynthesis.cancel(); setWakeStatus("Opening microphone...", true, "Opening mic..."); await new Promise((resolve) => setTimeout(resolve, 90)); const stream = await navigator.mediaDevices.getUserMedia({ audio: true }); mediaChunks = []; mediaStartedAt = Date.now(); const mimeType = preferredAudioMime(); mediaRecorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined); recordingMode = true; voiceStarting = false; speakBtn.classList.add("recording"); speakBtn.textContent = "■"; setOrbMode("listening"); startLiveTranscript(); startMicWave(stream); setWakeStatus("Oyi is listening...", true, "Stop recording"); wakeStatus.textContent = "Stop recording"; mediaRecorder.ondataavailable = (event) => { if (event.data?.size) mediaChunks.push(event.data); }; mediaRecorder.onstop = async () => { stopMicWave(); stopLiveTranscript(); stream.getTracks().forEach((track) => track.stop()); recordingMode = false; voiceStarting = false; speakBtn.classList.remove("recording"); speakBtn.textContent = "🎙"; setOrbMode("thinking"); setWakeStatus("Oyi is transcribing...", true, "Transcribing..."); try { const duration = Date.now() - mediaStartedAt; const blob = new Blob(mediaChunks, { type: mediaRecorder.mimeType || mimeType || "audio/webm" }); let transcript = ""; if (blob.size && duration >= 700) { try { transcript = await transcribeBlob(blob); } catch (_) { transcript = ""; } } transcript = transcript || liveTranscript.trim(); if (!transcript) throw new Error("No transcript"); await handleCommand(transcript); } catch (_) { const reply = "I missed that. Tap Oyi and speak again."; addBubble("oyi", reply); oyiLast.textContent = ""; speak(reply); } finally { liveTranscript = ""; mediaChunks = []; if (!("speechSynthesis" in window) || !window.speechSynthesis.speaking) setWakeStatus("", false, "Talk to Oyi"); } }; mediaRecorder.start(250); }
+      function stopRecordingCommand() { if (mediaRecorder && mediaRecorder.state === "recording") mediaRecorder.stop(); }
+      function startCommandRecognition() { const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition; if (!SpeechRecognition) { setWakeStatus("Allow microphone access.", false, "Allow mic"); return; } const recognition = new SpeechRecognition(); recognition.lang = "en-NG"; recognition.continuous = false; recognition.interimResults = false; recognition.onstart = () => { setOrbMode("listening"); setWakeStatus("Oyi is listening for your instruction...", true, "Stop recording"); }; recognition.onresult = (event) => handleCommand(Array.from(event.results || []).map((result) => result[0] ? result[0].transcript : "").join(" ")); recognition.onend = () => { setOrbMode("idle"); setWakeStatus("", false, "Talk to Oyi"); }; recognition.onerror = () => setWakeStatus("Allow microphone access.", false, "Allow mic"); try { recognition.start(); } catch (_) { setWakeStatus("Allow microphone access.", false, "Allow mic"); } }
+      function startWakeWord() { const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition; if (!SpeechRecognition) { setWakeStatus("", false, "Talk to Oyi"); return; } const recognition = new SpeechRecognition(); recognition.lang = "en-NG"; recognition.continuous = true; recognition.interimResults = true; recognition.onstart = () => setWakeStatus("", true, "Talk to Oyi"); recognition.onresult = (event) => { const heard = Array.from(event.results || []).map((result) => result[0] ? result[0].transcript : "").join(" ").toLowerCase(); if (/\b(hey\s+oyi|hey\s+o|hey\s+oe|oyi|o\s*e)\b/.test(heard)) wakeOyi("wake word"); }; recognition.onerror = () => setWakeStatus("", false, "Talk to Oyi"); recognition.onend = () => setTimeout(() => { try { recognition.start(); } catch (_) {} }, 900); try { recognition.start(); } catch (_) { setWakeStatus("", false, "Talk to Oyi"); } }
+      async function startClapWake() { if (!navigator.mediaDevices?.getUserMedia) return; try { const stream = await navigator.mediaDevices.getUserMedia({ audio: true }); const AudioContext = window.AudioContext || window.webkitAudioContext; if (!AudioContext) return; const context = new AudioContext(); const source = context.createMediaStreamSource(stream); const analyser = context.createAnalyser(); analyser.fftSize = 512; source.connect(analyser); const samples = new Uint8Array(analyser.fftSize); const tick = () => { analyser.getByteTimeDomainData(samples); let sum = 0; for (let i = 0; i < samples.length; i += 1) { const centered = (samples[i] - 128) / 128; sum += centered * centered; } const rms = Math.sqrt(sum / samples.length); const now = Date.now(); if (rms > .28) { clapHits = clapHits.filter((hit) => now - hit < 760); if (!clapHits.length || now - clapHits[clapHits.length - 1] > 140) clapHits.push(now); if (clapHits.length >= 2) { clapHits = []; wakeOyi("double clap"); } } requestAnimationFrame(tick); }; tick(); } catch (_) { setWakeStatus("", false, "Talk to Oyi"); } }
+
+      orb.addEventListener("pointerdown", handleOrbPointerDown);
+      orb.addEventListener("pointermove", handleOrbPointerMove);
+      orb.addEventListener("pointerup", handleOrbPointerUp);
+      orb.addEventListener("pointercancel", handleOrbPointerUp);
+      orb.addEventListener("click", (event) => { if (suppressOrbClick) { event.preventDefault(); return; } if (orb.classList.contains("docked")) { openChatLayer(); return; } toggleVoiceCommand(); });
+      function toggleVoiceCommand() { if (recordingMode) { stopRecordingCommand(); return; } if (voiceStarting) return; voiceStarting = true; setWakeStatus("Opening microphone...", true, "Opening mic..."); wakeOyi("mic", { silent: true }); startRecordingCommand().catch(() => { voiceStarting = false; startCommandRecognition(); }); }
+      speakBtn.addEventListener("click", toggleVoiceCommand);
+      wakeStatus.addEventListener("click", toggleVoiceCommand);
+      form.addEventListener("submit", (event) => { event.preventDefault(); handleCommand(input.value); });
+      document.getElementById("close-chat").addEventListener("click", closeChatLayer);
+      document.querySelectorAll("[data-command]").forEach((btn) => btn.addEventListener("click", () => handleCommand(btn.dataset.command)));
+      tuneWave(.18);
+      animateOrbSpin();
+      startWakeWord();
+      startClapWake();
+    </script>
+  </body>
+</html>

@@ -1,0 +1,97 @@
+[
+  {
+    "type": "function",
+    "name": "create_lead",
+    "description": "Create a new lead record in the CRM.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "company": { "type": "string" },
+        "role": { "type": "string" },
+        "email": { "type": "string" },
+        "phone": { "type": "string" },
+        "source": { "type": "string" },
+        "location": { "type": "string" },
+        "notes": { "type": "string" }
+      },
+      "required": ["source"]
+    }
+  },
+  {
+    "type": "function",
+    "name": "update_lead_status",
+    "description": "Update lead stage, owner, score, or summary.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "lead_id": { "type": "string" },
+        "status": {
+          "type": "string",
+          "enum": ["new", "qualified", "warm", "hot", "sales", "booked", "closed", "lost", "escalated"]
+        },
+        "owner": {
+          "type": "string",
+          "enum": ["marketing_agent", "sales_agent", "human"]
+        },
+        "score": { "type": "number" },
+        "summary": { "type": "string" },
+        "next_action": { "type": "string" }
+      },
+      "required": ["lead_id"]
+    }
+  },
+  {
+    "type": "function",
+    "name": "get_solution_fit",
+    "description": "Return the best-fit Ochiga/Oyi solution path for a lead.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "project_type": { "type": "string" },
+        "unit_count": { "type": "number" },
+        "needs": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "timeline": { "type": "string" }
+      },
+      "required": ["project_type"]
+    }
+  },
+  {
+    "type": "function",
+    "name": "schedule_demo",
+    "description": "Schedule a demo or discovery call for a qualified lead.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "lead_id": { "type": "string" },
+        "name": { "type": "string" },
+        "email": { "type": "string" },
+        "phone": { "type": "string" },
+        "preferred_time": { "type": "string" },
+        "timezone": { "type": "string" }
+      },
+      "required": ["lead_id"]
+    }
+  },
+  {
+    "type": "function",
+    "name": "notify_founder",
+    "description": "Escalate an important lead or issue to the founder/human team.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "lead_id": { "type": "string" },
+        "urgency": {
+          "type": "string",
+          "enum": ["low", "medium", "high", "critical"]
+        },
+        "reason": { "type": "string" },
+        "summary": { "type": "string" }
+      },
+      "required": ["reason", "summary"]
+    }
+  }
+]

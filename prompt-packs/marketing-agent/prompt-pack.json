@@ -1,0 +1,19 @@
+{
+  "name": "Ochiga Marketing Agent",
+  "version": "1.0.0",
+  "description": "Prompt pack for qualifying Ochiga inbound leads and routing them to sales or human review.",
+  "files": {
+    "system_prompt": "SYSTEM_PROMPT.md",
+    "scoring_rubric": "SCORING_RUBRIC.md",
+    "templates": "TEMPLATES.md",
+    "tools": "TOOLS.md"
+  },
+  "intended_use": [
+    "lead qualification",
+    "fit scoring",
+    "sales handoff",
+    "human escalation",
+    "crm record creation",
+    "demo scheduling"
+  ]
+}
