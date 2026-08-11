@@ -23,6 +23,11 @@ assert(/SUPABASE_SERVICE_ROLE_KEY[\s\S]*sync:\s+false/.test(render), "Supabase s
 assert(/OPENAI_API_KEY[\s\S]*sync:\s+false/.test(render), "OpenAI key must be an unsynced secret");
 assert(server.includes("/api/office/intake"), "Office intake API route must be registered");
 assert(server.includes("/api/lead-agents/public/session"), "Public intelligence session API route must be registered");
+assert(server.includes("callOyiCoreCorporateConversation"), "Public chat must delegate live intelligence to Oyi Core");
+assert(render.includes("OFFICE_BACKEND_BASE_URL"), "Render must declare Backend base URL for Oyi Core delegation");
+assert(/OFFICE_BACKEND_API_KEY[\s\S]*sync:\s+false/.test(render), "Backend API key must remain an unsynced Office secret");
+assert(render.includes("OFFICE_BACKEND_CONVERSATION_PATH"), "Render must declare the Oyi Core corporate conversation path");
+assert(envExample.includes("OFFICE_BACKEND_CONVERSATION_PATH=/office/conversation/corporate"), "Oyi Core conversation path must be documented");
 assert(envExample.includes("OFFICE_BACKEND_EVENTS_ENABLED=false"), "Office material events must be disabled by default in .env.example");
 assert(envExample.includes("OFFICE_BACKEND_EVENT_PATH=/office/events/material"), "Office material event path must be documented");
 assert(envExample.includes("OFFICE_BACKEND_EVENT_MAX_ATTEMPTS=2"), "Office material event retry limit must be documented");

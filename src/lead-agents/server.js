@@ -40,6 +40,11 @@ const {
   createFormContinuationContext,
   detectBlockedPublicOperationalRequest,
 } = require("./public-intelligence");
+const {
+  buildOyiCoreCorporateConversationRequest,
+  callOyiCoreCorporateConversation,
+} = require("./oyi-core-gateway");
+const { executeGovernedOfficeToolProposals } = require("./office-tool-governance");
 const { WhatsAppCloudAdapter } = require("./whatsapp");
 const { buildCalendarLinks, parsePreferredSchedule } = require("./scheduling");
 const { buildProposal, inferCommercialFacts } = require("./commercial");
@@ -1402,49 +1407,6 @@ async function ensurePublicFallbackLead(store, body) {
   );
 }
 
-function publicFallbackReply(message, lead) {
-  const text = String(message || "").toLowerCase();
-  const asksAboutCompany =
-    text.includes("what do you do") ||
-    text.includes("what does ochiga do") ||
-    text.includes("brief") ||
-    text.includes("company does") ||
-    text.includes("tell me about") ||
-    text.includes("what is oyi");
-
-  if (asksAboutCompany) {
-    return [
-      "Hi, I'm Oyi.",
-      "Ochiga builds infrastructure technology for estates, buildings, utilities, and connected communities.",
-      "Oyi is the operating and communication layer for that ecosystem: estate operations, access workflows, monitoring, resident services, support, payments, and facility coordination in one system.",
-      "For customers, it creates operational control. For partners and investors, it is the foundation for smart estate and city-scale infrastructure systems.",
-      "If you're working on a live project, share the location, number of units or buildings, and what you need most right now, and I'll guide the next step.",
-    ].join(" ");
-  }
-
-  const location = lead && lead.location ? lead.location : "";
-  const summary = lead && lead.summary ? lead.summary.toLowerCase() : "";
-  const hasScale = /\b\d+\s+units?\b/i.test(summary);
-  const hasContact = Boolean((lead && lead.email) || (lead && lead.phone));
-
-  if (location || hasScale) {
-    return [
-      "Thanks.",
-      `${location ? `I noted the project location as ${location}.` : "I noted the project scale details."}`,
-      "What do you need most right now: access control, monitoring, resident services, facility operations, or a broader estate operating system?",
-      hasContact
-        ? "Once I have that, I can route the next step properly."
-        : "If useful, you can also share the best contact email or phone for follow-up.",
-    ].join(" ");
-  }
-
-  return [
-    "Hi, I'm Oyi.",
-    "I can help with Ochiga and Oyi for estates, buildings, access workflows, monitoring, resident experience, facility operations, partnerships, and investment conversations.",
-    "Tell me your project location, approximate scale, and what you need most right now, and I'll point you correctly.",
-  ].join(" ");
-}
-
 async function resolveLeadForChannel(store, phone, source) {
   const existing = await store.findLeadByPhone(phone);
   if (existing) {
@@ -2481,66 +2443,124 @@ function buildServer({ config, store, runtime, rateLimiter, publicRateLimiter, l
           return;
         }
 
-        await appendAudit(store, { userId: null, email: "", role: "guest" }, "ai.command.received", "public_widget", body.lead_id || "", { source: body.source || config.defaultLeadSource, prompt_excerpt: body.message.slice(0, 240) }, req);
+        await appendAudit(store, { userId: null, email: "", role: "guest" }, "oyi_core.public_command.received", "public_widget", body.lead_id || session.session_id, { source: body.source || config.defaultLeadSource, prompt_excerpt: body.message.slice(0, 240), agent_role: session.active_agent_role, business_unit: session.business_unit }, req);
 
-        let result;
-        try {
-          result = await runtime.runChat({
-            agent: session.runtime_agent,
-            lead_id: body.lead_id,
-            source: body.source || config.defaultLeadSource,
-            notify_inbound: true,
-            message: body.message,
-            profile: body.profile || {},
-            corporate_context: session,
-          });
-        } catch (err) {
-          log("error", "lead_agents_server.public_chat_fallback", {
+        const lead = await ensurePublicFallbackLead(store, body);
+        const oyiCoreRequest = buildOyiCoreCorporateConversationRequest({
+          session,
+          message: body.message,
+          lead,
+          body,
+          requestId: ctx.requestId,
+        });
+        const oyiCoreResult = await callOyiCoreCorporateConversation(config, oyiCoreRequest);
+        if (!oyiCoreResult.ok) {
+          log("warn", "lead_agents_server.oyi_core_unavailable", {
             request_id: ctx.requestId,
-            error: err?.stack || err?.message || String(err),
+            public_session_id: session.session_id,
+            reason: oyiCoreResult.reason,
+            status: oyiCoreResult.status,
           });
-          const fallbackLead = await ensurePublicFallbackLead(store, body);
-          const fallbackAssistant = publicFallbackReply(body.message, fallbackLead);
-          await store.appendConversation({
-            lead_id: fallbackLead.id,
-            agent_name: "marketing_agent",
-            message_role: "user",
-            channel: "website",
-            content: body.message,
+          await store.appendTimelineEvent({
+            lead_id: lead.id,
+            event_type: "oyi_core_unavailable",
+            actor: "ochiga_intelligence",
+            title: "Oyi Core unavailable",
+            body: "Public intelligence request could not be completed because Oyi Core was unavailable.",
+            metadata: {
+              request_id: ctx.requestId,
+              public_session_id: session.session_id,
+              reason: oyiCoreResult.reason,
+              status: oyiCoreResult.status,
+            },
           });
-          await store.appendConversation({
-            lead_id: fallbackLead.id,
-            agent_name: "marketing_agent",
-            message_role: "assistant",
-            channel: "website",
-            content: fallbackAssistant,
-          });
-          result = {
-            agent: "marketing_agent",
-            lead: fallbackLead,
-            trace_id: "",
-            lead_memory: null,
-            knowledge_hits: [],
-            assistant_message: fallbackAssistant,
-            tools: [],
-            conversations: await store.listConversationsForLead(
-              fallbackLead.id,
-              config.maxConversationMessages
-            ),
+          await appendAudit(store, { userId: null, email: "", role: "guest" }, "oyi_core.public_response.unavailable", "public_widget", lead.id, { source: body.source || config.defaultLeadSource, reason: oyiCoreResult.reason, status: oyiCoreResult.status }, req, "failed");
+          json(res, 503, {
+            error: "oyi_core_unavailable",
+            message: "Ochiga Intelligence is temporarily unavailable. Your enquiry context is saved in Office, but I cannot continue the conversation right now.",
+            lead,
+            public_intelligence: {
+              session: {
+                ...session,
+                known_contact: Boolean(lead.id),
+                crm_contact_ref: lead.id ? "office_lead_record" : null,
+              },
+              oyi_core_request: oyiCoreRequest,
+            },
             degraded: true,
-          };
+            intelligence_available: false,
+          }, { "x-request-id": ctx.requestId });
+          return;
         }
 
-        await appendAudit(store, { userId: null, email: "", role: "guest" }, "ai.response.generated", "public_widget", result.lead?.id || body.lead_id || "", { source: body.source || config.defaultLeadSource, trace_id: result.trace_id || "", degraded: Boolean(result.degraded) }, req);
+        const oyiCoreResponse = oyiCoreResult.response;
+        const governedTools = await executeGovernedOfficeToolProposals({
+          proposals: oyiCoreResponse.tool_proposals,
+          store,
+          lead,
+          session,
+          requestId: ctx.requestId,
+        });
+        const finalLead = governedTools.lead || lead;
+        await store.appendTimelineEvent({
+          lead_id: finalLead.id,
+          event_type: "oyi_core_conversation_turn",
+          actor: "ochiga_intelligence",
+          title: "Public intelligence conversation",
+          body: String(oyiCoreResponse.answer || "").slice(0, 500),
+          metadata: {
+            request_id: ctx.requestId,
+            public_session_id: session.session_id,
+            oyi_thread_id: oyiCoreResponse.conversation_thread_id,
+            agent_role: oyiCoreResponse.recommended_internal_role || session.active_agent_role,
+            business_unit: oyiCoreResponse.business_domain || session.business_unit,
+            commercial_signal: oyiCoreResponse.commercial_signal,
+            qualification_signal: oyiCoreResponse.qualification_signal,
+            tool_result_count: governedTools.results.length,
+          },
+        });
+
+        const result = {
+          agent: session.active_agent_role === "osa" ? "sales_agent" : "marketing_agent",
+          lead: finalLead,
+          trace_id: ctx.requestId,
+          lead_memory: null,
+          knowledge_hits: Array.isArray(oyiCoreResponse.knowledge_references) ? oyiCoreResponse.knowledge_references : [],
+          assistant_message: oyiCoreResponse.answer || "",
+          tools: governedTools.results,
+          conversations: await store.listConversationsForLead(finalLead.id, config.maxConversationMessages),
+          oyi_core: {
+            ok: true,
+            canonical: Boolean(oyiCoreResponse.canonical),
+            thread_id: oyiCoreResponse.conversation_thread_id || "",
+          },
+          intelligence_authority: "ochiga-backend",
+          crm_source_of_truth: "ochiga-office",
+        };
+
+        await appendAudit(store, { userId: null, email: "", role: "guest" }, "oyi_core.public_response.generated", "public_widget", result.lead?.id || body.lead_id || "", { source: body.source || config.defaultLeadSource, trace_id: result.trace_id || "", degraded: Boolean(result.degraded), oyi_thread_id: oyiCoreResponse.conversation_thread_id || "" }, req);
         json(res, 200, {
           ...result,
           public_intelligence: {
             session: {
               ...session,
+              conversation_thread_id: oyiCoreResponse.conversation_thread_id || session.conversation_thread_id,
+              active_agent_role: oyiCoreResponse.recommended_internal_role || session.active_agent_role,
               known_contact: Boolean(result.lead?.id),
               crm_contact_ref: result.lead?.id ? "office_lead_record" : null,
             },
-            oyi_core_request: buildOyiCoreCorporateRequest(session, body.message),
+            oyi_core_request: oyiCoreRequest,
+            oyi_core_response: {
+              conversation_thread_id: oyiCoreResponse.conversation_thread_id || "",
+              understood_intent: oyiCoreResponse.understood_intent || "",
+              business_domain: oyiCoreResponse.business_domain || session.business_unit,
+              recommended_internal_role: oyiCoreResponse.recommended_internal_role || session.active_agent_role,
+              commercial_signal: oyiCoreResponse.commercial_signal || "none",
+              qualification_signal: oyiCoreResponse.qualification_signal || "low",
+              suggested_next_action: oyiCoreResponse.suggested_next_action || "",
+              handoff_recommended: Boolean(oyiCoreResponse.handoff_recommended),
+            },
+            compatibility_contract: buildOyiCoreCorporateRequest(session, body.message),
           },
         }, {
           "x-request-id": ctx.requestId,

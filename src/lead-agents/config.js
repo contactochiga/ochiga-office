@@ -159,6 +159,8 @@ function createConfig() {
     ),
     officeBackendEventPath:
       process.env.OFFICE_BACKEND_EVENT_PATH || "/office/events/material",
+    officeBackendConversationPath:
+      process.env.OFFICE_BACKEND_CONVERSATION_PATH || "/office/conversation/corporate",
     officeBackendEventTimeoutMs: numberFromEnv(
       process.env.OFFICE_BACKEND_EVENT_TIMEOUT_MS,
       10_000

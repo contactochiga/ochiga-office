@@ -65,6 +65,18 @@ services:
         sync: false
       - key: OFFICE_CONSUMER_BEARER_TOKEN
         sync: false
+      - key: OFFICE_BACKEND_BASE_URL
+        sync: false
+      - key: OFFICE_BACKEND_API_KEY
+        sync: false
+      - key: OFFICE_BACKEND_BEARER_TOKEN
+        sync: false
+      - key: OFFICE_BACKEND_CONVERSATION_PATH
+        value: /office/conversation/corporate
+      - key: OFFICE_BACKEND_EVENTS_ENABLED
+        value: "false"
+      - key: OFFICE_BACKEND_EVENT_PATH
+        value: /office/events/material
       - key: OFFICE_EMAIL_PROVIDER
         sync: false
       - key: RESEND_API_KEY
