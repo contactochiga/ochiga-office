@@ -21,6 +21,12 @@ It owns CRM intake, lead and opportunity workflows, Office dashboards, commercia
 
 Do not commit live credentials, local stores, traces, or generated outputs.
 
+## Deployment Cutover
+
+Run `npm run deployment:validate` before connecting Render/Vercel to this standalone repository. The operator checklist is in `docs/DEPLOYMENT_CUTOVER_PLAN.md`.
+
+Production database schema application, credential rotation, website environment switching, and retirement of the old mixed deployment require explicit approval.
+
 ## Boundary
 
 Office is the source of truth for corporate and commercial CRM state. Ochiga Backend remains the source of truth for operational/building/platform state. Integration happens through explicit intake, event, and projection contracts rather than shared source imports.

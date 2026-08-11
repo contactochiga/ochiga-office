@@ -12,6 +12,7 @@
   "lint": "node scripts/lint-repo.js",
   "build": "node scripts/build-office-assets.js",
   "security:secrets": "node scripts/check-secrets.js",
+  "deployment:validate": "node scripts/validate-deployment-config.js",
   "validate:release": "node scripts/validate-release.js",
     "test": "npm run check",
     "office:test": "node scripts/test-lead-agents.js",

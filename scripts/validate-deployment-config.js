@@ -1,0 +1,27 @@
+const fs = require("node:fs");
+
+function readJson(path) {
+  return JSON.parse(fs.readFileSync(path, "utf8"));
+}
+
+function assert(condition, message) {
+  if (!condition) throw new Error(message);
+}
+
+const pkg = readJson("package.json");
+const render = fs.readFileSync("render.yaml", "utf8");
+const vercel = fs.readFileSync("vercel.json", "utf8");
+const server = fs.readFileSync("src/lead-agents/server.js", "utf8");
+
+assert(pkg.scripts["office:start"], "package.json must expose office:start for Office deployment");
+assert(/startCommand:\s+npm run office:start/.test(render), "render.yaml must start the standalone Office runtime");
+assert(/healthCheckPath:\s+\/healthz/.test(render), "render.yaml must keep the Office health check path");
+assert(/LEAD_AGENTS_AUTH_MODE[\s\S]*value:\s+required_api_key/.test(render), "Office production auth must fail closed with required_api_key");
+assert(/LEAD_AGENTS_API_KEYS[\s\S]*sync:\s+false/.test(render), "Office API keys must be configured as unsynced secrets");
+assert(/SUPABASE_SERVICE_ROLE_KEY[\s\S]*sync:\s+false/.test(render), "Supabase service role must be an unsynced secret");
+assert(/OPENAI_API_KEY[\s\S]*sync:\s+false/.test(render), "OpenAI key must be an unsynced secret");
+assert(server.includes("/api/office/intake"), "Office intake API route must be registered");
+assert(vercel.includes("/api/lead-agents/:path*"), "Vercel compatibility rewrite for lead agents must remain");
+assert(vercel.includes("/healthz"), "Vercel health rewrite must remain");
+
+console.log("validate-deployment-config: PASS");

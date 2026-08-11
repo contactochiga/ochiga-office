@@ -5,6 +5,7 @@ const commands = [
   "npm run lint",
   "npm run check",
   "npm run build",
+  "npm run deployment:validate",
   "npm run office:test",
   "npm run office:intake:test",
 ];
