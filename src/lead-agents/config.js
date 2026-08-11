@@ -163,6 +163,10 @@ function createConfig() {
       process.env.OFFICE_BACKEND_EVENT_TIMEOUT_MS,
       10_000
     ),
+    officeBackendEventMaxAttempts: numberFromEnv(
+      process.env.OFFICE_BACKEND_EVENT_MAX_ATTEMPTS,
+      2
+    ),
     officeDigitalTwinBaseUrl: process.env.OFFICE_DIGITAL_TWIN_BASE_URL || "",
     officeDigitalTwinApiKey: process.env.OFFICE_DIGITAL_TWIN_API_KEY || "",
     officeDigitalTwinStatePath: process.env.OFFICE_DIGITAL_TWIN_STATE_PATH || "",

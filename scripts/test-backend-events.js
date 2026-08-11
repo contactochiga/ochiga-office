@@ -50,6 +50,7 @@ async function main() {
   const disabled = await publishBackendMaterialEvent({ officeBackendEventsEnabled: false }, event);
   assert.equal(disabled.skipped, true);
   assert.equal(disabled.reason, "disabled");
+  assert.equal(disabled.attempts, 0);
 
   let captured = null;
   const sent = await publishBackendMaterialEvent({
@@ -59,6 +60,7 @@ async function main() {
     officeBackendApiKey: "test-api-key",
     officeBackendBearerToken: "test-bearer",
     officeBackendEventTimeoutMs: 1234,
+    officeBackendEventMaxAttempts: 2,
   }, event, {
     httpPost: async (url, payload, config) => {
       captured = { url, payload, config };
@@ -73,6 +75,39 @@ async function main() {
   assert.equal(captured.config.headers["x-office-api-key"], "test-api-key");
   assert.equal(captured.config.headers.authorization, "Bearer test-bearer");
   assert.equal(captured.config.headers["x-idempotency-key"], "idem-1");
+  assert.equal(sent.attempts, 1);
+
+  let retryAttempts = 0;
+  const retried = await publishBackendMaterialEvent({
+    officeBackendEventsEnabled: true,
+    officeBackendBaseUrl: "https://backend.example",
+    officeBackendEventMaxAttempts: 3,
+  }, event, {
+    httpPost: async () => {
+      retryAttempts += 1;
+      return { status: retryAttempts === 1 ? 503 : 202 };
+    },
+  });
+  assert.equal(retried.ok, true);
+  assert.equal(retried.attempts, 2);
+  assert.equal(retryAttempts, 2);
+
+  let rejectedAttempts = 0;
+  const rejected = await publishBackendMaterialEvent({
+    officeBackendEventsEnabled: true,
+    officeBackendBaseUrl: "https://backend.example",
+    officeBackendEventMaxAttempts: 3,
+  }, event, {
+    httpPost: async () => {
+      rejectedAttempts += 1;
+      return { status: 400 };
+    },
+  });
+  assert.equal(rejected.ok, false);
+  assert.equal(rejected.reason, "backend_rejected");
+  assert.equal(rejected.dead_letter_required, true);
+  assert.equal(rejected.attempts, 1);
+  assert.equal(rejectedAttempts, 1);
 
   console.log("office backend material events smoke passed");
 }

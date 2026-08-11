@@ -80,13 +80,23 @@ function backendEventUrl(config) {
   return `${base}${path.startsWith("/") ? path : `/${path}`}`;
 }
 
+function eventMaxAttempts(config) {
+  const value = Number(config.officeBackendEventMaxAttempts);
+  if (!Number.isFinite(value)) return 2;
+  return Math.max(1, Math.min(5, Math.floor(value)));
+}
+
+function isRetryableStatus(status) {
+  return status === 0 || status === 408 || status === 429 || status >= 500;
+}
+
 async function publishBackendMaterialEvent(config, event, options = {}) {
   if (!config.officeBackendEventsEnabled) {
-    return { ok: false, skipped: true, reason: "disabled" };
+    return { ok: false, skipped: true, reason: "disabled", attempts: 0 };
   }
   const url = backendEventUrl(config);
   if (!url) {
-    return { ok: false, skipped: true, reason: "not_configured" };
+    return { ok: false, skipped: true, reason: "not_configured", attempts: 0 };
   }
   const headers = {
     "content-type": "application/json",
@@ -97,18 +107,40 @@ async function publishBackendMaterialEvent(config, event, options = {}) {
   if (config.officeBackendBearerToken) headers.authorization = `Bearer ${config.officeBackendBearerToken}`;
 
   const post = options.httpPost || ((targetUrl, payload, requestConfig) => axios.post(targetUrl, payload, requestConfig));
-  try {
-    const response = await post(url, event, {
-      timeout: config.officeBackendEventTimeoutMs || 10_000,
-      headers,
-      validateStatus: () => true,
-    });
-    const status = Number(response && response.status) || 0;
-    if (status >= 200 && status < 300) return { ok: true, skipped: false, status };
-    return { ok: false, skipped: false, status, reason: "backend_rejected" };
-  } catch (error) {
-    return { ok: false, skipped: false, status: 0, reason: "network_error", error: error && error.code ? String(error.code) : "request_failed" };
+  const maxAttempts = eventMaxAttempts(config);
+  let lastFailure = null;
+  let attempts = 0;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    attempts = attempt;
+    try {
+      const response = await post(url, event, {
+        timeout: config.officeBackendEventTimeoutMs || 10_000,
+        headers,
+        validateStatus: () => true,
+      });
+      const status = Number(response && response.status) || 0;
+      if (status >= 200 && status < 300) return { ok: true, skipped: false, status, attempts: attempt };
+      lastFailure = { status, reason: "backend_rejected" };
+      if (!isRetryableStatus(status)) break;
+    } catch (error) {
+      lastFailure = {
+        status: 0,
+        reason: "network_error",
+        error: error && error.code ? String(error.code) : "request_failed",
+      };
+    }
   }
+
+  return {
+    ok: false,
+    skipped: false,
+    status: lastFailure ? lastFailure.status : 0,
+    reason: lastFailure ? lastFailure.reason : "request_failed",
+    error: lastFailure && lastFailure.error ? lastFailure.error : undefined,
+    attempts,
+    dead_letter_required: true,
+  };
 }
 
 module.exports = {
