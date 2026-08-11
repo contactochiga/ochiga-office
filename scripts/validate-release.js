@@ -11,6 +11,7 @@ const commands = [
   "npm run office:backend-events:test",
   "npm run office:public-intelligence:test",
   "npm run office:oyi-core-delegation:test",
+  "npm run office:operating-system:test",
 ];
 
 for (const command of commands) {

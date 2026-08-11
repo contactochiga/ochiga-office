@@ -42,9 +42,19 @@ const {
 } = require("./public-intelligence");
 const {
   buildOyiCoreCorporateConversationRequest,
+  buildOyiCoreOfficeInternalRequest,
   callOyiCoreCorporateConversation,
+  callOyiCoreOfficeInternalConversation,
 } = require("./oyi-core-gateway");
 const { executeGovernedOfficeToolProposals } = require("./office-tool-governance");
+const {
+  CORPORATE_COLLECTIONS,
+  buildOfficeHomeProjection,
+  createCorporateRecord,
+  listCorporateRecords,
+  upsertContactIdentity,
+  validateCommercialDocumentDraft,
+} = require("./office-operating-system");
 const { WhatsAppCloudAdapter } = require("./whatsapp");
 const { buildCalendarLinks, parsePreferredSchedule } = require("./scheduling");
 const { buildProposal, inferCommercialFacts } = require("./commercial");
@@ -1470,23 +1480,44 @@ async function processWhatsAppEvent({ event, runtime, store, adapter, config, re
     };
   }
 
-  const result = await runtime.runChat({
-    agent: lead.owner === "sales_agent" || lead.status === "sales" ? "sales" : "marketing",
+  const session = buildPublicIntelligenceSession({
+    source_site: "whatsapp",
+    source_channel: "whatsapp",
     lead_id: lead.id,
-    source: "whatsapp",
-    channel: "whatsapp",
-    notify_inbound: true,
     message: event.text || "",
-    external_message_id: event.message_id,
-    profile: {
-      phone: event.from,
+    lead_stage: lead.status || lead.commercial_stage || "exploring",
+  });
+  const oyiCoreRequest = buildOyiCoreCorporateConversationRequest({
+    session,
+    message: event.text || "",
+    lead,
+    body: {
+      source: "whatsapp",
+      profile: { phone: event.from },
     },
-    request_id: requestId,
+    requestId,
+  });
+  const oyiCoreResult = await callOyiCoreCorporateConversation(config, oyiCoreRequest);
+  const assistantMessage = oyiCoreResult.ok
+    ? oyiCoreResult.response.answer
+    : "Ochiga Intelligence is temporarily unavailable. We have your WhatsApp message and the Office team can follow up, but I cannot continue the automated conversation right now.";
+  await store.appendTimelineEvent({
+    lead_id: lead.id,
+    event_type: oyiCoreResult.ok ? "oyi_core_whatsapp_turn" : "oyi_core_whatsapp_unavailable",
+    actor: "ochiga_intelligence",
+    title: oyiCoreResult.ok ? "WhatsApp intelligence turn" : "WhatsApp intelligence unavailable",
+    body: String(assistantMessage || "").slice(0, 500),
+    metadata: {
+      request_id: requestId,
+      public_session_id: session.session_id,
+      oyi_thread_id: oyiCoreResult.ok ? oyiCoreResult.response.conversation_thread_id : "",
+      reason: oyiCoreResult.ok ? "" : oyiCoreResult.reason,
+    },
   });
 
   const sendResult = await adapter.sendTextMessage({
     to: event.from,
-    body: result.assistant_message,
+    body: assistantMessage,
     contextMessageId: event.message_id,
   });
 
@@ -2659,16 +2690,40 @@ function buildServer({ config, store, runtime, rateLimiter, publicRateLimiter, l
           return;
         }
 
-        const result = await runtime.runChat({
-          agent: body.agent,
-          lead_id: body.lead_id,
-          source: body.source,
-          notify_inbound: false,
+        const oyiCoreRequest = buildOyiCoreOfficeInternalRequest({
+          authContext,
           message: body.message,
-          profile: body.profile || {},
+          body,
+          requestId: ctx.requestId,
         });
+        const oyiCoreResult = await callOyiCoreOfficeInternalConversation(config, oyiCoreRequest);
+        if (!oyiCoreResult.ok) {
+          await appendAudit(store, authContext, "oyi_core.office_internal.unavailable", "office_session", oyiCoreRequest.office_session_id, {
+            reason: oyiCoreResult.reason,
+            status: oyiCoreResult.status,
+          }, req, "failed");
+          json(res, 503, {
+            error: "oyi_core_unavailable",
+            message: "Oyi Core is unavailable, so Office Internal intelligence cannot answer from a separate reasoning path.",
+            oyi_core_request: oyiCoreRequest,
+          }, { "x-request-id": ctx.requestId });
+          return;
+        }
 
-        json(res, 200, result, {
+        await appendAudit(store, authContext, "oyi_core.office_internal.completed", "office_session", oyiCoreRequest.office_session_id, {
+          oyi_thread_id: oyiCoreResult.response.conversation_thread_id,
+          business_domain: oyiCoreResult.response.business_domain,
+          attention_signal: oyiCoreResult.response.attention_signal,
+        }, req);
+        json(res, 200, {
+          agent: "office_internal",
+          trace_id: ctx.requestId,
+          assistant_message: oyiCoreResult.response.answer,
+          oyi_core: oyiCoreResult.response,
+          tools: oyiCoreResult.response.tool_proposals || [],
+          intelligence_authority: "ochiga-backend",
+          crm_source_of_truth: "ochiga-office",
+        }, {
           "x-request-id": ctx.requestId,
         });
         return;
@@ -3521,6 +3576,133 @@ function buildServer({ config, store, runtime, rateLimiter, publicRateLimiter, l
           },
           { "x-request-id": ctx.requestId }
         );
+        return;
+      }
+
+      if (pathname === "/api/lead-agents/admin/office/home") {
+        if (req.method !== "GET") {
+          methodNotAllowed(res, "GET");
+          return;
+        }
+        authorizePermission(authContext, "office.read");
+        const home = await buildOfficeHomeProjection(store);
+        json(res, 200, { home }, { "x-request-id": ctx.requestId });
+        return;
+      }
+
+      const crmCollectionMatch = pathname.match(/^\/api\/lead-agents\/admin\/crm\/(contacts|organizations|opportunities|activities|tasks)$/);
+      if (crmCollectionMatch) {
+        const collection = crmCollectionMatch[1];
+        const policy = CORPORATE_COLLECTIONS[collection];
+        if (req.method === "GET") {
+          authorizePermission(authContext, policy.permission);
+          json(res, 200, { collection: await listCorporateRecords(store, collection) }, { "x-request-id": ctx.requestId });
+          return;
+        }
+        if (req.method === "POST") {
+          authorizePermission(authContext, policy.manage);
+          const body = await readJsonBody(req);
+          requireObject(body, "body");
+          const record = collection === "contacts"
+            ? await upsertContactIdentity(store, body, { actorEmail: authContext?.email || "office" })
+            : await createCorporateRecord(store, collection, body, { actorEmail: authContext?.email || "office" });
+          await appendAudit(store, authContext, `crm_${collection}_upserted`, collection, record.id, {
+            business_unit: record.business_unit,
+            status: record.status,
+          });
+          json(res, 201, { record }, { "x-request-id": ctx.requestId });
+          return;
+        }
+        methodNotAllowed(res, "GET,POST");
+        return;
+      }
+
+      const officeOperatingMatch = pathname.match(/^\/api\/lead-agents\/admin\/office\/(projects|portfolio|support|private|partnerships|meetings)$/);
+      if (officeOperatingMatch) {
+        const collection = officeOperatingMatch[1];
+        const policy = CORPORATE_COLLECTIONS[collection];
+        if (req.method === "GET") {
+          authorizePermission(authContext, policy.permission);
+          json(res, 200, { collection: await listCorporateRecords(store, collection) }, { "x-request-id": ctx.requestId });
+          return;
+        }
+        if (req.method === "POST") {
+          authorizePermission(authContext, policy.manage);
+          const body = await readJsonBody(req);
+          requireObject(body, "body");
+          const record = await createCorporateRecord(store, collection, body, { actorEmail: authContext?.email || "office" });
+          await appendAudit(store, authContext, `office_${collection}_created`, collection, record.id, {
+            business_unit: record.business_unit,
+            status: record.status,
+          });
+          json(res, 201, { record }, { "x-request-id": ctx.requestId });
+          return;
+        }
+        methodNotAllowed(res, "GET,POST");
+        return;
+      }
+
+      if (pathname === "/api/lead-agents/admin/office/documents/draft") {
+        if (req.method !== "POST") {
+          methodNotAllowed(res, "POST");
+          return;
+        }
+        authorizePermission(authContext, "documents.generate");
+        const body = await readJsonBody(req);
+        requireObject(body, "body");
+        const pricing = validateCommercialDocumentDraft(body);
+        const record = await createCorporateRecord(store, "activities", {
+          activity_type: "document_draft_requested",
+          title: body.title || "Commercial document draft",
+          body: pricing.allowed_to_price
+            ? "Commercial draft can use approved pricing truth."
+            : "Commercial draft requires staff pricing input before totals can be presented.",
+          business_unit: body.business_unit,
+          lead_id: body.lead_id,
+          opportunity_id: body.opportunity_id,
+          metadata: {
+            document_type: body.document_type || "proposal",
+            pricing,
+          },
+        }, { actorEmail: authContext?.email || "office" });
+        await appendAudit(store, authContext, "office_document_draft_requested", "office_document", record.id, {
+          pricing_status: pricing.pricing_status,
+        });
+        json(res, 202, { draft: record, pricing }, { "x-request-id": ctx.requestId });
+        return;
+      }
+
+      if (pathname === "/api/lead-agents/admin/office/intelligence/chat") {
+        if (req.method !== "POST") {
+          methodNotAllowed(res, "POST");
+          return;
+        }
+        authorizePermission(authContext, "office.intelligence");
+        const body = await readJsonBody(req);
+        requireObject(body, "body");
+        if (!body.message || typeof body.message !== "string") {
+          json(res, 400, { error: "message is required" });
+          return;
+        }
+        const oyiCoreRequest = buildOyiCoreOfficeInternalRequest({
+          authContext,
+          message: body.message,
+          body,
+          requestId: ctx.requestId,
+        });
+        const oyiCoreResult = await callOyiCoreOfficeInternalConversation(config, oyiCoreRequest);
+        if (!oyiCoreResult.ok) {
+          json(res, 503, {
+            error: "oyi_core_unavailable",
+            message: "Oyi Core is unavailable, so Office Internal intelligence cannot answer from a separate reasoning path.",
+            oyi_core_request: oyiCoreRequest,
+          }, { "x-request-id": ctx.requestId });
+          return;
+        }
+        json(res, 200, {
+          oyi_core: oyiCoreResult.response,
+          proposed_actions: oyiCoreResult.response.tool_proposals || [],
+        }, { "x-request-id": ctx.requestId });
         return;
       }
 

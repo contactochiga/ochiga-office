@@ -64,6 +64,46 @@ function buildOyiCoreCorporateConversationRequest({ session, message, lead, body
   };
 }
 
+function buildOyiCoreOfficeInternalRequest({ authContext, message, body, requestId } = {}) {
+  const safeBody = recordOf(body);
+  const page = recordOf(safeBody.page_context);
+  const staff = recordOf(safeBody.staff);
+  return {
+    request_id: text(requestId || safeBody.request_id),
+    message: text(message || safeBody.message),
+    office_session_id: text(safeBody.office_session_id || safeBody.session_id || `office_session_${requestId || Date.now()}`),
+    conversation_thread_id: text(safeBody.conversation_thread_id || safeBody.thread_id),
+    staff: {
+      staff_id: text(staff.staff_id || staff.id || authContext?.userId),
+      email: text(staff.email || authContext?.email),
+      role: text(staff.role || authContext?.role || "ochiga_staff"),
+      permissions: Array.isArray(staff.permissions)
+        ? staff.permissions
+        : Array.isArray(authContext?.permissions)
+        ? authContext.permissions
+        : [],
+    },
+    page_context: {
+      page: text(page.page || safeBody.page),
+      selected_type: text(page.selected_type || safeBody.selected_type),
+      selected_id: text(page.selected_id || safeBody.selected_id),
+    },
+    business_unit: text(safeBody.business_unit || "corporate"),
+    capability_context: Array.isArray(safeBody.capability_context) ? safeBody.capability_context : [],
+    crm_context: recordOf(safeBody.crm_context),
+    portfolio_context: recordOf(safeBody.portfolio_context),
+    support_context: recordOf(safeBody.support_context),
+    requested_capability: text(safeBody.requested_capability || "office_internal_conversation"),
+    knowledge_context: Array.isArray(safeBody.knowledge_context) ? safeBody.knowledge_context : [],
+    metadata: {
+      crm_source_of_truth: "ochiga-office",
+      intelligence_authority: "ochiga-backend",
+      surface: "office_internal",
+      mode: text(safeBody.mode || "text_conversation"),
+    },
+  };
+}
+
 async function callOyiCoreCorporateConversation(config = {}, payload = {}, options = {}) {
   const url = oyiCoreConversationUrl(config);
   if (!url) {
@@ -108,8 +148,19 @@ async function callOyiCoreCorporateConversation(config = {}, payload = {}, optio
   }
 }
 
+async function callOyiCoreOfficeInternalConversation(config = {}, payload = {}, options = {}) {
+  const path = config.officeBackendInternalConversationPath || "/office/conversation/internal";
+  return callOyiCoreCorporateConversation(
+    { ...config, officeBackendConversationPath: path },
+    payload,
+    options
+  );
+}
+
 module.exports = {
   buildOyiCoreCorporateConversationRequest,
+  buildOyiCoreOfficeInternalRequest,
   callOyiCoreCorporateConversation,
+  callOyiCoreOfficeInternalConversation,
   oyiCoreConversationUrl,
 };

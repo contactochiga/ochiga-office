@@ -20,6 +20,7 @@
     "office:backend-events:test": "node scripts/test-backend-events.js",
     "office:public-intelligence:test": "node scripts/test-public-intelligence.js",
     "office:oyi-core-delegation:test": "node scripts/test-oyi-core-delegation.js",
+    "office:operating-system:test": "node scripts/test-office-operating-system.js",
     "office:eval": "node scripts/run-lead-agents-evals.js"
   },
   "dependencies": {

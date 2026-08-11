@@ -758,3 +758,139 @@ create table if not exists office_files (
 
 create index if not exists office_files_purpose_created_at_idx
 on office_files (purpose, created_at desc);
+
+-- Ochiga Office corporate operating system primitives.
+-- Additive only: do not apply to production without migration approval.
+
+create table if not exists office_projects (
+  id text primary key,
+  name text not null,
+  location text,
+  business_unit text not null default 'development',
+  status text not null default 'active',
+  stage text not null default 'prospective',
+  owner text,
+  linked_opportunity_id uuid references crm_opportunities(id) on delete set null,
+  lead_id uuid references leads(id) on delete set null,
+  organization_id uuid references crm_organizations(id) on delete set null,
+  contact_id uuid references crm_contacts(id) on delete set null,
+  portfolio_id text,
+  backend_building_id text,
+  oyi_deployment_status text not null default 'not_started',
+  milestones jsonb not null default '[]'::jsonb,
+  metadata jsonb not null default '{}'::jsonb,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create table if not exists office_portfolio_entries (
+  id text primary key,
+  name text not null,
+  client_account text,
+  location text,
+  business_unit text not null default 'technology',
+  relationship_type text not null default 'customer_building',
+  status text not null default 'active',
+  owner text,
+  project_id text references office_projects(id) on delete set null,
+  backend_estate_id text,
+  backend_building_id text,
+  facility_deep_link text,
+  oyi_deployment_status text not null default 'unknown',
+  facility_os_status text not null default 'unknown',
+  consumer_os_status text not null default 'unknown',
+  health_summary text,
+  support_status text not null default 'normal',
+  major_escalations integer not null default 0,
+  metadata jsonb not null default '{}'::jsonb,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create table if not exists office_support_cases (
+  id text primary key,
+  title text not null,
+  business_unit text not null default 'technology',
+  status text not null default 'open',
+  owner text,
+  customer_contact_id uuid references crm_contacts(id) on delete set null,
+  organization_id uuid references crm_organizations(id) on delete set null,
+  portfolio_id text references office_portfolio_entries(id) on delete set null,
+  backend_incident_ref text,
+  product_area text not null default 'oyi',
+  category text not null default 'general',
+  priority text not null default 'normal',
+  severity text not null default 'medium',
+  assigned_staff text,
+  sla_target_at timestamptz,
+  resolution_notes text,
+  metadata jsonb not null default '{}'::jsonb,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create table if not exists office_private_relationships (
+  id text primary key,
+  contact_id uuid references crm_contacts(id) on delete set null,
+  organization_id uuid references crm_organizations(id) on delete set null,
+  opportunity_id uuid references crm_opportunities(id) on delete set null,
+  business_unit text not null default 'private',
+  relationship_type text not null default 'membership',
+  status text not null default 'active',
+  owner text,
+  relationship_manager text,
+  review_status text not null default 'active',
+  notes text,
+  metadata jsonb not null default '{}'::jsonb,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create table if not exists office_partnership_relationships (
+  id text primary key,
+  contact_id uuid references crm_contacts(id) on delete set null,
+  organization_id uuid references crm_organizations(id) on delete set null,
+  opportunity_id uuid references crm_opportunities(id) on delete set null,
+  business_unit text not null default 'partnerships',
+  relationship_type text not null default 'strategic_partner',
+  status text not null default 'active',
+  owner text,
+  relationship_manager text,
+  review_status text not null default 'active',
+  notes text,
+  metadata jsonb not null default '{}'::jsonb,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create table if not exists office_meetings (
+  id text primary key,
+  title text not null,
+  business_unit text not null default 'corporate',
+  status text not null default 'active',
+  owner text,
+  scheduled_at timestamptz,
+  participants jsonb not null default '[]'::jsonb,
+  related_type text,
+  related_id text,
+  notes text,
+  outcome text,
+  follow_up_task_id uuid references crm_tasks(id) on delete set null,
+  metadata jsonb not null default '{}'::jsonb,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+alter table crm_tasks add column if not exists project_id text;
+alter table crm_tasks add column if not exists portfolio_id text;
+alter table crm_tasks add column if not exists support_case_id text;
+alter table crm_tasks add column if not exists description text;
+alter table crm_tasks add column if not exists priority text not null default 'normal';
+alter table crm_tasks add column if not exists completed_at timestamptz;
+
+create index if not exists office_projects_stage_idx on office_projects (status, stage);
+create index if not exists office_portfolio_backend_building_idx on office_portfolio_entries (backend_building_id);
+create index if not exists office_support_cases_status_idx on office_support_cases (status, priority, severity);
+create index if not exists office_private_relationships_status_idx on office_private_relationships (status, review_status);
+create index if not exists office_partnership_relationships_status_idx on office_partnership_relationships (status, relationship_type);
+create index if not exists office_meetings_scheduled_at_idx on office_meetings (scheduled_at desc);
