@@ -34,6 +34,8 @@ Current Office config already supports:
 - `OYI_BACKEND_BASE_URL`
 - `OFFICE_BACKEND_API_KEY`
 - `OFFICE_BACKEND_BEARER_TOKEN`
+- `OFFICE_BACKEND_EVENTS_ENABLED`
+- `OFFICE_BACKEND_EVENT_PATH`
 - Facility and Consumer export credentials
 
 Current Office runtime already probes or syncs:
@@ -86,6 +88,22 @@ Publishes operational events toward:
 - Ochiga backend for canonical ingestion
 - Office for visibility only where required
 
+### Office material CRM events
+
+Office can now build a safe material CRM event envelope after canonical intake creates a durable CRM lead and timeline record.
+
+The publisher is disabled by default and uses `OFFICE_BACKEND_EVENTS_ENABLED=false` unless a cutover explicitly enables it. When enabled, Office posts to `OFFICE_BACKEND_BASE_URL + OFFICE_BACKEND_EVENT_PATH` with idempotency headers and either `OFFICE_BACKEND_API_KEY` or `OFFICE_BACKEND_BEARER_TOKEN`.
+
+Current event families include:
+
+- `technology_deployment_requested`
+- `development_enquiry_received`
+- `membership_requested`
+- `partnership_enquiry_received`
+- `lead_created`
+
+Office remains the CRM/commercial source of truth. Backend/Oyi Core should treat these as material event inputs for awareness and intelligence, not as a full CRM database replica.
+
 ## What Office Should Not Duplicate
 
 Office should not duplicate:
@@ -104,6 +122,7 @@ Office should not duplicate:
 3. Continue syncing Facility and Consumer data into Office views.
 4. Expand Ochiga backend APIs until Office can consume runtime outputs directly.
 5. Reduce local intelligence ownership to adapters and presentation helpers only.
+6. Approve and enable Office material CRM event publishing after Backend receiver validation.
 
 ## Static Dashboard Rebuild Notes
 

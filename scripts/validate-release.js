@@ -8,6 +8,7 @@ const commands = [
   "npm run deployment:validate",
   "npm run office:test",
   "npm run office:intake:test",
+  "npm run office:backend-events:test",
 ];
 
 for (const command of commands) {

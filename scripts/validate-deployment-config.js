@@ -12,6 +12,7 @@ const pkg = readJson("package.json");
 const render = fs.readFileSync("render.yaml", "utf8");
 const vercel = fs.readFileSync("vercel.json", "utf8");
 const server = fs.readFileSync("src/lead-agents/server.js", "utf8");
+const envExample = fs.readFileSync(".env.example", "utf8");
 
 assert(pkg.scripts["office:start"], "package.json must expose office:start for Office deployment");
 assert(/startCommand:\s+npm run office:start/.test(render), "render.yaml must start the standalone Office runtime");
@@ -21,6 +22,8 @@ assert(/LEAD_AGENTS_API_KEYS[\s\S]*sync:\s+false/.test(render), "Office API keys
 assert(/SUPABASE_SERVICE_ROLE_KEY[\s\S]*sync:\s+false/.test(render), "Supabase service role must be an unsynced secret");
 assert(/OPENAI_API_KEY[\s\S]*sync:\s+false/.test(render), "OpenAI key must be an unsynced secret");
 assert(server.includes("/api/office/intake"), "Office intake API route must be registered");
+assert(envExample.includes("OFFICE_BACKEND_EVENTS_ENABLED=false"), "Office material events must be disabled by default in .env.example");
+assert(envExample.includes("OFFICE_BACKEND_EVENT_PATH=/office/events/material"), "Office material event path must be documented");
 assert(vercel.includes("/api/lead-agents/:path*"), "Vercel compatibility rewrite for lead agents must remain");
 assert(vercel.includes("/healthz"), "Vercel health rewrite must remain");
 

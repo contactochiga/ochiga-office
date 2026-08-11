@@ -17,6 +17,7 @@
     "test": "npm run check",
     "office:test": "node scripts/test-lead-agents.js",
     "office:intake:test": "node scripts/test-office-intake.js",
+    "office:backend-events:test": "node scripts/test-backend-events.js",
     "office:eval": "node scripts/run-lead-agents-evals.js"
   },
   "dependencies": {

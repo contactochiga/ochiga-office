@@ -12,6 +12,11 @@ function stringListFromEnv(value) {
     .filter(Boolean);
 }
 
+function booleanFromEnv(value, fallback = false) {
+  if (value === undefined || value === null || value === "") return fallback;
+  return ["1", "true", "yes", "on"].includes(String(value).toLowerCase());
+}
+
 function createConfig() {
   const cwd = process.cwd();
 
@@ -148,6 +153,16 @@ function createConfig() {
       process.env.OFFICE_BACKEND_BEARER_TOKEN ||
       process.env.OYI_BACKEND_BEARER_TOKEN ||
       "",
+    officeBackendEventsEnabled: booleanFromEnv(
+      process.env.OFFICE_BACKEND_EVENTS_ENABLED,
+      false
+    ),
+    officeBackendEventPath:
+      process.env.OFFICE_BACKEND_EVENT_PATH || "/office/events/material",
+    officeBackendEventTimeoutMs: numberFromEnv(
+      process.env.OFFICE_BACKEND_EVENT_TIMEOUT_MS,
+      10_000
+    ),
     officeDigitalTwinBaseUrl: process.env.OFFICE_DIGITAL_TWIN_BASE_URL || "",
     officeDigitalTwinApiKey: process.env.OFFICE_DIGITAL_TWIN_API_KEY || "",
     officeDigitalTwinStatePath: process.env.OFFICE_DIGITAL_TWIN_STATE_PATH || "",

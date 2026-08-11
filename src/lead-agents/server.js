@@ -30,6 +30,10 @@ const {
   leadInputFromIntake,
   normalizeOfficeIntakeEnvelope,
 } = require("./office-intake");
+const {
+  buildMaterialCrmEvent,
+  publishBackendMaterialEvent,
+} = require("./backend-events");
 const { WhatsAppCloudAdapter } = require("./whatsapp");
 const { buildCalendarLinks, parsePreferredSchedule } = require("./scheduling");
 const { buildProposal, inferCommercialFacts } = require("./commercial");
@@ -2627,7 +2631,7 @@ function buildServer({ config, store, runtime, rateLimiter, publicRateLimiter, l
         }
 
         const lead = await store.createLead(leadInputFromIntake(envelope));
-        await store.appendTimelineEvent({
+        const timelineEvent = await store.appendTimelineEvent({
           lead_id: lead.id,
           event_type: "office_intake_received",
           actor: envelope.source_site,
@@ -2646,6 +2650,22 @@ function buildServer({ config, store, runtime, rateLimiter, publicRateLimiter, l
             consent: envelope.consent,
           },
         });
+        const materialEvent = buildMaterialCrmEvent({
+          lead,
+          envelope,
+          timelineEvent,
+          requestId: ctx.requestId,
+        });
+        const backendEventResult = await publishBackendMaterialEvent(config, materialEvent);
+        if (!backendEventResult.ok && !backendEventResult.skipped) {
+          log("warn", "office_backend_material_event_publish_failed", {
+            reason: backendEventResult.reason,
+            status: backendEventResult.status,
+            event_type: materialEvent.event_type,
+            lead_id: lead.id,
+            request_id: ctx.requestId,
+          });
+        }
 
         json(res, 201, {
           ok: true,
@@ -2653,6 +2673,12 @@ function buildServer({ config, store, runtime, rateLimiter, publicRateLimiter, l
           request_id: envelope.request_id,
           idempotency_key: envelope.idempotency_key,
           lead,
+          backend_event: {
+            enabled: Boolean(config.officeBackendEventsEnabled),
+            sent: Boolean(backendEventResult.ok),
+            skipped: Boolean(backendEventResult.skipped),
+            reason: backendEventResult.reason || null,
+          },
         }, { "x-request-id": ctx.requestId });
         return;
       }

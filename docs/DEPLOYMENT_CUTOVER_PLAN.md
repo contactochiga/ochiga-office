@@ -19,7 +19,8 @@ This plan prepares the standalone Office deployment without mutating production 
 6. Confirm `/healthz` responds in the preview deployment.
 7. Confirm `POST /api/office/intake` requires authentication.
 8. Confirm the website server has `OCHIGA_OFFICE_INTAKE_ENDPOINT` and `OCHIGA_OFFICE_INTAKE_TOKEN`.
-9. Apply `db/lead-agents-schema.sql` only in an approved database window.
+9. Keep `OFFICE_BACKEND_EVENTS_ENABLED=false` until the Backend material-event receiver and credentials are approved.
+10. Apply `db/lead-agents-schema.sql` only in an approved database window.
 
 ## Cutover Sequence
 
@@ -30,7 +31,8 @@ This plan prepares the standalone Office deployment without mutating production 
 5. Submit a controlled test enquiry from a staging or approved test form.
 6. Verify durable CRM record creation, idempotency and timeline activity.
 7. Verify email notification still sends or is explicitly skipped when not configured.
-8. Keep the old Render service standby until website intake and Office dashboard checks pass.
+8. Enable Office → Backend material CRM events only after a staging event smoke passes.
+9. Keep the old Render service standby until website intake and Office dashboard checks pass.
 
 ## Rollback
 
@@ -42,6 +44,7 @@ This plan prepares the standalone Office deployment without mutating production 
 ## Production Approval Required
 
 - Applying `db/lead-agents-schema.sql`
+- Enabling `OFFICE_BACKEND_EVENTS_ENABLED`
 - Rotating any credential in `docs/ROTATION_CHECKLIST.md`
 - Switching website production environment variables
 - Retiring the old mixed Edge/Office deployment
