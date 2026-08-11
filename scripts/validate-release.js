@@ -9,6 +9,7 @@ const commands = [
   "npm run office:test",
   "npm run office:intake:test",
   "npm run office:backend-events:test",
+  "npm run office:public-intelligence:test",
 ];
 
 for (const command of commands) {

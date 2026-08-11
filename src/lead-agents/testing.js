@@ -108,6 +108,7 @@ async function runMockChatScenario(options = {}) {
       location: "Lagos",
       ...(options.profile || {}),
     },
+    corporate_context: options.corporate_context,
   });
 
   return {

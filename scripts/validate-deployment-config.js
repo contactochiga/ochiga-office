@@ -22,6 +22,7 @@ assert(/LEAD_AGENTS_API_KEYS[\s\S]*sync:\s+false/.test(render), "Office API keys
 assert(/SUPABASE_SERVICE_ROLE_KEY[\s\S]*sync:\s+false/.test(render), "Supabase service role must be an unsynced secret");
 assert(/OPENAI_API_KEY[\s\S]*sync:\s+false/.test(render), "OpenAI key must be an unsynced secret");
 assert(server.includes("/api/office/intake"), "Office intake API route must be registered");
+assert(server.includes("/api/lead-agents/public/session"), "Public intelligence session API route must be registered");
 assert(envExample.includes("OFFICE_BACKEND_EVENTS_ENABLED=false"), "Office material events must be disabled by default in .env.example");
 assert(envExample.includes("OFFICE_BACKEND_EVENT_PATH=/office/events/material"), "Office material event path must be documented");
 assert(envExample.includes("OFFICE_BACKEND_EVENT_MAX_ATTEMPTS=2"), "Office material event retry limit must be documented");

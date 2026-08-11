@@ -34,6 +34,12 @@ const {
   buildMaterialCrmEvent,
   publishBackendMaterialEvent,
 } = require("./backend-events");
+const {
+  buildOyiCoreCorporateRequest,
+  buildPublicIntelligenceSession,
+  createFormContinuationContext,
+  detectBlockedPublicOperationalRequest,
+} = require("./public-intelligence");
 const { WhatsAppCloudAdapter } = require("./whatsapp");
 const { buildCalendarLinks, parsePreferredSchedule } = require("./scheduling");
 const { buildProposal, inferCommercialFacts } = require("./commercial");
@@ -1667,6 +1673,7 @@ function buildServer({ config, store, runtime, rateLimiter, publicRateLimiter, l
         pathname === "/widget" ||
         pathname === "/widget/" ||
         pathname === "/widget.js" ||
+        pathname === "/api/lead-agents/public/session" ||
         pathname === "/api/lead-agents/public/transcribe" ||
         pathname === "/api/lead-agents/public/chat";
       const isPublicDigitalTwinPath =
@@ -2119,6 +2126,38 @@ function buildServer({ config, store, runtime, rateLimiter, publicRateLimiter, l
         return;
       }
 
+      if (pathname === "/api/lead-agents/public/session") {
+        const rateLimitState = widgetRateLimiter.check(req);
+        res.setHeader("x-ratelimit-remaining", String(rateLimitState.remaining));
+        res.setHeader("x-ratelimit-reset", new Date(rateLimitState.resetAt).toISOString());
+
+        if (req.method !== "POST") {
+          methodNotAllowed(res, "POST");
+          return;
+        }
+
+        const body = await readJsonBody(req, 32 * 1024);
+        const session = buildPublicIntelligenceSession({
+          ...body,
+          source_site: body.source_site || body.source || config.defaultLeadSource,
+          source_channel: body.source_channel || "website",
+        });
+        await appendAudit(store, { userId: null, email: "", role: "guest" }, "public.session.created", "public_widget", session.session_id, {
+          source_site: session.source.source_site,
+          source_page: session.source.source_page,
+          business_unit: session.business_unit,
+          agent_role: session.active_agent_role,
+          mode: session.engagement_mode,
+        }, req);
+        json(res, 201, {
+          ok: true,
+          session,
+          public_identity: session.public_identity,
+          oyi_core_request: buildOyiCoreCorporateRequest(session, body.message || ""),
+        }, { "x-request-id": ctx.requestId });
+        return;
+      }
+
       if (pathname === "/digital-twin" || pathname === "/digital-twin/") {
         if (req.method !== "GET") {
           methodNotAllowed(res, "GET");
@@ -2420,17 +2459,40 @@ function buildServer({ config, store, runtime, rateLimiter, publicRateLimiter, l
           return;
         }
 
+        const session = buildPublicIntelligenceSession({
+          ...body,
+          source_site: body.source_site || body.source || config.defaultLeadSource,
+          source_channel: "website",
+          lead_id: body.lead_id,
+        });
+        const blocked = detectBlockedPublicOperationalRequest({ message: body.message });
+        if (blocked.blocked) {
+          await appendAudit(store, { userId: null, email: "", role: "guest" }, "public.capability.blocked", "public_widget", body.lead_id || session.session_id, {
+            source: body.source || config.defaultLeadSource,
+            domain: blocked.domain,
+            action: blocked.action,
+            reason: blocked.reason,
+          }, req);
+          json(res, 403, {
+            error: "public_capability_blocked",
+            message: "I can explain Ochiga and route your enquiry, but I cannot access or control private building, resident, security, visitor, wallet, or device systems from this public surface.",
+            session,
+          }, { "x-request-id": ctx.requestId });
+          return;
+        }
+
         await appendAudit(store, { userId: null, email: "", role: "guest" }, "ai.command.received", "public_widget", body.lead_id || "", { source: body.source || config.defaultLeadSource, prompt_excerpt: body.message.slice(0, 240) }, req);
 
         let result;
         try {
           result = await runtime.runChat({
-            agent: "marketing",
+            agent: session.runtime_agent,
             lead_id: body.lead_id,
             source: body.source || config.defaultLeadSource,
             notify_inbound: true,
             message: body.message,
             profile: body.profile || {},
+            corporate_context: session,
           });
         } catch (err) {
           log("error", "lead_agents_server.public_chat_fallback", {
@@ -2470,7 +2532,17 @@ function buildServer({ config, store, runtime, rateLimiter, publicRateLimiter, l
         }
 
         await appendAudit(store, { userId: null, email: "", role: "guest" }, "ai.response.generated", "public_widget", result.lead?.id || body.lead_id || "", { source: body.source || config.defaultLeadSource, trace_id: result.trace_id || "", degraded: Boolean(result.degraded) }, req);
-        json(res, 200, result, {
+        json(res, 200, {
+          ...result,
+          public_intelligence: {
+            session: {
+              ...session,
+              known_contact: Boolean(result.lead?.id),
+              crm_contact_ref: result.lead?.id ? "office_lead_record" : null,
+            },
+            oyi_core_request: buildOyiCoreCorporateRequest(session, body.message),
+          },
+        }, {
           "x-request-id": ctx.requestId,
         });
         return;
@@ -2620,17 +2692,20 @@ function buildServer({ config, store, runtime, rateLimiter, publicRateLimiter, l
         const envelope = normalizeOfficeIntakeEnvelope(body);
         const existing = await findExistingIntakeLead(store, envelope.idempotency_key);
         if (existing) {
+          const continuation = createFormContinuationContext(envelope, existing);
           json(res, 200, {
             ok: true,
             duplicate: true,
             request_id: envelope.request_id,
             idempotency_key: envelope.idempotency_key,
             lead: existing,
+            conversation_continuation: continuation,
           }, { "x-request-id": ctx.requestId });
           return;
         }
 
         const lead = await store.createLead(leadInputFromIntake(envelope));
+        const continuation = createFormContinuationContext(envelope, lead);
         const timelineEvent = await store.appendTimelineEvent({
           lead_id: lead.id,
           event_type: "office_intake_received",
@@ -2648,6 +2723,7 @@ function buildServer({ config, store, runtime, rateLimiter, publicRateLimiter, l
             inquiry_type: envelope.inquiry_type,
             campaign: envelope.campaign,
             consent: envelope.consent,
+            public_context_ref: continuation.public_context_ref,
           },
         });
         const materialEvent = buildMaterialCrmEvent({
@@ -2673,6 +2749,7 @@ function buildServer({ config, store, runtime, rateLimiter, publicRateLimiter, l
           request_id: envelope.request_id,
           idempotency_key: envelope.idempotency_key,
           lead,
+          conversation_continuation: continuation,
           backend_event: {
             enabled: Boolean(config.officeBackendEventsEnabled),
             sent: Boolean(backendEventResult.ok),

@@ -459,6 +459,17 @@ class LeadAgentRuntime {
         "user",
         `Runtime context: agent=${agentPack.agentName}; lead_id=${lead.id}; source=${lead.source}. A lead record already exists for this conversation. Known project type=${enrichedLead.project_type || "unknown"}; known unit_count=${enrichedLead.unit_count || "unknown"}.`
       ),
+      request.corporate_context
+        ? toInputMessage(
+            "user",
+            [
+              `Public corporate intelligence context: public_identity=${request.corporate_context.public_identity || "ochiga_intelligence"}.`,
+              `Internal agent role=${request.corporate_context.active_agent_role || "oma"}; business_unit=${request.corporate_context.business_unit || "corporate"}; inquiry_type=${request.corporate_context.inquiry_type || "general_enquiry"}.`,
+              `Oyi Core intelligence authority=${request.corporate_context.oyi_core_authority || "ochiga-backend"}; CRM source of truth=${request.corporate_context.crm_source_of_truth || "ochiga-office"}.`,
+              "Do not expose internal role labels unless directly asked. Do not access or claim access to private resident, facility, security, visitor, wallet, device, or operational records from this public surface.",
+            ].join(" ")
+          )
+        : null,
       toInputMessage(
         "user",
         "Important response rule: answer the latest user message first. Do not revisit earlier answered questions unless the latest message explicitly asks again. If the lead just provided booking details, contact details, name, timezone, or scheduling confirmation, acknowledge those details directly and continue from there without reintroducing yourself."
@@ -479,7 +490,7 @@ class LeadAgentRuntime {
       ),
       ...this.buildHistoryMessages(history),
       toInputMessage("user", request.message),
-    ];
+    ].filter(Boolean);
 
     let response = await this.openaiClient.createResponse({
       model: this.config.openaiModel,
