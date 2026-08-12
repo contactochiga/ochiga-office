@@ -441,12 +441,16 @@
   .fact-value { font-size: 13px; color: var(--text-primary); }
 
   .rail-card { border: 1px solid var(--line); border-radius: var(--radius); padding: 14px; background: rgba(255,255,255,0.015); }
-  .rail-card h4 { font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-tertiary); margin: 0 0 10px; }
+  .rail-card h4 { font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-tertiary); margin: 0; }
+  .rail-card-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 10px; }
+  .rail-card-head .btn { margin-top: 0; width: auto; }
   .rail-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; font-size: 12.5px; }
   .rail-list a { color: var(--white); text-decoration: none; }
   .rail-list a:hover { color: var(--red-bright); }
   .rail-sub { color: var(--text-tertiary); font-size: 11px; margin-left: 4px; }
   .rail-empty { color: var(--text-tertiary); font-size: 12px; margin: 0; }
+  .quick-filters { gap: 6px; }
+  .quick-filters .btn { margin-top: 0; width: auto; }
 
   /* Inline forms (lead update, dialogs) */
   .inline-form { display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-end; }

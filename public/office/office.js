@@ -1,18 +1,25 @@
-// Ochiga Office — corporate shell (Phase 2: Home + CRM).
+// Ochiga Office — corporate shell (Phase 3: Projects + Portfolio +
+// Support + Tasks + Meetings).
 //
 // Phase 1 (shell/nav/layout/tokens/permission-aware nav/persistent Oyi
-// control/shared states) is preserved as-is. Phase 2 adds:
-//   - a real Office Home / Attention view
-//   - a CRM workspace: Overview, Leads, Contacts, Organizations,
-//     Opportunities, each with list + shared object-detail views
-//   - a generalized nested hash router (#/crm/leads/:id etc.)
-//   - a shared timeline component and object-detail shell
-//   - contextual Oyi intelligence (page + selected object)
+// control/shared states) and Phase 2 (Home/Attention + CRM) are
+// preserved as-is. Phase 3 turns the remaining core operational
+// placeholders into real modules on the same shared architecture:
+//   - Projects: real Ochiga projects/engagements (office_projects)
+//   - Portfolio: corporate-level view of buildings/deployments —
+//     a safe projection, never Facility/Consumer internals
+//   - Support: Ochiga-level support cases/escalations
+//   - Tasks: a cross-company work view over crm_tasks
+//   - Meetings: a lightweight corporate meeting workspace
+// All five reuse the Phase 2 shared list/detail/timeline/Oyi
+// primitives (renderStandardList, renderDetailShell, renderTimeline,
+// railCard, badge/toneForStatus) — no new page pattern was invented.
 //
 // Every screen renders only from real backend contracts already
 // documented in this repo. No independent reasoning happens here and
-// nothing is fabricated — see PHASE2_REPORT notes inline where a
-// backend limitation shapes what's shown.
+// nothing is fabricated — see inline notes where a backend limitation
+// (usually: list+create only, no update/status-transition endpoint)
+// shapes what's shown. See PHASE3_REPORT for the full list.
 //
 // Backend contracts used (all pre-existing, none altered):
 //   GET  /api/lead-agents/admin/session/me
@@ -22,12 +29,15 @@
 //   GET  /api/lead-agents/admin/office/home
 //   GET  /api/lead-agents/leads
 //   GET  /api/lead-agents/leads/:id
-//   PATCH /api/lead-agents/leads/:id
+//   PATCH /api/lead-agents/leads/:id  (sparse — hardened, no more full-record workaround)
 //   GET  /api/lead-agents/leads/:id/timeline
 //   GET  /api/lead-agents/leads/:id/proposals
 //   GET  /api/lead-agents/leads/:id/conversations
 //   GET/POST /api/lead-agents/admin/crm/{contacts|organizations|opportunities|activities|tasks}
-//   GET/POST /api/lead-agents/admin/office/meetings
+//   GET/POST /api/lead-agents/admin/office/{projects|portfolio|support|meetings}
+//   None of the above support PATCH/DELETE except the lead endpoint —
+//   Projects/Portfolio/Support/Tasks/Meetings/Contacts/Organizations/
+//   Opportunities/Activities remain list+create only on the backend.
 
 const state = {
   admin: null,
@@ -139,6 +149,18 @@ async function fetchMeetings(force) {
   const data = await cached("meetings", () => apiListOffice("meetings"), force);
   return data.collection || [];
 }
+async function fetchProjects(force) {
+  const data = await cached("projects", () => apiListOffice("projects"), force);
+  return data.collection || [];
+}
+async function fetchPortfolio(force) {
+  const data = await cached("portfolio", () => apiListOffice("portfolio"), force);
+  return data.collection || [];
+}
+async function fetchSupport(force) {
+  const data = await cached("support", () => apiListOffice("support"), force);
+  return data.collection || [];
+}
 
 // ---------------------------------------------------------------
 // Session
@@ -181,15 +203,17 @@ async function logout() {
 
 // ---------------------------------------------------------------
 // Navigation model — permission keys match permissions.js exactly.
-// Tasks/Meetings are deliberately not top-level destinations; they
-// surface contextually inside object detail views (see below).
+// Tasks and Meetings are top-level, cross-company workspaces as of
+// Phase 3 (they also surface contextually inside object detail rails).
 // ---------------------------------------------------------------
 const PRIMARY_NAV = [
   { key: "home", label: "Home", permission: "office.read", phase: null },
   { key: "crm", label: "CRM", permission: "crm.read", phase: null },
-  { key: "projects", label: "Projects", permission: "projects.read", phase: 3 },
-  { key: "portfolio", label: "Portfolio", permission: "portfolio.read", phase: 3 },
-  { key: "support", label: "Support", permission: "support.read", phase: 3 },
+  { key: "projects", label: "Projects", permission: "projects.read", phase: null },
+  { key: "portfolio", label: "Portfolio", permission: "portfolio.read", phase: null },
+  { key: "support", label: "Support", permission: "support.read", phase: null },
+  { key: "tasks", label: "Tasks", permission: "tasks.read", phase: null },
+  { key: "meetings", label: "Meetings", permission: "meetings.read", phase: null },
   { key: "private", label: "Private", permission: "private.read", phase: 4 },
   { key: "partnerships", label: "Partnerships", permission: "partnerships.read", phase: 4 },
   { key: "documents", label: "Documents", permission: "documents.generate", phase: 5 },
@@ -202,9 +226,6 @@ const ADMIN_NAV = [
 ];
 
 const VIEW_COPY = {
-  projects: "Actual Ochiga projects and engagements being executed — real estate development, technology deployments and other corporate projects.",
-  portfolio: "Corporate-level visibility across relevant Ochiga assets, buildings and deployments — a projection, not a duplicate of Facility or Consumer operational truth.",
-  support: "Corporate and customer support cases and escalations, distinct from the Facility/Consumer incidents they may reference.",
   private: "Ochiga Private relationship, member and investor workflow — relationship-oriented, not an investment marketplace.",
   partnerships: "Landowner, capital, buyer/offtake, delivery, technology/integration and strategic partner relationships.",
   documents: "Quotations, proposals and drafts built from approved Office truth — Oyi will never invent a price here.",
@@ -297,8 +318,8 @@ function badge(text, tone = "default") {
 function toneForStatus(value) {
   const v = String(value || "").toLowerCase();
   if (/won|approved|active|resolved|completed|done/.test(v)) return "green";
-  if (/lost|cancelled|declined|closed|overdue/.test(v)) return "red";
-  if (/pending|review|awaiting|open|new/.test(v)) return "amber";
+  if (/lost|cancelled|declined|closed|overdue|urgent|critical/.test(v)) return "red";
+  if (/pending|review|awaiting|open|new|high/.test(v)) return "amber";
   return "default";
 }
 
@@ -461,8 +482,15 @@ function renderDetailShell(outlet, { type, id, label, typeLine, badges, backLabe
   outlet.appendChild(body);
 }
 
-function railCard(title, contentNodeOrHtml) {
-  const card = el(`<div class="rail-card"><h4>${escapeHtml(title)}</h4></div>`);
+function railCard(title, contentNodeOrHtml, action) {
+  const card = el(`<div class="rail-card"></div>`);
+  const head = el(`<div class="rail-card-head"><h4>${escapeHtml(title)}</h4></div>`);
+  if (action) {
+    const btn = el(`<button type="button" class="btn btn-ghost btn-sm">${escapeHtml(action.label)}</button>`);
+    btn.addEventListener("click", action.onClick);
+    head.appendChild(btn);
+  }
+  card.appendChild(head);
   if (contentNodeOrHtml instanceof Node) card.appendChild(contentNodeOrHtml);
   else card.insertAdjacentHTML("beforeend", contentNodeOrHtml);
   return card;
@@ -525,6 +553,16 @@ async function renderRoute() {
     await renderHomeView(outlet, token);
   } else if (topKey === "crm") {
     await renderCrmRoute(outlet, rest, token);
+  } else if (topKey === "projects") {
+    await renderModuleRoute(outlet, "projects", rest, token);
+  } else if (topKey === "portfolio") {
+    await renderModuleRoute(outlet, "portfolio", rest, token);
+  } else if (topKey === "support") {
+    await renderModuleRoute(outlet, "support", rest, token);
+  } else if (topKey === "tasks") {
+    await renderTasksRoute(outlet, rest, token);
+  } else if (topKey === "meetings") {
+    await renderModuleRoute(outlet, "meetings", rest, token);
   } else {
     setTopbar(item.label, item.phase ? `Phase ${item.phase}` : "");
     setSelectedObject(null);
@@ -624,6 +662,12 @@ function renderHomeSection(title, items, emptyText) {
     if (item.type === "lead") {
       row.classList.add("clickable");
       row.addEventListener("click", () => navigate(`crm/leads/${item.id}`));
+    } else if (item.type === "support_case") {
+      row.classList.add("clickable");
+      row.addEventListener("click", () => navigate(`support/${item.id}`));
+    } else if (item.type === "task") {
+      row.classList.add("clickable");
+      row.addEventListener("click", () => navigate(`tasks/${item.id}`));
     }
     list.appendChild(row);
   });
@@ -852,35 +896,55 @@ async function renderCrmList(body, key, token) {
   const config = CRM_LIST_CONFIG[key];
   const records = await config.fetch();
   if (token !== state.renderToken) return;
+  renderStandardList(body, {
+    title: titleCase(key),
+    records,
+    columns: config.columns,
+    searchFields: config.searchFields,
+    filters: config.filters,
+    canManage: hasPermission(config.manage),
+    onCreate: () => openCreateDialog(key),
+    onRowClick: (row) => navigate(`crm/${key}/${row.id}`),
+    emptyMessage: "No records yet.",
+  });
+}
 
+// ---------------------------------------------------------------
+// Shared list primitive — a permission-aware, searchable/filterable
+// table with an optional "My Records" toggle and "New" action. Used
+// by CRM (above) and every Phase 3 module (Projects/Portfolio/
+// Support/Tasks/Meetings) below, so every list in Office behaves
+// identically.
+// ---------------------------------------------------------------
+function renderStandardList(body, { title, records, columns, searchFields, filters, canManage, onCreate, onRowClick, emptyMessage, secondaryAction, ownerField }) {
   const listState = { query: "", filters: {}, mineOnly: false };
 
   function draw() {
     let rows = records;
-    if (listState.mineOnly) rows = rows.filter((r) => isMine(r.owner));
+    if (listState.mineOnly) rows = rows.filter((r) => isMine(ownerField ? r[ownerField] : (r.owner || r.assignee)));
     Object.entries(listState.filters).forEach(([field, value]) => {
       if (value) rows = rows.filter((r) => String(r[field] || "") === value);
     });
     if (listState.query) {
       const q = listState.query.toLowerCase();
-      rows = rows.filter((r) => config.searchFields.some((field) => String(r[field] || "").toLowerCase().includes(q)));
+      rows = rows.filter((r) => searchFields.some((field) => String(r[field] || "").toLowerCase().includes(q)));
     }
     resultsHost.innerHTML = "";
     resultsHost.appendChild(renderDataTable({
-      columns: config.columns,
+      columns,
       rows,
-      onRowClick: (row) => navigate(`crm/${key}/${row.id}`),
-      emptyMessage: records.length ? "No records match your filters." : "No records yet.",
+      onRowClick,
+      emptyMessage: records.length ? "No records match your filters." : (emptyMessage || "No records yet."),
     }));
     countLabel.textContent = `${rows.length} of ${records.length}`;
   }
 
   body.innerHTML = "";
-  const heading = el(`<div class="view-heading"><h1>${escapeHtml(titleCase(key))}</h1><span class="count-pill" id="crmListCount"></span></div>`);
+  const heading = el(`<div class="view-heading"><h1>${escapeHtml(title)}</h1><span class="count-pill"></span></div>`);
   body.appendChild(heading);
-  const countLabel = heading.querySelector("#crmListCount");
+  const countLabel = heading.querySelector(".count-pill");
 
-  const filterDefs = config.filters.map((filter) => ({
+  const filterDefs = (filters || []).map((filter) => ({
     label: filter.label,
     value: listState.filters[filter.key] || "",
     options: [...new Set(records.map((r) => r[filter.key]).filter(Boolean))].sort(),
@@ -897,7 +961,7 @@ async function renderCrmList(body, key, token) {
       draw();
     },
     filters: filterDefs,
-    secondaryAction: {
+    secondaryAction: secondaryAction || {
       label: "My Records",
       onClick: (event) => {
         listState.mineOnly = !listState.mineOnly;
@@ -905,7 +969,7 @@ async function renderCrmList(body, key, token) {
         draw();
       },
     },
-    primaryAction: hasPermission(config.manage) ? { label: "New", onClick: () => openCreateDialog(key) } : null,
+    primaryAction: canManage && onCreate ? { label: "New", onClick: onCreate } : null,
   });
   body.appendChild(toolbar);
 
@@ -947,13 +1011,15 @@ async function renderLeadDetail(body, id, token) {
     return;
   }
 
-  const [activities, tasks] = await Promise.all([
+  const [activities, tasks, projects] = await Promise.all([
     fetchActivities().catch(() => []),
     hasPermission("tasks.read") ? fetchTasks().catch(() => []) : Promise.resolve([]),
+    hasPermission("projects.read") ? fetchProjects().catch(() => []) : Promise.resolve([]),
   ]);
   if (token !== state.renderToken) return;
   const ownActivities = activities.filter((a) => a.lead_id === id);
   const ownTasks = tasks.filter((t) => t.lead_id === id);
+  const linkedProject = projects.find((p) => p.lead_id === id);
   const combinedTimeline = [...timeline, ...ownActivities];
   const canManage = hasPermission("crm.manage");
 
@@ -983,6 +1049,9 @@ async function renderLeadDetail(body, id, token) {
   }
   if (hasPermission("documents.generate")) {
     railSections.push(railCard("Proposals", railList(proposals, (p) => `${escapeHtml(p.tier_name || "Proposal")} <span class="rail-sub">${escapeHtml(titleCase(p.status))}</span>`)));
+  }
+  if (linkedProject) {
+    railSections.push(railCard("Project", `<a href="#/projects/${linkedProject.id}">${escapeHtml(linkedProject.name)}</a> <span class="rail-sub">${escapeHtml(titleCase(linkedProject.stage))}</span>`));
   }
 
   renderDetailShell(body, {
@@ -1041,8 +1110,10 @@ function renderLeadUpdateForm(record) {
 }
 
 async function renderContactDetail(body, id, token) {
-  const [contacts, organizations, opportunities, activities, meetings] = await Promise.all([
-    fetchContacts(), fetchOrganizations(), fetchOpportunities(), fetchActivities(), hasPermission("meetings.read") ? fetchMeetings().catch(() => []) : Promise.resolve([]),
+  const [contacts, organizations, opportunities, activities, meetings, projects] = await Promise.all([
+    fetchContacts(), fetchOrganizations(), fetchOpportunities(), fetchActivities(),
+    hasPermission("meetings.read") ? fetchMeetings().catch(() => []) : Promise.resolve([]),
+    hasPermission("projects.read") ? fetchProjects().catch(() => []) : Promise.resolve([]),
   ]);
   if (token !== state.renderToken) return;
   const record = contacts.find((c) => c.id === id);
@@ -1055,6 +1126,7 @@ async function renderContactDetail(body, id, token) {
   const relatedOpportunities = opportunities.filter((o) => o.contact_id === id);
   const relatedActivities = activities.filter((a) => a.contact_id === id);
   const relatedMeetings = meetings.filter((m) => m.related_type === "contact" && m.related_id === id);
+  const linkedProject = projects.find((p) => p.contact_id === id);
   const canManage = hasPermission("crm.manage");
 
   const mainSections = [
@@ -1078,6 +1150,7 @@ async function renderContactDetail(body, id, token) {
   ];
   if (hasPermission("meetings.read")) railSections.push(railCard("Meetings", railList(relatedMeetings, (m) => escapeHtml(m.title))));
   if (org) railSections.push(railCard("Organization", `<a href="#/crm/organizations/${org.id}">${escapeHtml(org.name)}</a>`));
+  if (linkedProject) railSections.push(railCard("Project", `<a href="#/projects/${linkedProject.id}">${escapeHtml(linkedProject.name)}</a> <span class="rail-sub">${escapeHtml(titleCase(linkedProject.stage))}</span>`));
 
   renderDetailShell(body, {
     type: "contact",
@@ -1093,8 +1166,11 @@ async function renderContactDetail(body, id, token) {
 }
 
 async function renderOrganizationDetail(body, id, token) {
-  const [organizations, contacts, opportunities, activities, meetings] = await Promise.all([
-    fetchOrganizations(), fetchContacts(), fetchOpportunities(), fetchActivities(), hasPermission("meetings.read") ? fetchMeetings().catch(() => []) : Promise.resolve([]),
+  const [organizations, contacts, opportunities, activities, meetings, projects, supportCases] = await Promise.all([
+    fetchOrganizations(), fetchContacts(), fetchOpportunities(), fetchActivities(),
+    hasPermission("meetings.read") ? fetchMeetings().catch(() => []) : Promise.resolve([]),
+    hasPermission("projects.read") ? fetchProjects().catch(() => []) : Promise.resolve([]),
+    hasPermission("support.read") ? fetchSupport().catch(() => []) : Promise.resolve([]),
   ]);
   if (token !== state.renderToken) return;
   const record = organizations.find((o) => o.id === id);
@@ -1107,6 +1183,8 @@ async function renderOrganizationDetail(body, id, token) {
   const relatedOpportunities = opportunities.filter((o) => o.organization_id === id);
   const relatedActivities = activities.filter((a) => a.organization_id === id);
   const relatedMeetings = meetings.filter((m) => m.related_type === "organization" && m.related_id === id);
+  const linkedProjects = projects.filter((p) => p.organization_id === id);
+  const relatedSupport = supportCases.filter((s) => s.organization_id === id);
   const canManage = hasPermission("crm.manage");
 
   const mainSections = [
@@ -1129,6 +1207,8 @@ async function renderOrganizationDetail(body, id, token) {
     railCard("Opportunities", railList(relatedOpportunities, (o) => `<a href="#/crm/opportunities/${o.id}">${escapeHtml(titleCase(o.inquiry_type))}</a> <span class="rail-sub">${escapeHtml(titleCase(o.stage))}</span>`)),
   ];
   if (hasPermission("meetings.read")) railSections.push(railCard("Meetings", railList(relatedMeetings, (m) => escapeHtml(m.title))));
+  if (linkedProjects.length) railSections.push(railCard("Projects", railList(linkedProjects, (p) => `<a href="#/projects/${p.id}">${escapeHtml(p.name)}</a> <span class="rail-sub">${escapeHtml(titleCase(p.stage))}</span>`)));
+  if (hasPermission("support.read")) railSections.push(railCard("Support Cases", railList(relatedSupport, (s) => `<a href="#/support/${s.id}">${escapeHtml(s.title)}</a> <span class="rail-sub">${escapeHtml(titleCase(s.status))}</span>`)));
 
   renderDetailShell(body, {
     type: "organization",
@@ -1144,12 +1224,13 @@ async function renderOrganizationDetail(body, id, token) {
 }
 
 async function renderOpportunityDetail(body, id, token) {
-  const [opportunities, contacts, organizations, leads, activities, tasks] = await Promise.all([
+  const [opportunities, contacts, organizations, leads, activities, tasks, projects] = await Promise.all([
     fetchOpportunities(), fetchContacts(), fetchOrganizations(),
     // GET /api/lead-agents/leads is gated on office.read (legacy
     // view_dashboard alias), not crm.read — matches the actual route.
     hasPermission("office.read") ? fetchLeads().catch(() => []) : Promise.resolve([]),
     fetchActivities(), hasPermission("tasks.read") ? fetchTasks().catch(() => []) : Promise.resolve([]),
+    hasPermission("projects.read") ? fetchProjects().catch(() => []) : Promise.resolve([]),
   ]);
   if (token !== state.renderToken) return;
   const record = opportunities.find((o) => o.id === id);
@@ -1163,6 +1244,7 @@ async function renderOpportunityDetail(body, id, token) {
   const originLead = leads.find((l) => l.id === record.lead_id);
   const relatedActivities = activities.filter((a) => a.opportunity_id === id);
   const relatedTasks = tasks.filter((t) => t.opportunity_id === id);
+  const linkedProject = projects.find((p) => p.linked_opportunity_id === id);
   const canManage = hasPermission("crm.manage");
 
   const mainSections = [
@@ -1188,6 +1270,20 @@ async function renderOpportunityDetail(body, id, token) {
   if (org) railSections.push(railCard("Organization", `<a href="#/crm/organizations/${org.id}">${escapeHtml(org.name)}</a>`));
   if (originLead) railSections.push(railCard("Originating Lead", `<a href="#/crm/leads/${originLead.id}">${escapeHtml(originLead.company || originLead.name)}</a>`));
   if (hasPermission("tasks.read")) railSections.push(railCard("Tasks", railList(relatedTasks, (t) => `${escapeHtml(t.title)} <span class="rail-sub">${escapeHtml(titleCase(t.status))}</span>`)));
+  if (linkedProject) {
+    railSections.push(railCard("Project", `<a href="#/projects/${linkedProject.id}">${escapeHtml(linkedProject.name)}</a> <span class="rail-sub">${escapeHtml(titleCase(linkedProject.stage))}</span>`));
+  } else if (hasPermission("projects.manage")) {
+    railSections.push(railCard("Project", `<p class="rail-empty">No project started from this opportunity yet.</p>`, {
+      label: "Start Project",
+      onClick: () => openCreateProjectDialog({
+        linked_opportunity_id: id,
+        lead_id: record.lead_id,
+        organization_id: record.organization_id,
+        contact_id: record.contact_id,
+        business_unit: record.business_unit,
+      }),
+    }));
+  }
 
   renderDetailShell(body, {
     type: "opportunity",
@@ -1224,7 +1320,7 @@ function openDialog(title, fields, onSubmit) {
   fields.forEach((field) => {
     fieldsHost.appendChild(el(`
       <label>${escapeHtml(field.label)}
-        ${field.type === "textarea" ? `<textarea name="${field.name}" rows="3"></textarea>` : `<input name="${field.name}" type="${field.type || "text"}" />`}
+        ${field.type === "textarea" ? `<textarea name="${field.name}" rows="3">${escapeHtml(field.value || "")}</textarea>` : `<input name="${field.name}" type="${field.type || "text"}" value="${escapeHtml(field.value || "")}" />`}
       </label>
     `));
   });
@@ -1272,6 +1368,767 @@ function promptAddNote(refs) {
     await apiCreateCrm("activities", { ...refs, activity_type: "note", title: data.title || "Note", body: data.body });
     invalidate("activities");
     renderRoute();
+  });
+}
+
+// ---------------------------------------------------------------
+// Phase 3 — Projects / Portfolio / Support / Tasks / Meetings.
+//
+// Every one of these collections is list+create only on the backend
+// (see CORPORATE_COLLECTIONS / office-operating-system.js) — there is
+// no update or status-transition endpoint yet for any of them. So,
+// like Contacts/Organizations/Opportunities in Phase 2, these views
+// are read + create, never a fake "Edit"/"Resolve"/"Assign" action.
+//
+// None of these collections have a dedicated timeline/notes table
+// (crm_activities has no project_id/portfolio_id/support_case_id
+// column), so there is no "Add note" here — the Timeline shown is
+// built honestly from real Tasks + Meetings for that record, and no
+// note-taking affordance is offered where the backend has nowhere to
+// put it. This is a documented backend gap, not a bug — see
+// PHASE3_REPORT.
+// ---------------------------------------------------------------
+function openCreateProjectDialog(prefill = {}) {
+  openDialog("New Project", [
+    { name: "name", label: "Project Name" },
+    { name: "location", label: "Location" },
+    { name: "stage", label: "Stage", value: "prospective" },
+    { name: "business_unit", label: "Business Unit", value: prefill.business_unit || "" },
+  ], async (data) => {
+    await apiCreateOffice("projects", {
+      ...data,
+      linked_opportunity_id: prefill.linked_opportunity_id,
+      lead_id: prefill.lead_id,
+      organization_id: prefill.organization_id,
+      contact_id: prefill.contact_id,
+    });
+    invalidate("projects");
+    navigate("projects");
+  });
+}
+
+function openCreatePortfolioDialog(prefill = {}) {
+  openDialog("New Portfolio Entry", [
+    { name: "name", label: "Building / Deployment Name" },
+    { name: "client_account", label: "Client / Account", value: prefill.client_account || "" },
+    { name: "location", label: "Location" },
+    { name: "relationship_type", label: "Relationship Type", value: "customer_building" },
+    { name: "business_unit", label: "Business Unit", value: prefill.business_unit || "" },
+  ], async (data) => {
+    await apiCreateOffice("portfolio", { ...data, project_id: prefill.project_id });
+    invalidate("portfolio");
+    navigate("portfolio");
+  });
+}
+
+function openCreateSupportDialog(prefill = {}) {
+  openDialog("New Support Case", [
+    { name: "title", label: "Title" },
+    { name: "category", label: "Category" },
+    { name: "priority", label: "Priority", value: "normal" },
+    { name: "severity", label: "Severity", value: "medium" },
+    { name: "product_area", label: "Product Area", value: "oyi" },
+    { name: "business_unit", label: "Business Unit", value: prefill.business_unit || "" },
+  ], async (data) => {
+    await apiCreateOffice("support", { ...data, portfolio_id: prefill.portfolio_id });
+    invalidate("support");
+    navigate(prefill.portfolio_id ? `portfolio/${prefill.portfolio_id}` : "support");
+  });
+}
+
+function openCreateMeetingDialog(prefill = {}) {
+  openDialog("Schedule Meeting", [
+    { name: "title", label: "Title" },
+    { name: "scheduled_at", label: "Scheduled At", type: "datetime-local" },
+    { name: "notes", label: "Notes", type: "textarea" },
+  ], async (data) => {
+    await apiCreateOffice("meetings", {
+      ...data,
+      scheduled_at: data.scheduled_at ? new Date(data.scheduled_at).toISOString() : "",
+      related_type: prefill.related_type,
+      related_id: prefill.related_id,
+    });
+    invalidate("meetings");
+    renderRoute();
+  });
+}
+
+// ---- module route dispatch --------------------------------------
+async function renderModuleRoute(outlet, moduleKey, rest, token) {
+  const [objectId] = rest;
+  const item = findNavItem(moduleKey);
+  setTopbar(item.label, "");
+  outlet.innerHTML = "";
+  outlet.appendChild(skeletonPanel(4));
+  try {
+    if (moduleKey === "projects") {
+      if (objectId) await renderProjectDetail(outlet, objectId, token);
+      else await renderProjectsList(outlet, token);
+    } else if (moduleKey === "portfolio") {
+      if (objectId) await renderPortfolioDetail(outlet, objectId, token);
+      else await renderPortfolioList(outlet, token);
+    } else if (moduleKey === "support") {
+      if (objectId) await renderSupportDetail(outlet, objectId, token);
+      else await renderSupportList(outlet, token);
+    } else if (moduleKey === "meetings") {
+      if (objectId) await renderMeetingDetail(outlet, objectId, token);
+      else await renderMeetingsList(outlet, token);
+    }
+  } catch (err) {
+    if (token !== state.renderToken) return;
+    outlet.innerHTML = "";
+    outlet.appendChild(errorPanel(err.message || "Could not load this view."));
+  }
+}
+
+// ---------------------------------------------------------------
+// PROJECTS — real Ochiga projects/engagements (office_projects).
+// Not Development enquiries (those stay in CRM as Leads/Opportunities)
+// — a Project is an engagement now being executed, optionally linked
+// back to the Opportunity/Lead/Contact/Organization it grew from.
+// ---------------------------------------------------------------
+async function renderProjectsList(outlet, token) {
+  setSelectedObject(null);
+  const [projects, organizations] = await Promise.all([
+    fetchProjects(),
+    hasPermission("crm.read") ? fetchOrganizations().catch(() => []) : Promise.resolve([]),
+  ]);
+  if (token !== state.renderToken) return;
+  const orgById = Object.fromEntries(organizations.map((o) => [o.id, o]));
+  renderStandardList(outlet, {
+    title: "Projects",
+    records: projects,
+    columns: [
+      { label: "Project", width: "1.6fr", render: (p) => escapeHtml(p.name) },
+      { label: "Business Unit", render: (p) => escapeHtml(titleCase(p.business_unit)) },
+      { label: "Stage", render: (p) => badge(titleCase(p.stage), toneForStatus(p.stage)) },
+      { label: "Organization", render: (p) => escapeHtml((orgById[p.organization_id] || {}).name || "—") },
+      { label: "Owner", render: (p) => escapeHtml(p.owner || "Unassigned") },
+      { label: "Updated", render: (p) => escapeHtml(fmtRelative(p.updated_at)) },
+    ],
+    searchFields: ["name", "location"],
+    filters: [{ key: "business_unit", label: "Business Unit" }, { key: "stage", label: "Stage" }],
+    canManage: hasPermission("projects.manage"),
+    onCreate: () => openCreateProjectDialog(),
+    onRowClick: (p) => navigate(`projects/${p.id}`),
+    emptyMessage: "No active projects yet.",
+  });
+}
+
+async function renderProjectDetail(outlet, id, token) {
+  const [projects, organizations, contacts, opportunities, leads, portfolioEntries, tasks, meetings] = await Promise.all([
+    fetchProjects(),
+    hasPermission("crm.read") ? fetchOrganizations().catch(() => []) : Promise.resolve([]),
+    hasPermission("crm.read") ? fetchContacts().catch(() => []) : Promise.resolve([]),
+    hasPermission("crm.read") ? fetchOpportunities().catch(() => []) : Promise.resolve([]),
+    hasPermission("office.read") ? fetchLeads().catch(() => []) : Promise.resolve([]),
+    hasPermission("portfolio.read") ? fetchPortfolio().catch(() => []) : Promise.resolve([]),
+    hasPermission("tasks.read") ? fetchTasks().catch(() => []) : Promise.resolve([]),
+    hasPermission("meetings.read") ? fetchMeetings().catch(() => []) : Promise.resolve([]),
+  ]);
+  if (token !== state.renderToken) return;
+  const record = projects.find((p) => p.id === id);
+  if (!record) {
+    outlet.innerHTML = "";
+    outlet.appendChild(errorPanel("This project could not be found."));
+    return;
+  }
+  const org = organizations.find((o) => o.id === record.organization_id);
+  const contact = contacts.find((c) => c.id === record.contact_id);
+  const opportunity = opportunities.find((o) => o.id === record.linked_opportunity_id);
+  const lead = leads.find((l) => l.id === record.lead_id);
+  const linkedPortfolio = portfolioEntries.find((p) => p.id === record.portfolio_id) || portfolioEntries.find((p) => p.project_id === id);
+  const relatedTasks = tasks.filter((t) => t.project_id === id);
+  const relatedMeetings = meetings.filter((m) => m.related_type === "project" && m.related_id === id);
+  const timelineEvents = [
+    ...relatedTasks.map((t) => ({ event_type: "task", title: t.title, body: t.description, actor: t.assignee, occurred_at: t.created_at })),
+    ...relatedMeetings.map((m) => ({ event_type: "meeting", title: m.title, body: m.notes, actor: m.owner, occurred_at: m.scheduled_at || m.created_at })),
+  ];
+
+  const mainSections = [
+    el(`
+      <div class="detail-section">
+        <h3>Project Summary</h3>
+        <div class="fact-grid">
+          ${factRow("Location", record.location)}
+          ${factRow("Business Unit", titleCase(record.business_unit))}
+          ${factRow("Stage", titleCase(record.stage))}
+          ${factRow("Oyi Deployment Status", titleCase(record.oyi_deployment_status))}
+          ${factRow("Organization", org ? org.name : "—")}
+          ${factRow("Contact", contact ? contact.name : "—")}
+        </div>
+      </div>
+    `),
+    renderTimeline(timelineEvents),
+  ];
+
+  const railSections = [];
+  if (opportunity) railSections.push(railCard("Opportunity", `<a href="#/crm/opportunities/${opportunity.id}">${escapeHtml(titleCase(opportunity.inquiry_type))}</a>`));
+  if (lead) railSections.push(railCard("Lead", `<a href="#/crm/leads/${lead.id}">${escapeHtml(lead.company || lead.name)}</a>`));
+  if (org) railSections.push(railCard("Organization", `<a href="#/crm/organizations/${org.id}">${escapeHtml(org.name)}</a>`));
+  if (contact) railSections.push(railCard("Contact", `<a href="#/crm/contacts/${contact.id}">${escapeHtml(contact.name)}</a>`));
+  if (linkedPortfolio) {
+    railSections.push(railCard("Portfolio Entry", `<a href="#/portfolio/${linkedPortfolio.id}">${escapeHtml(linkedPortfolio.name)}</a>`));
+  } else if (hasPermission("portfolio.manage")) {
+    railSections.push(railCard("Portfolio Entry", `<p class="rail-empty">No portfolio entry linked yet.</p>`, {
+      label: "Add Entry",
+      onClick: () => openCreatePortfolioDialog({ project_id: id, business_unit: record.business_unit, client_account: org ? org.name : "" }),
+    }));
+  }
+  if (hasPermission("tasks.read")) railSections.push(railCard("Tasks", railList(relatedTasks, (t) => `${escapeHtml(t.title)} <span class="rail-sub">${escapeHtml(titleCase(t.status))}</span>`)));
+  if (hasPermission("meetings.read")) {
+    railSections.push(railCard("Meetings", railList(relatedMeetings, (m) => escapeHtml(m.title)), hasPermission("meetings.manage") ? {
+      label: "Schedule",
+      onClick: () => openCreateMeetingDialog({ related_type: "project", related_id: id }),
+    } : null));
+  }
+
+  renderDetailShell(outlet, {
+    type: "project",
+    id,
+    label: record.name,
+    typeLine: `Project · ${titleCase(record.business_unit)}`,
+    badges: [badge(titleCase(record.stage), toneForStatus(record.stage))],
+    backLabel: "Projects",
+    onBack: () => navigate("projects"),
+    mainSections,
+    railSections,
+  });
+}
+
+// ---------------------------------------------------------------
+// PORTFOLIO — Ochiga's corporate-level view of buildings/deployments
+// (office_portfolio_entries). This is NOT Oyi Facility: it never
+// calls estates/homes/devices/wallets endpoints and never renders
+// resident-private data. Status fields (facility_os_status,
+// consumer_os_status, oyi_deployment_status) are shown as plain,
+// honest reference badges — no composite "health score" is computed.
+// ---------------------------------------------------------------
+async function renderPortfolioList(outlet, token) {
+  setSelectedObject(null);
+  const portfolioEntries = await fetchPortfolio();
+  if (token !== state.renderToken) return;
+  renderStandardList(outlet, {
+    title: "Portfolio",
+    records: portfolioEntries,
+    columns: [
+      { label: "Building / Deployment", width: "1.6fr", render: (p) => escapeHtml(p.name) },
+      { label: "Client / Account", render: (p) => escapeHtml(p.client_account || "—") },
+      { label: "Relationship", render: (p) => escapeHtml(titleCase(p.relationship_type)) },
+      { label: "Facility OS", render: (p) => badge(titleCase(p.facility_os_status), toneForStatus(p.facility_os_status)) },
+      { label: "Consumer OS", render: (p) => badge(titleCase(p.consumer_os_status), toneForStatus(p.consumer_os_status)) },
+      { label: "Updated", render: (p) => escapeHtml(fmtRelative(p.updated_at)) },
+    ],
+    searchFields: ["name", "client_account", "location"],
+    filters: [{ key: "business_unit", label: "Business Unit" }, { key: "relationship_type", label: "Relationship" }],
+    canManage: hasPermission("portfolio.manage"),
+    onCreate: () => openCreatePortfolioDialog(),
+    onRowClick: (p) => navigate(`portfolio/${p.id}`),
+    emptyMessage: "No portfolio entries yet.",
+  });
+}
+
+async function renderPortfolioDetail(outlet, id, token) {
+  const [portfolioEntries, projects, supportCases, tasks, meetings] = await Promise.all([
+    fetchPortfolio(),
+    hasPermission("projects.read") ? fetchProjects().catch(() => []) : Promise.resolve([]),
+    hasPermission("support.read") ? fetchSupport().catch(() => []) : Promise.resolve([]),
+    hasPermission("tasks.read") ? fetchTasks().catch(() => []) : Promise.resolve([]),
+    hasPermission("meetings.read") ? fetchMeetings().catch(() => []) : Promise.resolve([]),
+  ]);
+  if (token !== state.renderToken) return;
+  const record = portfolioEntries.find((p) => p.id === id);
+  if (!record) {
+    outlet.innerHTML = "";
+    outlet.appendChild(errorPanel("This portfolio entry could not be found."));
+    return;
+  }
+  const linkedProject = projects.find((p) => p.id === record.project_id) || projects.find((p) => p.portfolio_id === id);
+  const relatedSupport = supportCases.filter((s) => s.portfolio_id === id);
+  const relatedTasks = tasks.filter((t) => t.portfolio_id === id);
+  const relatedMeetings = meetings.filter((m) => m.related_type === "portfolio" && m.related_id === id);
+  const timelineEvents = [
+    ...relatedTasks.map((t) => ({ event_type: "task", title: t.title, body: t.description, actor: t.assignee, occurred_at: t.created_at })),
+    ...relatedMeetings.map((m) => ({ event_type: "meeting", title: m.title, body: m.notes, actor: m.owner, occurred_at: m.scheduled_at || m.created_at })),
+    ...relatedSupport.map((s) => ({ event_type: "default", title: `Support: ${s.title}`, body: s.resolution_notes, actor: s.assigned_staff, occurred_at: s.updated_at })),
+  ];
+
+  const mainSections = [
+    el(`
+      <div class="detail-section">
+        <h3>Relationship</h3>
+        <div class="fact-grid">
+          ${factRow("Client / Account", record.client_account)}
+          ${factRow("Location", record.location)}
+          ${factRow("Relationship Type", titleCase(record.relationship_type))}
+          ${factRow("Business Unit", titleCase(record.business_unit))}
+        </div>
+      </div>
+    `),
+    el(`
+      <div class="detail-section">
+        <h3>Ochiga / Oyi Status</h3>
+        <div class="fact-grid">
+          ${factRow("Oyi Deployment", titleCase(record.oyi_deployment_status))}
+          ${factRow("Facility OS", titleCase(record.facility_os_status))}
+          ${factRow("Consumer OS", titleCase(record.consumer_os_status))}
+          ${factRow("Support Status", titleCase(record.support_status))}
+        </div>
+        <p class="detail-note">${record.health_summary ? escapeHtml(record.health_summary) : "No health summary recorded for this entry yet."}</p>
+      </div>
+    `),
+    el(`
+      <div class="detail-section">
+        <h3>Linked Operational Environment</h3>
+        ${record.facility_deep_link
+          ? `<p><a href="${escapeHtml(record.facility_deep_link)}" target="_blank" rel="noopener">Open in Facility →</a></p>`
+          : `<p class="detail-note">No authorized Facility deep link is set for this entry yet. Portfolio here is corporate oversight of the relationship — it is not a substitute for Facility's operational tools.</p>`}
+        ${record.backend_building_id ? `<p class="detail-note">Backend building reference: ${escapeHtml(record.backend_building_id)}</p>` : ""}
+      </div>
+    `),
+    renderTimeline(timelineEvents),
+  ];
+
+  const railSections = [];
+  if (linkedProject) railSections.push(railCard("Project", `<a href="#/projects/${linkedProject.id}">${escapeHtml(linkedProject.name)}</a>`));
+  if (hasPermission("support.read")) {
+    railSections.push(railCard("Support Cases", railList(relatedSupport, (s) => `<a href="#/support/${s.id}">${escapeHtml(s.title)}</a> <span class="rail-sub">${escapeHtml(titleCase(s.status))}</span>`), hasPermission("support.assign") ? {
+      label: "New Case",
+      onClick: () => openCreateSupportDialog({ portfolio_id: id, business_unit: record.business_unit }),
+    } : null));
+  }
+  if (hasPermission("tasks.read")) railSections.push(railCard("Tasks", railList(relatedTasks, (t) => `${escapeHtml(t.title)} <span class="rail-sub">${escapeHtml(titleCase(t.status))}</span>`)));
+  if (hasPermission("meetings.read")) {
+    railSections.push(railCard("Meetings", railList(relatedMeetings, (m) => escapeHtml(m.title)), hasPermission("meetings.manage") ? {
+      label: "Schedule",
+      onClick: () => openCreateMeetingDialog({ related_type: "portfolio", related_id: id }),
+    } : null));
+  }
+  if (record.backend_estate_id) railSections.push(railCard("Reference", `<p class="rail-sub">Backend estate ID: ${escapeHtml(record.backend_estate_id)}</p>`));
+
+  renderDetailShell(outlet, {
+    type: "portfolio",
+    id,
+    label: record.name,
+    typeLine: `Portfolio · ${titleCase(record.business_unit)}`,
+    badges: [
+      badge(titleCase(record.relationship_type)),
+      Number(record.major_escalations || 0) > 0 ? badge(`${record.major_escalations} Escalations`, "red") : badge("No Escalations", "green"),
+    ],
+    backLabel: "Portfolio",
+    onBack: () => navigate("portfolio"),
+    mainSections,
+    railSections,
+  });
+}
+
+// ---------------------------------------------------------------
+// SUPPORT — Ochiga-level support cases and escalations
+// (office_support_cases). Distinct from the Facility/Consumer
+// incident it may reference (backend_incident_ref is shown as plain
+// text, never a fabricated deep link into Facility internals).
+// ---------------------------------------------------------------
+async function renderSupportList(outlet, token) {
+  setSelectedObject(null);
+  const [supportCases, contacts, organizations] = await Promise.all([
+    fetchSupport(),
+    hasPermission("crm.read") ? fetchContacts().catch(() => []) : Promise.resolve([]),
+    hasPermission("crm.read") ? fetchOrganizations().catch(() => []) : Promise.resolve([]),
+  ]);
+  if (token !== state.renderToken) return;
+  const contactById = Object.fromEntries(contacts.map((c) => [c.id, c]));
+  const orgById = Object.fromEntries(organizations.map((o) => [o.id, o]));
+  renderStandardList(outlet, {
+    title: "Support",
+    records: supportCases,
+    ownerField: "assigned_staff",
+    columns: [
+      { label: "Case", width: "1.5fr", render: (s) => escapeHtml(s.title) },
+      { label: "Customer", render: (s) => escapeHtml((contactById[s.customer_contact_id] || {}).name || (orgById[s.organization_id] || {}).name || "—") },
+      { label: "Category", render: (s) => escapeHtml(titleCase(s.category)) },
+      { label: "Priority", render: (s) => badge(titleCase(s.priority), toneForStatus(s.priority)) },
+      { label: "Severity", render: (s) => badge(titleCase(s.severity), toneForStatus(s.severity)) },
+      { label: "Status", render: (s) => badge(titleCase(s.status), toneForStatus(s.status)) },
+      { label: "Assignee", render: (s) => escapeHtml(s.assigned_staff || "Unassigned") },
+    ],
+    searchFields: ["title", "category", "product_area"],
+    filters: [
+      { key: "status", label: "Status" }, { key: "severity", label: "Severity" },
+      { key: "category", label: "Category" }, { key: "business_unit", label: "Business Unit" },
+    ],
+    canManage: hasPermission("support.assign"),
+    onCreate: () => openCreateSupportDialog(),
+    onRowClick: (s) => navigate(`support/${s.id}`),
+    emptyMessage: "No open support cases.",
+  });
+}
+
+async function renderSupportDetail(outlet, id, token) {
+  const [supportCases, contacts, organizations, portfolioEntries, tasks, meetings] = await Promise.all([
+    fetchSupport(),
+    hasPermission("crm.read") ? fetchContacts().catch(() => []) : Promise.resolve([]),
+    hasPermission("crm.read") ? fetchOrganizations().catch(() => []) : Promise.resolve([]),
+    hasPermission("portfolio.read") ? fetchPortfolio().catch(() => []) : Promise.resolve([]),
+    hasPermission("tasks.read") ? fetchTasks().catch(() => []) : Promise.resolve([]),
+    hasPermission("meetings.read") ? fetchMeetings().catch(() => []) : Promise.resolve([]),
+  ]);
+  if (token !== state.renderToken) return;
+  const record = supportCases.find((s) => s.id === id);
+  if (!record) {
+    outlet.innerHTML = "";
+    outlet.appendChild(errorPanel("This support case could not be found."));
+    return;
+  }
+  const contact = contacts.find((c) => c.id === record.customer_contact_id);
+  const org = organizations.find((o) => o.id === record.organization_id);
+  const portfolioEntry = portfolioEntries.find((p) => p.id === record.portfolio_id);
+  const relatedTasks = tasks.filter((t) => t.support_case_id === id);
+  const relatedMeetings = meetings.filter((m) => m.related_type === "support" && m.related_id === id);
+  const timelineEvents = [
+    ...relatedTasks.map((t) => ({ event_type: "task", title: t.title, body: t.description, actor: t.assignee, occurred_at: t.created_at })),
+    ...relatedMeetings.map((m) => ({ event_type: "meeting", title: m.title, body: m.notes, actor: m.owner, occurred_at: m.scheduled_at || m.created_at })),
+  ];
+
+  const mainSections = [
+    el(`
+      <div class="detail-section">
+        <h3>Case Summary</h3>
+        <div class="fact-grid">
+          ${factRow("Product Area", titleCase(record.product_area))}
+          ${factRow("Category", titleCase(record.category))}
+          ${factRow("Customer", contact ? contact.name : "—")}
+          ${factRow("Organization", org ? org.name : "—")}
+          ${factRow("SLA Target", record.sla_target_at ? fmtDateTime(record.sla_target_at) : "—")}
+          ${factRow("Business Unit", titleCase(record.business_unit))}
+        </div>
+        <p class="detail-note">This is an Ochiga corporate support case. ${record.backend_incident_ref
+          ? `It references a Facility/Consumer operational incident (${escapeHtml(record.backend_incident_ref)}) — this page does not show Facility internals.`
+          : "No linked Facility/Consumer operational incident reference is recorded."}</p>
+      </div>
+    `),
+    el(`
+      <div class="detail-section">
+        <h3>Resolution Notes</h3>
+        <p>${record.resolution_notes ? escapeHtml(record.resolution_notes) : "No resolution notes recorded yet."}</p>
+      </div>
+    `),
+    renderTimeline(timelineEvents),
+  ];
+
+  const railSections = [];
+  if (contact) railSections.push(railCard("Customer", `<a href="#/crm/contacts/${contact.id}">${escapeHtml(contact.name)}</a>`));
+  if (org) railSections.push(railCard("Organization", `<a href="#/crm/organizations/${org.id}">${escapeHtml(org.name)}</a>`));
+  if (portfolioEntry) railSections.push(railCard("Portfolio", `<a href="#/portfolio/${portfolioEntry.id}">${escapeHtml(portfolioEntry.name)}</a>`));
+  if (hasPermission("tasks.read")) railSections.push(railCard("Tasks", railList(relatedTasks, (t) => `${escapeHtml(t.title)} <span class="rail-sub">${escapeHtml(titleCase(t.status))}</span>`)));
+  if (hasPermission("meetings.read")) {
+    railSections.push(railCard("Meetings", railList(relatedMeetings, (m) => escapeHtml(m.title)), hasPermission("meetings.manage") ? {
+      label: "Schedule",
+      onClick: () => openCreateMeetingDialog({ related_type: "support", related_id: id }),
+    } : null));
+  }
+
+  renderDetailShell(outlet, {
+    type: "support_case",
+    id,
+    label: record.title,
+    typeLine: `Support · ${titleCase(record.business_unit)}`,
+    badges: [
+      badge(titleCase(record.status), toneForStatus(record.status)),
+      badge(titleCase(record.severity), toneForStatus(record.severity)),
+      badge(record.assigned_staff || "Unassigned"),
+    ],
+    backLabel: "Support",
+    onBack: () => navigate("support"),
+    mainSections,
+    railSections,
+  });
+}
+
+// ---------------------------------------------------------------
+// TASKS — a cross-company work view over crm_tasks. A task is not a
+// destination in itself: clicking one navigates to whichever real
+// object it belongs to (Lead/Opportunity/Project/Portfolio/Support).
+// There is no PATCH for crm_tasks yet, so there is deliberately no
+// edit/complete action here — see PHASE3_REPORT.
+// ---------------------------------------------------------------
+function resolveTaskRelation(task, index) {
+  if (task.lead_id && index.leadById[task.lead_id]) {
+    const l = index.leadById[task.lead_id];
+    return { type: "Lead", path: `crm/leads/${task.lead_id}`, name: l.company || l.name || "Lead" };
+  }
+  if (task.opportunity_id && index.oppById[task.opportunity_id]) {
+    return { type: "Opportunity", path: `crm/opportunities/${task.opportunity_id}`, name: titleCase(index.oppById[task.opportunity_id].inquiry_type) };
+  }
+  if (task.project_id && index.projectById[task.project_id]) {
+    return { type: "Project", path: `projects/${task.project_id}`, name: index.projectById[task.project_id].name };
+  }
+  if (task.portfolio_id && index.portfolioById[task.portfolio_id]) {
+    return { type: "Portfolio", path: `portfolio/${task.portfolio_id}`, name: index.portfolioById[task.portfolio_id].name };
+  }
+  if (task.support_case_id && index.supportById[task.support_case_id]) {
+    return { type: "Support", path: `support/${task.support_case_id}`, name: index.supportById[task.support_case_id].title };
+  }
+  return null;
+}
+
+async function fetchTaskRelationIndex() {
+  const [leads, opportunities, projects, portfolioEntries, supportCases] = await Promise.all([
+    hasPermission("office.read") ? fetchLeads().catch(() => []) : Promise.resolve([]),
+    hasPermission("crm.read") ? fetchOpportunities().catch(() => []) : Promise.resolve([]),
+    hasPermission("projects.read") ? fetchProjects().catch(() => []) : Promise.resolve([]),
+    hasPermission("portfolio.read") ? fetchPortfolio().catch(() => []) : Promise.resolve([]),
+    hasPermission("support.read") ? fetchSupport().catch(() => []) : Promise.resolve([]),
+  ]);
+  return {
+    leadById: Object.fromEntries(leads.map((l) => [l.id, l])),
+    oppById: Object.fromEntries(opportunities.map((o) => [o.id, o])),
+    projectById: Object.fromEntries(projects.map((p) => [p.id, p])),
+    portfolioById: Object.fromEntries(portfolioEntries.map((p) => [p.id, p])),
+    supportById: Object.fromEntries(supportCases.map((s) => [s.id, s])),
+  };
+}
+
+async function renderTasksList(outlet, token) {
+  setSelectedObject(null);
+  const [tasks, index] = await Promise.all([fetchTasks(), fetchTaskRelationIndex()]);
+  if (token !== state.renderToken) return;
+
+  const now = Date.now();
+  const enriched = tasks.map((t) => {
+    const relation = resolveTaskRelation(t, index);
+    const overdue = Boolean(t.due_at) && !t.completed_at && new Date(t.due_at).getTime() < now && !["done", "completed", "cancelled"].includes(String(t.status || "").toLowerCase());
+    return { ...t, __relation: relation, __related_type: relation ? relation.type : "", __overdue: overdue };
+  });
+
+  const listState = { query: "", quick: "open", businessUnit: "", relatedType: "" };
+
+  outlet.innerHTML = "";
+  const heading = el(`<div class="view-heading"><h1>Tasks</h1><span class="count-pill"></span></div>`);
+  outlet.appendChild(heading);
+  const countLabel = heading.querySelector(".count-pill");
+
+  const toolbar = el(`<div class="list-toolbar"></div>`);
+  const search = el(`<input type="search" class="toolbar-search" placeholder="Search tasks…" />`);
+  search.addEventListener("input", () => { listState.query = search.value; draw(); });
+  toolbar.appendChild(search);
+
+  const buOptions = [...new Set(enriched.map((t) => t.business_unit).filter(Boolean))].sort();
+  const buSelect = el(`<select class="toolbar-filter"><option value="">Business Unit</option>${buOptions.map((bu) => `<option value="${escapeHtml(bu)}">${escapeHtml(titleCase(bu))}</option>`).join("")}</select>`);
+  buSelect.addEventListener("change", () => { listState.businessUnit = buSelect.value; draw(); });
+  toolbar.appendChild(buSelect);
+
+  const relSelect = el(`<select class="toolbar-filter"><option value="">Related Type</option>${["Lead", "Opportunity", "Project", "Portfolio", "Support"].map((r) => `<option value="${r}">${r}</option>`).join("")}</select>`);
+  relSelect.addEventListener("change", () => { listState.relatedType = relSelect.value; draw(); });
+  toolbar.appendChild(relSelect);
+  toolbar.appendChild(el(`<div class="toolbar-spacer"></div>`));
+  outlet.appendChild(toolbar);
+
+  const quickBar = el(`<div class="list-toolbar quick-filters"></div>`);
+  const quickButtons = {};
+  [["open", "Open"], ["mine", "Mine"], ["overdue", "Overdue"], ["completed", "Completed"], ["all", "All"]].forEach(([key, label]) => {
+    const btn = el(`<button type="button" class="btn btn-ghost btn-sm">${escapeHtml(label)}</button>`);
+    btn.addEventListener("click", () => { listState.quick = key; syncQuickButtons(); draw(); });
+    quickButtons[key] = btn;
+    quickBar.appendChild(btn);
+  });
+  outlet.appendChild(quickBar);
+  function syncQuickButtons() {
+    Object.entries(quickButtons).forEach(([key, btn]) => btn.classList.toggle("active", key === listState.quick));
+  }
+  syncQuickButtons();
+
+  const resultsHost = el(`<div class="crm-results"></div>`);
+  outlet.appendChild(resultsHost);
+
+  function draw() {
+    let rows = enriched;
+    if (listState.quick === "mine") rows = rows.filter((t) => isMine(t.assignee));
+    else if (listState.quick === "open") rows = rows.filter((t) => !["done", "completed", "cancelled"].includes(String(t.status || "").toLowerCase()));
+    else if (listState.quick === "overdue") rows = rows.filter((t) => t.__overdue);
+    else if (listState.quick === "completed") rows = rows.filter((t) => ["done", "completed"].includes(String(t.status || "").toLowerCase()));
+    if (listState.businessUnit) rows = rows.filter((t) => t.business_unit === listState.businessUnit);
+    if (listState.relatedType) rows = rows.filter((t) => t.__related_type === listState.relatedType);
+    if (listState.query) {
+      const q = listState.query.toLowerCase();
+      rows = rows.filter((t) => [t.title, t.description].some((f) => String(f || "").toLowerCase().includes(q)));
+    }
+    resultsHost.innerHTML = "";
+    resultsHost.appendChild(renderDataTable({
+      columns: [
+        { label: "Task", width: "1.6fr", render: (t) => escapeHtml(t.title) },
+        { label: "Status", render: (t) => badge(titleCase(t.status), toneForStatus(t.status)) },
+        { label: "Priority", render: (t) => badge(titleCase(t.priority), toneForStatus(t.priority)) },
+        { label: "Assignee", render: (t) => escapeHtml(t.assignee || "Unassigned") },
+        { label: "Due", render: (t) => t.due_at ? (t.__overdue ? badge(fmtDate(t.due_at), "red") : escapeHtml(fmtDate(t.due_at))) : "—" },
+        { label: "Related", render: (t) => t.__relation ? `${escapeHtml(t.__relation.type)}: ${escapeHtml(t.__relation.name || "—")}` : "—" },
+        { label: "Business Unit", render: (t) => escapeHtml(titleCase(t.business_unit)) },
+      ],
+      rows,
+      onRowClick: (t) => { if (t.__relation) navigate(t.__relation.path); },
+      emptyMessage: enriched.length ? "No tasks match your filters." : "No tasks yet.",
+    }));
+    countLabel.textContent = `${rows.length} of ${enriched.length}`;
+  }
+  draw();
+}
+
+async function renderTaskRedirect(outlet, id, token) {
+  const [tasks, index] = await Promise.all([fetchTasks(), fetchTaskRelationIndex()]);
+  if (token !== state.renderToken) return;
+  const record = tasks.find((t) => t.id === id);
+  if (!record) {
+    outlet.innerHTML = "";
+    outlet.appendChild(errorPanel("This task could not be found."));
+    return;
+  }
+  const relation = resolveTaskRelation(record, index);
+  if (relation) {
+    navigate(relation.path);
+    return;
+  }
+
+  // No resolvable related object — render a minimal read-only panel
+  // rather than a broken redirect or a fabricated relation.
+  setSelectedObject("task", id, record.title);
+  outlet.innerHTML = "";
+  const back = el(`<button type="button" class="detail-back">← Tasks</button>`);
+  back.addEventListener("click", () => navigate("tasks"));
+  outlet.appendChild(back);
+  outlet.appendChild(el(`
+    <div class="detail-header">
+      <div>
+        <div class="detail-typeline">Task · ${escapeHtml(titleCase(record.business_unit))}</div>
+        <h1>${escapeHtml(record.title)}</h1>
+        <div class="detail-badges">${badge(titleCase(record.status), toneForStatus(record.status))}${badge(titleCase(record.priority), toneForStatus(record.priority))}</div>
+      </div>
+    </div>
+  `));
+  outlet.appendChild(el(`
+    <div class="detail-body"><div class="detail-main">
+      <div class="detail-section">
+        <h3>Details</h3>
+        <div class="fact-grid">
+          ${factRow("Assignee", record.assignee)}
+          ${factRow("Due", record.due_at ? fmtDate(record.due_at) : "—")}
+          ${factRow("Description", record.description)}
+        </div>
+        <p class="detail-note">This task isn't linked to a Lead, Opportunity, Project, Portfolio or Support case.</p>
+      </div>
+    </div></div>
+  `));
+}
+
+async function renderTasksRoute(outlet, rest, token) {
+  const [objectId] = rest;
+  setTopbar("Tasks", "");
+  outlet.innerHTML = "";
+  outlet.appendChild(skeletonPanel(4));
+  try {
+    if (objectId) await renderTaskRedirect(outlet, objectId, token);
+    else await renderTasksList(outlet, token);
+  } catch (err) {
+    if (token !== state.renderToken) return;
+    outlet.innerHTML = "";
+    outlet.appendChild(errorPanel(err.message || "Could not load tasks."));
+  }
+}
+
+// ---------------------------------------------------------------
+// MEETINGS — a lightweight corporate meeting workspace over
+// office_meetings. related_type/related_id is a generic reference to
+// any of Lead/Contact/Organization/Opportunity/Project/Portfolio/
+// Support — resolved here for display, never fabricated if absent.
+// ---------------------------------------------------------------
+function resolveGenericRelation(type, id, { leads, contacts, organizations, opportunities, projects, portfolioEntries, supportCases }) {
+  if (!type || !id) return null;
+  const t = String(type).toLowerCase();
+  if (t === "lead") { const r = leads.find((x) => x.id === id); return r ? { name: r.company || r.name || "Lead", path: `crm/leads/${id}` } : null; }
+  if (t === "contact") { const r = contacts.find((x) => x.id === id); return r ? { name: r.name || "Contact", path: `crm/contacts/${id}` } : null; }
+  if (t === "organization") { const r = organizations.find((x) => x.id === id); return r ? { name: r.name || "Organization", path: `crm/organizations/${id}` } : null; }
+  if (t === "opportunity") { const r = opportunities.find((x) => x.id === id); return r ? { name: titleCase(r.inquiry_type) || "Opportunity", path: `crm/opportunities/${id}` } : null; }
+  if (t === "project") { const r = projects.find((x) => x.id === id); return r ? { name: r.name || "Project", path: `projects/${id}` } : null; }
+  if (t === "portfolio") { const r = portfolioEntries.find((x) => x.id === id); return r ? { name: r.name || "Portfolio Entry", path: `portfolio/${id}` } : null; }
+  if (t === "support" || t === "support_case") { const r = supportCases.find((x) => x.id === id); return r ? { name: r.title || "Support Case", path: `support/${id}` } : null; }
+  return null;
+}
+
+async function renderMeetingsList(outlet, token) {
+  setSelectedObject(null);
+  const meetings = await fetchMeetings();
+  if (token !== state.renderToken) return;
+  const now = Date.now();
+  const enriched = meetings.map((m) => ({ ...m, __upcoming: Boolean(m.scheduled_at) && new Date(m.scheduled_at).getTime() >= now }));
+  renderStandardList(outlet, {
+    title: "Meetings",
+    records: enriched,
+    columns: [
+      { label: "Title", width: "1.6fr", render: (m) => escapeHtml(m.title) },
+      { label: "Related", render: (m) => m.related_type ? escapeHtml(titleCase(m.related_type)) : "—" },
+      { label: "Scheduled", render: (m) => m.scheduled_at ? (m.__upcoming ? badge(fmtDateTime(m.scheduled_at), "amber") : escapeHtml(fmtDateTime(m.scheduled_at))) : "—" },
+      { label: "Owner", render: (m) => escapeHtml(m.owner || "Unassigned") },
+      { label: "Outcome", render: (m) => escapeHtml(m.outcome || "—") },
+    ],
+    searchFields: ["title", "notes", "outcome"],
+    filters: [{ key: "business_unit", label: "Business Unit" }, { key: "related_type", label: "Related Type" }],
+    canManage: hasPermission("meetings.manage"),
+    onCreate: () => openCreateMeetingDialog(),
+    onRowClick: (m) => navigate(`meetings/${m.id}`),
+    emptyMessage: "No meetings scheduled yet.",
+  });
+}
+
+async function renderMeetingDetail(outlet, id, token) {
+  const [meetings, leads, contacts, organizations, opportunities, projects, portfolioEntries, supportCases, tasks] = await Promise.all([
+    fetchMeetings(),
+    hasPermission("office.read") ? fetchLeads().catch(() => []) : Promise.resolve([]),
+    hasPermission("crm.read") ? fetchContacts().catch(() => []) : Promise.resolve([]),
+    hasPermission("crm.read") ? fetchOrganizations().catch(() => []) : Promise.resolve([]),
+    hasPermission("crm.read") ? fetchOpportunities().catch(() => []) : Promise.resolve([]),
+    hasPermission("projects.read") ? fetchProjects().catch(() => []) : Promise.resolve([]),
+    hasPermission("portfolio.read") ? fetchPortfolio().catch(() => []) : Promise.resolve([]),
+    hasPermission("support.read") ? fetchSupport().catch(() => []) : Promise.resolve([]),
+    hasPermission("tasks.read") ? fetchTasks().catch(() => []) : Promise.resolve([]),
+  ]);
+  if (token !== state.renderToken) return;
+  const record = meetings.find((m) => m.id === id);
+  if (!record) {
+    outlet.innerHTML = "";
+    outlet.appendChild(errorPanel("This meeting could not be found."));
+    return;
+  }
+  const related = resolveGenericRelation(record.related_type, record.related_id, { leads, contacts, organizations, opportunities, projects, portfolioEntries, supportCases });
+  const followUpTask = tasks.find((t) => t.id === record.follow_up_task_id);
+
+  const mainSections = [
+    el(`
+      <div class="detail-section">
+        <h3>Meeting Summary</h3>
+        <div class="fact-grid">
+          ${factRow("Scheduled", record.scheduled_at ? fmtDateTime(record.scheduled_at) : "—")}
+          ${factRow("Owner", record.owner)}
+          ${factRow("Related", related ? related.name : "—")}
+          ${factRow("Participants", Array.isArray(record.participants) && record.participants.length ? record.participants.join(", ") : "—")}
+        </div>
+      </div>
+    `),
+    el(`<div class="detail-section"><h3>Notes</h3><p>${record.notes ? escapeHtml(record.notes) : "No notes recorded yet."}</p></div>`),
+    el(`<div class="detail-section"><h3>Outcome &amp; Follow-up</h3><p>${record.outcome ? escapeHtml(record.outcome) : "No outcome recorded yet."}</p></div>`),
+  ];
+
+  const railSections = [];
+  if (related) railSections.push(railCard(titleCase(record.related_type), `<a href="#/${related.path}">${escapeHtml(related.name)}</a>`));
+  if (followUpTask) railSections.push(railCard("Follow-up Task", `${escapeHtml(followUpTask.title)} <span class="rail-sub">${escapeHtml(titleCase(followUpTask.status))}</span>`));
+
+  renderDetailShell(outlet, {
+    type: "meeting",
+    id,
+    label: record.title,
+    typeLine: `Meeting · ${titleCase(record.business_unit)}`,
+    badges: [badge(record.scheduled_at ? fmtDateTime(record.scheduled_at) : "Unscheduled")],
+    backLabel: "Meetings",
+    onBack: () => navigate("meetings"),
+    mainSections,
+    railSections,
   });
 }
 
@@ -1337,6 +2194,10 @@ const QUICK_PROMPTS = {
   contact: ["Summarize our relationship with this person.", "Prepare me for the next conversation."],
   organization: ["Prepare me for the next meeting with this company.", "Summarize our relationship with this organization."],
   opportunity: ["What should I follow up on here?", "Summarize this opportunity."],
+  project: ["Summarize the current state of this project.", "What needs attention here?", "Prepare me for the next project meeting."],
+  portfolio: ["Which parts of this account need Ochiga attention?", "Summarize our relationship with this building."],
+  support_case: ["Summarize this case.", "What has already been tried?", "What should we do next?"],
+  meeting: ["Prepare me for this meeting.", "Summarize everything relevant about this customer.", "What are the outstanding actions?"],
 };
 
 function updateOyiContext() {
