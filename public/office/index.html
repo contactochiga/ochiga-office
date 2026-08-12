@@ -321,6 +321,172 @@
   .oyi-composer button:hover { background: var(--red-bright); }
   .oyi-composer button:disabled { opacity: 0.4; cursor: default; }
 
+  .oyi-quick-prompts { display: none; flex-wrap: wrap; gap: 6px; padding: 0 12px 10px; }
+  .quick-prompt {
+    font-size: 11.5px; color: var(--text-secondary); background: rgba(255,255,255,0.03);
+    border: 1px solid var(--line-strong); border-radius: 20px; padding: 5px 11px; cursor: pointer;
+    transition: border-color var(--duration-fast) var(--ease), color var(--duration-fast) var(--ease);
+  }
+  .quick-prompt:hover { border-color: var(--red-muted); color: var(--white); }
+
+  .oyi-structured p { margin: 0 0 8px; }
+  .oyi-structured p:last-child { margin-bottom: 0; }
+  .oyi-block-label { font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-tertiary); margin: 10px 0 6px; }
+  .oyi-list { margin: 0; padding-left: 16px; }
+  .oyi-list li { margin-bottom: 4px; }
+
+  /* ---------------------------------------------------------------
+     Phase 2 — Home + CRM
+  ----------------------------------------------------------------*/
+  .view-heading { display: flex; align-items: baseline; gap: 10px; }
+
+  .count-pill {
+    font-size: 11px; color: var(--text-tertiary); background: rgba(255,255,255,0.05);
+    border-radius: 20px; padding: 1px 8px;
+  }
+
+  .badge {
+    display: inline-flex; align-items: center; font-size: 10.5px; text-transform: uppercase;
+    letter-spacing: 0.03em; padding: 2px 7px; border-radius: 3px; border: 1px solid var(--line-strong);
+    color: var(--text-secondary); background: rgba(255,255,255,0.02);
+  }
+  .badge-green { color: #7fd9a0; border-color: rgba(63, 143, 95, 0.4); background: rgba(63, 143, 95, 0.08); }
+  .badge-red { color: var(--red-bright); border-color: rgba(179, 36, 27, 0.4); background: rgba(179, 36, 27, 0.08); }
+  .badge-amber { color: var(--amber); border-color: rgba(201, 134, 43, 0.4); background: rgba(201, 134, 43, 0.08); }
+
+  /* Home */
+  .home-section { margin-bottom: 28px; }
+  .home-section h3 {
+    font-size: 12.5px; font-weight: 600; color: var(--white); margin: 0 0 12px;
+    text-transform: uppercase; letter-spacing: 0.04em;
+  }
+  .attention-list { display: flex; flex-direction: column; gap: 1px; border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; }
+  .attention-row {
+    display: grid; grid-template-columns: 90px 1fr auto 140px; align-items: center; gap: 12px;
+    padding: 9px 12px; background: var(--charcoal); font-size: 12.5px;
+  }
+  .attention-row.clickable { cursor: pointer; }
+  .attention-row.clickable:hover { background: var(--graphite); }
+  .attention-type { color: var(--text-tertiary); font-size: 11px; text-transform: uppercase; }
+  .attention-title { color: var(--text-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .attention-owner { color: var(--text-tertiary); font-size: 11.5px; text-align: right; }
+  .ask-oyi-card { display: flex; align-items: center; justify-content: space-between; gap: 16px; max-width: none; }
+  .ask-oyi-card p { flex: 1; }
+
+  /* CRM tabs */
+  .crm-tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--line); margin-bottom: 20px; }
+  .crm-tab {
+    background: none; border: none; color: var(--text-tertiary); font-size: 12.5px;
+    padding: 8px 4px; margin-right: 16px; cursor: pointer; border-bottom: 2px solid transparent;
+    transition: color var(--duration-fast) var(--ease), border-color var(--duration-fast) var(--ease);
+  }
+  .crm-tab:hover { color: var(--white); }
+  .crm-tab.active { color: var(--white); border-color: var(--red); font-weight: 500; }
+
+  .overview-section { margin-bottom: 26px; }
+  .overview-section h3 {
+    font-size: 12.5px; font-weight: 600; color: var(--white); margin: 0 0 12px;
+    text-transform: uppercase; letter-spacing: 0.04em; display: flex; align-items: center; gap: 8px;
+  }
+
+  .stage-strip { display: flex; flex-wrap: wrap; gap: 8px; }
+  .stage-chip {
+    display: flex; align-items: center; gap: 7px; border: 1px solid var(--line-strong);
+    border-radius: 20px; padding: 5px 12px 5px 6px; font-size: 12px; color: var(--text-secondary);
+  }
+  .stage-count {
+    display: inline-flex; align-items: center; justify-content: center; min-width: 20px; height: 20px;
+    border-radius: 50%; background: rgba(179, 36, 27, 0.16); color: var(--white); font-size: 11px; font-weight: 600;
+  }
+
+  /* List toolbar */
+  .list-toolbar { display: flex; align-items: center; gap: 8px; margin-bottom: 14px; flex-wrap: wrap; }
+  .toolbar-search, .toolbar-filter {
+    background: rgba(255,255,255,0.02); border: 1px solid var(--line-strong); color: var(--white);
+    border-radius: var(--radius-sm); padding: 7px 10px; font-size: 12.5px; font-family: inherit;
+  }
+  .toolbar-search { min-width: 180px; }
+  .toolbar-search:focus, .toolbar-filter:focus { border-color: var(--red); outline: none; }
+  .toolbar-spacer { flex: 1; }
+  .btn-sm { padding: 6px 13px; font-size: 12px; }
+  .btn-ghost.active { color: var(--white); border-color: var(--red-muted); background: rgba(179,36,27,0.08); }
+
+  /* Data table — grid-based, reflows to stacked cards on mobile */
+  .crm-table { display: flex; flex-direction: column; border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; }
+  .crm-row { display: grid; gap: 10px; padding: 10px 14px; align-items: center; border-bottom: 1px solid var(--line); background: var(--charcoal); }
+  .crm-row:last-child { border-bottom: none; }
+  .crm-row-head { background: rgba(255,255,255,0.02); }
+  .crm-row-head .cell { font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-tertiary); }
+  .crm-row.clickable { cursor: pointer; }
+  .crm-row.clickable:hover { background: var(--graphite); }
+  .crm-row .cell { font-size: 12.5px; color: var(--text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .crm-row .cell a { color: var(--white); }
+
+  /* Detail shell */
+  .detail-back { background: none; border: none; color: var(--text-tertiary); font-size: 12px; cursor: pointer; margin-bottom: 14px; padding: 0; }
+  .detail-back:hover { color: var(--white); }
+  .detail-header { margin-bottom: 22px; }
+  .detail-typeline { font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--red-bright); margin-bottom: 4px; }
+  .detail-header h1 { font-size: 19px; font-weight: 600; color: var(--white); margin: 0 0 8px; }
+  .detail-badges { display: flex; gap: 6px; }
+  .detail-body { display: grid; grid-template-columns: 1fr 280px; gap: 28px; align-items: start; }
+  .detail-main { display: flex; flex-direction: column; gap: 24px; min-width: 0; }
+  .detail-rail { display: flex; flex-direction: column; gap: 14px; }
+  .detail-section h3 { font-size: 12.5px; font-weight: 600; color: var(--white); margin: 0 0 12px; text-transform: uppercase; letter-spacing: 0.04em; }
+  .detail-note { font-size: 11.5px; color: var(--text-tertiary); margin-top: 12px; line-height: 1.6; }
+
+  .fact-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px 20px; }
+  .fact { display: flex; flex-direction: column; gap: 3px; }
+  .fact-label { font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-tertiary); }
+  .fact-value { font-size: 13px; color: var(--text-primary); }
+
+  .rail-card { border: 1px solid var(--line); border-radius: var(--radius); padding: 14px; background: rgba(255,255,255,0.015); }
+  .rail-card h4 { font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-tertiary); margin: 0 0 10px; }
+  .rail-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; font-size: 12.5px; }
+  .rail-list a { color: var(--white); text-decoration: none; }
+  .rail-list a:hover { color: var(--red-bright); }
+  .rail-sub { color: var(--text-tertiary); font-size: 11px; margin-left: 4px; }
+  .rail-empty { color: var(--text-tertiary); font-size: 12px; margin: 0; }
+
+  /* Inline forms (lead update, dialogs) */
+  .inline-form { display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-end; }
+  .inline-form label { display: flex; flex-direction: column; gap: 5px; font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-tertiary); }
+  .inline-form input, .inline-form textarea {
+    background: rgba(255,255,255,0.02); border: 1px solid var(--line-strong); color: var(--white);
+    border-radius: var(--radius-sm); padding: 7px 10px; font-size: 12.5px; font-family: inherit; min-width: 160px;
+  }
+  .inline-form input:focus, .inline-form textarea:focus { border-color: var(--red); outline: none; }
+  .form-status { font-size: 11.5px; color: var(--text-tertiary); }
+
+  /* Timeline */
+  .timeline-block { }
+  .section-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
+  .section-head h3 { font-size: 12.5px; font-weight: 600; color: var(--white); margin: 0; text-transform: uppercase; letter-spacing: 0.04em; }
+  .timeline-list { display: flex; flex-direction: column; gap: 14px; }
+  .timeline-item { display: flex; gap: 10px; }
+  .timeline-icon {
+    flex-shrink: 0; width: 22px; height: 22px; border-radius: 50%; border: 1px solid var(--line-strong);
+    display: flex; align-items: center; justify-content: center; font-size: 11px; color: var(--text-tertiary);
+  }
+  .timeline-content { min-width: 0; }
+  .timeline-title { font-size: 12.5px; color: var(--text-primary); }
+  .timeline-body { font-size: 12px; color: var(--text-secondary); margin-top: 3px; line-height: 1.5; }
+  .timeline-meta { font-size: 11px; color: var(--text-tertiary); margin-top: 3px; }
+
+  /* Dialogs */
+  .dialog-overlay { position: fixed; inset: 0; z-index: 80; background: rgba(0,0,0,0.6); display: flex; align-items: center; justify-content: center; padding: 20px; }
+  .dialog-card { width: min(420px, 100%); background: var(--charcoal); border: 1px solid var(--line-strong); border-radius: var(--radius); padding: 22px; }
+  .dialog-card h3 { font-size: 14.5px; font-weight: 600; color: var(--white); margin: 0 0 16px; }
+  .dialog-fields { display: flex; flex-direction: column; gap: 12px; margin-bottom: 18px; }
+  .dialog-fields label { display: flex; flex-direction: column; gap: 5px; font-size: 11px; color: var(--text-tertiary); text-transform: uppercase; letter-spacing: 0.03em; }
+  .dialog-fields input, .dialog-fields textarea {
+    background: rgba(255,255,255,0.02); border: 1px solid var(--line-strong); color: var(--white);
+    border-radius: var(--radius-sm); padding: 8px 10px; font-size: 13px; font-family: inherit;
+  }
+  .dialog-fields input:focus, .dialog-fields textarea:focus { border-color: var(--red); outline: none; }
+  .dialog-actions { display: flex; justify-content: flex-end; gap: 8px; }
+  .dialog-error { color: var(--red-bright); font-size: 12px; margin: 10px 0 0; }
+
   /* ---------------------------------------------------------------
      Responsive
   ----------------------------------------------------------------*/
@@ -345,6 +511,32 @@
     .oyi-control { right: 12px; bottom: 12px; left: 12px; align-items: stretch; }
     .oyi-bar { justify-content: center; }
     .oyi-panel { width: 100%; }
+
+    /* Phase 2 — stack tables into label:value cards, never scroll horizontally */
+    .detail-body { grid-template-columns: 1fr; }
+    .fact-grid { grid-template-columns: 1fr; }
+    .attention-row { grid-template-columns: 1fr; gap: 4px; }
+    .attention-owner { text-align: left; }
+
+    .crm-row-head { display: none; }
+    .crm-row {
+      display: flex !important; flex-direction: column; gap: 6px; padding: 12px 14px;
+    }
+    .crm-row .cell {
+      display: flex; justify-content: space-between; gap: 10px; white-space: normal;
+      font-size: 12.5px;
+    }
+    .crm-row .cell::before {
+      content: attr(data-label); color: var(--text-tertiary); font-size: 10.5px;
+      text-transform: uppercase; letter-spacing: 0.03em; flex-shrink: 0;
+    }
+
+    .list-toolbar { flex-direction: column; align-items: stretch; }
+    .toolbar-search { min-width: 0; }
+    .toolbar-spacer { display: none; }
+
+    .inline-form { flex-direction: column; align-items: stretch; }
+    .inline-form input, .inline-form textarea { min-width: 0; }
   }
 
   @media (prefers-reduced-motion: reduce) {
@@ -408,6 +600,7 @@
           <button id="oyiClose" aria-label="Close Oyi">×</button>
         </div>
         <div class="oyi-thread" id="oyiThread"></div>
+        <div class="oyi-quick-prompts" id="oyiQuickPrompts"></div>
         <form class="oyi-composer" id="oyiComposer">
           <textarea id="oyiInput" rows="1" placeholder="Ask Oyi about what you're looking at…"></textarea>
           <button type="submit" id="oyiSend" aria-label="Send">→</button>
