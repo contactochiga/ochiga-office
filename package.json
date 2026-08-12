@@ -21,6 +21,7 @@
     "office:public-intelligence:test": "node scripts/test-public-intelligence.js",
     "office:oyi-core-delegation:test": "node scripts/test-oyi-core-delegation.js",
     "office:communications-handoff:test": "node scripts/test-communications-handoff.js",
+    "office:contract-hardening:test": "node scripts/test-office-contract-hardening.js",
     "office:operating-system:test": "node scripts/test-office-operating-system.js",
     "office:eval": "node scripts/run-lead-agents-evals.js"
   },

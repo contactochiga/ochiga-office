@@ -24,7 +24,7 @@ const {
 } = require("./auth");
 const { MemoryRateLimiter } = require("./rate-limit");
 const { FileKnowledgeBase } = require("./knowledge-base");
-const { normalizeEmail, normalizeLeadInput, normalizeLeadPatch } = require("./normalize-lead");
+const { PATCH_FIELDS, normalizeEmail, normalizeLeadInput } = require("./normalize-lead");
 const {
   findExistingIntakeLead,
   leadInputFromIntake,
@@ -138,6 +138,16 @@ function requireObject(body, name) {
     error.statusCode = 400;
     throw error;
   }
+}
+
+function sparseLeadPatchFromBody(body) {
+  const patch = {};
+  for (const field of PATCH_FIELDS) {
+    if (Object.prototype.hasOwnProperty.call(body, field)) {
+      patch[field] = body[field];
+    }
+  }
+  return patch;
 }
 
 function customerServiceWindowExpiry(timestampSeconds) {
@@ -1571,6 +1581,7 @@ async function enrichAuthContext(authContext, store) {
 function buildServer({ config, store, runtime, rateLimiter, publicRateLimiter, loginRateLimiter, whatsappAdapter, openaiClient }) {
   const startedAt = Date.now();
   const widgetRateLimiter = publicRateLimiter || rateLimiter;
+  const officeInternalRateLimiter = rateLimiter;
   const adminLoginRateLimiter =
     loginRateLimiter ||
     new MemoryRateLimiter({
@@ -1721,7 +1732,7 @@ function buildServer({ config, store, runtime, rateLimiter, publicRateLimiter, l
       ) {
         authContext = tryEdgeAuth(req, config) || enforceAuth(req, config);
         authContext = await enrichAuthContext(authContext, store);
-        const rateLimitState = widgetRateLimiter.check(req);
+        const rateLimitState = officeInternalRateLimiter.check(req);
         res.setHeader("x-ratelimit-remaining", String(rateLimitState.remaining));
         res.setHeader(
           "x-ratelimit-reset",
@@ -2459,7 +2470,7 @@ function buildServer({ config, store, runtime, rateLimiter, publicRateLimiter, l
       }
 
       if (pathname === "/api/lead-agents/public/chat") {
-        const rateLimitState = rateLimiter.check(req);
+        const rateLimitState = widgetRateLimiter.check(req);
         res.setHeader("x-ratelimit-remaining", String(rateLimitState.remaining));
         res.setHeader(
           "x-ratelimit-reset",
@@ -2978,44 +2989,7 @@ function buildServer({ config, store, runtime, rateLimiter, publicRateLimiter, l
           authorizePermission(authContext, "manage_leads");
           const body = await readJsonBody(req);
           requireObject(body, "body");
-        const updated = await store.updateLead(
-          leadMatch[1],
-          normalizeLeadPatch({
-              name: body.name,
-              company: body.company,
-              role: body.role,
-              email: body.email,
-              phone: body.phone,
-              source: body.source,
-              source_channel: body.source_channel,
-              location: body.location,
-              city: body.city,
-              country: body.country,
-              unit_count: body.unit_count,
-              project_type: body.project_type,
-              property_type: body.property_type,
-              property_size: body.property_size,
-              number_of_units: body.number_of_units,
-              pain_points: body.pain_points,
-              budget_range: body.budget_range,
-              timeline: body.timeline,
-              decision_maker_status: body.decision_maker_status,
-              interest_package: body.interest_package,
-              lead_score: body.lead_score,
-              qualification_status: body.qualification_status,
-              stage: body.stage,
-              status: body.status,
-              owner: body.owner,
-              commercial_stage: body.commercial_stage,
-              lost_reason: body.lost_reason,
-              score: body.score,
-              summary: body.summary,
-              next_action: body.next_action,
-              next_action_at: body.next_action_at,
-              last_contact_at: body.last_contact_at,
-              notes: body.notes,
-          })
-        );
+          const updated = await store.updateLead(leadMatch[1], sparseLeadPatchFromBody(body));
           if (!updated) {
             notFound(res);
             return;

@@ -553,32 +553,16 @@ function renderForbiddenView(outlet) {
 }
 
 // ---------------------------------------------------------------
-// HOME — real attention projection from GET /admin/office/home.
-//
-// PHASE2 LIMITATION (documented, not worked around with fabricated
-// data): the backend aggregate is company-wide and unscoped by
-// caller — it does not filter by assignee/owner server-side, and its
-// `recent_activity` field is always empty today (no timeline
-// aggregation wired up yet). This view compensates honestly:
-//   - "My Work" is a real client-side filter of attention_items whose
-//     owner matches the signed-in staff member's email (the data
-//     already carries that field — this is filtering, not invention).
-//   - Sections are hidden per-item where the underlying permission
-//     is absent (crm.read for leads, tasks.read for tasks, etc.) even
-//     though the aggregate endpoint doesn't scope them server-side.
-//   - "Recent Activity" is populated from real crm_activities records
-//     (sorted by recency) rather than the always-empty backend field.
+// HOME — real attention and recent-activity projection from
+// GET /admin/office/home. The client still hides sections where the
+// signed-in staff member lacks the related permission.
 // ---------------------------------------------------------------
 const ATTENTION_PERMISSION = { task: "tasks.read", support_case: "support.read", proposal: "crm.read", lead: "crm.read" };
 
 async function renderHomeView(outlet, token) {
   let home;
-  let recentActivity = [];
   try {
-    [home, recentActivity] = await Promise.all([
-      getHome().then((d) => d.home),
-      hasPermission("crm.read") ? fetchActivities().catch(() => []) : Promise.resolve([]),
-    ]);
+    home = await getHome().then((d) => d.home);
   } catch (err) {
     if (token !== state.renderToken) return;
     outlet.innerHTML = "";
@@ -617,7 +601,7 @@ async function renderHomeView(outlet, token) {
     }
   }
 
-  outlet.appendChild(renderRecentActivitySection(recentActivity));
+  outlet.appendChild(renderRecentActivitySection(home.recent_activity || []));
   outlet.appendChild(renderAskOyiCard());
 }
 
@@ -1040,26 +1024,7 @@ function renderLeadUpdateForm(record) {
     const statusLabel = form.querySelector(".form-status");
     const formData = new FormData(form);
     try {
-      // PATCH /api/lead-agents/leads/:id builds its patch object with an
-      // explicit key for every recognized field, present or not — any
-      // field the caller omits arrives as `undefined` and the store's
-      // merge overwrites the existing value with it (a real destructive
-      // quirk in the existing backend contract, not something this
-      // frontend can fix). Sending every recognized field back, seeded
-      // from the current record, prevents this update from silently
-      // wiping unrelated data. See PHASE2 report.
       await apiUpdateLead(record.id, {
-        name: record.name, company: record.company, role: record.role, email: record.email,
-        phone: record.phone, source: record.source, source_channel: record.source_channel,
-        location: record.location, city: record.city, country: record.country,
-        unit_count: record.unit_count, project_type: record.project_type, property_type: record.property_type,
-        property_size: record.property_size, number_of_units: record.number_of_units,
-        pain_points: record.pain_points, budget_range: record.budget_range, timeline: record.timeline,
-        decision_maker_status: record.decision_maker_status, interest_package: record.interest_package,
-        lead_score: record.lead_score, qualification_status: record.qualification_status,
-        stage: record.stage, commercial_stage: record.commercial_stage, lost_reason: record.lost_reason,
-        score: record.score, summary: record.summary, next_action_at: record.next_action_at,
-        last_contact_at: record.last_contact_at, notes: record.notes,
         status: formData.get("status"),
         owner: formData.get("owner"),
         next_action: formData.get("next_action"),

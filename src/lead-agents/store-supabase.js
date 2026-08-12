@@ -70,6 +70,8 @@ class SupabaseLeadAgentsStore {
       project_type: row.project_type || "",
       property_type: row.property_type || row.project_type || "",
       source_channel: row.source_channel || row.primary_channel || row.source || "",
+      business_unit: row.business_unit ?? null,
+      inquiry_type: row.inquiry_type ?? null,
       city: row.city || "",
       country: row.country || "",
       property_size: row.property_size || "",

@@ -144,6 +144,8 @@ class FileLeadAgentsStore {
       channel_last_seen_at: input.channel_last_seen_at || "",
       source: input.source || "",
       source_channel: input.source_channel || input.primary_channel || input.source || "",
+      business_unit: input.business_unit || null,
+      inquiry_type: input.inquiry_type || null,
       location: input.location || "",
       city: input.city || "",
       country: input.country || "",

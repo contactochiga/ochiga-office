@@ -44,6 +44,8 @@ function normalizeLeadInput(input, fallbackSource) {
     primary_channel: normalizeText(input.primary_channel),
     source_channel: normalizeText(input.source_channel),
     source: normalizeSource(input.source, fallbackSource),
+    business_unit: normalizeText(input.business_unit),
+    inquiry_type: normalizeText(input.inquiry_type),
     location: normalizeText(input.location),
     city: normalizeText(input.city),
     country: normalizeText(input.country),
@@ -79,10 +81,67 @@ function normalizeLeadInput(input, fallbackSource) {
   };
 }
 
+const PATCH_FIELDS = [
+  "name",
+  "company",
+  "role",
+  "email",
+  "phone",
+  "whatsapp_phone",
+  "primary_channel",
+  "source_channel",
+  "source",
+  "business_unit",
+  "inquiry_type",
+  "location",
+  "city",
+  "country",
+  "unit_count",
+  "project_type",
+  "property_type",
+  "property_size",
+  "number_of_units",
+  "pain_points",
+  "budget_range",
+  "timeline",
+  "decision_maker_status",
+  "interest_package",
+  "lead_score",
+  "qualification_status",
+  "stage",
+  "status",
+  "owner",
+  "commercial_stage",
+  "lost_reason",
+  "score",
+  "summary",
+  "next_action",
+  "next_action_at",
+  "last_contact_at",
+  "notes",
+];
+
 function normalizeLeadPatch(patch) {
-  const normalized = normalizeLeadInput(patch, "");
+  const sparse = {};
+  for (const field of PATCH_FIELDS) {
+    if (Object.prototype.hasOwnProperty.call(patch, field)) {
+      sparse[field] = patch[field];
+    }
+  }
+  for (const field of ["unit_count", "number_of_units", "lead_score", "score"]) {
+    if (Object.prototype.hasOwnProperty.call(sparse, field) && sparse[field] !== null && sparse[field] !== undefined && sparse[field] !== "") {
+      const numeric = Number(sparse[field]);
+      if (!Number.isFinite(numeric)) {
+        const error = new Error(`invalid_${field}`);
+        error.statusCode = 400;
+        throw error;
+      }
+    }
+  }
   return Object.fromEntries(
-    Object.entries(normalized).filter(([, value]) => value !== undefined)
+    Object.entries(normalizeLeadInput(sparse, "")).filter(
+      ([key, value]) => Object.prototype.hasOwnProperty.call(sparse, key) && value !== undefined
+    )
   );
 }
 
@@ -90,6 +149,7 @@ module.exports = {
   normalizeEmail,
   normalizeLeadInput,
   normalizeLeadPatch,
+  PATCH_FIELDS,
   normalizePhone,
   normalizeScore,
   normalizeSource,
