@@ -1603,6 +1603,21 @@ function buildServer({ config, store, runtime, rateLimiter, publicRateLimiter, l
     "dashboard",
     "dashboard.js"
   );
+  // Ochiga Office corporate shell (Phase 1 rebuild) — same explicit
+  // static-route pattern as the legacy dashboard above; the legacy
+  // dashboard is left fully intact and reachable at its existing path.
+  const officeShellIndexPath = path.join(
+    process.cwd(),
+    "public",
+    "office",
+    "index.html"
+  );
+  const officeShellScriptPath = path.join(
+    process.cwd(),
+    "public",
+    "office",
+    "office.js"
+  );
   const dashboardLogoPath = path.join(
     process.cwd(),
     "public",
@@ -2089,6 +2104,24 @@ function buildServer({ config, store, runtime, rateLimiter, publicRateLimiter, l
           return;
         }
         await serveFile(res, dashboardScriptPath);
+        return;
+      }
+
+      if (pathname === "/office" || pathname === "/office/") {
+        if (req.method !== "GET") {
+          methodNotAllowed(res, "GET");
+          return;
+        }
+        await serveFile(res, officeShellIndexPath);
+        return;
+      }
+
+      if (pathname === "/office.js") {
+        if (req.method !== "GET") {
+          methodNotAllowed(res, "GET");
+          return;
+        }
+        await serveFile(res, officeShellScriptPath);
         return;
       }
 

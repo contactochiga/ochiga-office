@@ -15,6 +15,10 @@
       "destination": "/widget/oma-widget.js"
     },
     {
+      "source": "/office.js",
+      "destination": "/office/office.js"
+    },
+    {
       "source": "/api/lead-agents/:path*",
       "destination": "https://ochiga-lead-agents.onrender.com/api/lead-agents/:path*"
     },

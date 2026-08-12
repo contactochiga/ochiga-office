@@ -13,6 +13,8 @@ const requiredFiles = [
   "public/digital-twin/app.js",
   "public/plan-studio/index.html",
   "public/plan-studio/app.js",
+  "public/office/index.html",
+  "public/office/office.js",
   "lead-agents-server.js",
   "render.yaml",
   "docs/office-os-2-architecture.md",
