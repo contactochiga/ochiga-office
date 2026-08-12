@@ -13,6 +13,7 @@ const commands = [
   "npm run office:oyi-core-delegation:test",
   "npm run office:communications-handoff:test",
   "npm run office:contract-hardening:test",
+  "npm run office:operational-mutations:test",
   "npm run office:operating-system:test",
 ];
 

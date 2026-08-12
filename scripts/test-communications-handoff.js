@@ -113,7 +113,7 @@ const { createTempStore } = require("../src/lead-agents/testing");
   });
   assert.equal(task.related_type, "communications_handoff");
   assert.equal(task.metadata.fallback_action, "request_callback");
-  assert.ok(store.state.tasks.some((item) => item.id === task.id));
+  assert.ok(store.state.crm_tasks.some((item) => item.id === task.id));
 
   assert.equal(canViewHandoffQueue({ permissions: ["office.read"] }, "office_public"), true);
   assert.equal(canViewHandoffQueue({ permissions: ["support.read"] }, "support"), true);

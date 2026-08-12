@@ -55,6 +55,16 @@ const {
   upsertContactIdentity,
   validateCommercialDocumentDraft,
 } = require("./office-operating-system");
+const {
+  canCreateActivityForRelatedObject,
+  createOrUpdateHandoff,
+  createRelatedActivity,
+  listHandoffQueue,
+  listRelatedActivities,
+  updateHandoff,
+  updateOperationalRecord,
+  validateRelatedObject,
+} = require("./office-operational-workflows");
 const { WhatsAppCloudAdapter } = require("./whatsapp");
 const { buildCalendarLinks, parsePreferredSchedule } = require("./scheduling");
 const { buildProposal, inferCommercialFacts } = require("./commercial");
@@ -3626,6 +3636,29 @@ function buildServer({ config, store, runtime, rateLimiter, publicRateLimiter, l
         return;
       }
 
+      const crmItemMatch = pathname.match(/^\/api\/lead-agents\/admin\/crm\/(tasks)\/([^/]+)$/);
+      if (crmItemMatch) {
+        const [, collection, id] = crmItemMatch;
+        const policy = CORPORATE_COLLECTIONS[collection];
+        if (req.method === "PATCH") {
+          authorizePermission(authContext, policy.manage);
+          const body = await readJsonBody(req);
+          requireObject(body, "body");
+          const result = await updateOperationalRecord(store, collection, decodeURIComponent(id), body, {
+            authContext,
+            actorEmail: authContext?.email || "office",
+          });
+          await appendAudit(store, authContext, `crm_${collection}_updated`, collection, result.record.id, {
+            status: result.record.status,
+            allowed_status_transitions: result.allowed_status_transitions,
+          });
+          json(res, 200, result, { "x-request-id": ctx.requestId });
+          return;
+        }
+        methodNotAllowed(res, "PATCH");
+        return;
+      }
+
       const officeOperatingMatch = pathname.match(/^\/api\/lead-agents\/admin\/office\/(projects|portfolio|support|private|partnerships|meetings)$/);
       if (officeOperatingMatch) {
         const collection = officeOperatingMatch[1];
@@ -3648,6 +3681,132 @@ function buildServer({ config, store, runtime, rateLimiter, publicRateLimiter, l
           return;
         }
         methodNotAllowed(res, "GET,POST");
+        return;
+      }
+
+      const officeOperatingItemMatch = pathname.match(/^\/api\/lead-agents\/admin\/office\/(projects|portfolio|support|meetings)\/([^/]+)$/);
+      if (officeOperatingItemMatch) {
+        const [, collection, id] = officeOperatingItemMatch;
+        const policy = CORPORATE_COLLECTIONS[collection];
+        if (req.method === "PATCH") {
+          authorizePermission(authContext, policy.manage);
+          const body = await readJsonBody(req);
+          requireObject(body, "body");
+          const result = await updateOperationalRecord(store, collection, decodeURIComponent(id), body, {
+            authContext,
+            actorEmail: authContext?.email || "office",
+          });
+          await appendAudit(store, authContext, `office_${collection}_updated`, collection, result.record.id, {
+            status: result.record.status,
+            allowed_status_transitions: result.allowed_status_transitions,
+          });
+          json(res, 200, result, { "x-request-id": ctx.requestId });
+          return;
+        }
+        methodNotAllowed(res, "PATCH");
+        return;
+      }
+
+      const relatedActivityMatch = pathname.match(/^\/api\/lead-agents\/admin\/office\/activities\/([^/]+)\/([^/]+)$/);
+      if (relatedActivityMatch) {
+        const [, relatedType, relatedId] = relatedActivityMatch;
+        if (req.method === "GET") {
+          await validateRelatedObject(store, authContext, decodeURIComponent(relatedType), decodeURIComponent(relatedId));
+          const activities = await listRelatedActivities(store, authContext, decodeURIComponent(relatedType), decodeURIComponent(relatedId));
+          json(res, 200, { collection: activities }, { "x-request-id": ctx.requestId });
+          return;
+        }
+        if (req.method === "POST") {
+          if (!canCreateActivityForRelatedObject(authContext, decodeURIComponent(relatedType))) {
+            authorizePermission(authContext, "crm.manage");
+          }
+          const body = await readJsonBody(req);
+          requireObject(body, "body");
+          const activity = await createRelatedActivity(store, {
+            ...body,
+            related_type: decodeURIComponent(relatedType),
+            related_id: decodeURIComponent(relatedId),
+          }, { authContext, actorEmail: authContext?.email || "office" });
+          await appendAudit(store, authContext, "office_activity_created", activity.related_type || "activity", activity.related_id || activity.id, {
+            activity_type: activity.activity_type,
+          });
+          json(res, 201, { record: activity }, { "x-request-id": ctx.requestId });
+          return;
+        }
+        methodNotAllowed(res, "GET,POST");
+        return;
+      }
+
+      if (pathname === "/api/lead-agents/admin/office/handoffs") {
+        if (req.method === "GET") {
+          if (!hasPermission(authContext, "office.read") && !hasPermission(authContext, "support.read")) {
+            authorizePermission(authContext, "office.read");
+          }
+          const queue = await listHandoffQueue(store, authContext, { status: url.searchParams.get("status") || "" });
+          json(res, 200, { queue }, { "x-request-id": ctx.requestId });
+          return;
+        }
+        if (req.method === "POST") {
+          authorizePermission(authContext, "office.manage");
+          const body = await readJsonBody(req);
+          requireObject(body, "body");
+          const handoff = await createOrUpdateHandoff(store, body);
+          await appendAudit(store, authContext, "office_handoff_created", "communications_handoff", handoff.handoff_id, {
+            business_unit: handoff.business_unit,
+            requested_capability: handoff.requested_capability,
+            media_mode: handoff.media_mode,
+          });
+          json(res, 201, { handoff }, { "x-request-id": ctx.requestId });
+          return;
+        }
+        methodNotAllowed(res, "GET,POST");
+        return;
+      }
+
+      const handoffDetailMatch = pathname.match(/^\/api\/lead-agents\/admin\/office\/handoffs\/([^/]+)$/);
+      if (handoffDetailMatch) {
+        if (req.method !== "GET") {
+          methodNotAllowed(res, "GET");
+          return;
+        }
+        if (!hasPermission(authContext, "office.read") && !hasPermission(authContext, "support.read")) {
+          authorizePermission(authContext, "office.read");
+        }
+        const [handoff] = (await listHandoffQueue(store, authContext, {})).filter((item) => item.handoff_id === decodeURIComponent(handoffDetailMatch[1]));
+        if (!handoff) {
+          notFound(res);
+          return;
+        }
+        json(res, 200, { handoff }, { "x-request-id": ctx.requestId });
+        return;
+      }
+
+      const handoffActionMatch = pathname.match(/^\/api\/lead-agents\/admin\/office\/handoffs\/([^/]+)\/(accept|decline|assign|callback)$/);
+      if (handoffActionMatch) {
+        const [, handoffId, action] = handoffActionMatch;
+        if (req.method !== "POST") {
+          methodNotAllowed(res, "POST");
+          return;
+        }
+        const body = await readJsonBody(req);
+        const handoff = await updateHandoff(store, authContext, decodeURIComponent(handoffId), action, body || {});
+        await appendAudit(store, authContext, `office_handoff_${action}`, "communications_handoff", handoff.handoff_id, {
+          status: handoff.status,
+          assigned_staff_id: handoff.assigned_staff_id,
+        });
+        await createCorporateRecord(store, "activities", {
+          activity_type: `handoff_${action}`,
+          title: `Handoff ${action}`,
+          body: handoff.reason,
+          business_unit: handoff.business_unit,
+          related_type: "handoff",
+          related_id: handoff.handoff_id,
+          metadata: {
+            communications_session_id: handoff.communications_session_id,
+            public_session_id: handoff.public_session_id,
+          },
+        }, { actorEmail: authContext?.email || "office" });
+        json(res, 200, { handoff }, { "x-request-id": ctx.requestId });
         return;
       }
 

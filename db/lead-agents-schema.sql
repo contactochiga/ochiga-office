@@ -113,6 +113,12 @@ create table if not exists crm_activities (
   contact_id uuid references crm_contacts(id) on delete set null,
   organization_id uuid references crm_organizations(id) on delete set null,
   opportunity_id uuid references crm_opportunities(id) on delete set null,
+  project_id text,
+  portfolio_id text,
+  support_case_id text,
+  meeting_id text,
+  related_type text,
+  related_id text,
   activity_type text not null,
   title text,
   body text,
@@ -824,6 +830,7 @@ create table if not exists office_support_cases (
   assigned_staff text,
   sla_target_at timestamptz,
   resolution_notes text,
+  resolved_at timestamptz,
   metadata jsonb not null default '{}'::jsonb,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
@@ -876,6 +883,8 @@ create table if not exists office_meetings (
   notes text,
   outcome text,
   follow_up_task_id uuid references crm_tasks(id) on delete set null,
+  completed_at timestamptz,
+  cancelled_at timestamptz,
   metadata jsonb not null default '{}'::jsonb,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
@@ -894,3 +903,38 @@ create index if not exists office_support_cases_status_idx on office_support_cas
 create index if not exists office_private_relationships_status_idx on office_private_relationships (status, review_status);
 create index if not exists office_partnership_relationships_status_idx on office_partnership_relationships (status, relationship_type);
 create index if not exists office_meetings_scheduled_at_idx on office_meetings (scheduled_at desc);
+
+alter table crm_activities add column if not exists project_id text;
+alter table crm_activities add column if not exists portfolio_id text;
+alter table crm_activities add column if not exists support_case_id text;
+alter table crm_activities add column if not exists meeting_id text;
+alter table crm_activities add column if not exists related_type text;
+alter table crm_activities add column if not exists related_id text;
+alter table office_support_cases add column if not exists resolved_at timestamptz;
+alter table office_meetings add column if not exists completed_at timestamptz;
+alter table office_meetings add column if not exists cancelled_at timestamptz;
+create index if not exists crm_activities_related_object_idx on crm_activities (related_type, related_id, occurred_at desc);
+create index if not exists crm_activities_project_idx on crm_activities (project_id, occurred_at desc);
+create index if not exists crm_activities_portfolio_idx on crm_activities (portfolio_id, occurred_at desc);
+create index if not exists crm_activities_support_case_idx on crm_activities (support_case_id, occurred_at desc);
+
+create table if not exists office_handoffs (
+  handoff_id text primary key,
+  communications_session_id text,
+  public_session_id text,
+  oyi_thread_id text,
+  business_unit text not null default 'corporate',
+  requested_capability text not null default 'corporate.office_desk',
+  media_mode text not null default 'chat',
+  reason text,
+  status text not null default 'requested',
+  priority text not null default 'normal',
+  assigned_staff_id text,
+  crm_contact_ref text,
+  crm_opportunity_ref text,
+  safe_visitor_context jsonb not null default '{}'::jsonb,
+  metadata jsonb not null default '{}'::jsonb,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+create index if not exists office_handoffs_status_idx on office_handoffs (status, business_unit, requested_capability, created_at);

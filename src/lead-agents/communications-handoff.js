@@ -133,8 +133,8 @@ async function createCallbackTask({ store, lead, handoff = {}, session = {} } = 
     created_at: nowIso(),
     updated_at: nowIso(),
   };
-  store.state.tasks = Array.isArray(store.state.tasks) ? store.state.tasks : [];
-  store.state.tasks.push(task);
+  store.state.crm_tasks = Array.isArray(store.state.crm_tasks) ? store.state.crm_tasks : [];
+  store.state.crm_tasks.push(task);
   if (store.persist) await store.persist();
   return task;
 }
