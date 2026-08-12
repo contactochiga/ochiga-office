@@ -259,14 +259,15 @@ async function upsertContactIdentity(store, input = {}, context = {}) {
   return createCorporateRecord(store, "contacts", { ...existing, ...input, id: existing.id }, context);
 }
 
-async function buildOfficeHomeProjection(store) {
+async function buildOfficeHomeProjection(store, options = {}) {
+  const includeRecentActivity = options.includeRecentActivity !== false;
   const [leads, proposals, notifications, tasks, activities, support, projects, portfolio, privateRows, partnershipRows] =
     await Promise.all([
       store.listLeads ? store.listLeads() : [],
       store.listProposals ? store.listProposals() : [],
       store.listNotifications ? store.listNotifications(200) : [],
       listCorporateRecords(store, "tasks"),
-      listCorporateRecords(store, "activities"),
+      includeRecentActivity ? listCorporateRecords(store, "activities") : [],
       listCorporateRecords(store, "support"),
       listCorporateRecords(store, "projects"),
       listCorporateRecords(store, "portfolio"),

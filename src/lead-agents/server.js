@@ -63,7 +63,7 @@ const { createDigitalTwinRuntime } = require("./digital-twin");
 const { createPlanStudioRuntime } = require("./plan-studio");
 const { createOfficeSyncService } = require("./office-sync");
 const { appendAuditRecord } = require("./audit");
-const { PERMISSION_KEYS, ROLE_PERMISSIONS } = require("./permissions");
+const { PERMISSION_KEYS, ROLE_PERMISSIONS, hasPermission } = require("./permissions");
 const { createRealtimeHub } = require("./realtime");
 const { createStorageService } = require("./storage");
 const {
@@ -3592,7 +3592,9 @@ function buildServer({ config, store, runtime, rateLimiter, publicRateLimiter, l
           return;
         }
         authorizePermission(authContext, "office.read");
-        const home = await buildOfficeHomeProjection(store);
+        const home = await buildOfficeHomeProjection(store, {
+          includeRecentActivity: authContext.type === "api_key" || hasPermission(authContext, "crm.read"),
+        });
         json(res, 200, { home }, { "x-request-id": ctx.requestId });
         return;
       }

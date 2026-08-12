@@ -115,6 +115,8 @@ async function main() {
   assert.equal(home.recent_activity[0].business_unit, "technology");
   assert.equal(JSON.stringify(home.recent_activity).includes("private_payload"), false);
   assert.ok(home.recent_activity.length <= 12);
+  const restrictedHome = await buildOfficeHomeProjection(store, { includeRecentActivity: false });
+  assert.deepEqual(restrictedHome.recent_activity, [], "Home projection must omit CRM activity when caller lacks crm.read visibility");
 
   const serverSource = read("src/lead-agents/server.js");
   assert.match(serverSource, /const widgetRateLimiter = publicRateLimiter \|\| rateLimiter/);
