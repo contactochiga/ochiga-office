@@ -125,6 +125,8 @@ function normalizeCorporateRecord(collection, input = {}, context = {}) {
       project_id: text(input.project_id) || null,
       portfolio_id: text(input.portfolio_id) || null,
       support_case_id: text(input.support_case_id) || null,
+      private_relationship_id: text(input.private_relationship_id) || null,
+      partnership_relationship_id: text(input.partnership_relationship_id) || null,
       title: text(input.title, "Office task"),
       description: text(input.description || input.body),
       priority: text(input.priority, "normal"),
@@ -193,7 +195,11 @@ function normalizeCorporateRecord(collection, input = {}, context = {}) {
       opportunity_id: text(input.opportunity_id) || null,
       relationship_type: text(input.relationship_type, collection === "private" ? "membership" : "strategic_partner"),
       relationship_manager: text(input.relationship_manager || input.owner || context.actorEmail),
-      review_status: text(input.review_status, "active"),
+      // Matches office-operational-workflows.js STATUS_TRANSITIONS'
+      // entry states — "active" here would skip the governed
+      // request/review/approve pipeline entirely (active only
+      // transitions to inactive).
+      review_status: text(input.review_status, collection === "private" ? "requested" : "new"),
       notes: text(input.notes),
     };
   }
@@ -302,7 +308,24 @@ async function buildOfficeHomeProjection(store, options = {}) {
       priority: activity.priority || null,
     }));
   const attention_items = [
-    ...openTasks.slice(0, 5).map((task) => ({ type: "task", id: task.id, title: task.title, priority: task.priority || "normal", owner: task.assignee || task.owner || "" })),
+    ...openTasks.slice(0, 5).map((task) => {
+      const related = task.private_relationship_id
+        ? { related_object_type: "private_relationship", related_object_id: task.private_relationship_id }
+        : task.partnership_relationship_id
+          ? { related_object_type: "partnership_relationship", related_object_id: task.partnership_relationship_id }
+          : task.support_case_id
+            ? { related_object_type: "support_case", related_object_id: task.support_case_id }
+            : task.project_id
+              ? { related_object_type: "project", related_object_id: task.project_id }
+              : task.portfolio_id
+                ? { related_object_type: "portfolio", related_object_id: task.portfolio_id }
+                : task.opportunity_id
+                  ? { related_object_type: "opportunity", related_object_id: task.opportunity_id }
+                  : task.lead_id
+                    ? { related_object_type: "lead", related_object_id: task.lead_id }
+                    : {};
+      return { type: "task", id: task.id, title: task.title, priority: task.priority || "normal", owner: task.assignee || task.owner || "", ...related };
+    }),
     ...openSupport.slice(0, 5).map((item) => ({ type: "support_case", id: item.id, title: item.title, priority: item.priority || item.severity || "normal", owner: item.assigned_staff || item.owner || "" })),
     ...proposalAwaiting.slice(0, 5).map((proposal) => ({ type: "proposal", id: proposal.id, title: proposal.title, priority: "follow_up", owner: proposal.lead?.owner || "" })),
     ...hotLeads.slice(0, 5).map((lead) => ({ type: "lead", id: lead.id, title: lead.company || lead.name || "Lead", priority: "follow_up", owner: lead.owner || "" })),

@@ -38,10 +38,8 @@
 //   POST /api/lead-agents/leads/:id/proposals
 //   PATCH /api/lead-agents/admin/proposals/:id
 //   GET  /api/lead-agents/admin/office/handoffs  (safe projection, read-only here)
-//   Private and Partnerships still have NO PATCH/status-transition
-//   endpoint (unlike Projects/Portfolio/Support/Tasks/Meetings) — they
-//   remain list+create+notes(via the generic activities endpoint)
-//   only. office_documents has no PATCH at all. See PHASE4_REPORT.
+//   Private and Partnerships use governed review_status PATCH and
+//   generic activities/notes. office_documents has no PATCH at all.
 
 const state = {
   admin: null,
@@ -124,10 +122,8 @@ async function apiListOffice(collection) {
 async function apiCreateOffice(collection, body) {
   return api(`/api/lead-agents/admin/office/${collection}`, { method: "POST", body });
 }
-// Sparse PATCH for the collections the operational-hardening pass
-// added a real mutation contract for. namespace is "crm" for tasks,
-// "office" for projects/portfolio/support/meetings. Private and
-// Partnerships are deliberately absent — no PATCH exists for them.
+// Sparse PATCH for governed operational collections. namespace is
+// "crm" for tasks and "office" for Office-owned objects.
 async function apiPatchOperational(namespace, collection, id, patch) {
   return api(`/api/lead-agents/admin/${namespace}/${collection}/${encodeURIComponent(id)}`, { method: "PATCH", body: patch });
 }
@@ -565,10 +561,9 @@ function railList(items, renderItem) {
 // src/lead-agents/office-operational-workflows.js STATUS_TRANSITIONS
 // exactly. The backend is the source of truth and validates every
 // transition server-side regardless of what this map says; this only
-// decides which buttons to offer before the first PATCH. Only the
-// five collections the hardening pass actually added a mutation
-// contract for are listed — Private/Partnerships/Documents/Proposals
-// have no status-transition endpoint and never call this.
+// decides which buttons to offer before the first PATCH. Private and
+// Partnerships use review_status; the other operational records use
+// status. Documents/Proposals remain read-only here.
 // ---------------------------------------------------------------
 const STATUS_TRANSITIONS = {
   tasks: {
@@ -607,6 +602,22 @@ const STATUS_TRANSITIONS = {
     completed: [],
     cancelled: [],
   },
+  private: {
+    requested: ["under_review", "declined"],
+    under_review: ["approved", "declined"],
+    approved: ["active", "inactive"],
+    active: ["inactive"],
+    inactive: ["under_review"],
+    declined: [],
+  },
+  partnerships: {
+    new: ["under_review", "active", "declined"],
+    under_review: ["active", "declined"],
+    active: ["paused", "closed"],
+    paused: ["active", "closed"],
+    closed: [],
+    declined: [],
+  },
 };
 function allowedNextStatuses(collection, currentStatus) {
   const key = String(currentStatus || "").toLowerCase();
@@ -614,14 +625,16 @@ function allowedNextStatuses(collection, currentStatus) {
 }
 // namespace: "crm" for tasks (PATCH /admin/crm/tasks/:id), "office"
 // for projects/portfolio/support/meetings (PATCH /admin/office/:collection/:id).
-function renderStatusActions(namespace, collection, record, onDone) {
-  const next = allowedNextStatuses(collection, record.status);
+function renderStatusActions(namespace, collection, record, onDone, options = {}) {
+  const statusField = options.statusField || "status";
+  const currentStatus = record[statusField] || record.status;
+  const next = allowedNextStatuses(collection, currentStatus);
   if (!next.length) return null;
   const wrap = el(`<div class="status-actions"></div>`);
   const errorLabel = el(`<span class="form-status"></span>`);
   async function apply(status, extra) {
     try {
-      await apiPatchOperational(namespace, collection, record.id, { status, ...(extra || {}) });
+      await apiPatchOperational(namespace, collection, record.id, { [statusField]: status, ...(extra || {}) });
       invalidate(collection);
       onDone();
     } catch (err) {
@@ -1605,19 +1618,10 @@ function promptAddNote(refs) {
 // ---------------------------------------------------------------
 // Phase 3 — Projects / Portfolio / Support / Tasks / Meetings.
 //
-// Every one of these collections is list+create only on the backend
-// (see CORPORATE_COLLECTIONS / office-operating-system.js) — there is
-// no update or status-transition endpoint yet for any of them. So,
-// like Contacts/Organizations/Opportunities in Phase 2, these views
-// are read + create, never a fake "Edit"/"Resolve"/"Assign" action.
-//
-// None of these collections have a dedicated timeline/notes table
-// (crm_activities has no project_id/portfolio_id/support_case_id
-// column), so there is no "Add note" here — the Timeline shown is
-// built honestly from real Tasks + Meetings for that record, and no
-// note-taking affordance is offered where the backend has nowhere to
-// put it. This is a documented backend gap, not a bug — see
-// PHASE3_REPORT.
+// These collections now use governed sparse PATCH/status transitions
+// where Office owns the business state. Notes/timelines flow through
+// the generic related activities contract rather than per-module
+// activity tables.
 // ---------------------------------------------------------------
 function openCreateProjectDialog(prefill = {}) {
   openDialog("New Project", [
@@ -1680,6 +1684,30 @@ function openCreateMeetingDialog(prefill = {}) {
       related_id: prefill.related_id,
     });
     invalidate("meetings");
+    renderRoute();
+  });
+}
+
+function openCreateTaskDialog(prefill = {}) {
+  openDialog("Create Task", [
+    { name: "title", label: "Title" },
+    { name: "description", label: "Description", type: "textarea" },
+    { name: "priority", label: "Priority", value: "normal" },
+    { name: "due_at", label: "Due At", type: "datetime-local" },
+    { name: "business_unit", label: "Business Unit", value: prefill.business_unit || "" },
+  ], async (data) => {
+    await apiCreateCrm("tasks", {
+      ...data,
+      due_at: data.due_at ? new Date(data.due_at).toISOString() : "",
+      lead_id: prefill.lead_id,
+      opportunity_id: prefill.opportunity_id,
+      project_id: prefill.project_id,
+      portfolio_id: prefill.portfolio_id,
+      support_case_id: prefill.support_case_id,
+      private_relationship_id: prefill.private_relationship_id,
+      partnership_relationship_id: prefill.partnership_relationship_id,
+    });
+    invalidate("tasks");
     renderRoute();
   });
 }
@@ -2223,7 +2251,8 @@ async function renderSupportDetail(outlet, id, token) {
 // ---------------------------------------------------------------
 // TASKS — a cross-company work view over crm_tasks. A task is not a
 // destination in itself: clicking one navigates to whichever real
-// object it belongs to (Lead/Opportunity/Project/Portfolio/Support).
+// object it belongs to (Lead/Opportunity/Project/Portfolio/Support/
+// Private/Partnership).
 // PATCH /admin/crm/tasks/:id now exists (Phase 4 backend hardening),
 // so each row also carries restrained status actions.
 // ---------------------------------------------------------------
@@ -2244,16 +2273,28 @@ function resolveTaskRelation(task, index) {
   if (task.support_case_id && index.supportById[task.support_case_id]) {
     return { type: "Support", path: `support/${task.support_case_id}`, name: index.supportById[task.support_case_id].title };
   }
+  if (task.private_relationship_id && index.privateById[task.private_relationship_id]) {
+    const r = index.privateById[task.private_relationship_id];
+    return { type: "Private", path: `private/${task.private_relationship_id}`, name: relationshipLabel(r, index.contacts, index.organizations) };
+  }
+  if (task.partnership_relationship_id && index.partnershipById[task.partnership_relationship_id]) {
+    const r = index.partnershipById[task.partnership_relationship_id];
+    return { type: "Partnership", path: `partnerships/${task.partnership_relationship_id}`, name: relationshipLabel(r, index.contacts, index.organizations) };
+  }
   return null;
 }
 
 async function fetchTaskRelationIndex() {
-  const [leads, opportunities, projects, portfolioEntries, supportCases] = await Promise.all([
+  const [leads, opportunities, projects, portfolioEntries, supportCases, privateRelationships, partnerships, contacts, organizations] = await Promise.all([
     hasPermission("office.read") ? fetchLeads().catch(() => []) : Promise.resolve([]),
     hasPermission("crm.read") ? fetchOpportunities().catch(() => []) : Promise.resolve([]),
     hasPermission("projects.read") ? fetchProjects().catch(() => []) : Promise.resolve([]),
     hasPermission("portfolio.read") ? fetchPortfolio().catch(() => []) : Promise.resolve([]),
     hasPermission("support.read") ? fetchSupport().catch(() => []) : Promise.resolve([]),
+    hasPermission("private.read") ? fetchPrivate().catch(() => []) : Promise.resolve([]),
+    hasPermission("partnerships.read") ? fetchPartnerships().catch(() => []) : Promise.resolve([]),
+    hasPermission("crm.read") ? fetchContacts().catch(() => []) : Promise.resolve([]),
+    hasPermission("crm.read") ? fetchOrganizations().catch(() => []) : Promise.resolve([]),
   ]);
   return {
     leadById: Object.fromEntries(leads.map((l) => [l.id, l])),
@@ -2261,6 +2302,10 @@ async function fetchTaskRelationIndex() {
     projectById: Object.fromEntries(projects.map((p) => [p.id, p])),
     portfolioById: Object.fromEntries(portfolioEntries.map((p) => [p.id, p])),
     supportById: Object.fromEntries(supportCases.map((s) => [s.id, s])),
+    privateById: Object.fromEntries(privateRelationships.map((r) => [r.id, r])),
+    partnershipById: Object.fromEntries(partnerships.map((p) => [p.id, p])),
+    contacts,
+    organizations,
   };
 }
 
@@ -2293,7 +2338,7 @@ async function renderTasksList(outlet, token) {
   buSelect.addEventListener("change", () => { listState.businessUnit = buSelect.value; draw(); });
   toolbar.appendChild(buSelect);
 
-  const relSelect = el(`<select class="toolbar-filter"><option value="">Related Type</option>${["Lead", "Opportunity", "Project", "Portfolio", "Support"].map((r) => `<option value="${r}">${r}</option>`).join("")}</select>`);
+  const relSelect = el(`<select class="toolbar-filter"><option value="">Related Type</option>${["Lead", "Opportunity", "Project", "Portfolio", "Support", "Private", "Partnership"].map((r) => `<option value="${r}">${r}</option>`).join("")}</select>`);
   relSelect.addEventListener("change", () => { listState.relatedType = relSelect.value; draw(); });
   toolbar.appendChild(relSelect);
   toolbar.appendChild(el(`<div class="toolbar-spacer"></div>`));
@@ -2399,7 +2444,7 @@ async function renderTaskRedirect(outlet, id, token) {
           ${factRow("Due", record.due_at ? fmtDate(record.due_at) : "—")}
           ${factRow("Description", record.description)}
         </div>
-        <p class="detail-note">This task isn't linked to a Lead, Opportunity, Project, Portfolio or Support case.</p>
+        <p class="detail-note">This task isn't linked to a Lead, Opportunity, Project, Portfolio, Support case, Private relationship or Partnership.</p>
       </div>
     </div></div>
   `));
@@ -2564,12 +2609,10 @@ function resolveRelationshipOrgName(record, contactById, orgById) {
 // this module because the backend owns none of that here. Every
 // relationship is anchored to a real CRM Contact/Organization — this
 // never creates a second person identity (see relationshipLabel).
-// No PATCH endpoint exists for this collection (unlike Projects/
-// Portfolio/Support/Tasks/Meetings) — review_status is shown
-// read-only. Notes use the new generic activities endpoint.
-// crm_tasks has no private_relationship_id column, so — unlike
-// Project/Portfolio/Support — there is no "Tasks" rail here; that is
-// a real backend gap, not an oversight.
+// Private now uses the same governed operational PATCH path as the
+// other Office-owned objects. The lifecycle represents membership /
+// relationship review state only; it does not model investment funds,
+// balances, returns or custody.
 // ---------------------------------------------------------------
 async function renderPrivateList(outlet, token) {
   setSelectedObject(null);
@@ -2609,12 +2652,13 @@ async function renderPrivateList(outlet, token) {
 
 async function renderPrivateDetail(outlet, id, token) {
   const canManage = hasPermission("private.manage");
-  const [relationships, contacts, organizations, opportunities, meetings, handoffs, documents, notes] = await Promise.all([
+  const [relationships, contacts, organizations, opportunities, meetings, tasks, handoffs, documents, notes] = await Promise.all([
     fetchPrivate(),
     hasPermission("crm.read") ? fetchContacts().catch(() => []) : Promise.resolve([]),
     hasPermission("crm.read") ? fetchOrganizations().catch(() => []) : Promise.resolve([]),
     hasPermission("crm.read") ? fetchOpportunities().catch(() => []) : Promise.resolve([]),
     hasPermission("meetings.read") ? fetchMeetings().catch(() => []) : Promise.resolve([]),
+    hasPermission("tasks.read") ? fetchTasks().catch(() => []) : Promise.resolve([]),
     (hasPermission("office.manage") || hasPermission("support.assign")) ? fetchHandoffs().catch(() => []) : Promise.resolve([]),
     hasPermission("documents.generate") ? fetchDocuments().catch(() => []) : Promise.resolve([]),
     fetchRelatedActivities("private_relationship", id),
@@ -2630,9 +2674,13 @@ async function renderPrivateDetail(outlet, id, token) {
   const org = organizations.find((o) => o.id === record.organization_id);
   const opportunity = opportunities.find((o) => o.id === record.opportunity_id);
   const relatedMeetings = meetings.filter((m) => m.related_type === "private_relationship" && m.related_id === id);
+  const relatedTasks = tasks.filter((t) => t.private_relationship_id === id);
   const relatedDocuments = documents.filter((d) => d.related_type === "private_relationship" && d.related_id === id);
   const handoff = handoffs.find((h) => h.crm_contact_ref && h.crm_contact_ref === record.contact_id);
   const label = relationshipLabel(record, contacts, organizations);
+  const statusActions = canManage
+    ? renderStatusActions("office", "private", record, () => navigate(`private/${id}`), { statusField: "review_status" })
+    : null;
 
   const mainSections = [
     el(`
@@ -2647,6 +2695,7 @@ async function renderPrivateDetail(outlet, id, token) {
         <p class="detail-note">${record.notes ? escapeHtml(record.notes) : "No notes recorded yet."}</p>
       </div>
     `),
+    ...(statusActions ? [statusActions] : []),
     renderTimeline(notes, { canAddNote: canManage, onAddNote: () => promptAddRelatedNote("private_relationship", id) }),
   ];
 
@@ -2658,6 +2707,12 @@ async function renderPrivateDetail(outlet, id, token) {
     railSections.push(railCard("Meetings", railList(relatedMeetings, (m) => escapeHtml(m.title)), hasPermission("meetings.manage") ? {
       label: "Schedule",
       onClick: () => openCreateMeetingDialog({ related_type: "private_relationship", related_id: id }),
+    } : null));
+  }
+  if (hasPermission("tasks.read")) {
+    railSections.push(railCard("Tasks", railList(relatedTasks, (t) => `<a href="#/tasks/${t.id}">${escapeHtml(t.title)}</a> <span class="rail-sub">${escapeHtml(titleCase(t.status))}</span>`), hasPermission("tasks.manage") ? {
+      label: "Create Task",
+      onClick: () => openCreateTaskDialog({ private_relationship_id: id, business_unit: record.business_unit }),
     } : null));
   }
   if (hasPermission("documents.generate")) {
@@ -2687,8 +2742,8 @@ async function renderPrivateDetail(outlet, id, token) {
 // Oyi Integrators are not a separate system — they are Partnership
 // records whose relationship_type happens to be a technology/
 // integrator value; no separate Integrator CRM was built.
-// Same backend limitations as Private: no PATCH, no Tasks rail
-// (crm_tasks has no partnership_relationship_id column).
+// Relationship type remains free text with suggestions, while
+// review_status uses a governed operational lifecycle.
 // ---------------------------------------------------------------
 async function renderPartnershipList(outlet, token) {
   setSelectedObject(null);
@@ -2733,13 +2788,14 @@ async function renderPartnershipList(outlet, token) {
 
 async function renderPartnershipDetail(outlet, id, token) {
   const canManage = hasPermission("partnerships.manage");
-  const [partnerships, contacts, organizations, opportunities, projects, meetings, handoffs, documents, notes] = await Promise.all([
+  const [partnerships, contacts, organizations, opportunities, projects, meetings, tasks, handoffs, documents, notes] = await Promise.all([
     fetchPartnerships(),
     hasPermission("crm.read") ? fetchContacts().catch(() => []) : Promise.resolve([]),
     hasPermission("crm.read") ? fetchOrganizations().catch(() => []) : Promise.resolve([]),
     hasPermission("crm.read") ? fetchOpportunities().catch(() => []) : Promise.resolve([]),
     hasPermission("projects.read") ? fetchProjects().catch(() => []) : Promise.resolve([]),
     hasPermission("meetings.read") ? fetchMeetings().catch(() => []) : Promise.resolve([]),
+    hasPermission("tasks.read") ? fetchTasks().catch(() => []) : Promise.resolve([]),
     (hasPermission("office.manage") || hasPermission("support.assign")) ? fetchHandoffs().catch(() => []) : Promise.resolve([]),
     hasPermission("documents.generate") ? fetchDocuments().catch(() => []) : Promise.resolve([]),
     fetchRelatedActivities("partnership_relationship", id),
@@ -2756,9 +2812,13 @@ async function renderPartnershipDetail(outlet, id, token) {
   const opportunity = opportunities.find((o) => o.id === record.opportunity_id);
   const linkedProjects = projects.filter((p) => p.organization_id === record.organization_id);
   const relatedMeetings = meetings.filter((m) => m.related_type === "partnership_relationship" && m.related_id === id);
+  const relatedTasks = tasks.filter((t) => t.partnership_relationship_id === id);
   const relatedDocuments = documents.filter((d) => d.related_type === "partnership_relationship" && d.related_id === id);
   const handoff = handoffs.find((h) => h.crm_contact_ref && h.crm_contact_ref === record.contact_id);
   const label = relationshipLabel(record, contacts, organizations);
+  const statusActions = canManage
+    ? renderStatusActions("office", "partnerships", record, () => navigate(`partnerships/${id}`), { statusField: "review_status" })
+    : null;
 
   const mainSections = [
     el(`
@@ -2773,6 +2833,7 @@ async function renderPartnershipDetail(outlet, id, token) {
         <p class="detail-note">${record.notes ? escapeHtml(record.notes) : "No notes recorded yet."}</p>
       </div>
     `),
+    ...(statusActions ? [statusActions] : []),
     renderTimeline(notes, { canAddNote: canManage, onAddNote: () => promptAddRelatedNote("partnership_relationship", id) }),
   ];
 
@@ -2785,6 +2846,12 @@ async function renderPartnershipDetail(outlet, id, token) {
     railSections.push(railCard("Meetings", railList(relatedMeetings, (m) => escapeHtml(m.title)), hasPermission("meetings.manage") ? {
       label: "Schedule",
       onClick: () => openCreateMeetingDialog({ related_type: "partnership_relationship", related_id: id }),
+    } : null));
+  }
+  if (hasPermission("tasks.read")) {
+    railSections.push(railCard("Tasks", railList(relatedTasks, (t) => `<a href="#/tasks/${t.id}">${escapeHtml(t.title)}</a> <span class="rail-sub">${escapeHtml(titleCase(t.status))}</span>`), hasPermission("tasks.manage") ? {
+      label: "Create Task",
+      onClick: () => openCreateTaskDialog({ partnership_relationship_id: id, business_unit: record.business_unit }),
     } : null));
   }
   if (hasPermission("documents.generate")) {

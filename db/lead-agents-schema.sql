@@ -133,6 +133,8 @@ create table if not exists crm_tasks (
   id uuid primary key default gen_random_uuid(),
   lead_id uuid references leads(id) on delete set null,
   opportunity_id uuid references crm_opportunities(id) on delete set null,
+  private_relationship_id text,
+  partnership_relationship_id text,
   title text not null,
   status text not null default 'open',
   assignee text,
@@ -141,6 +143,11 @@ create table if not exists crm_tasks (
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
+
+alter table crm_tasks add column if not exists private_relationship_id text;
+alter table crm_tasks add column if not exists partnership_relationship_id text;
+create index if not exists crm_tasks_private_relationship_idx on crm_tasks (private_relationship_id, status, due_at);
+create index if not exists crm_tasks_partnership_relationship_idx on crm_tasks (partnership_relationship_id, status, due_at);
 
 create table if not exists conversations (
   id uuid primary key default gen_random_uuid(),

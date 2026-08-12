@@ -5,11 +5,13 @@ const { hasPermission } = require("./permissions");
 const { chooseStaffForHandoff } = require("./communications-handoff");
 
 const FIELD_POLICY = Object.freeze({
-  tasks: ["title", "description", "owner", "assignee", "priority", "due_at", "status", "lead_id", "opportunity_id", "project_id", "portfolio_id", "support_case_id", "business_unit"],
+  tasks: ["title", "description", "owner", "assignee", "priority", "due_at", "status", "lead_id", "opportunity_id", "project_id", "portfolio_id", "support_case_id", "private_relationship_id", "partnership_relationship_id", "business_unit"],
   support: ["title", "owner", "assigned_staff", "priority", "severity", "category", "status", "resolution_notes", "portfolio_id", "backend_incident_ref", "business_unit"],
   projects: ["name", "owner", "business_unit", "stage", "status", "location", "metadata", "linked_opportunity_id", "lead_id", "organization_id", "contact_id", "portfolio_id", "oyi_deployment_status"],
   portfolio: ["owner", "relationship_type", "status", "support_status", "oyi_deployment_status", "health_summary", "project_id", "business_unit", "metadata"],
   meetings: ["title", "scheduled_at", "owner", "participants", "notes", "outcome", "status", "follow_up_task_id", "related_type", "related_id", "business_unit"],
+  private: ["relationship_type", "relationship_manager", "owner", "status", "review_status", "notes", "business_unit", "contact_id", "organization_id", "opportunity_id"],
+  partnerships: ["relationship_type", "relationship_manager", "owner", "status", "review_status", "notes", "business_unit", "contact_id", "organization_id", "opportunity_id"],
 });
 
 const STATUS_TRANSITIONS = Object.freeze({
@@ -48,6 +50,22 @@ const STATUS_TRANSITIONS = Object.freeze({
     active: ["scheduled", "completed", "cancelled"],
     completed: [],
     cancelled: [],
+  },
+  private: {
+    requested: ["under_review", "declined"],
+    under_review: ["approved", "declined"],
+    approved: ["active", "inactive"],
+    active: ["inactive"],
+    inactive: ["under_review"],
+    declined: [],
+  },
+  partnerships: {
+    new: ["under_review", "active", "declined"],
+    under_review: ["active", "declined"],
+    active: ["paused", "closed"],
+    paused: ["active", "closed"],
+    closed: [],
+    declined: [],
   },
 });
 
@@ -134,12 +152,16 @@ function sanitizePatch(collection, input = {}, current = {}) {
     }
     patch.metadata = { ...(current.metadata || {}), ...patch.metadata };
   }
-  for (const field of ["title", "description", "owner", "assignee", "priority", "due_at", "name", "stage", "status", "location", "notes", "outcome", "resolution_notes", "assigned_staff", "category", "severity", "relationship_type", "support_status", "oyi_deployment_status", "health_summary"]) {
+  for (const field of ["title", "description", "owner", "assignee", "priority", "due_at", "name", "stage", "status", "review_status", "location", "notes", "outcome", "resolution_notes", "assigned_staff", "category", "severity", "relationship_type", "relationship_manager", "support_status", "oyi_deployment_status", "health_summary"]) {
     if (Object.prototype.hasOwnProperty.call(patch, field)) patch[field] = text(patch[field]);
   }
   if (Object.prototype.hasOwnProperty.call(patch, "status")) {
     patch.status = normalizeStatus(collection, patch.status);
     assertTransition(collection, normalizeStatus(collection, current.status || defaultStatus(collection)), patch.status);
+  }
+  if (Object.prototype.hasOwnProperty.call(patch, "review_status")) {
+    patch.review_status = normalizeStatus(collection, patch.review_status);
+    assertTransition(collection, normalizeStatus(collection, current.review_status || current.status || defaultReviewStatus(collection)), patch.review_status);
   }
   if (collection === "tasks" && patch.status === "completed" && !current.completed_at) {
     patch.completed_at = nowIso();
@@ -166,6 +188,12 @@ function defaultStatus(collection) {
   return "active";
 }
 
+function defaultReviewStatus(collection) {
+  if (collection === "private") return "requested";
+  if (collection === "partnerships") return "new";
+  return defaultStatus(collection);
+}
+
 async function findCorporateRecord(store, collection, id) {
   if (!id) return null;
   if (collection === "leads" && store?.getLead) return store.getLead(id);
@@ -190,6 +218,13 @@ async function validateRelatedObject(store, authContext, relatedType, relatedId)
 }
 
 async function validatePatchRelationships(store, authContext, collection, patch) {
+  if (collection === "private" || collection === "partnerships") {
+    for (const field of ["contact_id", "organization_id"]) {
+      if (Object.prototype.hasOwnProperty.call(patch, field) && !patch[field]) {
+        throw errorWithStatus("relationship_identity_reference_required", 400);
+      }
+    }
+  }
   const mapping = {
     lead_id: ["lead", "crm.read"],
     contact_id: ["contact", "crm.read"],
@@ -199,6 +234,8 @@ async function validatePatchRelationships(store, authContext, collection, patch)
     project_id: ["project", "projects.read"],
     portfolio_id: ["portfolio", "portfolio.read"],
     support_case_id: ["support_case", "support.read"],
+    private_relationship_id: ["private_relationship", "private.read"],
+    partnership_relationship_id: ["partnership_relationship", "partnerships.read"],
     follow_up_task_id: ["tasks", "tasks.read"],
   };
   for (const [field, [type, permission]] of Object.entries(mapping)) {
@@ -211,6 +248,10 @@ async function validatePatchRelationships(store, authContext, collection, patch)
   if (collection === "meetings" && (Object.prototype.hasOwnProperty.call(patch, "related_type") || Object.prototype.hasOwnProperty.call(patch, "related_id"))) {
     await validateRelatedObject(store, authContext, patch.related_type, patch.related_id);
   }
+}
+
+async function validateOperationalRelationships(store, authContext, collection, input = {}) {
+  await validatePatchRelationships(store, authContext, collection, input);
 }
 
 async function persistCorporateRecord(store, collection, record) {
@@ -233,21 +274,32 @@ async function persistCorporateRecord(store, collection, record) {
 }
 
 function activityForMutation(collection, before, after, patch, actorEmail) {
-  const statusChanged = before.status !== after.status;
-  const assignmentChanged = (before.assignee || before.assigned_staff || before.owner || "") !== (after.assignee || after.assigned_staff || after.owner || "");
+  const statusChanged = before.status !== after.status || before.review_status !== after.review_status;
+  const assignmentChanged = (before.assignee || before.assigned_staff || before.relationship_manager || before.owner || "") !== (after.assignee || after.assigned_staff || after.relationship_manager || after.owner || "");
   const type = statusChanged ? `${collection}_status_changed` : assignmentChanged ? `${collection}_assignment_changed` : `${collection}_updated`;
+  const relatedType = collection === "support"
+    ? "support_case"
+    : collection === "tasks"
+      ? "task"
+      : collection === "private"
+        ? "private_relationship"
+        : collection === "partnerships"
+          ? "partnership_relationship"
+          : collection.slice(0, -1);
+  const previousStatus = before.review_status || before.status || null;
+  const nextStatus = after.review_status || after.status || null;
   return {
     activity_type: type,
     title: `${collection} ${statusChanged ? "status changed" : assignmentChanged ? "assignment changed" : "updated"}`,
-    body: statusChanged ? `${before.status || "unknown"} → ${after.status}` : `${collection} updated.`,
+    body: statusChanged ? `${previousStatus || "unknown"} → ${nextStatus}` : `${collection} updated.`,
     business_unit: after.business_unit,
-    related_type: collection === "support" ? "support_case" : collection === "tasks" ? "task" : collection.slice(0, -1),
+    related_type: relatedType,
     related_id: after.id,
     actor: actorEmail,
     metadata: {
       changed_fields: Object.keys(patch),
-      previous_status: before.status || null,
-      next_status: after.status || null,
+      previous_status: previousStatus,
+      next_status: nextStatus,
     },
   };
 }
@@ -265,18 +317,24 @@ async function updateOperationalRecord(store, collection, id, input = {}, contex
     record,
     activity,
     allowed_actions: allowedActions(collection, record),
-    allowed_status_transitions: STATUS_TRANSITIONS[collection]?.[normalizeStatus(collection, record.status)] || [],
+    allowed_status_transitions: allowedStatusTransitions(collection, record),
   };
 }
 
 function allowedActions(collection, record) {
-  const transitions = STATUS_TRANSITIONS[collection]?.[normalizeStatus(collection, record.status)] || [];
+  const transitions = allowedStatusTransitions(collection, record);
+  const current = normalizeStatus(collection, record.review_status || record.status);
   return {
-    can_update: transitions.length > 0 || !["completed", "cancelled", "closed"].includes(normalizeStatus(collection, record.status)),
+    can_update: transitions.length > 0 || !["completed", "cancelled", "closed", "declined"].includes(current),
     can_transition: transitions.length > 0,
     can_add_activity: true,
     transitions,
   };
+}
+
+function allowedStatusTransitions(collection, record = {}) {
+  const current = normalizeStatus(collection, record.review_status || record.status || defaultReviewStatus(collection));
+  return STATUS_TRANSITIONS[collection]?.[current] || [];
 }
 
 async function createRelatedActivity(store, input = {}, context = {}) {
@@ -439,5 +497,6 @@ module.exports = {
   safeHandoffProjection,
   updateHandoff,
   updateOperationalRecord,
+  validateOperationalRelationships,
   validateRelatedObject,
 };

@@ -63,6 +63,7 @@ const {
   listRelatedActivities,
   updateHandoff,
   updateOperationalRecord,
+  validateOperationalRelationships,
   validateRelatedObject,
 } = require("./office-operational-workflows");
 const { WhatsAppCloudAdapter } = require("./whatsapp");
@@ -148,6 +149,17 @@ function requireObject(body, name) {
     error.statusCode = 400;
     throw error;
   }
+}
+
+function taskRelatedActivityRef(task = {}) {
+  if (task.private_relationship_id) return { related_type: "private_relationship", related_id: task.private_relationship_id };
+  if (task.partnership_relationship_id) return { related_type: "partnership_relationship", related_id: task.partnership_relationship_id };
+  if (task.support_case_id) return { related_type: "support_case", related_id: task.support_case_id };
+  if (task.project_id) return { related_type: "project", related_id: task.project_id };
+  if (task.portfolio_id) return { related_type: "portfolio", related_id: task.portfolio_id };
+  if (task.opportunity_id) return { related_type: "opportunity", related_id: task.opportunity_id };
+  if (task.lead_id) return { related_type: "lead", related_id: task.lead_id };
+  return null;
 }
 
 function sparseLeadPatchFromBody(body) {
@@ -3622,9 +3634,21 @@ function buildServer({ config, store, runtime, rateLimiter, publicRateLimiter, l
           authorizePermission(authContext, policy.manage);
           const body = await readJsonBody(req);
           requireObject(body, "body");
+          if (collection === "tasks") {
+            await validateOperationalRelationships(store, authContext, collection, body);
+          }
           const record = collection === "contacts"
             ? await upsertContactIdentity(store, body, { actorEmail: authContext?.email || "office" })
             : await createCorporateRecord(store, collection, body, { actorEmail: authContext?.email || "office" });
+          const relatedTaskRef = collection === "tasks" ? taskRelatedActivityRef(record) : null;
+          if (relatedTaskRef) {
+            await createRelatedActivity(store, {
+              ...relatedTaskRef,
+              activity_type: "task_created",
+              title: "Task created",
+              body: record.title || "Task created.",
+            }, { authContext, actorEmail: authContext?.email || "office" });
+          }
           await appendAudit(store, authContext, `crm_${collection}_upserted`, collection, record.id, {
             business_unit: record.business_unit,
             status: record.status,
@@ -3672,6 +3696,9 @@ function buildServer({ config, store, runtime, rateLimiter, publicRateLimiter, l
           authorizePermission(authContext, policy.manage);
           const body = await readJsonBody(req);
           requireObject(body, "body");
+          if (collection === "private" || collection === "partnerships") {
+            await validateOperationalRelationships(store, authContext, collection, body);
+          }
           const record = await createCorporateRecord(store, collection, body, { actorEmail: authContext?.email || "office" });
           await appendAudit(store, authContext, `office_${collection}_created`, collection, record.id, {
             business_unit: record.business_unit,
@@ -3684,7 +3711,7 @@ function buildServer({ config, store, runtime, rateLimiter, publicRateLimiter, l
         return;
       }
 
-      const officeOperatingItemMatch = pathname.match(/^\/api\/lead-agents\/admin\/office\/(projects|portfolio|support|meetings)\/([^/]+)$/);
+      const officeOperatingItemMatch = pathname.match(/^\/api\/lead-agents\/admin\/office\/(projects|portfolio|support|private|partnerships|meetings)\/([^/]+)$/);
       if (officeOperatingItemMatch) {
         const [, collection, id] = officeOperatingItemMatch;
         const policy = CORPORATE_COLLECTIONS[collection];

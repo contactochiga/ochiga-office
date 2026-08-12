@@ -13,6 +13,7 @@ const {
   listRelatedActivities,
   updateHandoff,
   updateOperationalRecord,
+  validateOperationalRelationships,
   validateRelatedObject,
 } = require("../src/lead-agents/office-operational-workflows");
 const { createTempStore } = require("../src/lead-agents/testing");
@@ -37,6 +38,10 @@ const admin = {
     "portfolio.manage",
     "meetings.read",
     "meetings.manage",
+    "private.read",
+    "private.manage",
+    "partnerships.read",
+    "partnerships.manage",
   ],
 };
 
@@ -90,6 +95,36 @@ async function main() {
     portfolio_id: portfolio.id,
     backend_incident_ref: "backend-incident-1",
   });
+  // Creation-time default must land on the STATUS_TRANSITIONS entry
+  // state, not "active" — "active" only transitions to "inactive",
+  // which would silently skip the governed request/review/approve
+  // pipeline for every relationship created without an explicit
+  // review_status (i.e. every relationship created from the UI).
+  const privateDefaulted = await createCorporateRecord(store, "private", { contact_id: contact.id });
+  assert.equal(privateDefaulted.review_status, "requested");
+  const partnershipDefaulted = await createCorporateRecord(store, "partnerships", { contact_id: contact.id });
+  assert.equal(partnershipDefaulted.review_status, "new");
+
+  const privateRelationship = await createCorporateRecord(store, "private", {
+    contact_id: contact.id,
+    organization_id: org.id,
+    opportunity_id: opportunity.id,
+    relationship_type: "membership",
+    review_status: "requested",
+    relationship_manager: "private-lead",
+    notes: "Original Private notes.",
+    business_unit: "private",
+  });
+  const partnership = await createCorporateRecord(store, "partnerships", {
+    contact_id: contact.id,
+    organization_id: org.id,
+    opportunity_id: opportunity.id,
+    relationship_type: "Technology / Custom Integrator",
+    review_status: "new",
+    relationship_manager: "partner-lead",
+    notes: "Original Partnership notes.",
+    business_unit: "partnerships",
+  });
 
   const task = await createCorporateRecord(store, "tasks", {
     title: "Prepare proposal",
@@ -111,6 +146,27 @@ async function main() {
   assert.ok(taskCompleted.record.completed_at);
   await assertRejectsStatus(() => updateOperationalRecord(store, "tasks", task.id, { status: "open" }, { authContext: admin }), 400, "invalid_tasks_status_transition");
   await assertRejectsStatus(() => updateOperationalRecord(store, "tasks", task.id, { project_id: "missing-project" }, { authContext: admin }), 404, "related_object_not_found");
+  await assertRejectsStatus(() => validateOperationalRelationships(store, unauthorized, "tasks", { private_relationship_id: privateRelationship.id }), 403, "forbidden_related_object");
+  await assertRejectsStatus(() => validateOperationalRelationships(store, unauthorized, "tasks", { partnership_relationship_id: partnership.id }), 403, "forbidden_related_object");
+
+  const privateTask = await createCorporateRecord(store, "tasks", {
+    title: "Review Private profile",
+    status: "open",
+    private_relationship_id: privateRelationship.id,
+    business_unit: "private",
+  });
+  const partnershipTask = await createCorporateRecord(store, "tasks", {
+    title: "Prepare partner briefing",
+    status: "open",
+    partnership_relationship_id: partnership.id,
+    business_unit: "partnerships",
+  });
+  await validateOperationalRelationships(store, admin, "tasks", { private_relationship_id: privateRelationship.id });
+  await validateOperationalRelationships(store, admin, "tasks", { partnership_relationship_id: partnership.id });
+  const privateTaskPatched = await updateOperationalRecord(store, "tasks", privateTask.id, { priority: "high" }, { authContext: admin, actorEmail: admin.email });
+  assert.equal(privateTaskPatched.record.private_relationship_id, privateRelationship.id);
+  const partnershipTaskPatched = await updateOperationalRecord(store, "tasks", partnershipTask.id, { due_at: "2026-08-22T09:00:00.000Z" }, { authContext: admin, actorEmail: admin.email });
+  assert.equal(partnershipTaskPatched.record.partnership_relationship_id, partnership.id);
 
   const supportAssigned = await updateOperationalRecord(store, "support", support.id, { assigned_staff: "support-agent", status: "in_progress" }, { authContext: admin, actorEmail: admin.email });
   assert.equal(supportAssigned.record.assigned_staff, "support-agent");
@@ -121,6 +177,36 @@ async function main() {
   const supportReopened = await updateOperationalRecord(store, "support", support.id, { status: "in_progress" }, { authContext: admin, actorEmail: admin.email });
   assert.equal(supportReopened.record.status, "in_progress");
   await assertRejectsStatus(() => validateRelatedObject(store, unauthorized, "support_case", support.id), 403, "forbidden_related_object");
+
+  const privateReview = await updateOperationalRecord(store, "private", privateRelationship.id, { review_status: "under_review", relationship_manager: "private-manager" }, { authContext: admin, actorEmail: admin.email });
+  assert.equal(privateReview.record.review_status, "under_review");
+  assert.equal(privateReview.record.relationship_manager, "private-manager");
+  assert.equal(privateReview.record.contact_id, contact.id);
+  assert.equal(privateReview.record.organization_id, org.id);
+  assert.equal(privateReview.record.opportunity_id, opportunity.id);
+  assert.equal(privateReview.record.notes, "Original Private notes.");
+  const privateApproved = await updateOperationalRecord(store, "private", privateRelationship.id, { review_status: "approved" }, { authContext: admin, actorEmail: admin.email });
+  assert.equal(privateApproved.record.review_status, "approved");
+  const privateActive = await updateOperationalRecord(store, "private", privateRelationship.id, { review_status: "active" }, { authContext: admin, actorEmail: admin.email });
+  assert.equal(privateActive.record.review_status, "active");
+  const privateNotesCleared = await updateOperationalRecord(store, "private", privateRelationship.id, { notes: null }, { authContext: admin, actorEmail: admin.email });
+  assert.equal(privateNotesCleared.record.notes, "");
+  await assertRejectsStatus(() => updateOperationalRecord(store, "private", privateRelationship.id, { contact_id: null }, { authContext: admin }), 400, "relationship_identity_reference_required");
+  await assertRejectsStatus(() => updateOperationalRecord(store, "private", privateRelationship.id, { review_status: "requested" }, { authContext: admin }), 400, "invalid_private_status_transition");
+  await assertRejectsStatus(() => validateRelatedObject(store, unauthorized, "private_relationship", privateRelationship.id), 403, "forbidden_related_object");
+
+  const partnershipReview = await updateOperationalRecord(store, "partnerships", partnership.id, { review_status: "under_review", relationship_manager: "partnership-manager" }, { authContext: admin, actorEmail: admin.email });
+  assert.equal(partnershipReview.record.review_status, "under_review");
+  assert.equal(partnershipReview.record.relationship_type, "Technology / Custom Integrator");
+  assert.equal(partnershipReview.record.relationship_manager, "partnership-manager");
+  assert.equal(partnershipReview.record.contact_id, contact.id);
+  const partnershipActive = await updateOperationalRecord(store, "partnerships", partnership.id, { review_status: "active" }, { authContext: admin, actorEmail: admin.email });
+  assert.equal(partnershipActive.record.review_status, "active");
+  const partnershipPaused = await updateOperationalRecord(store, "partnerships", partnership.id, { review_status: "paused" }, { authContext: admin, actorEmail: admin.email });
+  assert.equal(partnershipPaused.record.review_status, "paused");
+  await assertRejectsStatus(() => updateOperationalRecord(store, "partnerships", partnership.id, { organization_id: null }, { authContext: admin }), 400, "relationship_identity_reference_required");
+  await assertRejectsStatus(() => updateOperationalRecord(store, "partnerships", partnership.id, { review_status: "new" }, { authContext: admin }), 400, "invalid_partnerships_status_transition");
+  await assertRejectsStatus(() => validateRelatedObject(store, unauthorized, "partnership_relationship", partnership.id), 403, "forbidden_related_object");
 
   const projectActive = await updateOperationalRecord(store, "projects", project.id, { status: "active", owner: "pm-1", stage: "active_delivery" }, { authContext: admin, actorEmail: admin.email });
   assert.equal(projectActive.record.owner, "pm-1");
@@ -163,6 +249,9 @@ async function main() {
   assert.equal(canCreateActivityForRelatedObject({ type: "session", role: "guest", permissionScopes: ["support.read"], permissions: ["support.read"] }, "support_case"), false);
   const home = await buildOfficeHomeProjection(store);
   assert.ok(home.recent_activity.some((item) => item.related_object_type === "project"));
+  assert.ok(home.attention_items.some((item) => item.related_object_type === "private_relationship" && item.related_object_id === privateRelationship.id));
+  assert.ok(home.attention_items.some((item) => item.related_object_type === "partnership_relationship" && item.related_object_id === partnership.id));
+  assert.equal(home.attention_items.filter((item) => item.related_object_id === privateRelationship.id).length, 1);
 
   const handoff = await createOrUpdateHandoff(store, {
     handoff_id: "handoff-1",
@@ -203,6 +292,8 @@ async function main() {
   assert.ok(activities.some((item) => item.activity_type === "support_status_changed"));
   assert.ok(activities.some((item) => item.activity_type === "projects_status_changed"));
   assert.ok(activities.some((item) => item.activity_type === "meetings_status_changed"));
+  assert.ok(activities.some((item) => item.activity_type === "private_status_changed" && item.related_type === "private_relationship"));
+  assert.ok(activities.some((item) => item.activity_type === "partnerships_status_changed" && item.related_type === "partnership_relationship"));
 
   await store.persist();
   const reloadedStore = new FileLeadAgentsStore(filePath);
@@ -212,6 +303,10 @@ async function main() {
   assert.equal((await listCorporateRecords(reloadedStore, "projects")).find((item) => item.id === project.id).linked_opportunity_id, opportunity.id);
   assert.equal((await listCorporateRecords(reloadedStore, "support")).find((item) => item.id === support.id).backend_incident_ref, "backend-incident-1");
   assert.equal((await listCorporateRecords(reloadedStore, "meetings")).find((item) => item.id === meeting.id).related_id, project.id);
+  assert.equal((await listCorporateRecords(reloadedStore, "tasks")).find((item) => item.id === privateTask.id).private_relationship_id, privateRelationship.id);
+  assert.equal((await listCorporateRecords(reloadedStore, "tasks")).find((item) => item.id === partnershipTask.id).partnership_relationship_id, partnership.id);
+  assert.equal((await listCorporateRecords(reloadedStore, "private")).find((item) => item.id === privateRelationship.id).review_status, "active");
+  assert.equal((await listCorporateRecords(reloadedStore, "partnerships")).find((item) => item.id === partnership.id).review_status, "paused");
   assert.equal((await listRelatedActivities(reloadedStore, admin, "support_case", support.id)).some((item) => item.id === supportNote.id), true);
   assert.equal((await listHandoffQueue(reloadedStore, admin, {})).find((item) => item.handoff_id === "handoff-1").status, "accepted");
 
