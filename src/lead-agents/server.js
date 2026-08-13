@@ -1738,6 +1738,11 @@ function buildServer({ config, store, runtime, rateLimiter, publicRateLimiter, l
         pathname === "/dashboard/" ||
         pathname === "/dashboard.js" ||
         pathname === "/assets/ochiga-logo.png";
+      const isPublicOfficeShellPath =
+        pathname === "/" ||
+        pathname === "/office" ||
+        pathname === "/office/" ||
+        pathname === "/office.js";
       const isPublicAdminSessionPath =
         pathname === "/api/lead-agents/admin/session/login" ||
         pathname === "/api/lead-agents/admin/session/logout" ||
@@ -1750,6 +1755,7 @@ function buildServer({ config, store, runtime, rateLimiter, publicRateLimiter, l
         !isPublicDigitalTwinPath &&
         !isPublicPlanStudioPath &&
         !isPublicDashboardPath &&
+        !isPublicOfficeShellPath &&
         !isPublicAdminSessionPath &&
         !isPublicWhatsappPath
       ) {
@@ -2123,6 +2129,15 @@ function buildServer({ config, store, runtime, rateLimiter, publicRateLimiter, l
         return;
       }
 
+      if (pathname === "/" || pathname === "/office" || pathname === "/office/") {
+        if (req.method !== "GET") {
+          methodNotAllowed(res, "GET");
+          return;
+        }
+        await serveFile(res, officeShellIndexPath);
+        return;
+      }
+
       if (pathname === "/dashboard" || pathname === "/dashboard/") {
         if (req.method !== "GET") {
           methodNotAllowed(res, "GET");
@@ -2138,15 +2153,6 @@ function buildServer({ config, store, runtime, rateLimiter, publicRateLimiter, l
           return;
         }
         await serveFile(res, dashboardScriptPath);
-        return;
-      }
-
-      if (pathname === "/office" || pathname === "/office/") {
-        if (req.method !== "GET") {
-          methodNotAllowed(res, "GET");
-          return;
-        }
-        await serveFile(res, officeShellIndexPath);
         return;
       }
 

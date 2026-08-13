@@ -26,6 +26,7 @@ assert(server.includes("/api/lead-agents/public/session"), "Public intelligence 
 assert(server.includes("callOyiCoreCorporateConversation"), "Public chat must delegate live intelligence to Oyi Core");
 assert(server.includes("/api/lead-agents/admin/office/home"), "Office Home attention API route must be registered");
 assert(server.includes("callOyiCoreOfficeInternalConversation"), "Authenticated Office intelligence must delegate to Oyi Core");
+assert(server.includes('pathname === "/" || pathname === "/office"'), "Dedicated Office deployment must serve the new Office shell at root and /office");
 assert(render.includes("OFFICE_BACKEND_BASE_URL"), "Render must declare Backend base URL for Oyi Core delegation");
 assert(/OFFICE_BACKEND_API_KEY[\s\S]*sync:\s+false/.test(render), "Backend API key must remain an unsynced Office secret");
 assert(render.includes("OFFICE_BACKEND_CONVERSATION_PATH"), "Render must declare the Oyi Core corporate conversation path");
@@ -37,5 +38,6 @@ assert(envExample.includes("OFFICE_BACKEND_EVENT_PATH=/office/events/material"),
 assert(envExample.includes("OFFICE_BACKEND_EVENT_MAX_ATTEMPTS=2"), "Office material event retry limit must be documented");
 assert(vercel.includes("/api/lead-agents/:path*"), "Vercel compatibility rewrite for lead agents must remain");
 assert(vercel.includes("/healthz"), "Vercel health rewrite must remain");
+assert(vercel.includes('"destination": "/office/"'), "Vercel compatibility root must open the new Office shell");
 
 console.log("validate-deployment-config: PASS");
