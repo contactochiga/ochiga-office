@@ -104,7 +104,7 @@ function getApiKey(req) {
   if (authHeader.startsWith("Bearer ")) {
     return authHeader.slice("Bearer ".length).trim();
   }
-  return String(req.headers["x-api-key"] || "").trim();
+  return String(req.headers["x-api-key"] || req.headers["x-office-api-key"] || "").trim();
 }
 
 function hashPassword(password, salt) {

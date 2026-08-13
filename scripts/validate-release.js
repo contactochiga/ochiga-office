@@ -14,8 +14,12 @@ const commands = [
   "npm run office:oyi-core-delegation:test",
   "npm run office:communications-handoff:test",
   "npm run office:contract-hardening:test",
+  "npm run office:rate-limit:test",
   "npm run office:operational-mutations:test",
   "npm run office:operating-system:test",
+  "npm run office:team-settings-audit:test",
+  "npm run office:portfolio-projection:test",
+  "npm run office:normalize-lead-timestamps:test",
 ];
 
 for (const command of commands) {

@@ -181,9 +181,13 @@
   .nav-item.active { background: rgba(179, 36, 27, 0.12); color: var(--white); }
   .nav-item.active .dot { background: var(--red-bright); opacity: 1; }
 
+  /* Shell-level identity block — lives in the topbar (see markup
+     comment above #navFooter), not the collapsible nav rail, so it
+     survives every route change and every viewport width. */
   .nav-footer {
-    margin-top: auto; padding-top: 14px; border-top: 1px solid var(--line);
-    display: flex; align-items: center; gap: 8px; padding: 12px 8px 4px;
+    display: flex; align-items: center; gap: 8px;
+    flex-shrink: 0; max-width: 220px; padding-left: 12px; margin-left: 12px;
+    border-left: 1px solid var(--line);
   }
   .nav-footer .avatar {
     width: 26px; height: 26px; border-radius: 50%; background: var(--graphite);
@@ -192,7 +196,7 @@
   }
   .nav-footer .who { min-width: 0; flex: 1; }
   .nav-footer .who .name { font-size: 12px; color: var(--white); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .nav-footer .who .role { font-size: 10.5px; color: var(--text-tertiary); text-transform: capitalize; }
+  .nav-footer .who .role { font-size: 10.5px; color: var(--text-tertiary); text-transform: capitalize; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .nav-footer button {
     background: none; border: none; color: var(--text-tertiary); cursor: pointer; font-size: 11px;
     padding: 4px; flex-shrink: 0;
@@ -205,10 +209,12 @@
     height: var(--topbar-height); flex-shrink: 0;
     border-bottom: 1px solid var(--line);
     display: flex; align-items: center; justify-content: space-between;
-    padding: 0 20px;
+    padding: 0 16px 0 20px;
+    gap: 12px;
   }
-  .topbar-title { font-size: 14px; font-weight: 600; color: var(--white); }
-  .topbar-meta { font-size: 11.5px; color: var(--text-tertiary); }
+  .topbar > div:first-child { min-width: 0; overflow: hidden; }
+  .topbar-title { font-size: 14px; font-weight: 600; color: var(--white); flex-shrink: 0; }
+  .topbar-meta { font-size: 11.5px; color: var(--text-tertiary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .nav-toggle { display: none; }
 
   .view-outlet { flex: 1; overflow-y: auto; padding: 24px 28px 120px; }
@@ -518,6 +524,9 @@
       display: none; position: fixed; inset: 0; z-index: 45; background: rgba(0,0,0,0.5);
     }
     body.nav-open .nav-scrim { display: block; }
+    .topbar-meta { display: none; }
+    .nav-footer { max-width: 140px; padding-left: 8px; margin-left: 8px; }
+    .nav-footer .who .role { display: none; }
     .nav-toggle {
       display: inline-flex; align-items: center; justify-content: center;
       width: 30px; height: 30px; border-radius: var(--radius-sm); border: 1px solid var(--line-strong);
@@ -586,23 +595,32 @@
       <aside class="nav-rail" id="navRail" aria-label="Office navigation">
         <div class="nav-brand"><span class="mark"></span><span>Ochiga Office</span></div>
         <div id="navGroups"><!-- rendered by office.js, permission-gated --></div>
-        <div class="nav-footer">
-          <div class="avatar" id="navAvatar">–</div>
-          <div class="who">
-            <div class="name" id="navUserName">–</div>
-            <div class="role" id="navUserRole">–</div>
-          </div>
-          <button id="navLogout" title="Sign out" aria-label="Sign out">Sign out</button>
-        </div>
       </aside>
 
       <div class="main-column">
         <header class="topbar">
-          <div style="display:flex;align-items:center;gap:10px;">
+          <div style="display:flex;align-items:center;gap:10px;min-width:0;">
             <button class="nav-toggle" id="navToggle" aria-label="Open navigation">☰</button>
             <span class="topbar-title" id="topbarTitle">Home</span>
+            <span class="topbar-meta" id="topbarMeta"></span>
           </div>
-          <span class="topbar-meta" id="topbarMeta"></span>
+          <!--
+            Shell-level identity, intentionally OUTSIDE .nav-rail: the nav
+            rail is a toggleable off-canvas drawer under 900px (see
+            body.nav-open .nav-rail) and gets closed automatically after
+            every navigation (closeNavOnMobile in office.js). Anything
+            mounted inside it disappears with it. Account identity/role/
+            sign-out must survive route changes and viewport size, so it
+            lives in the topbar, which is never toggled.
+          -->
+          <div class="nav-footer" id="navFooter">
+            <div class="avatar" id="navAvatar">–</div>
+            <div class="who">
+              <div class="name" id="navUserName">–</div>
+              <div class="role" id="navUserRole">–</div>
+            </div>
+            <button id="navLogout" title="Sign out" aria-label="Sign out">Sign out</button>
+          </div>
         </header>
         <main class="view-outlet" id="viewOutlet" role="main"></main>
       </div>

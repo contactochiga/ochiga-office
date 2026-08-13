@@ -120,7 +120,7 @@ async function main() {
 
   const serverSource = read("src/lead-agents/server.js");
   assert.match(serverSource, /const widgetRateLimiter = publicRateLimiter \|\| rateLimiter/);
-  assert.match(serverSource, /const officeInternalRateLimiter = rateLimiter/);
+  assert.match(serverSource, /const officeInternalRateLimiter = officeRateLimiter \|\| rateLimiter/);
   assert.match(serverSource, /officeInternalRateLimiter\.check\(req\)/);
   assert.match(serverSource, /widgetRateLimiter\.check\(req\)/);
   assert.doesNotMatch(

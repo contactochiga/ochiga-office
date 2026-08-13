@@ -378,6 +378,86 @@ async function buildOfficeHomeProjection(store, options = {}) {
   };
 }
 
+// Safe Oyi operational projection for Portfolio entries. This intentionally
+// exposes AGGREGATE counts only (homes_total, devices_total, devices_online,
+// last_synced_at) computed from the office_estates/office_buildings/
+// office_devices sync tables (populated by officeSync from Facility/
+// Consumer). It never returns wallet_balance, live_cameras, per-resident
+// data, or any other field the legacy dashboard exposed — Portfolio is
+// Ochiga's corporate oversight surface, not a re-exposure of Facility
+// internals. A record with no backend_estate_id/backend_building_id link
+// gets linked: false rather than a fabricated zero.
+function buildPortfolioOperationalProjection(entry, { estates = [], buildings = [], devices = [] } = {}) {
+  const buildingId = text(entry.backend_building_id);
+  const estateId = text(entry.backend_estate_id);
+  let matchedBuildings = [];
+  let matchedEstate = null;
+
+  if (buildingId) {
+    const building = buildings.find((b) => String(b.id) === buildingId);
+    if (building) {
+      matchedBuildings = [building];
+      matchedEstate = estates.find((e) => String(e.id) === String(building.estate_id)) || null;
+    }
+  } else if (estateId) {
+    matchedEstate = estates.find((e) => String(e.id) === estateId) || null;
+    if (matchedEstate) matchedBuildings = buildings.filter((b) => String(b.estate_id) === estateId);
+  }
+
+  if (!matchedEstate && !matchedBuildings.length) {
+    return {
+      linked: false,
+      homes_total: null,
+      devices_total: null,
+      devices_online: null,
+      last_synced_at: null,
+      note: "No Oyi deployment reference is linked yet for this Portfolio entry.",
+    };
+  }
+
+  const homesTotal = matchedBuildings.length
+    ? matchedBuildings.reduce((sum, b) => sum + Number(b.homes_count || 0), 0)
+    : Number(matchedEstate?.homes_count || 0);
+  const devicesTotalFromBuildings = matchedBuildings.length
+    ? matchedBuildings.reduce((sum, b) => sum + Number(b.devices_count || 0), 0)
+    : Number(matchedEstate?.devices_count || 0);
+
+  const matchedBuildingIds = new Set(matchedBuildings.map((b) => String(b.id)));
+  const scopedDevices = devices.filter((d) =>
+    matchedBuildingIds.size ? matchedBuildingIds.has(String(d.building_id)) : String(d.estate_id) === estateId
+  );
+  const devicesOnline = scopedDevices.length
+    ? scopedDevices.filter((d) => String(d.status || "").toLowerCase() === "online").length
+    : null;
+  const devicesTotal = scopedDevices.length ? scopedDevices.length : devicesTotalFromBuildings;
+
+  const lastSyncedAt =
+    [matchedEstate?.updated_at, ...matchedBuildings.map((b) => b.updated_at)]
+      .filter(Boolean)
+      .sort()
+      .pop() || null;
+
+  return {
+    linked: true,
+    homes_total: homesTotal,
+    devices_total: devicesTotal,
+    devices_online: devicesOnline,
+    last_synced_at: lastSyncedAt,
+  };
+}
+
+async function attachPortfolioOperationalProjections(store, records) {
+  const [estates, buildings, devices] = await Promise.all([
+    store.listOfficeEstates ? store.listOfficeEstates() : [],
+    store.listOfficeBuildings ? store.listOfficeBuildings() : [],
+    store.listOfficeDevices ? store.listOfficeDevices() : [],
+  ]);
+  return records.map((entry) => ({
+    ...entry,
+    operational_projection: buildPortfolioOperationalProjection(entry, { estates, buildings, devices }),
+  }));
+}
+
 function validateCommercialDocumentDraft(input = {}) {
   const hasApprovedPricing =
     Boolean(input.approved_price_ref) ||
@@ -396,6 +476,8 @@ module.exports = {
   BUSINESS_UNITS,
   CORPORATE_COLLECTIONS,
   buildOfficeHomeProjection,
+  buildPortfolioOperationalProjection,
+  attachPortfolioOperationalProjections,
   createCorporateRecord,
   listCorporateRecords,
   upsertContactIdentity,

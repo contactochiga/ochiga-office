@@ -23,8 +23,12 @@
     "office:oyi-core-delegation:test": "node scripts/test-oyi-core-delegation.js",
     "office:communications-handoff:test": "node scripts/test-communications-handoff.js",
     "office:contract-hardening:test": "node scripts/test-office-contract-hardening.js",
+    "office:rate-limit:test": "node scripts/test-office-rate-limit.js",
     "office:operational-mutations:test": "node scripts/test-office-operational-mutations.js",
     "office:operating-system:test": "node scripts/test-office-operating-system.js",
+    "office:team-settings-audit:test": "node scripts/test-office-team-settings-audit.js",
+    "office:portfolio-projection:test": "node scripts/test-office-portfolio-projection.js",
+    "office:normalize-lead-timestamps:test": "node scripts/test-normalize-lead-timestamps.js",
     "office:eval": "node scripts/run-lead-agents-evals.js"
   },
   "dependencies": {

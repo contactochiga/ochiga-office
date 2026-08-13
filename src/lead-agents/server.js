@@ -9,7 +9,6 @@ const { log } = require("./logger");
 const { createStore } = require("./store-factory");
 const { OpenAIResponsesClient } = require("./openai");
 const { ToolExecutor } = require("./tools");
-const { LeadAgentRuntime } = require("./runtime");
 const { WebhookDispatcher } = require("./webhooks");
 const {
   authorizePermission,
@@ -23,7 +22,6 @@ const {
   verifyPassword,
 } = require("./auth");
 const { MemoryRateLimiter } = require("./rate-limit");
-const { FileKnowledgeBase } = require("./knowledge-base");
 const { PATCH_FIELDS, normalizeEmail, normalizeLeadInput } = require("./normalize-lead");
 const {
   findExistingIntakeLead,
@@ -51,6 +49,7 @@ const { executeGovernedOfficeToolProposals } = require("./office-tool-governance
 const {
   CORPORATE_COLLECTIONS,
   buildOfficeHomeProjection,
+  attachPortfolioOperationalProjections,
   createCorporateRecord,
   listCorporateRecords,
   upsertContactIdentity,
@@ -150,6 +149,15 @@ function requireObject(body, name) {
     error.statusCode = 400;
     throw error;
   }
+}
+
+// store.listAdminUsers()/updateAdminUser() return the raw admin_users row,
+// which includes password_hash — never let that reach a response, even to
+// a caller with staff.manage permission.
+function sanitizeAdminUser(user) {
+  if (!user) return user;
+  const { password_hash, ...safe } = user;
+  return safe;
 }
 
 function taskRelatedActivityRef(task = {}) {
@@ -1467,7 +1475,7 @@ async function resolveLeadForChannel(store, phone, source) {
   });
 }
 
-async function processWhatsAppEvent({ event, runtime, store, adapter, config, requestId }) {
+async function processWhatsAppEvent({ event, store, adapter, config, requestId }) {
   if (event.kind === "status") {
     await store.appendInboundEvent({
       channel: "whatsapp",
@@ -1601,10 +1609,10 @@ async function enrichAuthContext(authContext, store) {
   };
 }
 
-function buildServer({ config, store, runtime, rateLimiter, publicRateLimiter, loginRateLimiter, whatsappAdapter, openaiClient }) {
+function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRateLimiter, loginRateLimiter, whatsappAdapter, openaiClient, toolExecutor }) {
   const startedAt = Date.now();
   const widgetRateLimiter = publicRateLimiter || rateLimiter;
-  const officeInternalRateLimiter = rateLimiter;
+  const officeInternalRateLimiter = officeRateLimiter || rateLimiter;
   const adminLoginRateLimiter =
     loginRateLimiter ||
     new MemoryRateLimiter({
@@ -1824,7 +1832,6 @@ function buildServer({ config, store, runtime, rateLimiter, publicRateLimiter, l
             results.push(
               await processWhatsAppEvent({
                 event,
-                runtime,
                 store,
                 adapter: whatsappAdapter,
                 config,
@@ -3541,7 +3548,7 @@ function buildServer({ config, store, runtime, rateLimiter, publicRateLimiter, l
           json(res, 400, { error: "reason and summary are required" });
           return;
         }
-        const result = await runtime.toolExecutor.execute(
+        const result = await toolExecutor.execute(
           "notify_founder",
           {
             lead_id: body.lead_id,
@@ -3731,7 +3738,10 @@ function buildServer({ config, store, runtime, rateLimiter, publicRateLimiter, l
         const policy = CORPORATE_COLLECTIONS[collection];
         if (req.method === "GET") {
           authorizePermission(authContext, policy.permission);
-          json(res, 200, { collection: await listCorporateRecords(store, collection) }, { "x-request-id": ctx.requestId });
+          const records = await listCorporateRecords(store, collection);
+          const collectionOut =
+            collection === "portfolio" ? await attachPortfolioOperationalProjections(store, records) : records;
+          json(res, 200, { collection: collectionOut }, { "x-request-id": ctx.requestId });
           return;
         }
         if (req.method === "POST") {
@@ -4373,7 +4383,7 @@ function buildServer({ config, store, runtime, rateLimiter, publicRateLimiter, l
             res,
             200,
             {
-              users: await store.listAdminUsers(),
+              users: (await store.listAdminUsers()).map(sanitizeAdminUser),
             },
             { "x-request-id": ctx.requestId }
           );
@@ -4411,7 +4421,7 @@ function buildServer({ config, store, runtime, rateLimiter, publicRateLimiter, l
               status: user.status,
             },
           });
-          json(res, 201, { user }, { "x-request-id": ctx.requestId });
+          json(res, 201, { user: sanitizeAdminUser(user) }, { "x-request-id": ctx.requestId });
           return;
         }
         methodNotAllowed(res, "GET,POST");
@@ -4533,7 +4543,7 @@ function buildServer({ config, store, runtime, rateLimiter, publicRateLimiter, l
             status: user.status,
           },
         });
-        json(res, 200, { user }, { "x-request-id": ctx.requestId });
+        json(res, 200, { user: sanitizeAdminUser(user) }, { "x-request-id": ctx.requestId });
         return;
       }
 
@@ -4584,7 +4594,7 @@ function buildServer({ config, store, runtime, rateLimiter, publicRateLimiter, l
             passport_photo_url: user.passport_photo_url,
           },
         });
-        json(res, 200, { user }, { "x-request-id": ctx.requestId });
+        json(res, 200, { user: sanitizeAdminUser(user) }, { "x-request-id": ctx.requestId });
         return;
       }
 
@@ -4701,18 +4711,8 @@ async function start() {
 
   const openaiClient = new OpenAIResponsesClient(config);
   const webhooks = new WebhookDispatcher({ config });
-  const knowledgeBase = new FileKnowledgeBase(config.knowledgeDir);
-  await knowledgeBase.init();
   const whatsappAdapter = new WhatsAppCloudAdapter(config);
   const toolExecutor = new ToolExecutor({ store, config, log, webhooks });
-  const runtime = new LeadAgentRuntime({
-    config,
-    store,
-    openaiClient,
-    toolExecutor,
-    log,
-    knowledgeBase,
-  });
   const rateLimiter = new MemoryRateLimiter({
     windowMs: config.rateLimitWindowMs,
     maxRequests: config.rateLimitMaxRequests,
@@ -4720,6 +4720,10 @@ async function start() {
   const publicRateLimiter = new MemoryRateLimiter({
     windowMs: config.publicWidgetRateLimitWindowMs,
     maxRequests: config.publicWidgetRateLimitMaxRequests,
+  });
+  const officeRateLimiter = new MemoryRateLimiter({
+    windowMs: config.officeRateLimitWindowMs,
+    maxRequests: config.officeRateLimitMaxRequests,
   });
   const loginRateLimiter = new MemoryRateLimiter({
     windowMs: config.loginRateLimitWindowMs,
@@ -4729,12 +4733,13 @@ async function start() {
   const server = buildServer({
     config,
     store,
-    runtime,
     rateLimiter,
     publicRateLimiter,
+    officeRateLimiter,
     loginRateLimiter,
     whatsappAdapter,
     openaiClient,
+    toolExecutor,
   });
 
   await new Promise((resolve, reject) => {
@@ -4768,5 +4773,6 @@ async function start() {
 }
 
 module.exports = {
+  buildServer,
   start,
 };

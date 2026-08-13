@@ -151,6 +151,26 @@ async function apiUpdateProposal(id, patch) {
 async function apiListHandoffs() {
   return api("/api/lead-agents/admin/office/handoffs");
 }
+// ---------------------------------------------------------------
+// Team / Settings / Audit — moved out of the legacy dashboard.
+// Same admin_users / integrations / audit_events contracts the
+// legacy dashboard used; nothing new invented on the backend.
+// ---------------------------------------------------------------
+async function apiListAdminUsers() {
+  return api("/api/lead-agents/admin/users");
+}
+async function apiUpdateAdminUser(id, patch) {
+  return api(`/api/lead-agents/admin/users/${encodeURIComponent(id)}`, { method: "PATCH", body: patch });
+}
+async function apiListIntegrations() {
+  return api("/api/lead-agents/admin/integrations");
+}
+async function apiTriggerOfficeSync(target) {
+  return api("/api/lead-agents/admin/office/sync", { method: "POST", body: { target } });
+}
+async function apiListAudit() {
+  return api("/api/lead-agents/admin/audit");
+}
 
 async function fetchLeads(force) {
   const data = await cached("leads", apiListLeads, force);
@@ -283,12 +303,6 @@ const ADMIN_NAV = [
   { key: "settings", label: "Settings", permission: "settings.manage", phase: null },
   { key: "audit", label: "Audit", permission: "audit.read", phase: null },
 ];
-
-const VIEW_COPY = {
-  team: "Staff accounts, roles and invitations. Available today in the legacy dashboard while this shell is rebuilt module by module.",
-  settings: "Platform configuration and integrations. Available today in the legacy dashboard while this shell is rebuilt module by module.",
-  audit: "The Office audit trail. Available today in the legacy dashboard while this shell is rebuilt module by module.",
-};
 
 function allNavItems() {
   return [...PRIMARY_NAV, ...ADMIN_NAV];
@@ -740,6 +754,18 @@ async function renderRoute() {
     await renderModuleRoute(outlet, "partnerships", rest, token);
   } else if (topKey === "documents") {
     await renderDocumentsRoute(outlet, rest, token);
+  } else if (topKey === "team") {
+    outlet.innerHTML = "";
+    outlet.appendChild(skeletonPanel(4));
+    await renderTeamView(outlet, token);
+  } else if (topKey === "settings") {
+    outlet.innerHTML = "";
+    outlet.appendChild(skeletonPanel(4));
+    await renderSettingsView(outlet, token);
+  } else if (topKey === "audit") {
+    outlet.innerHTML = "";
+    outlet.appendChild(skeletonPanel(4));
+    await renderAuditView(outlet, token);
   } else {
     setTopbar(item.label, item.phase ? `Phase ${item.phase}` : "");
     setSelectedObject(null);
@@ -755,9 +781,9 @@ function renderPlaceholderView(outlet, item) {
   outlet.innerHTML = "";
   outlet.appendChild(el(`<div class="view-heading"><h1>${escapeHtml(item.label)}</h1></div>`));
   const panel = emptyPanel({
-    kicker: item.phase ? "Not yet built" : "Available in legacy dashboard",
-    title: item.phase ? `${item.label} lands in Phase ${item.phase}` : `${item.label}`,
-    body: VIEW_COPY[item.key] || "",
+    kicker: "Not yet available",
+    title: item.label,
+    body: "This area does not have a route configured yet.",
   });
   if (item.phase) panel.insertBefore(el(phaseTag(item.phase)), panel.firstChild);
   outlet.appendChild(panel);
@@ -1623,11 +1649,21 @@ function promptAddNote(refs) {
 // the generic related activities contract rather than per-module
 // activity tables.
 // ---------------------------------------------------------------
+// office_projects.stage has no server-enforced enum (free text via
+// normalizeCorporateRecord) — this is the Ochiga development lifecycle
+// offered as a <datalist> suggestion, same non-rigid pattern as
+// PARTNERSHIP_TYPE_SUGGESTIONS below. Staff can still type any value.
+const PROJECT_STAGE_SUGGESTIONS = [
+  "Prospective", "Secured", "Planning", "Pre-development",
+  "Construction", "Sales / Offtake", "Completed", "Handed Over",
+  "Paused", "Cancelled",
+];
+
 function openCreateProjectDialog(prefill = {}) {
   openDialog("New Project", [
     { name: "name", label: "Project Name" },
     { name: "location", label: "Location" },
-    { name: "stage", label: "Stage", value: "prospective" },
+    { name: "stage", label: "Stage", value: "prospective", suggestions: PROJECT_STAGE_SUGGESTIONS },
     { name: "business_unit", label: "Business Unit", value: prefill.business_unit || "" },
   ], async (data) => {
     await apiCreateOffice("projects", {
@@ -1893,22 +1929,34 @@ async function renderProjectDetail(outlet, id, token) {
     ...relatedMeetings.map((m) => ({ event_type: "meeting", title: m.title, body: m.notes, actor: m.owner, occurred_at: m.scheduled_at || m.created_at })),
   ];
 
-  const mainSections = [
-    el(`
-      <div class="detail-section">
-        <h3>Project Summary</h3>
-        <div class="fact-grid">
-          ${factRow("Location", record.location)}
-          ${factRow("Business Unit", titleCase(record.business_unit))}
-          ${factRow("Status", titleCase(record.status))}
-          ${factRow("Stage", titleCase(record.stage))}
-          ${factRow("Oyi Deployment Status", titleCase(record.oyi_deployment_status))}
-          ${factRow("Organization", org ? org.name : "—")}
-          ${factRow("Contact", contact ? contact.name : "—")}
-        </div>
+  const summarySection = el(`
+    <div class="detail-section">
+      <h3>Project Summary</h3>
+      <div class="fact-grid">
+        ${factRow("Location", record.location)}
+        ${factRow("Business Unit", titleCase(record.business_unit))}
+        ${factRow("Status", titleCase(record.status))}
+        ${factRow("Stage", titleCase(record.stage))}
+        ${factRow("Oyi Deployment Status", titleCase(record.oyi_deployment_status))}
+        ${factRow("Organization", org ? org.name : "—")}
+        ${factRow("Contact", contact ? contact.name : "—")}
       </div>
-    `),
-  ];
+    </div>
+  `);
+  if (canManage) {
+    const editStageBtn = el(`<button type="button" class="btn btn-ghost btn-sm">Edit Stage</button>`);
+    editStageBtn.addEventListener("click", () => {
+      openDialog("Update Project Stage", [
+        { name: "stage", label: "Stage", value: record.stage, suggestions: PROJECT_STAGE_SUGGESTIONS },
+      ], async (data) => {
+        await apiPatchOperational("office", "projects", id, { stage: data.stage });
+        invalidate("projects");
+        navigate(`projects/${id}`);
+      });
+    });
+    summarySection.appendChild(editStageBtn);
+  }
+  const mainSections = [summarySection];
   if (canManage) {
     const actions = renderStatusActions("office", "projects", record, () => navigate(`projects/${id}`));
     if (actions) mainSections.push(el(`<div class="detail-section"><h3>Update Status</h3></div>`));
@@ -1967,6 +2015,42 @@ async function renderProjectDetail(outlet, id, token) {
 // consumer_os_status, oyi_deployment_status) are shown as plain,
 // honest reference badges — no composite "health score" is computed.
 // ---------------------------------------------------------------
+// operational_projection is a SAFE AGGREGATE-ONLY view computed server-side
+// from the Oyi sync tables (homes_total, devices_total, devices_online,
+// last_synced_at) — never wallet balances, camera feeds, or resident data.
+function portfolioOperationalSummaryText(entry) {
+  const projection = entry.operational_projection;
+  if (!projection || !projection.linked) return "Not linked to Oyi";
+  const homes = projection.homes_total ?? "—";
+  const devices = projection.devices_total ?? "—";
+  const online = projection.devices_online != null ? ` (${projection.devices_online} online)` : "";
+  return `${homes} homes · ${devices} devices${online}`;
+}
+
+function renderPortfolioOperationalSection(entry) {
+  const projection = entry.operational_projection;
+  if (!projection || !projection.linked) {
+    return el(`
+      <div class="detail-section">
+        <h3>Oyi Operational Overview</h3>
+        <p class="detail-note">${escapeHtml(projection?.note || "No Oyi deployment reference is linked yet for this Portfolio entry.")}</p>
+      </div>
+    `);
+  }
+  return el(`
+    <div class="detail-section">
+      <h3>Oyi Operational Overview</h3>
+      <div class="fact-grid">
+        ${factRow("Homes (total)", projection.homes_total != null ? String(projection.homes_total) : "—")}
+        ${factRow("Devices (total)", projection.devices_total != null ? String(projection.devices_total) : "—")}
+        ${factRow("Devices Online", projection.devices_online != null ? String(projection.devices_online) : "Not reported by sync")}
+        ${factRow("Last Synced", projection.last_synced_at ? fmtRelative(projection.last_synced_at) : "Never synced")}
+      </div>
+      <p class="detail-note">Aggregate counts only, sourced from Ochiga's safe corporate projection of Oyi Facility/Consumer data — never resident, wallet, or camera-level detail.</p>
+    </div>
+  `);
+}
+
 async function renderPortfolioList(outlet, token) {
   setSelectedObject(null);
   const portfolioEntries = await fetchPortfolio();
@@ -1980,6 +2064,7 @@ async function renderPortfolioList(outlet, token) {
       { label: "Relationship", render: (p) => escapeHtml(titleCase(p.relationship_type)) },
       { label: "Facility OS", render: (p) => badge(titleCase(p.facility_os_status), toneForStatus(p.facility_os_status)) },
       { label: "Consumer OS", render: (p) => badge(titleCase(p.consumer_os_status), toneForStatus(p.consumer_os_status)) },
+      { label: "Homes / Devices", render: (p) => escapeHtml(portfolioOperationalSummaryText(p)) },
       { label: "Updated", render: (p) => escapeHtml(fmtRelative(p.updated_at)) },
     ],
     searchFields: ["name", "client_account", "location"],
@@ -2054,6 +2139,7 @@ async function renderPortfolioDetail(outlet, id, token) {
         ${record.backend_building_id ? `<p class="detail-note">Backend building reference: ${escapeHtml(record.backend_building_id)}</p>` : ""}
       </div>
     `),
+    renderPortfolioOperationalSection(record),
   ];
   if (canManage) {
     const actions = renderStatusActions("office", "portfolio", record, () => navigate(`portfolio/${id}`));
@@ -3158,6 +3244,267 @@ async function renderProposalDetail(body, id, token) {
     mainSections,
     railSections,
   });
+}
+
+// ---------------------------------------------------------------
+// TEAM — real Office staff/admin_users, not a legacy placeholder.
+// Edit (role/status/display name) uses the same PATCH contract the
+// legacy dashboard used; only shown to staff.manage holders (in
+// practice super_admin/ochiga_admin — never weakened below that).
+// ---------------------------------------------------------------
+async function renderTeamView(outlet, token) {
+  setTopbar("Team", "");
+  setSelectedObject(null);
+  outlet.innerHTML = "";
+  outlet.appendChild(skeletonPanel(4));
+
+  let users;
+  try {
+    const data = await apiListAdminUsers();
+    users = data.users || [];
+  } catch (err) {
+    if (token !== state.renderToken) return;
+    outlet.innerHTML = "";
+    outlet.appendChild(el(`<div class="view-heading"><h1>Team</h1></div>`));
+    outlet.appendChild(errorPanel(err.message || "Could not load Office staff."));
+    return;
+  }
+  if (token !== state.renderToken) return;
+
+  const canManage = hasPermission("staff.manage");
+  outlet.innerHTML = "";
+  outlet.appendChild(el(`
+    <div class="view-heading">
+      <h1>Team</h1>
+      <p>Ochiga Office staff accounts — ${users.length} total.</p>
+    </div>
+  `));
+
+  const table = renderDataTable({
+    columns: [
+      { label: "Name", render: (u) => escapeHtml(u.display_name || u.email) },
+      { label: "Email", render: (u) => escapeHtml(u.email) },
+      { label: "Role", render: (u) => badge(titleCase(u.role), u.role === "super_admin" || u.role === "admin" ? "red" : "default") },
+      { label: "Status", render: (u) => badge(titleCase(u.status || "active"), toneForStatus(u.status || "active")) },
+      { label: "Last active", render: (u) => fmtRelative(u.last_login_at) },
+    ],
+    rows: users,
+    onRowClick: canManage ? (user) => toggleTeamEditRow(user) : undefined,
+    emptyMessage: "No staff accounts yet.",
+  });
+  outlet.appendChild(table);
+
+  if (canManage) {
+    const editWrap = el(`<div id="teamEditWrap"></div>`);
+    outlet.appendChild(editWrap);
+  } else {
+    outlet.appendChild(el(`<p class="hint" style="margin-top:14px;">You have read-only visibility into Team. Role/status changes require the staff.manage permission.</p>`));
+  }
+}
+
+function toggleTeamEditRow(user) {
+  const wrap = document.getElementById("teamEditWrap");
+  if (!wrap) return;
+  wrap.innerHTML = "";
+  const roles = Object.keys(ROLE_PERMISSIONS_HINT);
+  const form = el(`
+    <form class="inline-form" style="margin-top:14px;">
+      <div class="field">
+        <label>Editing</label>
+        <div style="padding-top:6px;color:var(--white);font-size:13px;">${escapeHtml(user.display_name || user.email)}</div>
+      </div>
+      <div class="field">
+        <label for="teamEditRole">Role</label>
+        <select id="teamEditRole">
+          ${roles.map((r) => `<option value="${escapeHtml(r)}" ${r === user.role ? "selected" : ""}>${escapeHtml(titleCase(r))}</option>`).join("")}
+        </select>
+      </div>
+      <div class="field">
+        <label for="teamEditStatus">Status</label>
+        <select id="teamEditStatus">
+          ${["active", "suspended"].map((s) => `<option value="${s}" ${s === (user.status || "active") ? "selected" : ""}>${titleCase(s)}</option>`).join("")}
+        </select>
+      </div>
+      <button class="btn btn-primary" type="submit">Save</button>
+      <button class="btn btn-ghost" type="button" id="teamEditCancel">Cancel</button>
+      <div class="form-error" id="teamEditError"></div>
+    </form>
+  `);
+  form.querySelector("#teamEditCancel").addEventListener("click", () => { wrap.innerHTML = ""; });
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const errorBox = form.querySelector("#teamEditError");
+    errorBox.classList.remove("visible");
+    try {
+      await apiUpdateAdminUser(user.id, {
+        role: form.querySelector("#teamEditRole").value,
+        status: form.querySelector("#teamEditStatus").value,
+      });
+      wrap.innerHTML = "";
+      const token = ++state.renderToken;
+      await renderTeamView(document.getElementById("viewOutlet"), token);
+    } catch (err) {
+      errorBox.textContent = err.message || "Could not update this account.";
+      errorBox.classList.add("visible");
+    }
+  });
+  wrap.appendChild(form);
+}
+// Mirrors permissions.js ROLE_PERMISSIONS keys — kept as a small local
+// hint list (role names only) so Team's edit form doesn't need a
+// dedicated API round-trip just to populate a dropdown.
+const ROLE_PERMISSIONS_HINT = {
+  super_admin: 1, ochiga_admin: 1, ochiga_staff: 1, estate_admin: 1,
+  facility_manager: 1, security_operator: 1, maintenance_operator: 1,
+  finance_operator: 1, resident: 1, guest: 1,
+};
+
+// ---------------------------------------------------------------
+// SETTINGS — real integration/connectivity status, not a legacy
+// placeholder. Read-only where Office has no mutation contract;
+// the one real action (trigger a Facility/Consumer sync) uses the
+// same endpoint the legacy dashboard used.
+// ---------------------------------------------------------------
+async function renderSettingsView(outlet, token) {
+  setTopbar("Settings", "");
+  setSelectedObject(null);
+  outlet.innerHTML = "";
+  outlet.appendChild(skeletonPanel(4));
+
+  let integrations;
+  try {
+    const data = await apiListIntegrations();
+    integrations = data.integrations || {};
+  } catch (err) {
+    if (token !== state.renderToken) return;
+    outlet.innerHTML = "";
+    outlet.appendChild(el(`<div class="view-heading"><h1>Settings</h1></div>`));
+    outlet.appendChild(errorPanel(err.message || "Could not load integration status."));
+    return;
+  }
+  if (token !== state.renderToken) return;
+
+  outlet.innerHTML = "";
+  outlet.appendChild(el(`
+    <div class="view-heading">
+      <h1>Settings</h1>
+      <p>Office integration and connectivity status. Read-only unless noted — Office does not fabricate save actions for settings it doesn't actually own.</p>
+    </div>
+  `));
+
+  const section = el(`<div class="overview-section"><h3>Integration status</h3></div>`);
+  const grid = el(`<div class="fact-grid"></div>`);
+  Object.entries(integrations).forEach(([key, value]) => {
+    const ok = value && (value.ok === true || value.status === "active" || value.status === "same_origin");
+    const configured = !(value && value.status === "not_configured");
+    const tone = ok ? "green" : configured ? "amber" : "default";
+    const label = configured ? (ok ? "Connected" : "Configured, not reachable") : "Not configured";
+    grid.appendChild(el(`
+      <div class="fact"><div class="fact-label">${escapeHtml(titleCase(key))}</div><div class="fact-value">${badge(label, tone)}</div></div>
+    `));
+  });
+  section.appendChild(grid);
+  outlet.appendChild(section);
+
+  if (hasPermission("office.manage")) {
+    const syncSection = el(`<div class="overview-section" style="margin-top:24px;"><h3>Sync</h3></div>`);
+    const syncBody = el(`<p>Pull the latest safe operational snapshot from Oyi Facility and Consumer.</p>`);
+    const btnRow = el(`<div class="inline-form"></div>`);
+    const statusLabel = el(`<span class="hint" id="syncStatus"></span>`);
+    ["facility", "consumer", "all"].forEach((target) => {
+      const btn = el(`<button class="btn btn-ghost" type="button">Sync ${escapeHtml(titleCase(target))}</button>`);
+      btn.addEventListener("click", async () => {
+        btn.disabled = true;
+        statusLabel.textContent = "Syncing…";
+        try {
+          await apiTriggerOfficeSync(target);
+          statusLabel.textContent = `${titleCase(target)} sync completed.`;
+        } catch (err) {
+          statusLabel.textContent = err.message || "Sync failed.";
+        } finally {
+          btn.disabled = false;
+        }
+      });
+      btnRow.appendChild(btn);
+    });
+    syncSection.appendChild(syncBody);
+    syncSection.appendChild(btnRow);
+    syncSection.appendChild(statusLabel);
+    outlet.appendChild(syncSection);
+  }
+
+  const notOwned = el(`
+    <div class="overview-section" style="margin-top:24px;">
+      <h3>Not yet owned by Office</h3>
+      <p class="hint">Company/business profile, notification preferences, CRM assignment defaults, and session/security policy do not have a real Office settings contract yet — shown here honestly rather than as fabricated toggles.</p>
+    </div>
+  `);
+  outlet.appendChild(notOwned);
+}
+
+// ---------------------------------------------------------------
+// AUDIT — real audit_events, super_admin/audit.read only. Read-only
+// (no backend contract mutates audit history) with a client-side
+// filter over the same 200 most-recent events the API returns.
+// ---------------------------------------------------------------
+async function renderAuditView(outlet, token) {
+  setTopbar("Audit", "");
+  setSelectedObject(null);
+  outlet.innerHTML = "";
+  outlet.appendChild(skeletonPanel(4));
+
+  let events;
+  try {
+    const data = await apiListAudit();
+    events = data.audit || [];
+  } catch (err) {
+    if (token !== state.renderToken) return;
+    outlet.innerHTML = "";
+    outlet.appendChild(el(`<div class="view-heading"><h1>Audit</h1></div>`));
+    outlet.appendChild(errorPanel(err.message || "Could not load the audit trail."));
+    return;
+  }
+  if (token !== state.renderToken) return;
+
+  outlet.innerHTML = "";
+  outlet.appendChild(el(`
+    <div class="view-heading">
+      <h1>Audit</h1>
+      <p>The most recent ${events.length} corporate audit events — authentication, CRM, and workflow-state changes.</p>
+    </div>
+  `));
+
+  const toolbar = el(`
+    <div class="list-toolbar">
+      <input class="toolbar-search" id="auditSearch" type="search" placeholder="Filter by actor, action, or target…" />
+    </div>
+  `);
+  outlet.appendChild(toolbar);
+
+  const tableWrap = el(`<div id="auditTableWrap"></div>`);
+  outlet.appendChild(tableWrap);
+
+  function renderFiltered(query) {
+    const q = query.trim().toLowerCase();
+    const filtered = q
+      ? events.filter((e) => [e.actor_email, e.action, e.target_type, e.target_id, e.resource_type, e.resource_id]
+          .some((field) => String(field || "").toLowerCase().includes(q)))
+      : events;
+    tableWrap.innerHTML = "";
+    tableWrap.appendChild(renderDataTable({
+      columns: [
+        { label: "Time", render: (e) => fmtDateTime(e.created_at) },
+        { label: "Actor", render: (e) => escapeHtml(e.actor_email || "system") },
+        { label: "Action", render: (e) => escapeHtml(titleCase(e.action)) },
+        { label: "Target", render: (e) => escapeHtml(`${e.target_type || e.resource_type || ""} ${e.target_id || e.resource_id || ""}`.trim() || "—") },
+        { label: "Status", render: (e) => badge(titleCase(e.status || "success"), toneForStatus(e.status || "success")) },
+      ],
+      rows: filtered,
+      emptyMessage: "No audit events match this filter.",
+    }));
+  }
+  renderFiltered("");
+  toolbar.querySelector("#auditSearch").addEventListener("input", (event) => renderFiltered(event.target.value));
 }
 
 // ---------------------------------------------------------------

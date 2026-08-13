@@ -7,7 +7,7 @@ function numberFromEnv(value, fallback) {
 
 function stringListFromEnv(value) {
   return String(value || "")
-    .split(",")
+    .split(/[\s,;]+/)
     .map((item) => item.trim())
     .filter(Boolean);
 }
@@ -81,6 +81,14 @@ function createConfig() {
     rateLimitMaxRequests: numberFromEnv(
       process.env.LEAD_AGENTS_RATE_LIMIT_MAX_REQUESTS,
       60
+    ),
+    officeRateLimitWindowMs: numberFromEnv(
+      process.env.LEAD_AGENTS_OFFICE_RATE_LIMIT_WINDOW_MS,
+      numberFromEnv(process.env.LEAD_AGENTS_RATE_LIMIT_WINDOW_MS, 60_000)
+    ),
+    officeRateLimitMaxRequests: numberFromEnv(
+      process.env.LEAD_AGENTS_OFFICE_RATE_LIMIT_MAX_REQUESTS,
+      300
     ),
     loginRateLimitWindowMs: numberFromEnv(
       process.env.LEAD_AGENTS_LOGIN_RATE_LIMIT_WINDOW_MS,

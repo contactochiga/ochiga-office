@@ -33,6 +33,16 @@ function normalizeSource(value, fallback) {
   return normalized || normalizeText(fallback);
 }
 
+// next_action_at/last_contact_at are `timestamptz` columns — unlike the
+// text columns normalizeText backs, an empty string is not a valid value
+// for them (Postgres/PostgREST reject "" with a 400: invalid input syntax
+// for type timestamp with time zone). Missing/blank input must become
+// undefined (dropped from the JSON payload), never "".
+function normalizeTimestamp(value) {
+  const text = normalizeText(value);
+  return text || undefined;
+}
+
 function normalizeLeadInput(input, fallbackSource) {
   return {
     name: normalizeText(input.name),
@@ -75,8 +85,8 @@ function normalizeLeadInput(input, fallbackSource) {
     score: normalizeScore(input.score),
     summary: normalizeText(input.summary),
     next_action: normalizeText(input.next_action),
-    next_action_at: normalizeText(input.next_action_at),
-    last_contact_at: normalizeText(input.last_contact_at),
+    next_action_at: normalizeTimestamp(input.next_action_at),
+    last_contact_at: normalizeTimestamp(input.last_contact_at),
     notes: normalizeText(input.notes),
   };
 }
