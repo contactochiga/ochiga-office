@@ -165,11 +165,14 @@
     min-height: 0; /* grid item — see #root comment above */
   }
   .nav-brand {
-    display: flex; align-items: center; gap: 9px;
+    display: flex; align-items: center;
     padding: 4px 8px 18px;
   }
-  .nav-brand .mark { width: 20px; height: 20px; border-radius: var(--radius-sm); background: var(--red); flex-shrink: 0; }
-  .nav-brand span { font-size: 13px; font-weight: 600; color: var(--white); letter-spacing: -0.01em; }
+  /* Official Ochiga mark (dark-background variant — transparent PNG,
+     white wordmark). The mark already reads "OCHIGA", so no adjacent
+     text is rendered here (was "Ochiga Office", a duplicated brand
+     name next to a plain color swatch). */
+  .nav-brand .logo-mark { height: 22px; width: auto; display: block; }
 
   .nav-group { margin-bottom: 18px; }
   .nav-group-label {
@@ -607,7 +610,7 @@
 
     <div class="app-shell" id="appShell">
       <aside class="nav-rail" id="navRail" aria-label="Office navigation">
-        <div class="nav-brand"><span class="mark"></span><span>Ochiga Office</span></div>
+        <div class="nav-brand"><img class="logo-mark" src="/office/brand/ochiga-logo-dark.png" alt="Ochiga Office" /></div>
         <div id="navGroups"><!-- rendered by office.js, permission-gated --></div>
         <!--
           Shell-level identity, at the bottom of the sidebar (sticky —
