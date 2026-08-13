@@ -46,6 +46,7 @@ const {
   callOyiCoreOfficeInternalConversation,
 } = require("./oyi-core-gateway");
 const { executeGovernedOfficeToolProposals } = require("./office-tool-governance");
+const { fetchBackendPortfolioProjection } = require("./backend-portfolio-gateway");
 const {
   CORPORATE_COLLECTIONS,
   buildOfficeHomeProjection,
@@ -3739,8 +3740,11 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
         if (req.method === "GET") {
           authorizePermission(authContext, policy.permission);
           const records = await listCorporateRecords(store, collection);
-          const collectionOut =
-            collection === "portfolio" ? await attachPortfolioOperationalProjections(store, records) : records;
+          let collectionOut = records;
+          if (collection === "portfolio") {
+            const backendProjection = await fetchBackendPortfolioProjection(config);
+            collectionOut = await attachPortfolioOperationalProjections(records, backendProjection);
+          }
           json(res, 200, { collection: collectionOut }, { "x-request-id": ctx.requestId });
           return;
         }

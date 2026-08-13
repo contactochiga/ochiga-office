@@ -20,6 +20,7 @@ const commands = [
   "npm run office:team-settings-audit:test",
   "npm run office:portfolio-projection:test",
   "npm run office:normalize-lead-timestamps:test",
+  "npm run office:oyi-internal-context:test",
 ];
 
 for (const command of commands) {

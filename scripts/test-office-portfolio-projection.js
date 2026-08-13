@@ -1,4 +1,5 @@
 const assert = require("node:assert/strict");
+const http = require("node:http");
 const { createConfig } = require("../src/lead-agents/config");
 const { buildServer } = require("../src/lead-agents/server");
 const { MemoryRateLimiter } = require("../src/lead-agents/rate-limit");
@@ -20,8 +21,49 @@ function close(server) {
   return new Promise((resolve) => server.close(resolve));
 }
 
+// A minimal stand-in for Ochiga Backend's real GET /office/portfolio/
+// projection (Ochiga-backend/src/routes/officeExport.ts). It returns the
+// same SAFE, pre-aggregated shape the real route computes server-side —
+// this test exists to prove Office's Portfolio route consumes that
+// contract correctly and never falls back to any raw local data source,
+// not to re-test Ochiga Backend's own aggregation logic (that lives in
+// the Ochiga-backend repo).
+function startFakeOchigaBackend(expectedApiKey) {
+  let receivedAuthHeader = null;
+  const server = http.createServer((req, res) => {
+    receivedAuthHeader = req.headers["x-office-api-key"];
+    if (req.url.startsWith("/office/portfolio/projection")) {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({
+        source: "oyi-os",
+        generated_at: "2026-08-13T00:00:00.000Z",
+        estates: [
+          { id: "estate_1", name: "Test Estate", homes_total: 40, homes_active: 30, devices_total: 15, devices_online: 12, major_open_escalations: 1, last_activity_at: "2026-08-12T00:00:00.000Z", last_activity_label: "Device activity recorded" },
+        ],
+        buildings: [
+          { id: "building_1", estate_id: "estate_1", name: "Block A", homes_total: 20, homes_active: 15, devices_total: 6, devices_online: 5, major_open_escalations: 0, last_activity_at: "2026-08-11T00:00:00.000Z", last_activity_label: "Home activity recorded" },
+        ],
+      }));
+      return;
+    }
+    res.writeHead(404, { "content-type": "application/json" });
+    res.end(JSON.stringify({ error: "not_found" }));
+  });
+  return { server, getReceivedAuthHeader: () => receivedAuthHeader };
+}
+
 async function main() {
-  const config = { ...createConfig(), authMode: "required_api_key", apiKeys: ["portfolio-test-key"], allowedOrigins: [] };
+  const { server: fakeBackend, getReceivedAuthHeader } = startFakeOchigaBackend();
+  const backendPort = await listen(fakeBackend);
+
+  const config = {
+    ...createConfig(),
+    authMode: "required_api_key",
+    apiKeys: ["portfolio-test-key"],
+    allowedOrigins: [],
+    officeBackendBaseUrl: `http://127.0.0.1:${backendPort}`,
+    officeBackendApiKey: "backend-projection-test-key",
+  };
   const { store } = await createTempStore();
   await store.ensureAdminUser({
     email: "super@ochiga.local",
@@ -57,41 +99,8 @@ async function main() {
     assert.equal(loginRes.status, 200, "login must succeed");
     const cookie = loginRes.headers.get("set-cookie").split(";")[0];
 
-    // A. Seed a fake Facility/Consumer sync snapshot via the real import
-    // contract (mirrors what officeSync.syncFacility/syncConsumer would
-    // have produced), including sensitive fields the projection must
-    // never re-expose (wallet_balance, live_cameras, resident_count).
-    const importRes = await fetch(`${base}/api/lead-agents/admin/office/import`, {
-      method: "POST",
-      headers: { "content-type": "application/json", cookie },
-      body: JSON.stringify({
-        source: "facility",
-        payload: {
-          collections: {
-            estates: [{
-              id: "estate_1", name: "Test Estate", homes_count: 40, devices_count: 120,
-              wallet_balance: 500000, resident_count: 88, updated_at: "2026-08-01T00:00:00.000Z",
-            }],
-            buildings: [{
-              id: "building_1", estate_id: "estate_1", name: "Block A", homes_count: 20,
-              devices_count: 60, live_cameras: 12, permitted_users: 44, occupancy_pct: 90,
-              updated_at: "2026-08-02T00:00:00.000Z",
-            }],
-            homes: [],
-            devices: [
-              { id: "device_1", estate_id: "estate_1", building_id: "building_1", home_id: "home_1", name: "Gate", category: "access", status: "online" },
-              { id: "device_2", estate_id: "estate_1", building_id: "building_1", home_id: "home_2", name: "Meter", category: "utility", status: "offline" },
-            ],
-          },
-        },
-      }),
-    });
-    assert.equal(importRes.status, 200, "office import must succeed");
-    console.log("A. Seeded Facility sync snapshot via real import contract — PASS");
-
-    // B. A Portfolio entry linked via backend_building_id gets a safe
-    // aggregate operational_projection: correct counts, never the raw
-    // sensitive fields.
+    // A. Office authenticates to Ochiga Backend using the x-office-api-key
+    // header, matching Ochiga-backend's officeCredential middleware.
     const createRes = await fetch(`${base}/api/lead-agents/admin/office/portfolio`, {
       method: "POST",
       headers: { "content-type": "application/json", cookie },
@@ -109,6 +118,9 @@ async function main() {
 
     const listRes = await fetch(`${base}/api/lead-agents/admin/office/portfolio`, { headers: { cookie } });
     assert.equal(listRes.status, 200);
+    assert.equal(getReceivedAuthHeader(), "backend-projection-test-key", "Office must call Ochiga Backend with x-office-api-key");
+    console.log("A. Office calls Ochiga Backend's projection contract with the correct credential header — PASS");
+
     const listBody = await listRes.text();
     assert.equal(listBody.includes("wallet_balance"), false, "Portfolio response must never expose wallet_balance");
     assert.equal(listBody.includes("live_cameras"), false, "Portfolio response must never expose live_cameras");
@@ -119,16 +131,29 @@ async function main() {
     const collection = JSON.parse(listBody).collection;
     const linked = collection.find((p) => p.id === linkedId);
     assert.ok(linked.operational_projection.linked, "linked entry should resolve a projection");
-    assert.equal(linked.operational_projection.homes_total, 20, "homes_total should come from the matched building");
-    assert.equal(linked.operational_projection.devices_total, 2, "devices_total should come from matched devices");
-    assert.equal(linked.operational_projection.devices_online, 1, "devices_online should count only status=online");
-    assert.ok(linked.operational_projection.last_synced_at, "last_synced_at should be populated");
-    console.log("C. Linked Portfolio entry computes correct safe aggregate counts — PASS");
+    assert.equal(linked.operational_projection.homes_total, 20, "homes_total should come from the matched building, not the estate");
+    assert.equal(linked.operational_projection.homes_active, 15);
+    assert.equal(linked.operational_projection.devices_total, 6);
+    assert.equal(linked.operational_projection.devices_online, 5);
+    assert.equal(linked.operational_projection.major_open_escalations, 0);
+    assert.ok(linked.operational_projection.last_activity_at, "last_activity_at should be populated");
+    console.log("C. Linked Portfolio entry consumes the backend's pre-aggregated building-level counts — PASS");
 
     const unlinked = collection.find((p) => p.name === "Unlinked Building");
     assert.equal(unlinked.operational_projection.linked, false, "unlinked entry must not fabricate a projection");
     assert.equal(unlinked.operational_projection.homes_total, null);
     console.log("D. Unlinked Portfolio entry honestly reports no Oyi deployment reference — PASS");
+
+    // E. When Ochiga Backend is unreachable, Portfolio reports the
+    // projection as unavailable rather than silently falling back to any
+    // local/stale data source.
+    await close(fakeBackend);
+    const outageRes = await fetch(`${base}/api/lead-agents/admin/office/portfolio`, { headers: { cookie } });
+    const outageCollection = (await outageRes.json()).collection;
+    const outageLinked = outageCollection.find((p) => p.id === linkedId);
+    assert.equal(outageLinked.operational_projection.linked, false);
+    assert.equal(outageLinked.operational_projection.available, false, "must honestly report unavailable, not a stale cached value");
+    console.log("E. Ochiga Backend outage is reported honestly, no silent fallback — PASS");
   } finally {
     await close(server);
   }

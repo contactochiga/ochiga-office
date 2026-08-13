@@ -378,83 +378,74 @@ async function buildOfficeHomeProjection(store, options = {}) {
   };
 }
 
-// Safe Oyi operational projection for Portfolio entries. This intentionally
-// exposes AGGREGATE counts only (homes_total, devices_total, devices_online,
-// last_synced_at) computed from the office_estates/office_buildings/
-// office_devices sync tables (populated by officeSync from Facility/
-// Consumer). It never returns wallet_balance, live_cameras, per-resident
-// data, or any other field the legacy dashboard exposed — Portfolio is
-// Ochiga's corporate oversight surface, not a re-exposure of Facility
-// internals. A record with no backend_estate_id/backend_building_id link
-// gets linked: false rather than a fabricated zero.
-function buildPortfolioOperationalProjection(entry, { estates = [], buildings = [], devices = [] } = {}) {
-  const buildingId = text(entry.backend_building_id);
-  const estateId = text(entry.backend_estate_id);
-  let matchedBuildings = [];
-  let matchedEstate = null;
-
-  if (buildingId) {
-    const building = buildings.find((b) => String(b.id) === buildingId);
-    if (building) {
-      matchedBuildings = [building];
-      matchedEstate = estates.find((e) => String(e.id) === String(building.estate_id)) || null;
-    }
-  } else if (estateId) {
-    matchedEstate = estates.find((e) => String(e.id) === estateId) || null;
-    if (matchedEstate) matchedBuildings = buildings.filter((b) => String(b.estate_id) === estateId);
-  }
-
-  if (!matchedEstate && !matchedBuildings.length) {
+// Safe Oyi operational projection for Portfolio entries. Source of truth
+// is a LIVE, read-only, server-to-server call to Ochiga Backend's
+// GET /office/portfolio/projection (see backend-portfolio-gateway.js) —
+// which itself only ever computes and returns aggregate counts (homes,
+// devices, escalations, generic activity signal), never wallet balances,
+// camera counts, or resident identities. This function only matches a
+// Portfolio entry's backend_estate_id/backend_building_id against that
+// response; it does not read Office's own office_estates/office_buildings/
+// office_devices sync tables (those remain for the legacy Settings sync
+// tooling only, not for Portfolio). If Ochiga Backend is unreachable, the
+// projection is honestly reported unavailable — never silently backed by
+// stale local data.
+function buildPortfolioOperationalProjection(entry, backendProjection) {
+  if (!backendProjection || backendProjection.ok === false) {
     return {
       linked: false,
+      available: false,
       homes_total: null,
+      homes_active: null,
       devices_total: null,
       devices_online: null,
-      last_synced_at: null,
+      major_open_escalations: null,
+      last_activity_at: null,
+      last_activity_label: null,
+      note: backendProjection && backendProjection.reason === "not_configured"
+        ? "Ochiga Backend portfolio projection is not configured yet."
+        : "Ochiga Backend operational data is temporarily unavailable.",
+    };
+  }
+
+  const buildingId = text(entry.backend_building_id);
+  const estateId = text(entry.backend_estate_id);
+  const building = buildingId ? (backendProjection.buildings || []).find((b) => String(b.id) === buildingId) : null;
+  const estate = !building && estateId ? (backendProjection.estates || []).find((e) => String(e.id) === estateId) : null;
+  const matched = building || estate;
+
+  if (!matched) {
+    return {
+      linked: false,
+      available: true,
+      homes_total: null,
+      homes_active: null,
+      devices_total: null,
+      devices_online: null,
+      major_open_escalations: null,
+      last_activity_at: null,
+      last_activity_label: null,
       note: "No Oyi deployment reference is linked yet for this Portfolio entry.",
     };
   }
 
-  const homesTotal = matchedBuildings.length
-    ? matchedBuildings.reduce((sum, b) => sum + Number(b.homes_count || 0), 0)
-    : Number(matchedEstate?.homes_count || 0);
-  const devicesTotalFromBuildings = matchedBuildings.length
-    ? matchedBuildings.reduce((sum, b) => sum + Number(b.devices_count || 0), 0)
-    : Number(matchedEstate?.devices_count || 0);
-
-  const matchedBuildingIds = new Set(matchedBuildings.map((b) => String(b.id)));
-  const scopedDevices = devices.filter((d) =>
-    matchedBuildingIds.size ? matchedBuildingIds.has(String(d.building_id)) : String(d.estate_id) === estateId
-  );
-  const devicesOnline = scopedDevices.length
-    ? scopedDevices.filter((d) => String(d.status || "").toLowerCase() === "online").length
-    : null;
-  const devicesTotal = scopedDevices.length ? scopedDevices.length : devicesTotalFromBuildings;
-
-  const lastSyncedAt =
-    [matchedEstate?.updated_at, ...matchedBuildings.map((b) => b.updated_at)]
-      .filter(Boolean)
-      .sort()
-      .pop() || null;
-
   return {
     linked: true,
-    homes_total: homesTotal,
-    devices_total: devicesTotal,
-    devices_online: devicesOnline,
-    last_synced_at: lastSyncedAt,
+    available: true,
+    homes_total: matched.homes_total ?? null,
+    homes_active: matched.homes_active ?? null,
+    devices_total: matched.devices_total ?? null,
+    devices_online: matched.devices_online ?? null,
+    major_open_escalations: matched.major_open_escalations ?? null,
+    last_activity_at: matched.last_activity_at ?? null,
+    last_activity_label: matched.last_activity_label ?? null,
   };
 }
 
-async function attachPortfolioOperationalProjections(store, records) {
-  const [estates, buildings, devices] = await Promise.all([
-    store.listOfficeEstates ? store.listOfficeEstates() : [],
-    store.listOfficeBuildings ? store.listOfficeBuildings() : [],
-    store.listOfficeDevices ? store.listOfficeDevices() : [],
-  ]);
+async function attachPortfolioOperationalProjections(records, backendProjection) {
   return records.map((entry) => ({
     ...entry,
-    operational_projection: buildPortfolioOperationalProjection(entry, { estates, buildings, devices }),
+    operational_projection: buildPortfolioOperationalProjection(entry, backendProjection),
   }));
 }
 

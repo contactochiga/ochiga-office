@@ -523,8 +523,8 @@ function renderTimeline(events, { onAddNote, canAddNote } = {}) {
 // (main content + a compact related-records rail) and wires the
 // persistent Oyi control's context to this object.
 // ---------------------------------------------------------------
-function renderDetailShell(outlet, { type, id, label, typeLine, badges, backLabel, onBack, mainSections, railSections }) {
-  setSelectedObject(type, id, label);
+function renderDetailShell(outlet, { type, id, label, typeLine, badges, backLabel, onBack, mainSections, railSections, oyiContext }) {
+  setSelectedObject(type, id, label, oyiContext);
   outlet.innerHTML = "";
 
   const back = el(`<button type="button" class="detail-back">← ${escapeHtml(backLabel)}</button>`);
@@ -710,8 +710,15 @@ function setTopbar(title, meta) {
   document.getElementById("topbarTitle").textContent = title;
   document.getElementById("topbarMeta").textContent = meta || "";
 }
-function setSelectedObject(type, id, label) {
-  state.selectedObject = type ? { type, id, label } : null;
+// extraContext carries the SAFE, already-fetched summary of the
+// selected record (crm_context / portfolio_context / support_context
+// shape from Ochiga-backend's OfficeInternalOyiCoreRequest contract) so
+// Oyi Core can reason about what staff are looking at without a second
+// round-trip. It only ever contains fields Office already shows on
+// screen — for Portfolio this is the safe aggregate operational_
+// projection, never raw Facility/resident data.
+function setSelectedObject(type, id, label, extraContext) {
+  state.selectedObject = type ? { type, id, label, extraContext: extraContext || null } : null;
   updateOyiContext();
 }
 
@@ -1270,6 +1277,7 @@ async function renderLeadDetail(body, id, token) {
     onBack: backToList("leads"),
     mainSections,
     railSections,
+    oyiContext: { lead_ref: id, safe_summary: record.summary || record.next_action || record.pain_points || "" },
   });
 }
 
@@ -1388,6 +1396,7 @@ async function renderContactDetail(body, id, token) {
     onBack: backToList("contacts"),
     mainSections,
     railSections,
+    oyiContext: { contact_ref: id, organization_ref: record.organization_id || null, safe_summary: `${record.name || "Contact"} · ${titleCase(record.role || "")}`.trim() },
   });
 }
 
@@ -1462,6 +1471,7 @@ async function renderOrganizationDetail(body, id, token) {
     onBack: backToList("organizations"),
     mainSections,
     railSections,
+    oyiContext: { organization_ref: id, safe_summary: `${record.name || "Organization"} · ${titleCase(record.account_type || "")}`.trim() },
   });
 }
 
@@ -1545,6 +1555,13 @@ async function renderOpportunityDetail(body, id, token) {
     onBack: backToList("opportunities"),
     mainSections,
     railSections,
+    oyiContext: {
+      opportunity_ref: id,
+      contact_ref: record.contact_id || null,
+      organization_ref: record.organization_id || null,
+      lead_ref: record.lead_id || null,
+      safe_summary: `${titleCase(record.inquiry_type || "Opportunity")} · ${titleCase(record.stage || "")}`.trim(),
+    },
   });
 }
 
@@ -2015,12 +2032,18 @@ async function renderProjectDetail(outlet, id, token) {
 // consumer_os_status, oyi_deployment_status) are shown as plain,
 // honest reference badges — no composite "health score" is computed.
 // ---------------------------------------------------------------
-// operational_projection is a SAFE AGGREGATE-ONLY view computed server-side
-// from the Oyi sync tables (homes_total, devices_total, devices_online,
-// last_synced_at) — never wallet balances, camera feeds, or resident data.
+// operational_projection is a SAFE AGGREGATE-ONLY view fetched live,
+// server-to-server, from Ochiga Backend's GET /office/portfolio/projection
+// (homes_total, homes_active, devices_total, devices_online,
+// major_open_escalations, last_activity_at/label) — never wallet
+// balances, camera feeds, or resident-level data. available:false means
+// Ochiga Backend was unreachable when this list was requested; it is
+// reported honestly rather than silently backed by stale local data.
 function portfolioOperationalSummaryText(entry) {
   const projection = entry.operational_projection;
-  if (!projection || !projection.linked) return "Not linked to Oyi";
+  if (!projection) return "—";
+  if (projection.available === false) return "Oyi data unavailable";
+  if (!projection.linked) return "Not linked to Oyi";
   const homes = projection.homes_total ?? "—";
   const devices = projection.devices_total ?? "—";
   const online = projection.devices_online != null ? ` (${projection.devices_online} online)` : "";
@@ -2042,11 +2065,13 @@ function renderPortfolioOperationalSection(entry) {
       <h3>Oyi Operational Overview</h3>
       <div class="fact-grid">
         ${factRow("Homes (total)", projection.homes_total != null ? String(projection.homes_total) : "—")}
+        ${factRow("Homes (active)", projection.homes_active != null ? String(projection.homes_active) : "—")}
         ${factRow("Devices (total)", projection.devices_total != null ? String(projection.devices_total) : "—")}
-        ${factRow("Devices Online", projection.devices_online != null ? String(projection.devices_online) : "Not reported by sync")}
-        ${factRow("Last Synced", projection.last_synced_at ? fmtRelative(projection.last_synced_at) : "Never synced")}
+        ${factRow("Devices Online", projection.devices_online != null ? String(projection.devices_online) : "Not reported")}
+        ${factRow("Major Open Escalations", projection.major_open_escalations != null ? String(projection.major_open_escalations) : "—")}
+        ${factRow("Last Activity", projection.last_activity_at ? `${escapeHtml(projection.last_activity_label || "Activity recorded")} · ${fmtRelative(projection.last_activity_at)}` : "No recent activity recorded")}
       </div>
-      <p class="detail-note">Aggregate counts only, sourced from Ochiga's safe corporate projection of Oyi Facility/Consumer data — never resident, wallet, or camera-level detail.</p>
+      <p class="detail-note">Aggregate counts only, fetched live from Ochiga Backend's safe Portfolio projection contract — never resident, wallet, or camera-level detail.</p>
     </div>
   `);
 }
@@ -2187,7 +2212,33 @@ async function renderPortfolioDetail(outlet, id, token) {
     onBack: () => navigate("portfolio"),
     mainSections,
     railSections,
+    oyiContext: {
+      portfolio_ref: id,
+      backend_building_ref: record.backend_building_id || record.backend_estate_id || null,
+      safe_summary: portfolioOyiSafeSummary(record),
+    },
   });
+}
+
+// Built ONLY from fields already rendered on the Portfolio detail page —
+// corporate identity plus the safe aggregate operational_projection
+// (never wallet/camera/resident-level Facility data) — so Oyi Core
+// reasons over exactly what staff can already see, nothing more.
+function portfolioOyiSafeSummary(record) {
+  const projection = record.operational_projection;
+  const parts = [
+    `${record.name || "Portfolio entry"} · ${titleCase(record.relationship_type || "")}`.trim(),
+    `Oyi deployment: ${titleCase(record.oyi_deployment_status || "unknown")}`,
+    `Facility OS: ${titleCase(record.facility_os_status || "unknown")}, Consumer OS: ${titleCase(record.consumer_os_status || "unknown")}`,
+  ];
+  if (projection && projection.linked) {
+    parts.push(`Operational: ${projection.homes_total ?? "—"} homes (${projection.homes_active ?? "—"} active), ${projection.devices_total ?? "—"} devices (${projection.devices_online ?? "—"} online), ${projection.major_open_escalations ?? "—"} major open escalations.`);
+  } else if (projection && projection.available === false) {
+    parts.push("Live Oyi operational data is currently unavailable.");
+  } else {
+    parts.push("Not yet linked to a live Oyi deployment reference.");
+  }
+  return parts.join(" ");
 }
 
 // ---------------------------------------------------------------
@@ -2331,6 +2382,10 @@ async function renderSupportDetail(outlet, id, token) {
     onBack: () => navigate("support"),
     mainSections,
     railSections,
+    oyiContext: {
+      support_case_ref: id,
+      safe_summary: `${record.title || "Support case"} · ${titleCase(record.status || "")} · ${titleCase(record.severity || "")} · ${titleCase(record.category || "")}`.trim(),
+    },
   });
 }
 
@@ -3610,6 +3665,29 @@ function currentPageContext() {
   return { page, selected_type: "", selected_id: "" };
 }
 
+// Maps the selected object's safe extraContext (set via renderDetailShell's
+// oyiContext) onto Ochiga-backend's OfficeInternalOyiCoreRequest slots —
+// crm_context for CRM records, portfolio_context for Portfolio (carrying
+// the safe aggregate operational_projection, never raw Facility data),
+// support_context for Support cases. Object types with no dedicated slot
+// (Project, Private, Partnership) still reach Oyi Core via page_context
+// above; this only adds the richer optional enrichment where the
+// contract defines one.
+function currentSelectedObjectContext() {
+  const selected = state.selectedObject;
+  if (!selected || !selected.extraContext) return {};
+  if (selected.type === "lead" || selected.type === "contact" || selected.type === "organization" || selected.type === "opportunity") {
+    return { crm_context: selected.extraContext };
+  }
+  if (selected.type === "portfolio") {
+    return { portfolio_context: selected.extraContext };
+  }
+  if (selected.type === "support_case") {
+    return { support_context: selected.extraContext };
+  }
+  return {};
+}
+
 function appendOyiMessage(role, contentNodeOrText) {
   const thread = document.getElementById("oyiThread");
   const bubble = el(`<div class="oyi-msg ${role}"></div>`);
@@ -3664,7 +3742,7 @@ async function sendOyiMessage(message) {
   try {
     const data = await api("/api/lead-agents/admin/office/intelligence/chat", {
       method: "POST",
-      body: { message, page_context: currentPageContext() },
+      body: { message, page_context: currentPageContext(), ...currentSelectedObjectContext() },
     });
     appendOyiMessage("assistant", renderOyiResponse(data.oyi_core || {}));
     if (Array.isArray(data.proposed_actions) && data.proposed_actions.length) {

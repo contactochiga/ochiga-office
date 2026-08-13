@@ -29,6 +29,7 @@
     "office:team-settings-audit:test": "node scripts/test-office-team-settings-audit.js",
     "office:portfolio-projection:test": "node scripts/test-office-portfolio-projection.js",
     "office:normalize-lead-timestamps:test": "node scripts/test-normalize-lead-timestamps.js",
+    "office:oyi-internal-context:test": "node scripts/test-office-oyi-internal-context.js",
     "office:eval": "node scripts/run-lead-agents-evals.js"
   },
   "dependencies": {
