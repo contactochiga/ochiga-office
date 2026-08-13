@@ -59,6 +59,14 @@
     -webkit-font-smoothing: antialiased;
     overflow: hidden;
   }
+  /* body/#root are fixed at 100vh on purpose (app-shell pattern, no
+     page bounce-scroll) — the actual scrollable surface is
+     .view-outlet. That only works if every ancestor between #root and
+     .view-outlet can shrink to its allotted space instead of growing
+     with content: grid/flex items default to min-height:auto, which
+     lets them overflow their track/flex-basis instead of clipping —
+     the earlier root cause of "long pages get cut off below the
+     viewport" with nothing to scroll. */
   #root { height: 100vh; width: 100vw; overflow: hidden; }
   a { color: inherit; }
   button { font-family: inherit; }
@@ -154,6 +162,7 @@
     display: flex; flex-direction: column;
     padding: 16px 12px;
     overflow-y: auto;
+    min-height: 0; /* grid item — see #root comment above */
   }
   .nav-brand {
     display: flex; align-items: center; gap: 9px;
@@ -181,13 +190,20 @@
   .nav-item.active { background: rgba(179, 36, 27, 0.12); color: var(--white); }
   .nav-item.active .dot { background: var(--red-bright); opacity: 1; }
 
-  /* Shell-level identity block — lives in the topbar (see markup
-     comment above #navFooter), not the collapsible nav rail, so it
-     survives every route change and every viewport width. */
+  /* Shell-level identity block — lives at the bottom of the nav rail
+     (see markup comment above #navFooter). Sticky within the rail's
+     own scroll container and pushed to the bottom via margin-top:auto
+     when the nav list is short, so it stays on-screen whether the
+     operating-areas list is short or long, and persists across every
+     route (nothing in office.js ever unmounts it — only nav-open,
+     which toggles the whole rail's visibility on mobile, same as the
+     rest of the sidebar). */
   .nav-footer {
     display: flex; align-items: center; gap: 8px;
-    flex-shrink: 0; max-width: 220px; padding-left: 12px; margin-left: 12px;
-    border-left: 1px solid var(--line);
+    flex-shrink: 0; margin-top: auto; padding: 12px 8px 4px;
+    border-top: 1px solid var(--line);
+    position: sticky; bottom: 0;
+    background: var(--charcoal);
   }
   .nav-footer .avatar {
     width: 26px; height: 26px; border-radius: 50%; background: var(--graphite);
@@ -203,7 +219,7 @@
   }
   .nav-footer button:hover { color: var(--red-bright); }
 
-  .main-column { display: flex; flex-direction: column; min-width: 0; }
+  .main-column { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
 
   .topbar {
     height: var(--topbar-height); flex-shrink: 0;
@@ -217,7 +233,7 @@
   .topbar-meta { font-size: 11.5px; color: var(--text-tertiary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .nav-toggle { display: none; }
 
-  .view-outlet { flex: 1; overflow-y: auto; padding: 24px 28px 120px; }
+  .view-outlet { flex: 1; overflow-y: auto; padding: 24px 28px 120px; min-height: 0; }
   .view-outlet .view-heading { margin-bottom: 20px; }
   .view-outlet .view-heading h1 {
     font-size: 18px; font-weight: 600; color: var(--white); margin: 0 0 4px;
@@ -304,7 +320,7 @@
   }
   .oyi-panel-head button:hover { color: var(--white); }
 
-  .oyi-thread { flex: 1; overflow-y: auto; padding: 14px; display: flex; flex-direction: column; gap: 10px; }
+  .oyi-thread { flex: 1; overflow-y: auto; padding: 14px; display: flex; flex-direction: column; gap: 10px; min-height: 0; }
   .oyi-msg { max-width: 88%; font-size: 12.5px; line-height: 1.55; padding: 8px 11px; border-radius: var(--radius); }
   .oyi-msg.user { align-self: flex-end; background: rgba(179, 36, 27, 0.16); color: var(--white); }
   .oyi-msg.assistant { align-self: flex-start; background: rgba(255,255,255,0.04); color: var(--text-primary); border: 1px solid var(--line); }
@@ -525,8 +541,6 @@
     }
     body.nav-open .nav-scrim { display: block; }
     .topbar-meta { display: none; }
-    .nav-footer { max-width: 140px; padding-left: 8px; margin-left: 8px; }
-    .nav-footer .who .role { display: none; }
     .nav-toggle {
       display: inline-flex; align-items: center; justify-content: center;
       width: 30px; height: 30px; border-radius: var(--radius-sm); border: 1px solid var(--line-strong);
@@ -595,6 +609,24 @@
       <aside class="nav-rail" id="navRail" aria-label="Office navigation">
         <div class="nav-brand"><span class="mark"></span><span>Ochiga Office</span></div>
         <div id="navGroups"><!-- rendered by office.js, permission-gated --></div>
+        <!--
+          Shell-level identity, at the bottom of the sidebar (sticky —
+          see .nav-footer). The nav rail is a toggleable off-canvas
+          drawer under 900px (see body.nav-open .nav-rail) and closes
+          automatically after every navigation on mobile
+          (closeNavOnMobile in office.js) — that's expected drawer
+          behavior, same as the rest of the sidebar; this block is
+          never unmounted or hidden independently of it, so it's
+          always present whenever the sidebar is (always, on desktop).
+        -->
+        <div class="nav-footer" id="navFooter">
+          <div class="avatar" id="navAvatar">–</div>
+          <div class="who">
+            <div class="name" id="navUserName">–</div>
+            <div class="role" id="navUserRole">–</div>
+          </div>
+          <button id="navLogout" title="Sign out" aria-label="Sign out">Sign out</button>
+        </div>
       </aside>
 
       <div class="main-column">
@@ -603,23 +635,6 @@
             <button class="nav-toggle" id="navToggle" aria-label="Open navigation">☰</button>
             <span class="topbar-title" id="topbarTitle">Home</span>
             <span class="topbar-meta" id="topbarMeta"></span>
-          </div>
-          <!--
-            Shell-level identity, intentionally OUTSIDE .nav-rail: the nav
-            rail is a toggleable off-canvas drawer under 900px (see
-            body.nav-open .nav-rail) and gets closed automatically after
-            every navigation (closeNavOnMobile in office.js). Anything
-            mounted inside it disappears with it. Account identity/role/
-            sign-out must survive route changes and viewport size, so it
-            lives in the topbar, which is never toggled.
-          -->
-          <div class="nav-footer" id="navFooter">
-            <div class="avatar" id="navAvatar">–</div>
-            <div class="who">
-              <div class="name" id="navUserName">–</div>
-              <div class="role" id="navUserRole">–</div>
-            </div>
-            <button id="navLogout" title="Sign out" aria-label="Sign out">Sign out</button>
           </div>
         </header>
         <main class="view-outlet" id="viewOutlet" role="main"></main>
