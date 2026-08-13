@@ -3,6 +3,17 @@ const { normalizeEmail, normalizeText } = require("./normalize-lead");
 
 const BUSINESS_UNITS = Object.freeze(["development", "technology", "private", "partnerships", "corporate"]);
 
+// The crm_* Supabase tables use a native `uuid` primary key with a
+// gen_random_uuid() default; the office_* tables use a plain `text`
+// primary key with no default (the app must supply one). Collections
+// here must match CORPORATE_COLLECTIONS keys backed by a crm_* table.
+const UUID_PK_COLLECTIONS = new Set(["contacts", "organizations", "opportunities", "activities", "tasks"]);
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+function isUuid(value) {
+  return UUID_PATTERN.test(String(value || ""));
+}
+
 const CORPORATE_COLLECTIONS = Object.freeze({
   contacts: { state: "crm_contacts", table: "crm_contacts", permission: "crm.read", manage: "crm.manage" },
   organizations: { state: "crm_organizations", table: "crm_organizations", permission: "crm.read", manage: "crm.manage" },
@@ -243,10 +254,26 @@ async function createCorporateRecord(store, collection, input = {}, context = {}
     return record;
   }
   if (store?.client) {
+    // crm_* tables have a real uuid primary key with a DB-side default.
+    // normalizeCorporateRecord always fills `id` (generating a prefixed
+    // string like "contacts_<uuid>" when none was supplied) so the
+    // file-store path always has one to key off of — but posting that
+    // string id to a uuid column fails Postgres's type cast every time.
+    // A record.id that already looks like a bare uuid only ever comes
+    // from an existing DB row (e.g. upsertContactIdentity re-using
+    // existing.id), so treat that as an update (PATCH by id) and
+    // anything else as a new row whose id Postgres should generate.
+    const uuidPk = UUID_PK_COLLECTIONS.has(String(collection || "").toLowerCase());
+    const isExistingUuidRow = uuidPk && isUuid(record.id);
+    const payload = uuidPk && !isExistingUuidRow ? { ...record, id: undefined } : record;
     try {
-      const response = await store.client.post(`/${config.table}`, record, {
-        headers: store.selectHeaders ? store.selectHeaders() : undefined,
-      });
+      const response = isExistingUuidRow
+        ? await store.client.patch(`/${config.table}?id=eq.${encodeURIComponent(record.id)}`, payload, {
+            headers: store.selectHeaders ? store.selectHeaders() : undefined,
+          })
+        : await store.client.post(`/${config.table}`, payload, {
+            headers: store.selectHeaders ? store.selectHeaders() : undefined,
+          });
       return response.data[0] || record;
     } catch (error) {
       const status = error?.response?.status;

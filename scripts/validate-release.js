@@ -8,6 +8,7 @@ const commands = [
   "npm run deployment:validate",
   "npm run office:test",
   "npm run office:intake:test",
+  "npm run office:crm-intake:test",
   "npm run office:backend-events:test",
   "npm run office:public-intelligence:test",
   "npm run office:oyi-core-delegation:test",

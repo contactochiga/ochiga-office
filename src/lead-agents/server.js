@@ -27,8 +27,9 @@ const { FileKnowledgeBase } = require("./knowledge-base");
 const { PATCH_FIELDS, normalizeEmail, normalizeLeadInput } = require("./normalize-lead");
 const {
   findExistingIntakeLead,
-  leadInputFromIntake,
+  findOrUpsertLead,
   normalizeOfficeIntakeEnvelope,
+  runOfficeIntakeCrm,
 } = require("./office-intake");
 const {
   buildMaterialCrmEvent,
@@ -2845,13 +2846,36 @@ function buildServer({ config, store, runtime, rateLimiter, publicRateLimiter, l
           return;
         }
 
-        const lead = await store.createLead(leadInputFromIntake(envelope));
+        // Lead identity is deduped by email/phone (findOrUpsertLead) rather
+        // than always creating a new row — a repeat enquiry from the same
+        // person folds into their existing Lead as a sparse update plus a
+        // fresh timeline/activity entry, so Office never accumulates an
+        // uncontrolled number of duplicate records for one visitor.
+        const { lead, created: leadCreated } = await findOrUpsertLead(store, envelope);
         const continuation = createFormContinuationContext(envelope, lead);
+
+        // The canonical-CRM write (Contact/Organization/Opportunity/
+        // Private or Partnership relationship/Activity) is additive
+        // enrichment on top of the legacy Lead record above, not a
+        // dependency of it — a transient failure here must not stop the
+        // visitor's submission from being acknowledged and filed as a
+        // Lead, since that's the record Office already relies on today.
+        let crm = null;
+        try {
+          crm = await runOfficeIntakeCrm(store, envelope, lead, { actorEmail: envelope.source_site });
+        } catch (error) {
+          log("warn", "office_intake_crm_write_failed", {
+            reason: error?.message || String(error),
+            lead_id: lead.id,
+            request_id: ctx.requestId,
+          });
+        }
+
         const timelineEvent = await store.appendTimelineEvent({
           lead_id: lead.id,
           event_type: "office_intake_received",
           actor: envelope.source_site,
-          title: "Office intake received",
+          title: leadCreated ? "Office intake received" : "Repeat office intake received",
           body: `${envelope.business_unit} ${envelope.inquiry_type} intake received from ${envelope.source_site}.`,
           metadata: {
             request_id: envelope.request_id,
@@ -2865,6 +2889,7 @@ function buildServer({ config, store, runtime, rateLimiter, publicRateLimiter, l
             campaign: envelope.campaign,
             consent: envelope.consent,
             public_context_ref: continuation.public_context_ref,
+            crm_contact_id: crm?.contact?.id || null,
           },
         });
         const materialEvent = buildMaterialCrmEvent({
@@ -2887,9 +2912,20 @@ function buildServer({ config, store, runtime, rateLimiter, publicRateLimiter, l
         json(res, 201, {
           ok: true,
           duplicate: false,
+          lead_created: leadCreated,
           request_id: envelope.request_id,
           idempotency_key: envelope.idempotency_key,
           lead,
+          crm: crm
+            ? {
+                contact_id: crm.contact?.id || null,
+                organization_id: crm.organization?.id || null,
+                opportunity_id: crm.opportunity?.id || null,
+                relationship_type: crm.relationship_collection,
+                relationship_id: crm.relationship?.id || null,
+                activity_id: crm.activity?.id || null,
+              }
+            : { sync_status: "failed_see_server_logs" },
           conversation_continuation: continuation,
           backend_event: {
             enabled: Boolean(config.officeBackendEventsEnabled),

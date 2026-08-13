@@ -17,6 +17,7 @@
     "test": "npm run check",
     "office:test": "node scripts/test-lead-agents.js",
     "office:intake:test": "node scripts/test-office-intake.js",
+    "office:crm-intake:test": "node scripts/test-office-crm-intake.js",
     "office:backend-events:test": "node scripts/test-backend-events.js",
     "office:public-intelligence:test": "node scripts/test-public-intelligence.js",
     "office:oyi-core-delegation:test": "node scripts/test-oyi-core-delegation.js",
