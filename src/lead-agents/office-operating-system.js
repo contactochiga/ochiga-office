@@ -316,7 +316,18 @@ async function buildOfficeHomeProjection(store, options = {}) {
       listCorporateRecords(store, "meetings"),
       store.listOfficeDocuments ? store.listOfficeDocuments() : [],
     ]);
-  const contentItems = store.listContentItems ? await store.listContentItems() : [];
+  // Isolated from the Promise.all above on purpose: Content/Publishing is
+  // its own additive V2 module (own table, own migration) and must not be
+  // able to collapse the rest of Home if it's unavailable (e.g. schema not
+  // yet migrated in an environment, or a transient Supabase error).
+  let contentItems = [];
+  let contentAvailable = true;
+  try {
+    contentItems = store.listContentItems ? await store.listContentItems() : [];
+  } catch (err) {
+    contentAvailable = false;
+    contentItems = [];
+  }
   const weekStart = (() => {
     const day = now.getDay();
     const diff = now.getDate() - day + (day === 0 ? -6 : 1);
@@ -409,6 +420,7 @@ async function buildOfficeHomeProjection(store, options = {}) {
     upcoming_meetings: upcomingMeetings,
     recent_documents: recentDocuments,
     content_publishing: {
+      available: contentAvailable,
       published_this_week: publishedThisWeek.length,
       target_per_week: 2,
       drafts: contentDrafts,

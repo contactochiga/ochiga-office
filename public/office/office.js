@@ -1048,6 +1048,14 @@ function renderRecentDocumentsSection(documents) {
 // target; 0/2 renders as 0/2.
 function renderContentWidget(content) {
   const section = el(`<div class="home-section"><h3>Content / Publishing</h3></div>`);
+  if (content.available === false) {
+    section.appendChild(emptyPanel({
+      kicker: "Content / Publishing",
+      title: "Content is temporarily unavailable",
+      body: "The rest of Home loaded normally. Publishing counts couldn't be read just now — try again shortly.",
+    }));
+    return section;
+  }
   // No "on track" / "behind" judgment here — that would need
   // day-of-week awareness this widget doesn't have. Just the honest
   // count against the target, nothing editorialized.
