@@ -171,6 +171,17 @@ async function apiUpdateAdminUser(id, patch) {
 async function apiResetAdminUserPassword(id) {
   return api(`/api/lead-agents/admin/users/${encodeURIComponent(id)}/reset`, { method: "POST", body: {} });
 }
+async function apiUploadAdminUserPhoto(id, photoDataUrl) {
+  return api(`/api/lead-agents/admin/users/${encodeURIComponent(id)}/photo`, { method: "POST", body: { photo_data_url: photoDataUrl } });
+}
+function readFileAsDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = () => reject(new Error("Could not read the selected file."));
+    reader.readAsDataURL(file);
+  });
+}
 async function apiGetPermissionsMeta() {
   return cached("permissionsMeta", () => api("/api/lead-agents/admin/permissions"));
 }
@@ -3461,6 +3472,13 @@ async function renderTeamView(outlet, token) {
 
   const table = renderDataTable({
     columns: [
+      {
+        label: "Photo", width: "40px",
+        render: (u) => {
+          const initials = (u.display_name || u.email || "?").trim().split(/\s+/).map((p) => p[0]).slice(0, 2).join("").toUpperCase();
+          return `<div class="avatar" style="width:24px;height:24px;font-size:10px;">${u.passport_photo_url ? `<img class="avatar-img" src="${escapeHtml(u.passport_photo_url)}" alt="" />` : `<span>${escapeHtml(initials || "?")}</span>`}</div>`;
+        },
+      },
       { label: "Name", render: (u) => escapeHtml(u.display_name || u.email) },
       { label: "Position", render: (u) => escapeHtml(u.office_position || "—") },
       { label: "Role", render: (u) => badge(titleCase(u.role), u.role === "super_admin" || u.role === "admin" ? "red" : "default") },
@@ -3530,11 +3548,22 @@ function toggleTeamEditRow(user, canonicalRoles, canManageSecurity) {
   // selectable so editing the account doesn't silently reassign the
   // role to something else just by opening the form.
   const roles = canonicalRoles.includes(user.role) ? canonicalRoles : [user.role, ...canonicalRoles];
+  const initials = (user.display_name || user.email || "?").trim().split(/\s+/).map((p) => p[0]).slice(0, 2).join("").toUpperCase();
   const form = el(`
     <form class="inline-form" style="margin-top:14px;">
       <div class="field">
         <label>Editing</label>
         <div style="padding-top:6px;color:var(--white);font-size:13px;">${escapeHtml(user.display_name || user.email)}</div>
+      </div>
+      <div class="field">
+        <label for="teamEditPhoto">Photo</label>
+        <div style="display:flex;align-items:center;gap:10px;">
+          <div class="avatar" style="width:36px;height:36px;font-size:13px;">
+            ${user.passport_photo_url ? `<img class="avatar-img" src="${escapeHtml(user.passport_photo_url)}" alt="" />` : `<span>${escapeHtml(initials || "?")}</span>`}
+          </div>
+          <input id="teamEditPhoto" type="file" accept="image/png,image/jpeg,image/webp,image/gif" />
+        </div>
+        <span class="form-status" id="teamPhotoStatus"></span>
       </div>
       <div class="field">
         <label for="teamEditPosition">Office Position</label>
@@ -3559,6 +3588,26 @@ function toggleTeamEditRow(user, canonicalRoles, canManageSecurity) {
     </form>
   `);
   form.querySelector("#teamEditCancel").addEventListener("click", () => { wrap.innerHTML = ""; });
+  form.querySelector("#teamEditPhoto").addEventListener("change", async (event) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    const statusEl = form.querySelector("#teamPhotoStatus");
+    const MAX_BYTES = 6 * 1024 * 1024; // matches the server's own 6MB cap
+    if (file.size > MAX_BYTES) {
+      statusEl.textContent = "Image is too large (6MB max).";
+      return;
+    }
+    statusEl.textContent = "Uploading…";
+    try {
+      const dataUrl = await readFileAsDataUrl(file);
+      await apiUploadAdminUserPhoto(user.id, dataUrl);
+      statusEl.textContent = "Photo updated.";
+      const token = ++state.renderToken;
+      await renderTeamView(document.getElementById("viewOutlet"), token);
+    } catch (err) {
+      statusEl.textContent = err.message || "Could not upload photo.";
+    }
+  });
   if (canManageSecurity) {
     form.querySelector("#teamResetPassword").addEventListener("click", async () => {
       const errorBox = form.querySelector("#teamEditError");
@@ -3775,9 +3824,24 @@ function syncNavActiveState() {
 function renderUserFooter() {
   if (!state.admin) return;
   const initials = (state.admin.display_name || state.admin.email || "?").trim().split(/\s+/).map((p) => p[0]).slice(0, 2).join("").toUpperCase();
-  document.getElementById("navAvatar").textContent = initials || "?";
+  const img = document.getElementById("navAvatarImg");
+  const initialsSpan = document.getElementById("navAvatarInitials");
+  if (state.admin.passport_photo_url) {
+    img.src = state.admin.passport_photo_url;
+    img.style.display = "block";
+    initialsSpan.style.display = "none";
+  } else {
+    img.style.display = "none";
+    initialsSpan.style.display = "block";
+    initialsSpan.textContent = initials || "?";
+  }
   document.getElementById("navUserName").textContent = state.admin.display_name || state.admin.email;
-  document.getElementById("navUserRole").textContent = (state.admin.role || "").replace(/_/g, " ");
+  // Position and system role are deliberately different concepts (see
+  // Phase 2) — show both where a position is set, role alone otherwise.
+  const roleLabel = (state.admin.role || "").replace(/_/g, " ");
+  document.getElementById("navUserRole").textContent = state.admin.office_position
+    ? `${state.admin.office_position} · ${titleCase(roleLabel)}`
+    : titleCase(roleLabel);
 }
 
 // ---------------------------------------------------------------
