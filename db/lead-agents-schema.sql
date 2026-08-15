@@ -436,6 +436,11 @@ create table if not exists admin_users (
   role text not null default 'admin',
   status text not null default 'active',
   display_name text,
+  -- Office Position (job title, e.g. "CEO", "Sales Director") is
+  -- deliberately separate from `role` (system authorization tier). Kept
+  -- free-text since positions are organizational, not an enum the
+  -- backend needs to reason about.
+  office_position text,
   passport_photo_url text,
   qr_credential text,
   permission_scopes text[] not null default '{}'::text[],
@@ -450,6 +455,7 @@ alter table admin_users add column if not exists password_changed_at timestamptz
 alter table admin_users add column if not exists passport_photo_url text;
 alter table admin_users add column if not exists qr_credential text;
 alter table admin_users add column if not exists permission_scopes text[] not null default '{}'::text[];
+alter table admin_users add column if not exists office_position text;
 
 drop trigger if exists admin_users_set_updated_at on admin_users;
 create trigger admin_users_set_updated_at
@@ -462,6 +468,7 @@ create table if not exists admin_invites (
   email text not null,
   role text not null default 'viewer',
   display_name text,
+  office_position text,
   token_hash text not null unique,
   status text not null default 'pending',
   invited_by text,
@@ -470,6 +477,8 @@ create table if not exists admin_invites (
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
+
+alter table admin_invites add column if not exists office_position text;
 
 create index if not exists admin_invites_email_created_at_idx
 on admin_invites (email, created_at desc);

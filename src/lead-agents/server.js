@@ -1954,6 +1954,7 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
               permission_scopes: Array.isArray(sessionUser.permission_scopes)
                 ? sessionUser.permission_scopes
                 : [],
+              office_position: sessionUser.office_position || "",
               passport_photo_url: sessionUser.passport_photo_url || "",
               qr_credential: sessionUser.qr_credential || "",
               permissions: permissionsForRole(sessionUser.role, sessionUser.permission_scopes),
@@ -2014,6 +2015,7 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
               permission_scopes: Array.isArray(currentUser.permission_scopes)
                 ? currentUser.permission_scopes
                 : [],
+              office_position: currentUser.office_position || "",
               passport_photo_url: currentUser.passport_photo_url || "",
               qr_credential: currentUser.qr_credential || "",
               permissions: permissionsForRole(currentUser.role, currentUser.permission_scopes),
@@ -2071,6 +2073,7 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           password_hash: hashPassword(body.password),
           role: invite.role || "viewer",
           display_name: body.display_name || invite.display_name || invite.email,
+          office_position: invite.office_position || "",
           status: "active",
           password_changed_at: new Date().toISOString(),
         });
@@ -2098,6 +2101,7 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
               role: user.role,
               display_name: user.display_name || user.email,
               status: user.status || "active",
+              office_position: user.office_position || "",
               permission_scopes: Array.isArray(user.permission_scopes) ? user.permission_scopes : [],
               passport_photo_url: user.passport_photo_url || "",
               qr_credential: user.qr_credential || "",
@@ -4097,6 +4101,14 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           res,
           200,
           {
+            // canonical_roles is the single source of truth for any UI
+            // role picker — Object.keys(ROLE_PERMISSIONS) in permissions.js.
+            // `roles` below additionally merges in legacy aliases
+            // (admin/founder/operator/sales/viewer) purely so existing
+            // permission lookups for already-stored legacy role values
+            // keep working; new assignments should only ever use
+            // canonical_roles.
+            canonical_roles: Object.keys(ROLE_PERMISSIONS),
             roles: {
               ...Object.fromEntries(
                 Object.keys(ROLE_PERMISSIONS).map((role) => [role, permissionsForRole(role)])
@@ -4440,6 +4452,7 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
             password_hash: hashPassword(body.password),
             role: body.role || "viewer",
             display_name: body.display_name || body.email,
+            office_position: body.office_position || "",
             status: body.status || "active",
             passport_photo_url: body.passport_photo_url || "",
             qr_credential: body.qr_credential || "",
@@ -4500,6 +4513,7 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           email: body.email,
           role: body.role || "viewer",
           display_name: body.display_name || "",
+          office_position: body.office_position || "",
           token_hash: hashOpaqueToken(rawToken),
           status: "pending",
           invited_by: authContext?.email || "",
@@ -4556,6 +4570,7 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
         requireObject(body, "body");
         const patch = {};
         if (body.display_name !== undefined) patch.display_name = body.display_name;
+        if (body.office_position !== undefined) patch.office_position = body.office_position;
         if (body.role !== undefined) patch.role = body.role;
         if (body.status !== undefined) patch.status = body.status;
         if (body.passport_photo_url !== undefined) patch.passport_photo_url = body.passport_photo_url;

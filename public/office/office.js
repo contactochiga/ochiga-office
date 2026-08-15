@@ -159,8 +159,20 @@ async function apiListHandoffs() {
 async function apiListAdminUsers() {
   return api("/api/lead-agents/admin/users");
 }
+async function apiCreateAdminUser(body) {
+  return api("/api/lead-agents/admin/users", { method: "POST", body });
+}
+async function apiInviteAdminUser(body) {
+  return api("/api/lead-agents/admin/users/invite", { method: "POST", body });
+}
 async function apiUpdateAdminUser(id, patch) {
   return api(`/api/lead-agents/admin/users/${encodeURIComponent(id)}`, { method: "PATCH", body: patch });
+}
+async function apiResetAdminUserPassword(id) {
+  return api(`/api/lead-agents/admin/users/${encodeURIComponent(id)}/reset`, { method: "POST", body: {} });
+}
+async function apiGetPermissionsMeta() {
+  return cached("permissionsMeta", () => api("/api/lead-agents/admin/permissions"));
 }
 async function apiListIntegrations() {
   return api("/api/lead-agents/admin/integrations");
@@ -351,6 +363,19 @@ function fmtRelative(value) {
 }
 function titleCase(value) {
   return String(value || "").replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+// Minimal transient status message — used anywhere an action succeeds
+// off-screen (email sent, link issued) without a full-page state change.
+function toast(message, tone = "default") {
+  const host = document.getElementById("toastHost") || (() => {
+    const el_ = el(`<div id="toastHost" class="toast-host"></div>`);
+    document.body.appendChild(el_);
+    return el_;
+  })();
+  const node = el(`<div class="toast toast-${tone}">${escapeHtml(message)}</div>`);
+  host.appendChild(node);
+  setTimeout(() => node.remove(), 5000);
 }
 
 function skeletonPanel(lines = 3) {
@@ -3394,10 +3419,14 @@ async function renderTeamView(outlet, token) {
   outlet.innerHTML = "";
   outlet.appendChild(skeletonPanel(4));
 
-  let users;
+  let users, canonicalRoles;
   try {
-    const data = await apiListAdminUsers();
-    users = data.users || [];
+    const [usersData, permissionsData] = await Promise.all([apiListAdminUsers(), apiGetPermissionsMeta()]);
+    users = usersData.users || [];
+    // permissions.js's ROLE_PERMISSIONS is the single source of truth —
+    // fetched live rather than kept as a second hardcoded copy here, so
+    // this list can never drift from the backend again.
+    canonicalRoles = permissionsData.canonical_roles || [];
   } catch (err) {
     if (token !== state.renderToken) return;
     outlet.innerHTML = "";
@@ -3408,6 +3437,7 @@ async function renderTeamView(outlet, token) {
   if (token !== state.renderToken) return;
 
   const canManage = hasPermission("staff.manage");
+  const canManageSecurity = hasPermission("manage_security");
   outlet.innerHTML = "";
   outlet.appendChild(el(`
     <div class="view-heading">
@@ -3416,16 +3446,29 @@ async function renderTeamView(outlet, token) {
     </div>
   `));
 
+  if (canManage) {
+    const toolbar = el(`<div class="list-toolbar"></div>`);
+    const spacer = el(`<div class="toolbar-spacer"></div>`);
+    toolbar.appendChild(spacer);
+    const inviteBtn = el(`<button type="button" class="btn btn-ghost btn-sm">Invite Staff</button>`);
+    inviteBtn.addEventListener("click", () => openInviteStaffDialog(canonicalRoles, token));
+    toolbar.appendChild(inviteBtn);
+    const addBtn = el(`<button type="button" class="btn btn-primary btn-sm">Add Staff</button>`);
+    addBtn.addEventListener("click", () => openAddStaffDialog(canonicalRoles, token));
+    toolbar.appendChild(addBtn);
+    outlet.appendChild(toolbar);
+  }
+
   const table = renderDataTable({
     columns: [
       { label: "Name", render: (u) => escapeHtml(u.display_name || u.email) },
-      { label: "Email", render: (u) => escapeHtml(u.email) },
+      { label: "Position", render: (u) => escapeHtml(u.office_position || "—") },
       { label: "Role", render: (u) => badge(titleCase(u.role), u.role === "super_admin" || u.role === "admin" ? "red" : "default") },
       { label: "Status", render: (u) => badge(titleCase(u.status || "active"), toneForStatus(u.status || "active")) },
       { label: "Last active", render: (u) => fmtRelative(u.last_login_at) },
     ],
     rows: users,
-    onRowClick: canManage ? (user) => toggleTeamEditRow(user) : undefined,
+    onRowClick: canManage ? (user) => toggleTeamEditRow(user, canonicalRoles, canManageSecurity) : undefined,
     emptyMessage: "No staff accounts yet.",
   });
   outlet.appendChild(table);
@@ -3438,11 +3481,55 @@ async function renderTeamView(outlet, token) {
   }
 }
 
-function toggleTeamEditRow(user) {
+function openAddStaffDialog(canonicalRoles, token) {
+  openDialog("Add Staff", [
+    { name: "display_name", label: "Full name" },
+    { name: "email", label: "Email", type: "email" },
+    { name: "password", label: "Temporary password", type: "password" },
+    { name: "office_position", label: "Office Position (e.g. CEO, Sales Director)" },
+    { name: "role", label: "System Role", type: "select", options: canonicalRoles, value: canonicalRoles[0] },
+  ], async (data) => {
+    if (!data.email || !data.password) throw new Error("Email and a temporary password are required.");
+    await apiCreateAdminUser({
+      email: data.email,
+      password: data.password,
+      display_name: data.display_name || data.email,
+      office_position: data.office_position || "",
+      role: data.role,
+    });
+    invalidate("permissionsMeta");
+    await renderTeamView(document.getElementById("viewOutlet"), ++state.renderToken);
+  });
+}
+
+function openInviteStaffDialog(canonicalRoles, token) {
+  openDialog("Invite Staff", [
+    { name: "display_name", label: "Full name" },
+    { name: "email", label: "Email", type: "email" },
+    { name: "office_position", label: "Office Position (e.g. CEO, Sales Director)" },
+    { name: "role", label: "System Role", type: "select", options: canonicalRoles, value: canonicalRoles[0] },
+  ], async (data) => {
+    if (!data.email) throw new Error("Email is required.");
+    const result = await apiInviteAdminUser({
+      email: data.email,
+      display_name: data.display_name || "",
+      office_position: data.office_position || "",
+      role: data.role,
+    });
+    const delivered = result?.email_delivery?.delivered;
+    toast(delivered ? `Invite sent to ${data.email}.` : `Invite created for ${data.email}, but the email could not be delivered — share the link manually.`);
+  });
+}
+
+function toggleTeamEditRow(user, canonicalRoles, canManageSecurity) {
   const wrap = document.getElementById("teamEditWrap");
   if (!wrap) return;
   wrap.innerHTML = "";
-  const roles = Object.keys(ROLE_PERMISSIONS_HINT);
+  // A stored role that predates this account's current role (a legacy
+  // alias like "admin"/"founder") won't be in canonicalRoles — keep it
+  // selectable so editing the account doesn't silently reassign the
+  // role to something else just by opening the form.
+  const roles = canonicalRoles.includes(user.role) ? canonicalRoles : [user.role, ...canonicalRoles];
   const form = el(`
     <form class="inline-form" style="margin-top:14px;">
       <div class="field">
@@ -3450,7 +3537,11 @@ function toggleTeamEditRow(user) {
         <div style="padding-top:6px;color:var(--white);font-size:13px;">${escapeHtml(user.display_name || user.email)}</div>
       </div>
       <div class="field">
-        <label for="teamEditRole">Role</label>
+        <label for="teamEditPosition">Office Position</label>
+        <input id="teamEditPosition" type="text" value="${escapeHtml(user.office_position || "")}" placeholder="e.g. CEO, Sales Director" />
+      </div>
+      <div class="field">
+        <label for="teamEditRole">System Role</label>
         <select id="teamEditRole">
           ${roles.map((r) => `<option value="${escapeHtml(r)}" ${r === user.role ? "selected" : ""}>${escapeHtml(titleCase(r))}</option>`).join("")}
         </select>
@@ -3462,11 +3553,25 @@ function toggleTeamEditRow(user) {
         </select>
       </div>
       <button class="btn btn-primary" type="submit">Save</button>
+      ${canManageSecurity ? `<button class="btn btn-ghost" type="button" id="teamResetPassword">Reset Password</button>` : ""}
       <button class="btn btn-ghost" type="button" id="teamEditCancel">Cancel</button>
       <div class="form-error" id="teamEditError"></div>
     </form>
   `);
   form.querySelector("#teamEditCancel").addEventListener("click", () => { wrap.innerHTML = ""; });
+  if (canManageSecurity) {
+    form.querySelector("#teamResetPassword").addEventListener("click", async () => {
+      const errorBox = form.querySelector("#teamEditError");
+      try {
+        const result = await apiResetAdminUserPassword(user.id);
+        const delivered = result?.email_delivery?.delivered;
+        toast(delivered ? `Password reset link sent to ${user.email}.` : `Reset link created, but the email could not be delivered — share it manually.`);
+      } catch (err) {
+        errorBox.textContent = err.message || "Could not issue a password reset.";
+        errorBox.classList.add("visible");
+      }
+    });
+  }
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
     const errorBox = form.querySelector("#teamEditError");
@@ -3475,6 +3580,7 @@ function toggleTeamEditRow(user) {
       await apiUpdateAdminUser(user.id, {
         role: form.querySelector("#teamEditRole").value,
         status: form.querySelector("#teamEditStatus").value,
+        office_position: form.querySelector("#teamEditPosition").value,
       });
       wrap.innerHTML = "";
       const token = ++state.renderToken;
@@ -3486,14 +3592,6 @@ function toggleTeamEditRow(user) {
   });
   wrap.appendChild(form);
 }
-// Mirrors permissions.js ROLE_PERMISSIONS keys — kept as a small local
-// hint list (role names only) so Team's edit form doesn't need a
-// dedicated API round-trip just to populate a dropdown.
-const ROLE_PERMISSIONS_HINT = {
-  super_admin: 1, ochiga_admin: 1, ochiga_staff: 1, estate_admin: 1,
-  facility_manager: 1, security_operator: 1, maintenance_operator: 1,
-  finance_operator: 1, resident: 1, guest: 1,
-};
 
 // ---------------------------------------------------------------
 // SETTINGS — real integration/connectivity status, not a legacy
