@@ -46,6 +46,7 @@ const {
   callOyiCoreOfficeInternalConversation,
 } = require("./oyi-core-gateway");
 const { executeGovernedOfficeToolProposals } = require("./office-tool-governance");
+const { listDocumentTemplates, renderDocumentFromTemplate } = require("./office-document-templates");
 const { fetchBackendPortfolioProjection } = require("./backend-portfolio-gateway");
 const {
   CORPORATE_COLLECTIONS,
@@ -4348,6 +4349,21 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
         return;
       }
 
+      // Template picker for "New Document" (Phase 7, v2 audit) — the
+      // structural templates live in office-document-templates.js;
+      // "basic" isn't in that list's render map, it's the existing
+      // documentHtml() below, kept as the default for backward
+      // compatibility with callers that don't pass template_id at all.
+      if (pathname === "/api/lead-agents/admin/documents/templates") {
+        if (req.method !== "GET") {
+          methodNotAllowed(res, "GET");
+          return;
+        }
+        authorizePermission(authContext, "documents.generate");
+        json(res, 200, { templates: listDocumentTemplates() }, { "x-request-id": ctx.requestId });
+        return;
+      }
+
       if (pathname === "/api/lead-agents/admin/documents/generate") {
         if (req.method !== "POST") {
           methodNotAllowed(res, "POST");
@@ -4361,7 +4377,8 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           return;
         }
         const id = `doc_${Date.now().toString(36)}_${crypto.randomBytes(5).toString("hex")}`;
-        const html = documentHtml(config, body);
+        const templateHtml = body.template_id && body.template_id !== "basic" ? renderDocumentFromTemplate(body.template_id, config, body) : null;
+        const html = templateHtml || documentHtml(config, body);
         const storedHtmlRaw = await storageService.putText({
           purpose: "office_document",
           extension: ".html",
@@ -4397,6 +4414,7 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           email_to: body.email_to || "",
           metadata: {
             recipient: body.recipient || "",
+            template_id: body.template_id || "basic",
             generated_format: "printable_html",
             pdf_status: "print_ready",
             source_file_url: body.file_url || "",

@@ -142,6 +142,9 @@ async function apiListOfficeDocuments() {
 async function apiGenerateDocument(body) {
   return api("/api/lead-agents/admin/documents/generate", { method: "POST", body });
 }
+async function apiListDocumentTemplates() {
+  return cached("documentTemplates", () => api("/api/lead-agents/admin/documents/templates"));
+}
 async function apiListProposals() {
   return api("/api/lead-agents/admin/proposals");
 }
@@ -1992,10 +1995,23 @@ const DOCUMENT_TYPE_OPTIONS = [
   "private_material", "partnership_material", "loi", "contract", "letter",
   "meeting_brief", "project_document", "technical_document", "template",
 ];
-function openCreateDocumentDialog(prefill = {}) {
+async function openCreateDocumentDialog(prefill = {}) {
+  // Template picker (Phase 7, v2 audit) — fetched live rather than
+  // hardcoded, so adding a template server-side doesn't need a matching
+  // frontend change. Falls back to just the existing basic/type flow if
+  // the endpoint is unreachable, rather than blocking document creation.
+  let templates = [{ id: "basic", label: "Basic Corporate Document" }];
+  try {
+    const data = await apiListDocumentTemplates();
+    if (data.templates?.length) templates = data.templates;
+  } catch {
+    /* fall back to basic-only, non-fatal */
+  }
   openDialog("New Document", [
+    { name: "template_id", label: "Template", type: "select", value: "basic", options: templates.map((t) => ({ value: t.id, label: t.label })) },
     { name: "title", label: "Title", value: prefill.title || "" },
     { name: "document_type", label: "Type", type: "select", value: prefill.document_type || "letter", options: DOCUMENT_TYPE_OPTIONS },
+    { name: "body", label: "Content", type: "textarea" },
   ], async (data) => {
     await apiGenerateDocument({ ...data, related_type: prefill.related_type, related_id: prefill.related_id });
     invalidate("documents");
@@ -3284,7 +3300,7 @@ async function renderDocumentsList(body, token) {
       { label: "Owner", render: (d) => escapeHtml(d.owner || "—") },
       { label: "Updated", render: (d) => escapeHtml(fmtRelative(d.updated_at)) },
     ],
-    searchFields: ["title", "document_type"],
+    searchFields: ["title", "document_type", "status", "owner", "related_type"],
     filters: [{ key: "document_type", label: "Type" }, { key: "status", label: "Status" }],
     canManage: hasPermission("documents.generate"),
     onCreate: () => openCreateDocumentDialog(),
