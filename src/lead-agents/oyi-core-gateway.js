@@ -93,6 +93,12 @@ function buildOyiCoreOfficeInternalRequest({ authContext, message, body, request
     crm_context: recordOf(safeBody.crm_context),
     portfolio_context: recordOf(safeBody.portfolio_context),
     support_context: recordOf(safeBody.support_context),
+    project_context: recordOf(safeBody.project_context),
+    task_context: recordOf(safeBody.task_context),
+    meeting_context: recordOf(safeBody.meeting_context),
+    partnership_context: recordOf(safeBody.partnership_context),
+    document_context: recordOf(safeBody.document_context),
+    content_context: recordOf(safeBody.content_context),
     requested_capability: text(safeBody.requested_capability || "office_internal_conversation"),
     knowledge_context: Array.isArray(safeBody.knowledge_context) ? safeBody.knowledge_context : [],
     metadata: {

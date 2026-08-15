@@ -2266,6 +2266,10 @@ async function renderProjectDetail(outlet, id, token) {
     badges: [badge(titleCase(record.status), toneForStatus(record.status)), badge(titleCase(record.stage), toneForStatus(record.stage))],
     backLabel: "Projects",
     onBack: () => navigate("projects"),
+    oyiContext: {
+      project_ref: id,
+      safe_summary: projectOyiSafeSummary(record, { org, contact }),
+    },
     mainSections,
     railSections,
   });
@@ -2485,6 +2489,20 @@ function portfolioOyiSafeSummary(record) {
   } else {
     parts.push("Not yet linked to a live Oyi deployment reference.");
   }
+  return parts.join(" ");
+}
+
+// Built ONLY from fields already rendered on the Project detail page,
+// same discipline as portfolioOyiSafeSummary above.
+function projectOyiSafeSummary(record, { org, contact } = {}) {
+  const parts = [
+    `${record.name || "Project"} · ${titleCase(record.business_unit || "")}`.trim(),
+    `Status: ${titleCase(record.status || "unknown")}, Stage: ${titleCase(record.stage || "unknown")}`,
+  ];
+  if (record.location) parts.push(`Location: ${record.location}.`);
+  if (record.oyi_deployment_status) parts.push(`Oyi deployment: ${titleCase(record.oyi_deployment_status)}.`);
+  if (org) parts.push(`Organization: ${org.name}.`);
+  if (contact) parts.push(`Contact: ${contact.name}.`);
   return parts.join(" ");
 }
 
@@ -2792,6 +2810,17 @@ async function renderTasksList(outlet, token) {
   draw();
 }
 
+// Built ONLY from fields already rendered on this Task panel.
+function taskOyiSafeSummary(record) {
+  const parts = [
+    `${record.title || "Task"} · ${titleCase(record.status || "unknown")}, Priority: ${titleCase(record.priority || "unknown")}`.trim(),
+  ];
+  if (record.assignee) parts.push(`Assignee: ${record.assignee}.`);
+  if (record.due_at) parts.push(`Due: ${fmtDate(record.due_at)}.`);
+  if (record.description) parts.push(`Description: ${record.description}`);
+  return parts.join(" ");
+}
+
 async function renderTaskRedirect(outlet, id, token) {
   const [tasks, index] = await Promise.all([fetchTasks(), fetchTaskRelationIndex()]);
   if (token !== state.renderToken) return;
@@ -2809,7 +2838,7 @@ async function renderTaskRedirect(outlet, id, token) {
 
   // No resolvable related object — render a minimal read-only panel
   // rather than a broken redirect or a fabricated relation.
-  setSelectedObject("task", id, record.title);
+  setSelectedObject("task", id, record.title, { task_ref: id, safe_summary: taskOyiSafeSummary(record) });
   outlet.innerHTML = "";
   const back = el(`<button type="button" class="detail-back">← Tasks</button>`);
   back.addEventListener("click", () => navigate("tasks"));
@@ -2977,9 +3006,26 @@ async function renderMeetingDetail(outlet, id, token) {
     badges: [badge(titleCase(record.status), toneForStatus(record.status)), badge(record.scheduled_at ? fmtDateTime(record.scheduled_at) : "Unscheduled")],
     backLabel: "Meetings",
     onBack: () => navigate("meetings"),
+    oyiContext: {
+      meeting_ref: id,
+      safe_summary: meetingOyiSafeSummary(record, { related, followUpTask }),
+    },
     mainSections,
     railSections,
   });
+}
+
+// Built ONLY from fields already rendered on the Meeting detail page.
+function meetingOyiSafeSummary(record, { related, followUpTask } = {}) {
+  const parts = [
+    `${record.title || "Meeting"} · ${titleCase(record.status || "unknown")}`.trim(),
+    record.scheduled_at ? `Scheduled: ${fmtDateTime(record.scheduled_at)}.` : "Not yet scheduled.",
+  ];
+  if (record.owner) parts.push(`Owner: ${record.owner}.`);
+  if (related) parts.push(`Related ${titleCase(record.related_type || "record")}: ${related.name}.`);
+  if (record.outcome) parts.push(`Outcome: ${record.outcome}`);
+  if (followUpTask) parts.push(`Follow-up task: ${followUpTask.title} (${titleCase(followUpTask.status)}).`);
+  return parts.join(" ");
 }
 
 function resolveRelationshipOrgName(record, contactById, orgById) {
@@ -3258,9 +3304,26 @@ async function renderPartnershipDetail(outlet, id, token) {
     badges: [badge(titleCase(record.relationship_type)), badge(titleCase(record.review_status), toneForStatus(record.review_status))],
     backLabel: "Partnerships",
     onBack: () => navigate("partnerships"),
+    oyiContext: {
+      partnership_ref: id,
+      safe_summary: partnershipOyiSafeSummary(record, { label, org, opportunity, handoff }),
+    },
     mainSections,
     railSections,
   });
+}
+
+// Built ONLY from fields already rendered on the Partnership detail page.
+function partnershipOyiSafeSummary(record, { label, org, opportunity, handoff } = {}) {
+  const parts = [
+    `${label || "Partnership"} · ${titleCase(record.relationship_type || "")}`.trim(),
+    `Status: ${titleCase(record.review_status || "unknown")}, Business Unit: ${titleCase(record.business_unit || "unknown")}`,
+  ];
+  if (record.relationship_manager) parts.push(`Relationship Manager: ${record.relationship_manager}.`);
+  if (org) parts.push(`Organization: ${org.name}.`);
+  if (opportunity) parts.push(`Linked Opportunity: ${titleCase(opportunity.inquiry_type)}.`);
+  if (handoff) parts.push(`Last communication: ${titleCase(handoff.status)} via ${titleCase(handoff.media_mode)}.`);
+  return parts.join(" ");
 }
 
 // ---------------------------------------------------------------
@@ -3369,6 +3432,21 @@ function openNewContentDialog() {
   });
 }
 
+// Built ONLY from article metadata already rendered on this editor page —
+// never the full body text, so Oyi Core sees what's on screen, not a draft
+// staff have not yet decided to publish.
+function contentOyiSafeSummary(item) {
+  const parts = [
+    `${item.title || "Article"} · ${titleCase(item.workflow_status || "unknown")}`.trim(),
+  ];
+  if (item.category) parts.push(`Category: ${item.category}.`);
+  if (item.author) parts.push(`Author: ${item.author}.`);
+  if (item.excerpt) parts.push(`Excerpt: ${item.excerpt}`);
+  if (item.workflow_status === "scheduled" && item.scheduled_publish_at) parts.push(`Scheduled: ${fmtDateTime(item.scheduled_publish_at)}.`);
+  if (item.sanity_live_url) parts.push(`Live at: ${item.sanity_live_url}.`);
+  return parts.join(" ");
+}
+
 async function renderContentEditor(outlet, contentId, token) {
   setTopbar("Content", "");
   setSelectedObject(null);
@@ -3384,6 +3462,7 @@ async function renderContentEditor(outlet, contentId, token) {
   }
   if (token !== state.renderToken) return;
 
+  setSelectedObject("content", item.id, item.title, { content_ref: item.id, safe_summary: contentOyiSafeSummary(item) });
   outlet.innerHTML = "";
   const back = el(`<button type="button" class="detail-back">← Content</button>`);
   back.addEventListener("click", () => navigate("content"));
@@ -3620,9 +3699,26 @@ async function renderDocumentDetail(body, id, token) {
     badges: [badge(titleCase(record.status), toneForStatus(record.status))],
     backLabel: "Documents",
     onBack: () => navigate("documents/library"),
+    oyiContext: {
+      document_ref: id,
+      safe_summary: documentOyiSafeSummary(record, { related }),
+    },
     mainSections,
     railSections,
   });
+}
+
+// Built ONLY from document metadata already rendered on this page — never
+// the file body/contents, which may carry sensitive commercial detail Oyi
+// Core has no need to see just to answer "what is this document about".
+function documentOyiSafeSummary(record, { related } = {}) {
+  const parts = [
+    `${record.title || "Document"} · ${titleCase(record.document_type || "unknown")}`.trim(),
+    `Status: ${titleCase(record.status || "unknown")}`,
+  ];
+  if (record.owner) parts.push(`Owner: ${record.owner}.`);
+  if (related) parts.push(`Related ${titleCase(record.related_type || "record")}: ${related.name}.`);
+  return parts.join(" ");
 }
 
 function renderProposalBody(markdown) {
@@ -4246,26 +4342,33 @@ function currentPageContext() {
 }
 
 // Maps the selected object's safe extraContext (set via renderDetailShell's
-// oyiContext) onto Ochiga-backend's OfficeInternalOyiCoreRequest slots —
-// crm_context for CRM records, portfolio_context for Portfolio (carrying
-// the safe aggregate operational_projection, never raw Facility data),
-// support_context for Support cases. Object types with no dedicated slot
-// (Project, Private, Partnership) still reach Oyi Core via page_context
-// above; this only adds the richer optional enrichment where the
-// contract defines one.
+// oyiContext, or directly via setSelectedObject for the lighter Task panel)
+// onto Ochiga-backend's OfficeInternalOyiCoreRequest slots — crm_context for
+// CRM records, portfolio_context for Portfolio (carrying the safe aggregate
+// operational_projection, never raw Facility data), support_context for
+// Support cases, and one dedicated slot each for Project, Task, Meeting,
+// Partnership, Document and Content. Private relationships still reach Oyi
+// Core via page_context only, matching upstream's message-based "private"
+// attention signal (no dedicated contract slot for that domain).
+const SELECTED_TYPE_CONTEXT_KEY = {
+  lead: "crm_context",
+  contact: "crm_context",
+  organization: "crm_context",
+  opportunity: "crm_context",
+  portfolio: "portfolio_context",
+  support_case: "support_context",
+  project: "project_context",
+  task: "task_context",
+  meeting: "meeting_context",
+  partnership_relationship: "partnership_context",
+  document: "document_context",
+  content: "content_context",
+};
 function currentSelectedObjectContext() {
   const selected = state.selectedObject;
   if (!selected || !selected.extraContext) return {};
-  if (selected.type === "lead" || selected.type === "contact" || selected.type === "organization" || selected.type === "opportunity") {
-    return { crm_context: selected.extraContext };
-  }
-  if (selected.type === "portfolio") {
-    return { portfolio_context: selected.extraContext };
-  }
-  if (selected.type === "support_case") {
-    return { support_context: selected.extraContext };
-  }
-  return {};
+  const key = SELECTED_TYPE_CONTEXT_KEY[selected.type];
+  return key ? { [key]: selected.extraContext } : {};
 }
 
 function appendOyiMessage(role, contentNodeOrText) {
