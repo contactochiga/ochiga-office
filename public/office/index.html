@@ -395,8 +395,23 @@
   .attention-type { color: var(--text-tertiary); font-size: 11px; text-transform: uppercase; }
   .attention-title { color: var(--text-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .attention-owner { color: var(--text-tertiary); font-size: 11.5px; text-align: right; }
-  .ask-oyi-card { display: flex; align-items: center; justify-content: space-between; gap: 16px; max-width: none; }
-  .ask-oyi-card p { flex: 1; }
+
+  .kpi-grid {
+    display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 10px;
+  }
+  .kpi-card {
+    border: 1px solid var(--line); border-radius: var(--radius); background: var(--charcoal);
+    padding: 14px 14px 12px; display: flex; flex-direction: column; gap: 6px;
+    transition: border-color var(--duration-fast) var(--ease), background var(--duration-fast) var(--ease);
+  }
+  .kpi-card.clickable { cursor: pointer; }
+  .kpi-card.clickable:hover { border-color: var(--red-muted); background: var(--graphite); }
+  .kpi-card .kpi-label {
+    font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-tertiary);
+  }
+  .kpi-card .kpi-value { font-size: 22px; font-weight: 600; color: var(--white); line-height: 1; }
+  .kpi-card .kpi-sub { font-size: 11px; color: var(--text-tertiary); }
+  .kpi-card.kpi-alert .kpi-value { color: var(--red-bright); }
 
   /* CRM tabs */
   .crm-tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--line); margin-bottom: 20px; }

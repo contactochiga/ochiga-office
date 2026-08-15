@@ -300,7 +300,8 @@ async function upsertContactIdentity(store, input = {}, context = {}) {
 
 async function buildOfficeHomeProjection(store, options = {}) {
   const includeRecentActivity = options.includeRecentActivity !== false;
-  const [leads, proposals, notifications, tasks, activities, support, projects, portfolio, privateRows, partnershipRows] =
+  const now = new Date();
+  const [leads, proposals, notifications, tasks, activities, support, projects, portfolio, privateRows, partnershipRows, meetings, documents] =
     await Promise.all([
       store.listLeads ? store.listLeads() : [],
       store.listProposals ? store.listProposals() : [],
@@ -312,8 +313,22 @@ async function buildOfficeHomeProjection(store, options = {}) {
       listCorporateRecords(store, "portfolio"),
       listCorporateRecords(store, "private"),
       listCorporateRecords(store, "partnerships"),
+      listCorporateRecords(store, "meetings"),
+      store.listOfficeDocuments ? store.listOfficeDocuments() : [],
     ]);
   const openTasks = tasks.filter((task) => !["done", "completed", "cancelled"].includes(String(task.status || "").toLowerCase()));
+  const overdueTasks = openTasks
+    .filter((task) => task.due_at && new Date(task.due_at).getTime() < now.getTime())
+    .sort((a, b) => String(a.due_at || "").localeCompare(String(b.due_at || "")));
+  const upcomingMeetings = meetings
+    .filter((meeting) => meeting.scheduled_at && new Date(meeting.scheduled_at).getTime() >= now.getTime() && !["completed", "cancelled"].includes(String(meeting.status || "").toLowerCase()))
+    .sort((a, b) => String(a.scheduled_at || "").localeCompare(String(b.scheduled_at || "")))
+    .slice(0, 5)
+    .map((meeting) => ({ id: meeting.id, title: meeting.title, scheduled_at: meeting.scheduled_at, related_type: meeting.related_type || null, related_id: meeting.related_id || null }));
+  const recentDocuments = [...documents]
+    .sort((a, b) => String(b.updated_at || b.created_at || "").localeCompare(String(a.updated_at || a.created_at || "")))
+    .slice(0, 5)
+    .map((doc) => ({ id: doc.id, title: doc.title, document_type: doc.document_type, status: doc.status, updated_at: doc.updated_at || doc.created_at || null }));
   const openSupport = support.filter((item) => !["resolved", "closed", "cancelled"].includes(String(item.status || "").toLowerCase()));
   const proposalAwaiting = proposals.filter((item) => ["sent", "awaiting_response"].includes(String(item.status || "").toLowerCase()));
   const hotLeads = leads.filter((lead) => Number(lead.score || lead.lead_score || 0) >= 70 || /follow|proposal|demo|meeting/i.test(String(lead.next_action || "")));
@@ -361,15 +376,22 @@ async function buildOfficeHomeProjection(store, options = {}) {
     summary: {
       attention_count: attention_items.length,
       open_tasks: openTasks.length,
+      overdue_tasks: overdueTasks.length,
       open_support_cases: openSupport.length,
       proposals_awaiting_response: proposalAwaiting.length,
       active_projects: projects.filter((item) => !["closed", "completed"].includes(String(item.status || "").toLowerCase())).length,
       portfolio_entries: portfolio.length,
       private_queue: privateRows.filter((item) => /review|pending|requested/i.test(String(item.status || item.review_status || ""))).length,
       partnership_queue: partnershipRows.filter((item) => /review|pending|prospect/i.test(String(item.status || item.review_status || ""))).length,
+      upcoming_meetings: upcomingMeetings.length,
+      recent_documents: recentDocuments.length,
+      crm_leads: leads.length,
     },
     attention_items,
     recent_activity,
+    overdue_tasks: overdueTasks.slice(0, 5).map((task) => ({ id: task.id, title: task.title, due_at: task.due_at, assignee: task.assignee || task.owner || "" })),
+    upcoming_meetings: upcomingMeetings,
+    recent_documents: recentDocuments,
     oyi_core: {
       authority: "ochiga-backend",
       expected_surface: "office_internal",

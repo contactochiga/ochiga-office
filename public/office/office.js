@@ -827,12 +827,23 @@ async function renderHomeView(outlet, token) {
   outlet.appendChild(el(`
     <div class="view-heading">
       <h1>Home</h1>
-      <p>What needs attention across Ochiga's operating environment.</p>
+      <p>What's happening across Ochiga right now, and what needs attention.</p>
     </div>
   `));
 
+  outlet.appendChild(renderHomeKpiGrid(home.summary || {}));
   outlet.appendChild(renderHomeSection("Needs Attention", visibleItems, "Nothing needs attention right now."));
   outlet.appendChild(renderHomeSection("My Work", mine, "Nothing assigned to you right now."));
+
+  if (hasPermission("tasks.read") && (home.overdue_tasks || []).length) {
+    outlet.appendChild(renderOverdueTasksSection(home.overdue_tasks));
+  }
+  if (hasPermission("meetings.read") && (home.upcoming_meetings || []).length) {
+    outlet.appendChild(renderUpcomingMeetingsSection(home.upcoming_meetings));
+  }
+  if (hasPermission("documents.generate") && (home.recent_documents || []).length) {
+    outlet.appendChild(renderRecentDocumentsSection(home.recent_documents));
+  }
 
   // Commercial movement — leads with meaningful recent change, permission-gated.
   if (hasPermission("crm.read")) {
@@ -850,7 +861,86 @@ async function renderHomeView(outlet, token) {
   }
 
   outlet.appendChild(renderRecentActivitySection(home.recent_activity || []));
-  outlet.appendChild(renderAskOyiCard());
+}
+
+// KPI grid — one card per module the signed-in staff member can see,
+// pulled entirely from the summary buildOfficeHomeProjection() already
+// computes server-side. No client-side aggregation, no fabricated values.
+const HOME_KPI_CARDS = [
+  { key: "attention_count", label: "Needs Attention", permission: "office.read" },
+  { key: "crm_leads", label: "CRM Leads", permission: "crm.read", route: "crm/leads" },
+  { key: "active_projects", label: "Active Projects", permission: "projects.read", route: "projects" },
+  { key: "portfolio_entries", label: "Portfolio", permission: "portfolio.read", route: "portfolio" },
+  { key: "open_support_cases", label: "Open Support", permission: "support.read", route: "support" },
+  { key: "open_tasks", label: "Open Tasks", permission: "tasks.read", route: "tasks", sub: (s) => (s.overdue_tasks ? `${s.overdue_tasks} overdue` : null), alert: (s) => s.overdue_tasks > 0 },
+  { key: "upcoming_meetings", label: "Upcoming Meetings", permission: "meetings.read", route: "meetings" },
+  { key: "private_queue", label: "Private Queue", permission: "private.read", route: "private" },
+  { key: "partnership_queue", label: "Partnerships Queue", permission: "partnerships.read", route: "partnerships" },
+  { key: "recent_documents", label: "Recent Documents", permission: "documents.generate", route: "documents" },
+];
+function renderHomeKpiGrid(summary) {
+  const grid = el(`<div class="home-section"><div class="kpi-grid"></div></div>`);
+  const list = grid.querySelector(".kpi-grid");
+  HOME_KPI_CARDS.filter((card) => hasPermission(card.permission)).forEach((card) => {
+    const value = summary[card.key];
+    if (value === undefined) return;
+    const sub = card.sub ? card.sub(summary) : null;
+    const alert = card.alert ? card.alert(summary) : false;
+    const el_ = el(`
+      <div class="kpi-card${card.route ? " clickable" : ""}${alert ? " kpi-alert" : ""}">
+        <span class="kpi-label">${escapeHtml(card.label)}</span>
+        <span class="kpi-value">${escapeHtml(String(value))}</span>
+        ${sub ? `<span class="kpi-sub">${escapeHtml(sub)}</span>` : ""}
+      </div>
+    `);
+    if (card.route) el_.addEventListener("click", () => navigate(card.route));
+    list.appendChild(el_);
+  });
+  return grid;
+}
+
+function renderOverdueTasksSection(tasks) {
+  const section = el(`<div class="home-section"><h3>Overdue Tasks</h3></div>`);
+  section.appendChild(renderDataTable({
+    columns: [
+      { label: "Task", render: (t) => escapeHtml(t.title || "Untitled") },
+      { label: "Due", render: (t) => badge(fmtRelative(t.due_at), "red") },
+      { label: "Assignee", render: (t) => escapeHtml(t.assignee || "Unassigned") },
+    ],
+    rows: tasks,
+    onRowClick: (t) => navigate(`tasks/${t.id}`),
+    emptyMessage: "No overdue tasks.",
+  }));
+  return section;
+}
+
+function renderUpcomingMeetingsSection(meetings) {
+  const section = el(`<div class="home-section"><h3>Upcoming Meetings</h3></div>`);
+  section.appendChild(renderDataTable({
+    columns: [
+      { label: "Meeting", render: (m) => escapeHtml(m.title || "Untitled") },
+      { label: "When", render: (m) => escapeHtml(fmtDateTime(m.scheduled_at)) },
+    ],
+    rows: meetings,
+    onRowClick: (m) => navigate(`meetings/${m.id}`),
+    emptyMessage: "No upcoming meetings.",
+  }));
+  return section;
+}
+
+function renderRecentDocumentsSection(documents) {
+  const section = el(`<div class="home-section"><h3>Recent Documents</h3></div>`);
+  section.appendChild(renderDataTable({
+    columns: [
+      { label: "Document", render: (d) => escapeHtml(d.title || "Untitled") },
+      { label: "Type", render: (d) => badge(titleCase(d.document_type || "document")) },
+      { label: "Updated", render: (d) => escapeHtml(fmtRelative(d.updated_at)) },
+    ],
+    rows: documents,
+    onRowClick: (d) => navigate(`documents/library/${d.id}`),
+    emptyMessage: "No documents yet.",
+  }));
+  return section;
 }
 
 function renderHomeSection(title, items, emptyText) {
@@ -910,19 +1000,10 @@ function renderRecentActivitySection(activities) {
   return section;
 }
 
-function renderAskOyiCard() {
-  const section = el(`<div class="home-section"><h3>Ask Oyi</h3></div>`);
-  const card = el(`
-    <div class="state-panel ask-oyi-card">
-      <p>Try: "Show me the leads that need attention today" or "Which opportunities haven't been followed up this week?"</p>
-    </div>
-  `);
-  const btn = el(`<button type="button" class="btn btn-primary btn-sm">Open Oyi</button>`);
-  btn.addEventListener("click", openOyiPanel);
-  card.appendChild(btn);
-  section.appendChild(card);
-  return section;
-}
+// Ask Oyi's large Home card was removed (Phase 1) — it opened the exact
+// same openOyiPanel() as the persistent Oyi bar in the shell chrome, so
+// it was a duplicate entry point, not a separate function. The bar
+// remains the single Oyi interaction surface.
 
 // ---------------------------------------------------------------
 // CRM
