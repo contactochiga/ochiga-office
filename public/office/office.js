@@ -469,9 +469,12 @@ function skeletonPanel(lines = 3) {
     </div>
   `);
 }
+const EMPTY_STATE_ICON = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 12h4l2 3h4l2-3h4"></path><path d="M5.5 6h13L21 12v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-6Z"></path></svg>`;
+const ERROR_STATE_ICON = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"></circle><path d="M12 8v5"></path><path d="M12 16.2v.1"></path></svg>`;
 function emptyPanel({ kicker, title, body }) {
   return el(`
     <div class="state-panel">
+      <div class="state-icon">${EMPTY_STATE_ICON}</div>
       <div class="kicker">${escapeHtml(kicker)}</div>
       <h2>${escapeHtml(title)}</h2>
       <p>${body}</p>
@@ -481,6 +484,7 @@ function emptyPanel({ kicker, title, body }) {
 function errorPanel(message) {
   return el(`
     <div class="state-panel error">
+      <div class="state-icon">${ERROR_STATE_ICON}</div>
       <div class="kicker">Could not load</div>
       <h2>Something needs attention</h2>
       <p>${escapeHtml(message)}</p>
