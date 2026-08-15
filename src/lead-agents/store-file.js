@@ -632,6 +632,10 @@ class FileLeadAgentsStore {
       response_code: input.response_code || null,
       status: input.status || "open",
       metadata: input.metadata || {},
+      recipient_email: input.recipient_email || null,
+      read_at: null,
+      related_type: input.related_type || null,
+      related_id: input.related_id || null,
       created_at: this.nowIso(),
       updated_at: this.nowIso(),
     };
@@ -657,10 +661,18 @@ class FileLeadAgentsStore {
         if (filter.status && item.status !== filter.status) return false;
         if (filter.type && item.type !== filter.type) return false;
         if (filter.lead_id && item.lead_id !== filter.lead_id) return false;
+        // forRecipient: rows targeted at this person, plus every
+        // broadcast row (recipient_email null) — never someone else's.
+        if (filter.forRecipient && item.recipient_email && item.recipient_email !== filter.forRecipient) return false;
+        if (filter.unreadOnly && item.read_at) return false;
         return true;
       })
       .sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)))
       .slice(0, limit);
+  }
+
+  async getNotificationById(notificationId) {
+    return this.state.notifications.find((item) => item.id === notificationId) || null;
   }
 
   async updateNotification(notificationId, patch) {

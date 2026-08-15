@@ -315,6 +315,18 @@ create table if not exists notifications (
   response_code integer,
   status text not null default 'open',
   metadata jsonb not null default '{}'::jsonb,
+  -- Recipient targeting (Phase 4, v2 audit): null recipient_email means
+  -- a broadcast notification, visible to anyone with notifications.read
+  -- — the same visibility every notification had before this column
+  -- existed. A non-null recipient_email restricts it to that one staff
+  -- member. read_at is per-notification-row, so a targeted notification
+  -- is inherently per-recipient already; a future true broadcast
+  -- per-user read state would need a join table, not needed yet since
+  -- nothing requires broadcast rows to track read state individually.
+  recipient_email text,
+  read_at timestamptz,
+  related_type text,
+  related_id text,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
@@ -324,6 +336,14 @@ on notifications (lead_id, created_at desc);
 
 create index if not exists notifications_status_idx
 on notifications (status, type);
+
+alter table notifications add column if not exists recipient_email text;
+alter table notifications add column if not exists read_at timestamptz;
+alter table notifications add column if not exists related_type text;
+alter table notifications add column if not exists related_id text;
+
+create index if not exists notifications_recipient_idx
+on notifications (recipient_email, read_at, created_at desc);
 
 drop trigger if exists notifications_set_updated_at on notifications;
 create trigger notifications_set_updated_at

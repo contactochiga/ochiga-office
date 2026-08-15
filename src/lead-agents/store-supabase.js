@@ -484,6 +484,9 @@ class SupabaseLeadAgentsStore {
         response_code: input.response_code || null,
         status: input.status || "open",
         metadata: input.metadata || {},
+        recipient_email: input.recipient_email || null,
+        related_type: input.related_type || null,
+        related_id: input.related_id || null,
       },
       {
         headers: this.selectHeaders(),
@@ -510,8 +513,19 @@ class SupabaseLeadAgentsStore {
     if (filter.status) query.set("status", `eq.${filter.status}`);
     if (filter.type) query.set("type", `eq.${filter.type}`);
     if (filter.lead_id) query.set("lead_id", `eq.${filter.lead_id}`);
+    // Rows targeted at this person, plus every broadcast row
+    // (recipient_email null) — never someone else's.
+    if (filter.forRecipient) {
+      query.set("or", `(recipient_email.eq.${filter.forRecipient},recipient_email.is.null)`);
+    }
+    if (filter.unreadOnly) query.set("read_at", "is.null");
     const response = await this.client.get(`/notifications?${query.toString()}`);
     return response.data;
+  }
+
+  async getNotificationById(notificationId) {
+    const response = await this.client.get(`/notifications?id=eq.${notificationId}&limit=1`);
+    return response.data[0] || null;
   }
 
   async updateNotification(notificationId, patch) {

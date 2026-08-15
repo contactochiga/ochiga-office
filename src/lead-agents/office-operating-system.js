@@ -471,6 +471,62 @@ async function attachPortfolioOperationalProjections(records, backendProjection)
   }));
 }
 
+// Single insertion point for every "something happened, tell the
+// relevant staff" trigger across Tasks/Meetings/Support/Projects/
+// Portfolio/Private/Partnerships/Documents — reused rather than each
+// module rolling its own notification logic. recipientEmails: array of
+// staff emails to target (deduped, actor excluded so you never get
+// notified of your own change), or omit/empty for a broadcast
+// notification visible to anyone with notifications.read. Never throws
+// — a notification failing to persist or publish must not fail the
+// underlying request that triggered it.
+async function notifyRecipients(store, eventBus, { recipientEmails, actorEmail, type, urgency, summary, relatedType, relatedId } = {}) {
+  try {
+    const actor = normalizeEmail(actorEmail || "");
+    const targets = Array.from(new Set((recipientEmails || []).map((e) => normalizeEmail(e)).filter((e) => e && e !== actor)));
+    const rows = [];
+    if (!targets.length) {
+      rows.push(
+        await store.createNotification({
+          type: type || "internal",
+          urgency: urgency || "medium",
+          summary,
+          channel: "office",
+          status: "open",
+          recipient_email: null,
+          related_type: relatedType || null,
+          related_id: relatedId || null,
+        })
+      );
+    } else {
+      for (const recipientEmail of targets) {
+        rows.push(
+          await store.createNotification({
+            type: type || "internal",
+            urgency: urgency || "medium",
+            summary,
+            channel: "office",
+            status: "open",
+            recipient_email: recipientEmail,
+            related_type: relatedType || null,
+            related_id: relatedId || null,
+          })
+        );
+      }
+    }
+    if (eventBus) {
+      eventBus.publish(
+        "office.notification",
+        { actor: actorEmail || "", notifications: rows },
+        targets.length ? { recipients: targets } : {}
+      );
+    }
+    return rows;
+  } catch {
+    return [];
+  }
+}
+
 function validateCommercialDocumentDraft(input = {}) {
   const hasApprovedPricing =
     Boolean(input.approved_price_ref) ||
@@ -495,4 +551,5 @@ module.exports = {
   listCorporateRecords,
   upsertContactIdentity,
   validateCommercialDocumentDraft,
+  notifyRecipients,
 };

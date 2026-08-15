@@ -55,6 +55,7 @@ const {
   listCorporateRecords,
   upsertContactIdentity,
   validateCommercialDocumentDraft,
+  notifyRecipients,
 } = require("./office-operating-system");
 const {
   canCreateActivityForRelatedObject,
@@ -159,6 +160,31 @@ function sanitizeAdminUser(user) {
   if (!user) return user;
   const { password_hash, ...safe } = user;
   return safe;
+}
+
+// Who should be told about a create/update on a given collection's
+// record — empty array means "no single owner, broadcast instead"
+// rather than "notify nobody". Kept in one place so trigger coverage
+// stays consistent instead of drifting per route.
+function notificationTargetsForRecord(collection, record) {
+  if (collection === "tasks") return [record.assignee].filter(Boolean);
+  if (collection === "support") return [record.assigned_staff].filter(Boolean);
+  if (collection === "meetings") return Array.isArray(record.participants) ? record.participants.filter(Boolean) : [];
+  return [];
+}
+function notificationSummaryForRecord(collection, action, record) {
+  const label = record.title || record.name || "Record";
+  if (collection === "tasks") return action === "created" ? `New task assigned: ${label}` : `Task updated: ${label} (${record.status})`;
+  if (collection === "support") return action === "created" ? `Support case assigned: ${label}` : `Support case updated: ${label} (${record.status})`;
+  if (collection === "meetings") return `Meeting scheduled: ${label}`;
+  if (collection === "projects") return `Project updated: ${label} (${record.status})`;
+  if (collection === "portfolio") return `Portfolio entry updated: ${label} (${record.status})`;
+  if (collection === "private") return `Private relationship updated: ${label} (${record.review_status || record.status})`;
+  if (collection === "partnerships") return `Partnership updated: ${label} (${record.review_status || record.status})`;
+  return `${titleCaseServer(collection)} updated: ${label}`;
+}
+function titleCaseServer(value) {
+  return String(value || "").replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
 function taskRelatedActivityRef(task = {}) {
@@ -3641,6 +3667,55 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
         return;
       }
 
+      // Every real Office role gets notifications.read (see
+      // permissions.js) — deliberately lighter than manage_notifications
+      // above, which is for the admin oversight view of every
+      // notification. This route only ever returns rows targeted at the
+      // caller plus broadcast rows, never another staff member's.
+      if (pathname === "/api/lead-agents/admin/notifications/mine") {
+        if (req.method !== "GET") {
+          methodNotAllowed(res, "GET");
+          return;
+        }
+        authorizePermission(authContext, "notifications.read");
+        const mine = await store.listNotifications(100, { forRecipient: normalizeEmail(authContext?.email || "") });
+        json(
+          res,
+          200,
+          {
+            notifications: mine,
+            unread_count: mine.filter((item) => !item.read_at).length,
+          },
+          { "x-request-id": ctx.requestId }
+        );
+        return;
+      }
+
+      const notificationReadMatch = pathname.match(/^\/api\/lead-agents\/admin\/notifications\/([^/]+)\/read$/);
+      if (notificationReadMatch) {
+        if (req.method !== "POST") {
+          methodNotAllowed(res, "POST");
+          return;
+        }
+        authorizePermission(authContext, "notifications.read");
+        const existing = await store.getNotificationById?.(notificationReadMatch[1]);
+        // Ownership check: only the targeted recipient (or a broadcast
+        // row anyone with notifications.read can see) may acknowledge
+        // it — never someone else's targeted notification, even with
+        // this lighter permission.
+        if (existing && existing.recipient_email && normalizeEmail(existing.recipient_email) !== normalizeEmail(authContext?.email || "")) {
+          json(res, 403, { error: "forbidden" }, { "x-request-id": ctx.requestId });
+          return;
+        }
+        const notification = await store.updateNotification(notificationReadMatch[1], { read_at: new Date().toISOString() });
+        if (!notification) {
+          notFound(res);
+          return;
+        }
+        json(res, 200, { notification }, { "x-request-id": ctx.requestId });
+        return;
+      }
+
       const notificationMatch = pathname.match(
         /^\/api\/lead-agents\/admin\/notifications\/([^/]+)$/
       );
@@ -3741,6 +3816,16 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
             business_unit: record.business_unit,
             status: record.status,
           });
+          if (collection === "tasks") {
+            await notifyRecipients(store, eventBus, {
+              recipientEmails: notificationTargetsForRecord(collection, record),
+              actorEmail: authContext?.email,
+              type: "task_assigned",
+              summary: notificationSummaryForRecord(collection, "created", record),
+              relatedType: "task",
+              relatedId: record.id,
+            });
+          }
           json(res, 201, { record }, { "x-request-id": ctx.requestId });
           return;
         }
@@ -3763,6 +3848,14 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           await appendAudit(store, authContext, `crm_${collection}_updated`, collection, result.record.id, {
             status: result.record.status,
             allowed_status_transitions: result.allowed_status_transitions,
+          });
+          await notifyRecipients(store, eventBus, {
+            recipientEmails: notificationTargetsForRecord(collection, result.record),
+            actorEmail: authContext?.email,
+            type: "task_updated",
+            summary: notificationSummaryForRecord(collection, "updated", result.record),
+            relatedType: "task",
+            relatedId: result.record.id,
           });
           json(res, 200, result, { "x-request-id": ctx.requestId });
           return;
@@ -3798,6 +3891,14 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
             business_unit: record.business_unit,
             status: record.status,
           });
+          await notifyRecipients(store, eventBus, {
+            recipientEmails: notificationTargetsForRecord(collection, record),
+            actorEmail: authContext?.email,
+            type: `${collection}_created`,
+            summary: notificationSummaryForRecord(collection, "created", record),
+            relatedType: collection,
+            relatedId: record.id,
+          });
           json(res, 201, { record }, { "x-request-id": ctx.requestId });
           return;
         }
@@ -3820,6 +3921,14 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           await appendAudit(store, authContext, `office_${collection}_updated`, collection, result.record.id, {
             status: result.record.status,
             allowed_status_transitions: result.allowed_status_transitions,
+          });
+          await notifyRecipients(store, eventBus, {
+            recipientEmails: notificationTargetsForRecord(collection, result.record),
+            actorEmail: authContext?.email,
+            type: `${collection}_updated`,
+            summary: notificationSummaryForRecord(collection, "updated", result.record),
+            relatedType: collection,
+            relatedId: result.record.id,
           });
           json(res, 200, result, { "x-request-id": ctx.requestId });
           return;
@@ -4291,6 +4400,13 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
         eventBus.publish("office.document", {
           actor: authContext?.email || "",
           document: documentRecord,
+        });
+        await notifyRecipients(store, eventBus, {
+          actorEmail: authContext?.email,
+          type: "document_created",
+          summary: `New document: ${documentRecord.title || body.title || "Untitled"}`,
+          relatedType: "document",
+          relatedId: documentRecord.id,
         });
         json(res, 201, { document: documentRecord, html_file: storedHtml }, { "x-request-id": ctx.requestId });
         return;

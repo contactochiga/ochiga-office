@@ -49,6 +49,9 @@ const state = {
   oyiOpen: false,
   oyiBusy: false,
   oyiThreadStarted: false,
+  notifications: [],
+  notifUnreadCount: 0,
+  notifPanelOpen: false,
 };
 
 const cache = {};
@@ -184,6 +187,12 @@ function readFileAsDataUrl(file) {
 }
 async function apiGetPermissionsMeta() {
   return cached("permissionsMeta", () => api("/api/lead-agents/admin/permissions"));
+}
+async function apiListMyNotifications() {
+  return api("/api/lead-agents/admin/notifications/mine");
+}
+async function apiMarkNotificationRead(id) {
+  return api(`/api/lead-agents/admin/notifications/${encodeURIComponent(id)}/read`, { method: "POST", body: {} });
 }
 async function apiListIntegrations() {
   return api("/api/lead-agents/admin/integrations");
@@ -4045,12 +4054,161 @@ function wireOyiControl() {
 }
 
 // ---------------------------------------------------------------
+// Notifications — bell + panel, backed by GET .../notifications/mine
+// (recipient-targeted rows + broadcasts, never another staff member's)
+// and live-updated over the same SSE hub the Oyi control doesn't use
+// but the legacy dashboard's inbox did — office.notification events
+// only reach this client when it's a broadcast or this session's own
+// email is in the trigger's recipient list (see realtime.js).
+// ---------------------------------------------------------------
+function routeForRelated(relatedType, relatedId) {
+  // Keys match server.js's relatedType verbatim — the raw collection
+  // name for everything routed through the generic office/crm handlers
+  // (projects, portfolio, support, tasks, meetings, private,
+  // partnerships), plus the two routes with their own dedicated
+  // triggers (task, document).
+  const routes = {
+    task: `tasks/${relatedId}`,
+    support: `support/${relatedId}`,
+    projects: `projects/${relatedId}`,
+    portfolio: `portfolio/${relatedId}`,
+    private: `private/${relatedId}`,
+    partnerships: `partnerships/${relatedId}`,
+    meetings: `meetings/${relatedId}`,
+    document: `documents/library/${relatedId}`,
+    lead: `crm/leads/${relatedId}`,
+  };
+  return routes[relatedType] || null;
+}
+
+function renderNotifBadge() {
+  const badge_ = document.getElementById("notifBadge");
+  if (!badge_) return;
+  if (state.notifUnreadCount > 0) {
+    badge_.textContent = state.notifUnreadCount > 99 ? "99+" : String(state.notifUnreadCount);
+    badge_.hidden = false;
+  } else {
+    badge_.hidden = true;
+  }
+}
+
+function renderNotifPanel() {
+  const panel = document.getElementById("notifPanel");
+  if (!panel) return;
+  panel.innerHTML = "";
+  const head = el(`
+    <div class="notif-panel-head">
+      <h3>Notifications</h3>
+      <button type="button" id="notifMarkAllRead">Mark all read</button>
+    </div>
+  `);
+  head.querySelector("#notifMarkAllRead").addEventListener("click", async () => {
+    const unread = state.notifications.filter((item) => !item.read_at);
+    await Promise.all(unread.map((item) => apiMarkNotificationRead(item.id).catch(() => null)));
+    await refreshNotifications();
+  });
+  panel.appendChild(head);
+
+  if (!state.notifications.length) {
+    panel.appendChild(el(`<div class="notif-empty">No notifications yet.</div>`));
+    return;
+  }
+
+  state.notifications.forEach((item) => {
+    const row = el(`
+      <div class="notif-item ${item.read_at ? "" : "unread"}">
+        <span class="notif-summary">${escapeHtml(item.summary || titleCase(item.type || "notification"))}</span>
+        <span class="notif-meta">${escapeHtml(fmtRelative(item.created_at))}</span>
+      </div>
+    `);
+    row.addEventListener("click", async () => {
+      if (!item.read_at) {
+        try {
+          await apiMarkNotificationRead(item.id);
+        } catch {
+          /* non-fatal — clicking through still works even if the read receipt fails */
+        }
+      }
+      toggleNotifPanel(false);
+      const route = routeForRelated(item.related_type, item.related_id);
+      if (route) navigate(route);
+      await refreshNotifications();
+    });
+    panel.appendChild(row);
+  });
+}
+
+async function refreshNotifications() {
+  try {
+    const data = await apiListMyNotifications();
+    state.notifications = data.notifications || [];
+    state.notifUnreadCount = data.unread_count || 0;
+    renderNotifBadge();
+    if (state.notifPanelOpen) renderNotifPanel();
+  } catch {
+    // Quiet failure — the bell simply doesn't update this cycle rather
+    // than interrupting whatever else the user is doing.
+  }
+}
+
+function toggleNotifPanel(force) {
+  const panel = document.getElementById("notifPanel");
+  const bell = document.getElementById("notifBell");
+  if (!panel || !bell) return;
+  const next = force === undefined ? !state.notifPanelOpen : force;
+  state.notifPanelOpen = next;
+  panel.hidden = !next;
+  bell.setAttribute("aria-expanded", String(next));
+  if (next) renderNotifPanel();
+}
+
+function wireNotifBell() {
+  const bell = document.getElementById("notifBell");
+  if (!bell) return;
+  bell.addEventListener("click", (event) => {
+    event.stopPropagation();
+    toggleNotifPanel();
+  });
+  document.addEventListener("click", (event) => {
+    const panel = document.getElementById("notifPanel");
+    if (state.notifPanelOpen && panel && !panel.contains(event.target) && event.target !== bell) {
+      toggleNotifPanel(false);
+    }
+  });
+}
+
+let notifStream = null;
+function connectNotificationStream() {
+  if (notifStream) return;
+  try {
+    notifStream = new EventSource("/api/lead-agents/admin/events");
+    notifStream.addEventListener("office.notification", () => {
+      refreshNotifications();
+    });
+    notifStream.onerror = () => {
+      // EventSource retries on its own; nothing to do here besides not
+      // crash the tab if the connection drops.
+    };
+  } catch {
+    notifStream = null;
+  }
+}
+
+// ---------------------------------------------------------------
 // Boot
 // ---------------------------------------------------------------
 function showShell() {
   document.body.classList.remove("auth-logged-out");
   renderNav();
   renderUserFooter();
+  const bell = document.getElementById("notifBell");
+  if (bell) {
+    bell.style.display = hasPermission("notifications.read") ? "" : "none";
+    if (hasPermission("notifications.read")) {
+      refreshNotifications();
+      connectNotificationStream();
+    }
+  }
   state.segments = currentSegmentsFromHash();
   renderRoute();
 }
@@ -4086,6 +4244,7 @@ function wireShellChrome() {
   });
   document.getElementById("navToggle").addEventListener("click", openNav);
   document.getElementById("navScrim").addEventListener("click", closeNav);
+  wireNotifBell();
 }
 
 async function boot() {

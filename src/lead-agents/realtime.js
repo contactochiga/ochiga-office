@@ -32,9 +32,16 @@ function createRealtimeHub() {
       });
       return () => clients.delete(client);
     },
-    publish(event, payload = {}) {
+    // options.recipients (array of staff emails) restricts delivery to
+    // matching connected sessions — used for per-user notifications so a
+    // private event never reaches every connected client. Omit it (as
+    // every pre-existing caller does) for genuine broadcast events;
+    // behavior for those is unchanged.
+    publish(event, payload = {}, options = {}) {
       const data = { ...payload, event, ts: new Date().toISOString() };
+      const recipients = Array.isArray(options.recipients) ? options.recipients : null;
       for (const client of clients) {
+        if (recipients && !recipients.includes(client.session?.email)) continue;
         try {
           send(client.res, event, data);
         } catch {
