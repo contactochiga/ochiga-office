@@ -145,6 +145,21 @@ async function apiGenerateDocument(body) {
 async function apiListDocumentTemplates() {
   return cached("documentTemplates", () => api("/api/lead-agents/admin/documents/templates"));
 }
+async function apiListContent(status) {
+  return api(`/api/lead-agents/admin/content${status ? `?status=${encodeURIComponent(status)}` : ""}`);
+}
+async function apiGetContent(id) {
+  return api(`/api/lead-agents/admin/content/${encodeURIComponent(id)}`);
+}
+async function apiCreateContent(body) {
+  return api("/api/lead-agents/admin/content", { method: "POST", body });
+}
+async function apiUpdateContent(id, patch) {
+  return api(`/api/lead-agents/admin/content/${encodeURIComponent(id)}`, { method: "PATCH", body: patch });
+}
+async function apiContentAction(id, action, body) {
+  return api(`/api/lead-agents/admin/content/${encodeURIComponent(id)}/${action}`, { method: "POST", body: body || {} });
+}
 async function apiListProposals() {
   return api("/api/lead-agents/admin/proposals");
 }
@@ -352,6 +367,7 @@ const PRIMARY_NAV = [
   { key: "private", label: "Private", permission: "private.read", phase: null },
   { key: "partnerships", label: "Partnerships", permission: "partnerships.read", phase: null },
   { key: "documents", label: "Documents", permission: "documents.generate", phase: null },
+  { key: "content", label: "Content", permission: "content.write", phase: null },
 ];
 
 const ADMIN_NAV = [
@@ -835,6 +851,10 @@ async function renderRoute() {
     await renderModuleRoute(outlet, "partnerships", rest, token);
   } else if (topKey === "documents") {
     await renderDocumentsRoute(outlet, rest, token);
+  } else if (topKey === "content") {
+    outlet.innerHTML = "";
+    outlet.appendChild(skeletonPanel(4));
+    await renderContentRoute(outlet, rest, token);
   } else if (topKey === "inbox") {
     outlet.innerHTML = "";
     outlet.appendChild(skeletonPanel(4));
@@ -921,6 +941,9 @@ async function renderHomeView(outlet, token) {
   }
   if (hasPermission("documents.generate") && (home.recent_documents || []).length) {
     outlet.appendChild(renderRecentDocumentsSection(home.recent_documents));
+  }
+  if (hasPermission("content.write") && home.content_publishing) {
+    outlet.appendChild(renderContentWidget(home.content_publishing));
   }
 
   // Commercial movement — leads with meaningful recent change, permission-gated.
@@ -1018,6 +1041,29 @@ function renderRecentDocumentsSection(documents) {
     onRowClick: (d) => navigate(`documents/library/${d.id}`),
     emptyMessage: "No documents yet.",
   }));
+  return section;
+}
+
+// Honest cadence widget — never fabricates progress toward the 2/week
+// target; 0/2 renders as 0/2.
+function renderContentWidget(content) {
+  const section = el(`<div class="home-section"><h3>Content / Publishing</h3></div>`);
+  // No "on track" / "behind" judgment here — that would need
+  // day-of-week awareness this widget doesn't have. Just the honest
+  // count against the target, nothing editorialized.
+  const card = el(`
+    <div class="kpi-grid">
+      <div class="kpi-card clickable">
+        <span class="kpi-label">Published This Week</span>
+        <span class="kpi-value">${content.published_this_week} / ${content.target_per_week}</span>
+      </div>
+      <div class="kpi-card clickable"><span class="kpi-label">Drafts</span><span class="kpi-value">${content.drafts}</span></div>
+      <div class="kpi-card clickable"><span class="kpi-label">Awaiting Review</span><span class="kpi-value">${content.awaiting_review}</span></div>
+      <div class="kpi-card clickable"><span class="kpi-label">Scheduled</span><span class="kpi-value">${content.scheduled}</span>${content.next_scheduled_publish_at ? `<span class="kpi-sub">Next: ${escapeHtml(fmtDateTime(content.next_scheduled_publish_at))}</span>` : ""}</div>
+    </div>
+  `);
+  card.querySelectorAll(".kpi-card").forEach((node) => node.addEventListener("click", () => navigate("content")));
+  section.appendChild(card);
   return section;
 }
 
@@ -3238,6 +3284,213 @@ const DOCUMENTS_TABS = [
   { key: "library", label: "Documents" },
   { key: "proposals", label: "Proposals / Quotations" },
 ];
+
+// ---------------------------------------------------------------
+// Content / Publishing (Phase 8) — draft -> review -> approve ->
+// publish/schedule, writing to Sanity's real "post" schema. Sanity
+// stays the canonical public content store; Office only tracks the
+// workflow here.
+// ---------------------------------------------------------------
+const CONTENT_STATUS_TONE = { draft: "default", in_review: "amber", approved: "amber", scheduled: "amber", published: "green", unpublished: "red" };
+
+async function renderContentRoute(outlet, rest, token) {
+  const contentId = rest[0];
+  if (contentId) await renderContentEditor(outlet, contentId, token);
+  else await renderContentList(outlet, token);
+}
+
+async function renderContentList(outlet, token) {
+  setTopbar("Content", "");
+  setSelectedObject(null);
+  let items;
+  try {
+    const data = await apiListContent();
+    items = data.items || [];
+  } catch (err) {
+    if (token !== state.renderToken) return;
+    outlet.innerHTML = "";
+    outlet.appendChild(el(`<div class="view-heading"><h1>Content</h1></div>`));
+    outlet.appendChild(errorPanel(err.message || "Could not load content."));
+    return;
+  }
+  if (token !== state.renderToken) return;
+
+  outlet.innerHTML = "";
+  outlet.appendChild(el(`
+    <div class="view-heading">
+      <h1>Content</h1>
+      <p>Draft, review, and publish Ochiga Insights articles.</p>
+    </div>
+  `));
+
+  const publishedThisWeek = items.filter((i) => i.workflow_status === "published" && i.updated_at && new Date(i.updated_at) >= startOfWeek()).length;
+  outlet.appendChild(el(`
+    <div class="kpi-grid" style="margin-bottom:18px;">
+      <div class="kpi-card"><span class="kpi-label">Published This Week</span><span class="kpi-value">${publishedThisWeek} / 2</span></div>
+      <div class="kpi-card"><span class="kpi-label">Drafts</span><span class="kpi-value">${items.filter((i) => i.workflow_status === "draft").length}</span></div>
+      <div class="kpi-card"><span class="kpi-label">Awaiting Review</span><span class="kpi-value">${items.filter((i) => i.workflow_status === "in_review").length}</span></div>
+      <div class="kpi-card"><span class="kpi-label">Scheduled</span><span class="kpi-value">${items.filter((i) => i.workflow_status === "scheduled").length}</span></div>
+    </div>
+  `));
+
+  const newBtn = el(`<button type="button" class="btn btn-primary btn-sm" style="margin-bottom:14px;">New Article</button>`);
+  newBtn.addEventListener("click", () => openNewContentDialog());
+  outlet.appendChild(newBtn);
+
+  outlet.appendChild(renderDataTable({
+    columns: [
+      { label: "Title", render: (i) => escapeHtml(i.title) },
+      { label: "Status", render: (i) => badge(titleCase(i.workflow_status), CONTENT_STATUS_TONE[i.workflow_status] || "default") },
+      { label: "Author", render: (i) => escapeHtml(i.author || "—") },
+      { label: "Updated", render: (i) => escapeHtml(fmtRelative(i.updated_at)) },
+    ],
+    rows: items,
+    onRowClick: (i) => navigate(`content/${i.id}`),
+    emptyMessage: "No articles yet. Start with New Article.",
+  }));
+}
+
+function startOfWeek() {
+  const now = new Date();
+  const day = now.getDay();
+  const diff = now.getDate() - day + (day === 0 ? -6 : 1);
+  return new Date(now.getFullYear(), now.getMonth(), diff);
+}
+
+function openNewContentDialog() {
+  openDialog("New Article", [
+    { name: "title", label: "Title" },
+    { name: "category", label: "Category (e.g. Oyi, Building Technology)" },
+    { name: "author", label: "Author name" },
+  ], async (data) => {
+    if (!data.title) throw new Error("Title is required.");
+    const { item } = await apiCreateContent(data);
+    navigate(`content/${item.id}`);
+  });
+}
+
+async function renderContentEditor(outlet, contentId, token) {
+  setTopbar("Content", "");
+  setSelectedObject(null);
+  let item;
+  try {
+    const data = await apiGetContent(contentId);
+    item = data.item;
+  } catch (err) {
+    if (token !== state.renderToken) return;
+    outlet.innerHTML = "";
+    outlet.appendChild(errorPanel(err.message || "This article could not be found."));
+    return;
+  }
+  if (token !== state.renderToken) return;
+
+  outlet.innerHTML = "";
+  const back = el(`<button type="button" class="detail-back">← Content</button>`);
+  back.addEventListener("click", () => navigate("content"));
+  outlet.appendChild(back);
+
+  outlet.appendChild(el(`
+    <div class="detail-header">
+      <div>
+        <div class="detail-typeline">Article</div>
+        <h1>${escapeHtml(item.title)}</h1>
+        <div class="detail-badges">${badge(titleCase(item.workflow_status), CONTENT_STATUS_TONE[item.workflow_status] || "default")}</div>
+      </div>
+    </div>
+  `));
+
+  if (item.sanity_live_url && item.workflow_status === "published") {
+    outlet.appendChild(el(`<p style="margin:10px 0;"><a href="${escapeHtml(item.sanity_live_url)}" target="_blank" rel="noopener">Open live article →</a></p>`));
+  }
+  if (item.workflow_status === "scheduled" && item.scheduled_publish_at) {
+    outlet.appendChild(el(`<p class="hint">Scheduled to publish ${escapeHtml(fmtDateTime(item.scheduled_publish_at))}.</p>`));
+  }
+
+  const form = el(`
+    <form class="inline-form" style="flex-direction:column;align-items:stretch;gap:12px;max-width:640px;">
+      <label>Title<input name="title" value="${escapeHtml(item.title)}" /></label>
+      <label>Slug<input name="slug" value="${escapeHtml(item.slug || "")}" /></label>
+      <label>Excerpt<textarea name="excerpt" rows="2">${escapeHtml(item.excerpt || "")}</textarea></label>
+      <label>Category<input name="category" value="${escapeHtml(item.category || "")}" /></label>
+      <label>Author<input name="author" value="${escapeHtml(item.author || "")}" /></label>
+      <label>Tags (comma separated)<input name="tags" value="${escapeHtml((item.tags || []).join(", "))}" /></label>
+      <label>Body<textarea name="body" rows="10">${escapeHtml(item.body || "")}</textarea></label>
+      <label>SEO Title<input name="seo_title" value="${escapeHtml(item.seo_title || "")}" /></label>
+      <label>SEO Description<textarea name="seo_description" rows="2">${escapeHtml(item.seo_description || "")}</textarea></label>
+      <div>
+        <button type="submit" class="btn btn-primary btn-sm">Save</button>
+        <span class="form-status"></span>
+      </div>
+    </form>
+  `);
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const statusEl = form.querySelector(".form-status");
+    const formData = Object.fromEntries(new FormData(form).entries());
+    try {
+      const result = await apiUpdateContent(contentId, { ...formData, tags: formData.tags.split(",").map((t) => t.trim()).filter(Boolean) });
+      statusEl.textContent = result.sanity?.ok ? "Saved and synced to Sanity draft." : "Saved locally.";
+      if (result.sanity?.warnings?.length) statusEl.textContent += ` (${result.sanity.warnings.join(" ")})`;
+    } catch (err) {
+      statusEl.textContent = err.message || "Could not save.";
+    }
+  });
+  outlet.appendChild(form);
+
+  outlet.appendChild(renderContentWorkflowActions(item, contentId));
+}
+
+function renderContentWorkflowActions(item, contentId) {
+  const wrap = el(`<div class="status-actions" style="margin-top:18px;"></div>`);
+  const errorLabel = el(`<span class="form-status"></span>`);
+
+  async function runAction(action, body) {
+    try {
+      await apiContentAction(contentId, action, body);
+      // Same route as we're already on — navigate() re-renders in
+      // place when the hash doesn't change, refreshing the status
+      // badge and the now-different set of workflow buttons.
+      navigate(`content/${contentId}`);
+    } catch (err) {
+      errorLabel.textContent = err.message || "That action could not be completed.";
+      errorLabel.classList.add("visible");
+    }
+  }
+
+  if (item.workflow_status === "draft" && hasPermission("content.write")) {
+    const btn = el(`<button type="button" class="btn btn-primary btn-sm">Submit for Review</button>`);
+    btn.addEventListener("click", () => runAction("submit-review"));
+    wrap.appendChild(btn);
+  }
+  if (item.workflow_status === "in_review" && hasPermission("content.review")) {
+    const approveBtn = el(`<button type="button" class="btn btn-primary btn-sm">Approve</button>`);
+    approveBtn.addEventListener("click", () => runAction("approve"));
+    wrap.appendChild(approveBtn);
+    const requestBtn = el(`<button type="button" class="btn btn-ghost btn-sm">Request Changes</button>`);
+    requestBtn.addEventListener("click", () => openDialog("Request Changes", [{ name: "note", label: "Note for the writer", type: "textarea" }], (data) => runAction("request-changes", data)));
+    wrap.appendChild(requestBtn);
+  }
+  if (item.workflow_status === "approved" && hasPermission("content.publish")) {
+    const publishBtn = el(`<button type="button" class="btn btn-primary btn-sm">Publish Now</button>`);
+    publishBtn.addEventListener("click", () => runAction("publish"));
+    wrap.appendChild(publishBtn);
+    const scheduleBtn = el(`<button type="button" class="btn btn-ghost btn-sm">Schedule</button>`);
+    scheduleBtn.addEventListener("click", () => openDialog("Schedule Publish", [{ name: "scheduled_publish_at", label: "Publish at (ISO date/time)", type: "datetime-local" }], (data) => runAction("schedule", { scheduled_publish_at: new Date(data.scheduled_publish_at).toISOString() })));
+    wrap.appendChild(scheduleBtn);
+  }
+  if (item.workflow_status === "scheduled" && hasPermission("content.publish")) {
+    const publishBtn = el(`<button type="button" class="btn btn-primary btn-sm">Publish Now</button>`);
+    publishBtn.addEventListener("click", () => runAction("publish"));
+    wrap.appendChild(publishBtn);
+  }
+  if (item.workflow_status === "published" && hasPermission("content.publish")) {
+    const unpublishBtn = el(`<button type="button" class="btn btn-ghost btn-sm">Unpublish</button>`);
+    unpublishBtn.addEventListener("click", () => runAction("unpublish"));
+    wrap.appendChild(unpublishBtn);
+  }
+  wrap.appendChild(errorLabel);
+  return wrap;
+}
 
 async function renderDocumentsRoute(outlet, rest, token) {
   const [subKey = "library", objectId] = rest;

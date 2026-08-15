@@ -47,6 +47,7 @@ const {
 } = require("./oyi-core-gateway");
 const { executeGovernedOfficeToolProposals } = require("./office-tool-governance");
 const { listDocumentTemplates, renderDocumentFromTemplate } = require("./office-document-templates");
+const { sanityConfigured, saveDraftToSanity, publishToSanity, unpublishFromSanity, slugify } = require("./sanity-adapter");
 const { fetchBackendPortfolioProjection } = require("./backend-portfolio-gateway");
 const {
   CORPORATE_COLLECTIONS,
@@ -1670,6 +1671,36 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
       maxRequests: config.loginRateLimitMaxAttempts || 10,
     });
   const eventBus = createRealtimeHub();
+  // Scheduled-content publisher (Phase 8) — off by default, same
+  // precedent as Ochiga Backend's own proactive scheduler (also
+  // env-gated, also off unless explicitly enabled). Only touches
+  // content items a publisher already explicitly scheduled; never
+  // auto-approves or auto-publishes anything that wasn't already in
+  // "scheduled" status via a real content.publish action.
+  if (process.env.OFFICE_CONTENT_SCHEDULER_ENABLED === "true") {
+    const intervalMs = Number(process.env.OFFICE_CONTENT_SCHEDULER_INTERVAL_MS || 5 * 60 * 1000);
+    setInterval(async () => {
+      try {
+        const due = await store.listScheduledContentDue(new Date());
+        for (const item of due) {
+          try {
+            const docId = item.sanity_document_id || `post-${item.id}`;
+            const result = await publishToSanity(docId);
+            if (result.ok) {
+              const liveUrl = `${process.env.OCHIGA_WEBSITE_URL || "https://ochiga.com.ng"}/insights/${item.slug || slugify(item.title)}`;
+              await store.updateContentItem(item.id, { workflow_status: "published", sanity_document_id: docId, sanity_live_url: liveUrl, published_by: "scheduler" });
+              await appendAudit(store, { email: "scheduler", role: "system" }, "content_published", "office_content_item", item.id, { title: item.title, via: "scheduler" });
+              eventBus.publish("office.notification", { actor: "scheduler", summary: `"${item.title}" published on schedule` });
+            }
+          } catch (err) {
+            log("error", "content_scheduler.publish_failed", { content_id: item.id, error: err.message });
+          }
+        }
+      } catch (err) {
+        log("error", "content_scheduler.tick_failed", { error: err.message });
+      }
+    }, intervalMs);
+  }
   const storageService = createStorageService(config);
   const digitalTwinRuntime = createDigitalTwinRuntime();
   const planStudioRuntime = createPlanStudioRuntime({
@@ -4638,6 +4669,218 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
         const marked = await store.markStaffMessagesRead(conversationId, email);
         json(res, 200, { marked_read: marked }, { "x-request-id": ctx.requestId });
         return;
+      }
+
+      // ---------------------------------------------------------------
+      // Content / Publishing (Phase 8) — writer (content.write) drafts
+      // and edits; reviewer (content.review) approves or sends back;
+      // publisher (content.publish) publishes/schedules/unpublishes.
+      // Sanity stays canonical for public content; this table is only
+      // Office's workflow/audit trail. Reuses appendAudit (not a
+      // second audit system) and notifyRecipients (Phase 4) for
+      // editorial events.
+      // ---------------------------------------------------------------
+      if (pathname === "/api/lead-agents/admin/content") {
+        if (req.method === "GET") {
+          authorizePermission(authContext, "content.write");
+          const url = new URL(req.url, "http://localhost");
+          const items = await store.listContentItems({ status: url.searchParams.get("status") || undefined });
+          json(res, 200, { items }, { "x-request-id": ctx.requestId });
+          return;
+        }
+        if (req.method === "POST") {
+          authorizePermission(authContext, "content.write");
+          const body = await readJsonBody(req);
+          requireObject(body, "body");
+          if (!body.title) {
+            json(res, 400, { error: "title is required" }, { "x-request-id": ctx.requestId });
+            return;
+          }
+          const item = await store.createContentItem({ ...body, slug: body.slug || slugify(body.title), created_by: authContext?.email || "office" });
+          const sanityResult = await saveDraftToSanity(item).catch(() => ({ ok: false }));
+          const updated = sanityResult.ok
+            ? await store.updateContentItem(item.id, { sanity_document_id: sanityResult.document_id, metadata: { ...item.metadata, sanity_warnings: sanityResult.warnings } })
+            : item;
+          await appendAudit(store, authContext, "content_created", "office_content_item", item.id, { title: item.title });
+          json(res, 201, { item: updated, sanity: sanityResult }, { "x-request-id": ctx.requestId });
+          return;
+        }
+        methodNotAllowed(res, "GET,POST");
+        return;
+      }
+
+      const contentItemMatch = pathname.match(/^\/api\/lead-agents\/admin\/content\/([^/]+)$/);
+      if (contentItemMatch) {
+        const contentId = contentItemMatch[1];
+        if (req.method === "GET") {
+          authorizePermission(authContext, "content.write");
+          const item = await store.getContentItemById(contentId);
+          if (!item) {
+            notFound(res);
+            return;
+          }
+          json(res, 200, { item }, { "x-request-id": ctx.requestId });
+          return;
+        }
+        if (req.method === "PATCH") {
+          authorizePermission(authContext, "content.write");
+          const body = await readJsonBody(req);
+          requireObject(body, "body");
+          const patch = {};
+          ["title", "slug", "excerpt", "category", "author", "tags", "body", "featured_image_url", "seo_title", "seo_description"].forEach((field) => {
+            if (body[field] !== undefined) patch[field] = body[field];
+          });
+          const item = await store.updateContentItem(contentId, patch);
+          if (!item) {
+            notFound(res);
+            return;
+          }
+          const sanityResult = await saveDraftToSanity(item).catch(() => ({ ok: false }));
+          if (sanityResult.ok) await store.updateContentItem(contentId, { sanity_document_id: sanityResult.document_id, metadata: { ...item.metadata, sanity_warnings: sanityResult.warnings } });
+          await appendAudit(store, authContext, "content_edited", "office_content_item", contentId, { fields: Object.keys(patch) });
+          json(res, 200, { item: await store.getContentItemById(contentId), sanity: sanityResult }, { "x-request-id": ctx.requestId });
+          return;
+        }
+        methodNotAllowed(res, "GET,PATCH");
+        return;
+      }
+
+      const contentActionMatch = pathname.match(/^\/api\/lead-agents\/admin\/content\/([^/]+)\/(submit-review|request-changes|approve|publish|schedule|unpublish)$/);
+      if (contentActionMatch) {
+        if (req.method !== "POST") {
+          methodNotAllowed(res, "POST");
+          return;
+        }
+        const [, contentId, action] = contentActionMatch;
+        const item = await store.getContentItemById(contentId);
+        if (!item) {
+          notFound(res);
+          return;
+        }
+        const body = await readJsonBody(req).catch(() => ({}));
+
+        if (action === "submit-review") {
+          authorizePermission(authContext, "content.write");
+          if (item.workflow_status !== "draft") {
+            json(res, 400, { error: `Cannot submit for review from status "${item.workflow_status}".` }, { "x-request-id": ctx.requestId });
+            return;
+          }
+          const updated = await store.updateContentItem(contentId, { workflow_status: "in_review" });
+          await appendAudit(store, authContext, "content_submitted_for_review", "office_content_item", contentId, { title: item.title });
+          await notifyRecipients(store, eventBus, { actorEmail: authContext?.email, type: "content_submitted", summary: `"${item.title}" submitted for review`, relatedType: "content", relatedId: contentId });
+          json(res, 200, { item: updated }, { "x-request-id": ctx.requestId });
+          return;
+        }
+
+        if (action === "request-changes") {
+          authorizePermission(authContext, "content.review");
+          if (item.workflow_status !== "in_review") {
+            json(res, 400, { error: `Cannot request changes from status "${item.workflow_status}".` }, { "x-request-id": ctx.requestId });
+            return;
+          }
+          // Separation of duties: a writer who also happens to hold
+          // content.review (the only real option while there's no
+          // dedicated "editor" role) still cannot review their own
+          // work — the review step would otherwise be a rubber stamp.
+          // Senior staff who also hold content.publish are exempt,
+          // since that permission already lets them bypass the
+          // workflow entirely if truly needed.
+          if (normalizeEmail(item.created_by) === normalizeEmail(authContext?.email || "") && !hasPermission(authContext, "content.publish")) {
+            json(res, 403, { error: "You cannot review your own draft. Ask another reviewer." }, { "x-request-id": ctx.requestId });
+            return;
+          }
+          const updated = await store.updateContentItem(contentId, { workflow_status: "draft", reviewed_by: authContext?.email || "" });
+          await appendAudit(store, authContext, "content_changes_requested", "office_content_item", contentId, { note: body.note || "" });
+          await notifyRecipients(store, eventBus, {
+            recipientEmails: [item.created_by],
+            actorEmail: authContext?.email,
+            type: "content_changes_requested",
+            summary: `Changes requested on "${item.title}"${body.note ? `: ${body.note}` : ""}`,
+            relatedType: "content",
+            relatedId: contentId,
+          });
+          json(res, 200, { item: updated }, { "x-request-id": ctx.requestId });
+          return;
+        }
+
+        if (action === "approve") {
+          authorizePermission(authContext, "content.review");
+          if (item.workflow_status !== "in_review") {
+            json(res, 400, { error: `Cannot approve from status "${item.workflow_status}".` }, { "x-request-id": ctx.requestId });
+            return;
+          }
+          if (normalizeEmail(item.created_by) === normalizeEmail(authContext?.email || "") && !hasPermission(authContext, "content.publish")) {
+            json(res, 403, { error: "You cannot approve your own draft. Ask another reviewer." }, { "x-request-id": ctx.requestId });
+            return;
+          }
+          const updated = await store.updateContentItem(contentId, { workflow_status: "approved", approved_by: authContext?.email || "" });
+          await appendAudit(store, authContext, "content_approved", "office_content_item", contentId, { title: item.title });
+          json(res, 200, { item: updated }, { "x-request-id": ctx.requestId });
+          return;
+        }
+
+        if (action === "publish") {
+          authorizePermission(authContext, "content.publish");
+          if (!["approved", "scheduled"].includes(item.workflow_status)) {
+            json(res, 400, { error: `Cannot publish from status "${item.workflow_status}". Approve it first.` }, { "x-request-id": ctx.requestId });
+            return;
+          }
+          if (!sanityConfigured()) {
+            json(res, 503, { error: "Sanity is not configured (SANITY_PROJECT_ID/SANITY_DATASET/SANITY_API_WRITE_TOKEN)." }, { "x-request-id": ctx.requestId });
+            return;
+          }
+          const draftResult = await saveDraftToSanity(item);
+          const docId = draftResult.document_id || item.sanity_document_id || `post-${item.id}`;
+          const publishResult = await publishToSanity(docId);
+          if (!publishResult.ok) {
+            json(res, 502, { error: `Sanity publish failed: ${publishResult.reason || "unknown error"}` }, { "x-request-id": ctx.requestId });
+            return;
+          }
+          const liveUrl = `${process.env.OCHIGA_WEBSITE_URL || "https://ochiga.com.ng"}/insights/${item.slug || slugify(item.title)}`;
+          const updated = await store.updateContentItem(contentId, {
+            workflow_status: "published",
+            published_by: authContext?.email || "",
+            sanity_document_id: docId,
+            sanity_live_url: liveUrl,
+          });
+          await appendAudit(store, authContext, "content_published", "office_content_item", contentId, { title: item.title, sanity_document_id: docId, live_url: liveUrl });
+          await notifyRecipients(store, eventBus, { actorEmail: authContext?.email, type: "content_published", summary: `"${item.title}" is now live`, relatedType: "content", relatedId: contentId });
+          json(res, 200, { item: updated, sanity: publishResult, warnings: draftResult.warnings }, { "x-request-id": ctx.requestId });
+          return;
+        }
+
+        if (action === "schedule") {
+          authorizePermission(authContext, "content.publish");
+          if (item.workflow_status !== "approved") {
+            json(res, 400, { error: `Cannot schedule from status "${item.workflow_status}". Approve it first.` }, { "x-request-id": ctx.requestId });
+            return;
+          }
+          if (!body.scheduled_publish_at) {
+            json(res, 400, { error: "scheduled_publish_at is required" }, { "x-request-id": ctx.requestId });
+            return;
+          }
+          const updated = await store.updateContentItem(contentId, { workflow_status: "scheduled", scheduled_publish_at: body.scheduled_publish_at });
+          await appendAudit(store, authContext, "content_scheduled", "office_content_item", contentId, { scheduled_publish_at: body.scheduled_publish_at });
+          json(res, 200, { item: updated }, { "x-request-id": ctx.requestId });
+          return;
+        }
+
+        if (action === "unpublish") {
+          authorizePermission(authContext, "content.publish");
+          if (item.workflow_status !== "published") {
+            json(res, 400, { error: `Cannot unpublish from status "${item.workflow_status}".` }, { "x-request-id": ctx.requestId });
+            return;
+          }
+          const result = await unpublishFromSanity(item.sanity_document_id || `post-${item.id}`);
+          if (!result.ok) {
+            json(res, 502, { error: `Sanity unpublish failed: ${result.reason || "unknown error"}` }, { "x-request-id": ctx.requestId });
+            return;
+          }
+          const updated = await store.updateContentItem(contentId, { workflow_status: "unpublished" });
+          await appendAudit(store, authContext, "content_unpublished", "office_content_item", contentId, { title: item.title });
+          json(res, 200, { item: updated }, { "x-request-id": ctx.requestId });
+          return;
+        }
       }
 
       const officeAssetActionMatch = pathname.match(

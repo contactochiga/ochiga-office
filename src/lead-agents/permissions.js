@@ -41,6 +41,12 @@ const PERMISSION_KEYS = Object.freeze([
   "notifications.manage",
   "messages.read",
   "messages.send",
+  // Content/Publishing (Phase 8): draft/edit, review, and
+  // approve-publish are three deliberately separate grants — writer !=
+  // publisher. See ROLE_PERMISSIONS below for who gets which.
+  "content.write",
+  "content.review",
+  "content.publish",
   "storage.read",
   "storage.write",
   "integrations.read",
@@ -77,6 +83,13 @@ const ROLE_PERMISSIONS = Object.freeze({
     "notifications.read",
     "messages.read",
     "messages.send",
+    // Writer + reviewer by default, deliberately NOT publisher — "do
+    // not make every writer a publisher." Publish rights are granted
+    // per-user via the existing permission_scopes additive mechanism
+    // for staff who should have them, or via a role with full
+    // PERMISSION_KEYS (super_admin/ochiga_admin).
+    "content.write",
+    "content.review",
     "storage.read",
     "integrations.read",
     "auth.change_password",

@@ -1,4 +1,5 @@
 const axios = require("axios");
+const crypto = require("crypto");
 const { normalizeEmail, normalizeLeadInput, normalizeLeadPatch, normalizeText } = require("./normalize-lead");
 const { buildDeploymentFromLead, normalizePartner } = require("./commercial-ops");
 const { buildOfficeSnapshot, createOfficeSeedData } = require("./office-data");
@@ -681,6 +682,60 @@ class SupabaseLeadAgentsStore {
     );
     const readIds = new Set(readResponse.data.map((r) => r.message_id));
     return ids.filter((id) => !readIds.has(id)).length;
+  }
+
+  // ---------------------------------------------------------------
+  // Content / Publishing (Phase 8) — see store-file.js for rationale.
+  // ---------------------------------------------------------------
+  async createContentItem(input) {
+    const response = await this.client.post(
+      "/office_content_items",
+      {
+        id: crypto.randomUUID(),
+        title: input.title || "Untitled",
+        slug: input.slug || "",
+        excerpt: input.excerpt || "",
+        category: input.category || "",
+        author: input.author || "",
+        tags: Array.isArray(input.tags) ? input.tags : [],
+        body: input.body || "",
+        featured_image_url: input.featured_image_url || "",
+        seo_title: input.seo_title || "",
+        seo_description: input.seo_description || "",
+        workflow_status: "draft",
+        created_by: input.created_by || "office",
+        metadata: input.metadata || {},
+      },
+      { headers: this.selectHeaders() }
+    );
+    return response.data[0];
+  }
+
+  async listContentItems(filter = {}) {
+    const query = new URLSearchParams();
+    query.set("order", "updated_at.desc");
+    if (filter.status) query.set("workflow_status", `eq.${filter.status}`);
+    const response = await this.client.get(`/office_content_items?${query.toString()}`);
+    return response.data;
+  }
+
+  async getContentItemById(id) {
+    const response = await this.client.get(`/office_content_items?id=eq.${encodeURIComponent(id)}&limit=1`);
+    return response.data[0] || null;
+  }
+
+  async updateContentItem(id, patch) {
+    const response = await this.client.patch(`/office_content_items?id=eq.${encodeURIComponent(id)}`, patch, {
+      headers: this.selectHeaders(),
+    });
+    return response.data[0] || null;
+  }
+
+  async listScheduledContentDue(now) {
+    const response = await this.client.get(
+      `/office_content_items?workflow_status=eq.scheduled&scheduled_publish_at=lte.${now.toISOString()}`
+    );
+    return response.data;
   }
 
   async appendTrace(input) {

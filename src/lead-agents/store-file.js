@@ -54,6 +54,7 @@ class FileLeadAgentsStore {
       staff_messages: [],
       staff_message_reads: [],
       staff_message_attachments: [],
+      office_content_items: [],
     };
     this.pendingWrite = Promise.resolve();
   }
@@ -115,6 +116,7 @@ class FileLeadAgentsStore {
         staff_messages: Array.isArray(parsed.staff_messages) ? parsed.staff_messages : [],
         staff_message_reads: Array.isArray(parsed.staff_message_reads) ? parsed.staff_message_reads : [],
         staff_message_attachments: Array.isArray(parsed.staff_message_attachments) ? parsed.staff_message_attachments : [],
+        office_content_items: Array.isArray(parsed.office_content_items) ? parsed.office_content_items : [],
       };
       if (await this.ensureOfficeSeedData()) {
         await this.persist();
@@ -828,6 +830,70 @@ class FileLeadAgentsStore {
     const normalized = normalizeEmail(email);
     const messages = this.state.staff_messages.filter((item) => item.conversation_id === conversationId && item.sender_email !== normalized);
     return messages.filter((message) => !this.state.staff_message_reads.some((r) => r.message_id === message.id && r.staff_email === normalized)).length;
+  }
+
+  // ---------------------------------------------------------------
+  // Content / Publishing (Phase 8) — Office's local editorial workflow
+  // record. Sanity holds the real content; this is workflow/audit
+  // metadata plus a text working copy so drafts survive even if Sanity
+  // is unreachable when a writer is working.
+  // ---------------------------------------------------------------
+  async createContentItem(input) {
+    const item = {
+      id: crypto.randomUUID(),
+      title: input.title || "Untitled",
+      slug: input.slug || "",
+      excerpt: input.excerpt || "",
+      category: input.category || "",
+      author: input.author || "",
+      tags: Array.isArray(input.tags) ? input.tags : [],
+      body: input.body || "",
+      featured_image_url: input.featured_image_url || "",
+      seo_title: input.seo_title || "",
+      seo_description: input.seo_description || "",
+      workflow_status: "draft",
+      scheduled_publish_at: null,
+      sanity_document_id: null,
+      sanity_live_url: null,
+      created_by: input.created_by || "office",
+      reviewed_by: null,
+      approved_by: null,
+      published_by: null,
+      metadata: input.metadata || {},
+      created_at: this.nowIso(),
+      updated_at: this.nowIso(),
+    };
+    this.state.office_content_items.push(item);
+    await this.persist();
+    return item;
+  }
+
+  async listContentItems(filter = {}) {
+    return this.state.office_content_items
+      .filter((item) => !filter.status || item.workflow_status === filter.status)
+      .sort((a, b) => String(b.updated_at).localeCompare(String(a.updated_at)));
+  }
+
+  async getContentItemById(id) {
+    return this.state.office_content_items.find((item) => item.id === id) || null;
+  }
+
+  async updateContentItem(id, patch) {
+    const index = this.state.office_content_items.findIndex((item) => item.id === id);
+    if (index === -1) return null;
+    this.state.office_content_items[index] = {
+      ...this.state.office_content_items[index],
+      ...patch,
+      updated_at: this.nowIso(),
+    };
+    await this.persist();
+    return this.state.office_content_items[index];
+  }
+
+  async listScheduledContentDue(now) {
+    return this.state.office_content_items.filter(
+      (item) => item.workflow_status === "scheduled" && item.scheduled_publish_at && new Date(item.scheduled_publish_at).getTime() <= now.getTime()
+    );
   }
 
   async appendTrace(input) {

@@ -316,6 +316,18 @@ async function buildOfficeHomeProjection(store, options = {}) {
       listCorporateRecords(store, "meetings"),
       store.listOfficeDocuments ? store.listOfficeDocuments() : [],
     ]);
+  const contentItems = store.listContentItems ? await store.listContentItems() : [];
+  const weekStart = (() => {
+    const day = now.getDay();
+    const diff = now.getDate() - day + (day === 0 ? -6 : 1);
+    return new Date(now.getFullYear(), now.getMonth(), diff);
+  })();
+  const publishedThisWeek = contentItems.filter((item) => item.workflow_status === "published" && item.updated_at && new Date(item.updated_at) >= weekStart);
+  const contentDrafts = contentItems.filter((item) => item.workflow_status === "draft").length;
+  const contentAwaitingReview = contentItems.filter((item) => item.workflow_status === "in_review").length;
+  const contentScheduled = contentItems
+    .filter((item) => item.workflow_status === "scheduled" && item.scheduled_publish_at)
+    .sort((a, b) => String(a.scheduled_publish_at).localeCompare(String(b.scheduled_publish_at)));
   const openTasks = tasks.filter((task) => !["done", "completed", "cancelled"].includes(String(task.status || "").toLowerCase()));
   const overdueTasks = openTasks
     .filter((task) => task.due_at && new Date(task.due_at).getTime() < now.getTime())
@@ -386,12 +398,24 @@ async function buildOfficeHomeProjection(store, options = {}) {
       upcoming_meetings: upcomingMeetings.length,
       recent_documents: recentDocuments.length,
       crm_leads: leads.length,
+      content_published_this_week: publishedThisWeek.length,
+      content_drafts: contentDrafts,
+      content_awaiting_review: contentAwaitingReview,
+      content_scheduled: contentScheduled.length,
     },
     attention_items,
     recent_activity,
     overdue_tasks: overdueTasks.slice(0, 5).map((task) => ({ id: task.id, title: task.title, due_at: task.due_at, assignee: task.assignee || task.owner || "" })),
     upcoming_meetings: upcomingMeetings,
     recent_documents: recentDocuments,
+    content_publishing: {
+      published_this_week: publishedThisWeek.length,
+      target_per_week: 2,
+      drafts: contentDrafts,
+      awaiting_review: contentAwaitingReview,
+      scheduled: contentScheduled.length,
+      next_scheduled_publish_at: contentScheduled[0]?.scheduled_publish_at || null,
+    },
     oyi_core: {
       authority: "ochiga-backend",
       expected_surface: "office_internal",
