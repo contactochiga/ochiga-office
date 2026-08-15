@@ -1582,6 +1582,28 @@ async function processWhatsAppEvent({ event, store, adapter, config, requestId }
       reason: oyiCoreResult.ok ? "" : oyiCoreResult.reason,
     },
   });
+  // Also log to the canonical polymorphic crm_activities timeline (Phase
+  // 6, v2 audit) — timeline_events above stays as the source-specific
+  // technical log this webhook path already depended on; this is the
+  // one staff actually see in the CRM activity feed alongside notes,
+  // status changes, and other channels. createCorporateRecord directly,
+  // not the staff-authorization-gated createRelatedActivity wrapper —
+  // this webhook has no logged-in staff actor to authorize against.
+  await createCorporateRecord(
+    store,
+    "activities",
+    {
+      lead_id: lead.id,
+      related_type: "lead",
+      related_id: lead.id,
+      activity_type: "whatsapp_message",
+      title: "WhatsApp message",
+      body: String(event.text || "").slice(0, 2000),
+      source: "whatsapp",
+      metadata: { direction: "inbound", ai_replied: oyiCoreResult.ok, request_id: requestId },
+    },
+    { actorEmail: "whatsapp" }
+  ).catch(() => null);
 
   const sendResult = await adapter.sendTextMessage({
     to: event.from,
@@ -4389,6 +4411,26 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
               html: `<p>Ochiga Office generated <strong>${body.document_type || "document"}</strong>: ${body.title}</p><p><a href="${storedHtml.url}">Open document</a></p>`,
             });
             documentRecord.email_delivery = emailDelivery;
+            // CRM-logged outbound email (Phase 6, v2 audit: email existed
+            // only as a delivery mechanism, never as CRM activity). Only
+            // when the document is actually tied to a CRM record —
+            // nothing to log an activity against otherwise.
+            if (emailDelivery?.delivered && body.related_type && body.related_id) {
+              await createCorporateRecord(
+                store,
+                "activities",
+                {
+                  related_type: body.related_type,
+                  related_id: body.related_id,
+                  activity_type: "email_sent",
+                  title: `Email sent: ${body.title}`,
+                  body: `Sent to ${body.email_to}`,
+                  source: "office_document",
+                  metadata: { document_id: id, document_type: body.document_type || "document" },
+                },
+                { actorEmail: authContext?.email || "office" }
+              ).catch(() => null);
+            }
           } catch (error) {
             documentRecord.email_delivery = {
               ok: false,

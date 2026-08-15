@@ -1364,10 +1364,14 @@ function backToList(type) {
 }
 
 async function renderLeadDetail(body, id, token) {
-  const [lead, timeline, proposals] = await Promise.all([
+  const [lead, timeline, proposals, conversations] = await Promise.all([
     apiGetLead(id),
     apiGetLeadTimeline(id).then((d) => d.timeline).catch(() => []),
     hasPermission("documents.generate") ? apiGetLeadProposals(id).then((d) => d.proposals).catch(() => []) : Promise.resolve([]),
+    // Real WhatsApp (and any other channel) message thread — the
+    // backend has always had this; the previous frontend never called
+    // it (Phase 6, v2 audit).
+    apiGetLeadConversations(id).then((d) => d.conversations || []).catch(() => []),
   ]);
   if (token !== state.renderToken) return;
   const record = lead.lead;
@@ -1404,6 +1408,7 @@ async function renderLeadDetail(body, id, token) {
     </div>
   `));
   if (canManage) mainSections.push(renderLeadUpdateForm(record));
+  if (conversations.length) mainSections.push(renderChannelThreadSection(conversations));
   mainSections.push(renderTimeline(combinedTimeline, {
     canAddNote: canManage,
     onAddNote: () => promptAddNote({ lead_id: id }),
@@ -1435,6 +1440,30 @@ async function renderLeadDetail(body, id, token) {
     railSections,
     oyiContext: { lead_ref: id, safe_summary: record.summary || record.next_action || record.pain_points || "" },
   });
+}
+
+// Real channel message thread (WhatsApp today, whatever else uses the
+// same `conversations` table later) — was captured by the backend the
+// whole time; the frontend just never rendered it (Phase 6, v2 audit).
+const CHANNEL_LABEL = { whatsapp: "WhatsApp", sms: "SMS", web: "Web chat" };
+function renderChannelThreadSection(conversations) {
+  const section = el(`<div class="detail-section"><h3>Messages</h3></div>`);
+  const thread = el(`<div class="oyi-thread" style="max-height:340px;border:1px solid var(--line);border-radius:var(--radius);"></div>`);
+  [...conversations]
+    .sort((a, b) => String(a.created_at || "").localeCompare(String(b.created_at || "")))
+    .forEach((turn) => {
+      const fromCustomer = turn.message_role === "user";
+      const channelLabel = CHANNEL_LABEL[turn.channel] || titleCase(turn.channel || "message");
+      const item = el(`
+        <div class="oyi-msg ${fromCustomer ? "assistant" : "user"}">
+          <div>${escapeHtml(turn.content || "")}</div>
+          <div style="font-size:10px;opacity:0.6;margin-top:4px;">${escapeHtml(fromCustomer ? channelLabel : turn.agent_name || "Oyi")} · ${escapeHtml(fmtRelative(turn.created_at))}</div>
+        </div>
+      `);
+      thread.appendChild(item);
+    });
+  section.appendChild(thread);
+  return section;
 }
 
 function factRow(label, value) {
