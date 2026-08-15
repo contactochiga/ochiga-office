@@ -431,6 +431,16 @@ function fmtRelative(value) {
   if (days < 30) return `${days}d ${suffix}`;
   return fmtDate(value);
 }
+// input[type=datetime-local] needs local-time "YYYY-MM-DDTHH:mm", not a
+// full ISO string — this is the pre-fill counterpart to the .toISOString()
+// conversion already done on submit for these fields.
+function toDatetimeLocalValue(value) {
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  const pad = (n) => String(n).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
 function titleCase(value) {
   return String(value || "").replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
 }
@@ -1200,12 +1210,16 @@ async function renderCrmOverview(body, token) {
   if (token !== state.renderToken) return;
   body.innerHTML = "";
 
-  const hotLeads = leads.filter((lead) => Number(lead.score || lead.lead_score || 0) >= 70 || /follow|proposal|demo|meeting/i.test(String(lead.next_action || "")));
+  const hotLeads = leads.filter((lead) =>
+    Number(lead.score || lead.lead_score || 0) >= 70 ||
+    /follow|proposal|demo|meeting/i.test(String(lead.next_action || "")) ||
+    (lead.next_action_at && new Date(lead.next_action_at).getTime() < Date.now())
+  );
   body.appendChild(el(`<div class="overview-section"><h3>Leads Needing Attention <span class="count-pill">${hotLeads.length}</span></h3></div>`));
   body.lastElementChild.appendChild(renderDataTable({
     columns: [
       { label: "Lead", render: (l) => escapeHtml(l.company || l.name || "Untitled") },
-      { label: "Next Action", render: (l) => escapeHtml(l.next_action || "—") },
+      { label: "Next Action", render: nextActionCell },
       { label: "Owner", render: (l) => escapeHtml(l.owner || "Unassigned") },
     ],
     rows: hotLeads.slice(0, 8),
@@ -1262,6 +1276,25 @@ async function renderCrmOverview(body, token) {
   body.appendChild(buSection);
 }
 
+// Channel is the communication medium (whatsapp/email/website_chat);
+// source is where the lead originated (referral/cold_outreach/website).
+// Both exist on the record already (primary_channel/source_channel vs
+// source) but only source was ever rendered — shown together here since
+// they answer different questions.
+function leadChannelLabel(record) {
+  const channel = record.primary_channel || record.source_channel || "";
+  return channel && channel !== record.source ? titleCase(channel) : "";
+}
+// next_action is free text; next_action_at is the actual due timestamp —
+// existed in the schema/store since the original CRM build but was never
+// rendered anywhere. Overdue (past, not yet actioned) shows red.
+function nextActionCell(record) {
+  const text = record.next_action ? escapeHtml(record.next_action) : "—";
+  if (!record.next_action_at) return text;
+  const overdue = new Date(record.next_action_at).getTime() < Date.now();
+  return `${text} ${badge(fmtRelative(record.next_action_at), overdue ? "red" : "default")}`;
+}
+
 const CRM_LIST_CONFIG = {
   leads: {
     fetch: fetchLeads,
@@ -1271,10 +1304,10 @@ const CRM_LIST_CONFIG = {
       { label: "Name / Organization", width: "1.6fr", render: (r) => escapeHtml(r.company || r.name || "Untitled") },
       { label: "Interest", render: (r) => escapeHtml(titleCase(r.inquiry_type || r.project_type || "—")) },
       { label: "Business Unit", render: (r) => escapeHtml(titleCase(r.business_unit)) },
-      { label: "Source", render: (r) => escapeHtml(titleCase(r.source)) },
+      { label: "Source", render: (r) => `${escapeHtml(titleCase(r.source))}${leadChannelLabel(r) ? ` <span class="rail-sub">· ${escapeHtml(leadChannelLabel(r))}</span>` : ""}` },
       { label: "Status", render: (r) => badge(titleCase(r.status || r.stage || "new"), toneForStatus(r.status || r.stage)) },
       { label: "Owner", render: (r) => escapeHtml(r.owner || "Unassigned") },
-      { label: "Next Action", render: (r) => escapeHtml(r.next_action || "—") },
+      { label: "Next Action", render: nextActionCell },
     ],
     filters: [{ key: "business_unit", label: "Business Unit" }, { key: "status", label: "Status" }],
   },
@@ -1455,6 +1488,15 @@ async function renderLeadDetail(body, id, token) {
   const combinedTimeline = [...timeline, ...ownActivities];
   const canManage = hasPermission("crm.manage");
 
+  // Most recent contact across every channel this lead has — the real
+  // WhatsApp thread plus the activity/note timeline — so "recent
+  // communication" is answerable from this page at a glance.
+  const lastCommunicationAt = [
+    ...conversations.map((c) => c.created_at),
+    ...combinedTimeline.map((t) => t.occurred_at || t.created_at),
+  ].filter(Boolean).sort().pop();
+  const channelLabel = leadChannelLabel(record);
+
   const mainSections = [];
   mainSections.push(el(`
     <div class="detail-section">
@@ -1463,8 +1505,10 @@ async function renderLeadDetail(body, id, token) {
         ${factRow("Email", record.email)}
         ${factRow("Phone", record.phone)}
         ${factRow("Business Unit", titleCase(record.business_unit))}
-        ${factRow("Source", titleCase(record.source))}
-        ${factRow("Next Action", record.next_action)}
+        ${factRow("Source", `${titleCase(record.source)}${channelLabel ? ` · ${channelLabel}` : ""}`)}
+        ${factRow("Owner", record.owner || "Unassigned")}
+        ${factRow("Last Communication", lastCommunicationAt ? fmtRelative(lastCommunicationAt) : "No recorded contact yet")}
+        ${factRowHtml("Next Action", nextActionCell(record))}
         ${factRow("Summary", record.summary)}
       </div>
     </div>
@@ -1478,7 +1522,10 @@ async function renderLeadDetail(body, id, token) {
 
   const railSections = [];
   if (hasPermission("tasks.read")) {
-    railSections.push(railCard("Tasks", railList(ownTasks, (t) => `${escapeHtml(t.title)} <span class="rail-sub">${escapeHtml(titleCase(t.status))}</span>`)));
+    railSections.push(railCard("Tasks", railList(ownTasks, (t) => {
+      const overdue = t.due_at && !["done", "completed", "cancelled"].includes(String(t.status || "").toLowerCase()) && new Date(t.due_at).getTime() < Date.now();
+      return `${escapeHtml(t.title)} <span class="rail-sub">${escapeHtml(titleCase(t.status))}${t.due_at ? ` · ${overdue ? badge(`Overdue ${fmtRelative(t.due_at)}`, "red") : escapeHtml(`Due ${fmtDate(t.due_at)}`)}` : ""}</span>`;
+    })));
   }
   if (hasPermission("documents.generate")) {
     railSections.push(railCard("Proposals", railList(proposals, (p) => `<a href="#/documents/proposals/${p.id}">${escapeHtml(p.tier_name || "Proposal")}</a> <span class="rail-sub">${escapeHtml(titleCase(p.status))}</span>`), hasPermission("crm.manage") ? {
@@ -1531,6 +1578,12 @@ function renderChannelThreadSection(conversations) {
 function factRow(label, value) {
   return `<div class="fact"><span class="fact-label">${escapeHtml(label)}</span><span class="fact-value">${escapeHtml(value || "—")}</span></div>`;
 }
+// For values that already contain markup (e.g. a badge) — factRow above
+// escapes its value, which is correct for plain text but would double-
+// escape real HTML.
+function factRowHtml(label, html) {
+  return `<div class="fact"><span class="fact-label">${escapeHtml(label)}</span><span class="fact-value">${html}</span></div>`;
+}
 
 function renderLeadUpdateForm(record) {
   const section = el(`<div class="detail-section"><h3>Update</h3></div>`);
@@ -1545,6 +1598,9 @@ function renderLeadUpdateForm(record) {
       <label>Next Action
         <input name="next_action" value="${escapeHtml(record.next_action || "")}" />
       </label>
+      <label>Next Action Due
+        <input type="datetime-local" name="next_action_at" value="${escapeHtml(toDatetimeLocalValue(record.next_action_at))}" />
+      </label>
       <button type="submit" class="btn btn-primary btn-sm">Save</button>
       <span class="form-status"></span>
     </form>
@@ -1553,11 +1609,13 @@ function renderLeadUpdateForm(record) {
     event.preventDefault();
     const statusLabel = form.querySelector(".form-status");
     const formData = new FormData(form);
+    const nextActionAtRaw = formData.get("next_action_at");
     try {
       await apiUpdateLead(record.id, {
         status: formData.get("status"),
         owner: formData.get("owner"),
         next_action: formData.get("next_action"),
+        next_action_at: nextActionAtRaw ? new Date(nextActionAtRaw).toISOString() : null,
       });
       invalidate("leads");
       statusLabel.textContent = "Saved.";
