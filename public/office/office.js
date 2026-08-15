@@ -195,6 +195,11 @@ async function apiResetAdminUserPassword(id) {
 async function apiUploadAdminUserPhoto(id, photoDataUrl) {
   return api(`/api/lead-agents/admin/users/${encodeURIComponent(id)}/photo`, { method: "POST", body: { photo_data_url: photoDataUrl } });
 }
+// Self-service — updates the CURRENT signed-in user's own photo, not
+// an arbitrary staff.manage-gated target the way the function above does.
+async function apiUploadMyPhoto(photoDataUrl) {
+  return api("/api/lead-agents/admin/session/photo", { method: "POST", body: { photo_data_url: photoDataUrl } });
+}
 function readFileAsDataUrl(file) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -4285,6 +4290,36 @@ function renderUserFooter() {
     : titleCase(roleLabel);
 }
 
+// Self-service sidebar photo change — separate from the Team edit row's
+// admin-on-someone-else upload. Every signed-in staff member can set
+// their own canonical avatar this way.
+function wireOwnAvatarUpload() {
+  const trigger = document.getElementById("navAvatar");
+  const input = document.getElementById("navAvatarInput");
+  if (!trigger || !input) return;
+  trigger.addEventListener("click", () => input.click());
+  trigger.addEventListener("keydown", (event) => {
+    if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      input.click();
+    }
+  });
+  input.addEventListener("change", async () => {
+    const file = input.files && input.files[0];
+    input.value = "";
+    if (!file) return;
+    try {
+      const dataUrl = await readFileAsDataUrl(file);
+      const result = await apiUploadMyPhoto(dataUrl);
+      state.admin.passport_photo_url = result.passport_photo_url;
+      renderUserFooter();
+      toast("Photo updated.");
+    } catch (err) {
+      toast(err.message || "Could not update your photo.");
+    }
+  });
+}
+
 // ---------------------------------------------------------------
 // Mobile nav
 // ---------------------------------------------------------------
@@ -4915,6 +4950,7 @@ function wireShellChrome() {
     await logout();
     showLogin();
   });
+  wireOwnAvatarUpload();
   document.getElementById("navToggle").addEventListener("click", openNav);
   document.getElementById("navScrim").addEventListener("click", closeNav);
   wireNotifBell();

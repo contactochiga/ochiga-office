@@ -2132,6 +2132,47 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
         return;
       }
 
+      // Self-service avatar upload — distinct from POST
+      // /admin/users/:id/photo (staff.manage-gated, lets an admin set
+      // someone else's photo). Any authenticated staff member can set
+      // their OWN photo; no elevated permission required, same as
+      // session/me and session/password above.
+      if (pathname === "/api/lead-agents/admin/session/photo") {
+        if (req.method !== "POST") {
+          methodNotAllowed(res, "POST");
+          return;
+        }
+        const body = await readJsonBody(req);
+        requireObject(body, "body");
+        if (!body.photo_data_url) {
+          json(res, 400, { error: "photo_data_url is required" });
+          return;
+        }
+        const currentUser = await store.getAdminUserByEmail(authContext.email);
+        if (!currentUser) {
+          json(res, 401, { error: "unauthorized" });
+          return;
+        }
+        const storedPhotoRaw = await storageService.putDataUrl({
+          data_url: body.photo_data_url,
+          purpose: "staff_photo",
+          mime_type: body.mime_type,
+          resource_type: "staff",
+          resource_id: currentUser.id,
+        });
+        const storedPhoto =
+          typeof store.createOfficeFile === "function" ? await store.createOfficeFile(storedPhotoRaw) : storedPhotoRaw;
+        const updated = await store.updateAdminUser(currentUser.id, { passport_photo_url: storedPhoto.url });
+        await appendAudit(store, authContext, "admin_user_photo_updated", "admin_user", currentUser.id, { email: currentUser.email, self_service: true });
+        eventBus.publish("office.staff", {
+          action: "photo_updated",
+          actor: authContext?.email || "",
+          user: { id: updated.id, email: updated.email, passport_photo_url: updated.passport_photo_url },
+        });
+        json(res, 200, { ok: true, passport_photo_url: updated.passport_photo_url }, { "x-request-id": ctx.requestId });
+        return;
+      }
+
       if (pathname === "/api/lead-agents/admin/session/invite/accept") {
         if (req.method !== "POST") {
           methodNotAllowed(res, "POST");
