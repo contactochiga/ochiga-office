@@ -238,6 +238,9 @@ async function apiMarkConversationRead(conversationId) {
 async function apiUploadAttachment(dataUrl, filename, mimeType) {
   return api("/api/lead-agents/admin/storage", { method: "POST", body: { data_url: dataUrl, purpose: "message_attachment", filename, mime_type: mimeType } });
 }
+async function apiUploadContentImage(dataUrl, filename, mimeType) {
+  return api("/api/lead-agents/admin/storage", { method: "POST", body: { data_url: dataUrl, purpose: "content_featured_image", filename, mime_type: mimeType } });
+}
 async function apiListIntegrations() {
   return api("/api/lead-agents/admin/integrations");
 }
@@ -3561,18 +3564,67 @@ async function renderContentEditor(outlet, contentId, token) {
       <label>Title<input name="title" value="${escapeHtml(item.title)}" /></label>
       <label>Slug<input name="slug" value="${escapeHtml(item.slug || "")}" /></label>
       <label>Excerpt<textarea name="excerpt" rows="2">${escapeHtml(item.excerpt || "")}</textarea></label>
+      <label>Featured Image
+        <div class="featured-image-field" style="display:flex;align-items:center;gap:10px;">
+          <img class="featured-image-thumb" src="${escapeHtml(item.featured_image_url || "")}" style="width:64px;height:64px;object-fit:cover;border-radius:var(--radius-sm);border:1px solid var(--line);display:${item.featured_image_url ? "block" : "none"};" alt="" />
+          <input type="file" accept="image/*" class="featured-image-input" />
+          <span class="featured-image-status" style="font-size:11px;color:var(--text-tertiary);"></span>
+        </div>
+        <input type="hidden" name="featured_image_url" value="${escapeHtml(item.featured_image_url || "")}" />
+      </label>
       <label>Category<input name="category" value="${escapeHtml(item.category || "")}" /></label>
       <label>Author<input name="author" value="${escapeHtml(item.author || "")}" /></label>
       <label>Tags (comma separated)<input name="tags" value="${escapeHtml((item.tags || []).join(", "))}" /></label>
-      <label>Body<textarea name="body" rows="10">${escapeHtml(item.body || "")}</textarea></label>
+      <label>Body
+        <div class="body-toolbar" style="display:flex;gap:4px;margin-bottom:4px;"></div>
+        <textarea name="body" rows="14" style="font-family:inherit;">${escapeHtml(item.body || "")}</textarea>
+        <span class="hint">Supports **bold**, *italic*, # / ## headings, and "- " bullet lists — carried through to the published article.</span>
+      </label>
       <label>SEO Title<input name="seo_title" value="${escapeHtml(item.seo_title || "")}" /></label>
       <label>SEO Description<textarea name="seo_description" rows="2">${escapeHtml(item.seo_description || "")}</textarea></label>
       <div>
         <button type="submit" class="btn btn-primary btn-sm">Save</button>
+        <button type="button" class="btn btn-ghost btn-sm content-preview-toggle">Preview</button>
         <span class="form-status"></span>
       </div>
     </form>
   `);
+
+  wireBodyToolbar(form.querySelector(".body-toolbar"), form.querySelector('textarea[name="body"]'));
+
+  const imageInput = form.querySelector(".featured-image-input");
+  const imageThumb = form.querySelector(".featured-image-thumb");
+  const imageStatus = form.querySelector(".featured-image-status");
+  const imageUrlField = form.querySelector('input[name="featured_image_url"]');
+  imageInput.addEventListener("change", async () => {
+    const file = imageInput.files && imageInput.files[0];
+    if (!file) return;
+    imageStatus.textContent = "Uploading…";
+    try {
+      const dataUrl = await readFileAsDataUrl(file);
+      const result = await apiUploadContentImage(dataUrl, file.name, file.type);
+      imageUrlField.value = result.file.url;
+      imageThumb.src = result.file.url;
+      imageThumb.style.display = "block";
+      imageStatus.textContent = "Uploaded — click Save to keep it.";
+    } catch (err) {
+      imageStatus.textContent = err.message || "Could not upload image.";
+    }
+  });
+
+  const previewHost = el(`<div class="content-preview" style="display:none;margin-top:14px;max-width:640px;"></div>`);
+  form.querySelector(".content-preview-toggle").addEventListener("click", () => {
+    const showing = previewHost.style.display !== "none";
+    if (showing) {
+      previewHost.style.display = "none";
+      previewHost.innerHTML = "";
+      return;
+    }
+    const formData = Object.fromEntries(new FormData(form).entries());
+    previewHost.innerHTML = renderContentPreviewHtml(formData);
+    previewHost.style.display = "block";
+  });
+
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
     const statusEl = form.querySelector(".form-status");
@@ -3586,8 +3638,72 @@ async function renderContentEditor(outlet, contentId, token) {
     }
   });
   outlet.appendChild(form);
+  outlet.appendChild(previewHost);
 
   outlet.appendChild(renderContentWorkflowActions(item, contentId));
+}
+
+// Deliberately markdown-LITE, not a full markdown implementation and not
+// a WYSIWYG editor — a plain textarea stays inspectable/diffable, and
+// this small, fixed set of rules (bold/italic/headings/bullets) is
+// exactly what textToPortableText in sanity-adapter.js also parses, so
+// what a writer sees in Preview is what actually reaches the published
+// article, not a plain-text approximation of formatting that gets lost.
+function wireBodyToolbar(toolbar, textarea) {
+  const buttons = [
+    { label: "B", wrap: "**" },
+    { label: "I", wrap: "*" },
+    { label: "H2", prefix: "## " },
+    { label: "H3", prefix: "### " },
+    { label: "•", prefix: "- " },
+  ];
+  buttons.forEach(({ label, wrap, prefix }) => {
+    const btn = el(`<button type="button" class="btn btn-ghost btn-sm" style="padding:2px 8px;">${escapeHtml(label)}</button>`);
+    btn.addEventListener("click", () => {
+      const start = textarea.selectionStart;
+      const end = textarea.selectionEnd;
+      const value = textarea.value;
+      if (wrap) {
+        textarea.value = value.slice(0, start) + wrap + value.slice(start, end) + wrap + value.slice(end);
+        textarea.selectionStart = start + wrap.length;
+        textarea.selectionEnd = end + wrap.length;
+      } else if (prefix) {
+        const lineStart = value.lastIndexOf("\n", start - 1) + 1;
+        textarea.value = value.slice(0, lineStart) + prefix + value.slice(lineStart);
+        textarea.selectionStart = textarea.selectionEnd = start + prefix.length;
+      }
+      textarea.focus();
+    });
+    toolbar.appendChild(btn);
+  });
+}
+
+function markdownLiteToHtml(text) {
+  const inline = (line) => escapeHtml(line).replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>").replace(/\*(.+?)\*/g, "<em>$1</em>");
+  const paragraphs = String(text || "").split(/\n\s*\n/).map((p) => p.trim()).filter(Boolean);
+  return paragraphs.map((p) => {
+    const lines = p.split("\n");
+    if (lines.every((l) => l.trim().startsWith("- "))) {
+      return `<ul>${lines.map((l) => `<li>${inline(l.trim().slice(2))}</li>`).join("")}</ul>`;
+    }
+    if (/^###\s+/.test(p)) return `<h4>${inline(p.replace(/^###\s+/, ""))}</h4>`;
+    if (/^##\s+/.test(p)) return `<h3>${inline(p.replace(/^##\s+/, ""))}</h3>`;
+    if (/^#\s+/.test(p)) return `<h2>${inline(p.replace(/^#\s+/, ""))}</h2>`;
+    return `<p>${lines.map(inline).join("<br/>")}</p>`;
+  }).join("");
+}
+
+function renderContentPreviewHtml(item) {
+  return `
+    <div style="border:1px solid var(--line);border-radius:var(--radius);padding:16px;background:var(--charcoal);">
+      <div class="hint" style="margin-bottom:8px;">Office-rendered preview — approximates the published layout; the live article's actual design comes from the Ochiga website.</div>
+      ${item.featured_image_url ? `<img src="${escapeHtml(item.featured_image_url)}" style="width:100%;max-height:260px;object-fit:cover;border-radius:var(--radius-sm);margin-bottom:12px;" alt="" />` : ""}
+      <h2 style="margin:0 0 6px;">${escapeHtml(item.title || "Untitled")}</h2>
+      <div class="hint" style="margin-bottom:10px;">${escapeHtml([item.author, item.category].filter(Boolean).join(" · "))}</div>
+      ${item.excerpt ? `<p style="font-style:italic;color:var(--text-secondary);">${escapeHtml(item.excerpt)}</p>` : ""}
+      <div>${markdownLiteToHtml(item.body)}</div>
+    </div>
+  `;
 }
 
 function renderContentWorkflowActions(item, contentId) {

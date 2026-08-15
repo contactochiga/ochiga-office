@@ -13,6 +13,7 @@
 // prefix is the published version. Publishing = copy draft content to
 // the bare id, then delete the draft. Unpublishing = the reverse.
 const { createClient } = require("@sanity/client");
+const crypto = require("crypto");
 
 function sanityConfigured() {
   return Boolean(process.env.SANITY_PROJECT_ID && process.env.SANITY_DATASET && process.env.SANITY_API_WRITE_TOKEN);
@@ -32,21 +33,62 @@ function sanityClient() {
   return cachedClient;
 }
 
-// Minimal plain-text -> Portable Text conversion: paragraphs separated
-// by a blank line become "block" entries. No rich formatting is
-// claimed or attempted — matches what Office's editor actually
-// collects (plain text), rather than pretending a WYSIWYG editor exists.
+function portableKey() {
+  return crypto.randomBytes(6).toString("hex");
+}
+
+// Splits a line into spans with strong/em marks for **bold** and
+// *italic* — the exact same markdown-lite rules Office's editor toolbar
+// writes and its Preview panel renders (wireBodyToolbar/
+// markdownLiteToHtml in office.js), so what a writer sees in Preview is
+// what actually reaches the published article.
+function inlineSpans(text) {
+  const spans = [];
+  const regex = /\*\*(.+?)\*\*|\*(.+?)\*/g;
+  let lastIndex = 0;
+  let match;
+  while ((match = regex.exec(text))) {
+    if (match.index > lastIndex) spans.push({ _type: "span", _key: portableKey(), text: text.slice(lastIndex, match.index), marks: [] });
+    if (match[1] !== undefined) spans.push({ _type: "span", _key: portableKey(), text: match[1], marks: ["strong"] });
+    else spans.push({ _type: "span", _key: portableKey(), text: match[2], marks: ["em"] });
+    lastIndex = regex.lastIndex;
+  }
+  if (lastIndex < text.length) spans.push({ _type: "span", _key: portableKey(), text: text.slice(lastIndex), marks: [] });
+  if (!spans.length) spans.push({ _type: "span", _key: portableKey(), text: "", marks: [] });
+  return spans;
+}
+
+// Markdown-lite -> Portable Text: paragraphs (blank-line separated)
+// become normal blocks; "# "/"## "/"### " become h2/h3/h4; a group
+// where every line starts with "- " becomes bullet listItem blocks.
+// Intentionally a small fixed rule set, not a full markdown parser —
+// matches exactly what the editor toolbar can produce.
 function textToPortableText(body) {
-  const paragraphs = String(body || "")
-    .split(/\n\s*\n/)
-    .map((p) => p.trim())
-    .filter(Boolean);
-  if (!paragraphs.length) return [];
-  return paragraphs.map((text) => ({
-    _type: "block",
-    style: "normal",
-    children: [{ _type: "span", text }],
-  }));
+  const groups = String(body || "").split(/\n\s*\n/).map((p) => p.trim()).filter(Boolean);
+  const blocks = [];
+  groups.forEach((group) => {
+    const lines = group.split("\n");
+    if (lines.length && lines.every((l) => l.trim().startsWith("- "))) {
+      lines.forEach((l) => {
+        blocks.push({ _type: "block", _key: portableKey(), style: "normal", listItem: "bullet", level: 1, markDefs: [], children: inlineSpans(l.trim().slice(2)) });
+      });
+      return;
+    }
+    if (/^###\s+/.test(group)) {
+      blocks.push({ _type: "block", _key: portableKey(), style: "h4", markDefs: [], children: inlineSpans(group.replace(/^###\s+/, "")) });
+      return;
+    }
+    if (/^##\s+/.test(group)) {
+      blocks.push({ _type: "block", _key: portableKey(), style: "h3", markDefs: [], children: inlineSpans(group.replace(/^##\s+/, "")) });
+      return;
+    }
+    if (/^#\s+/.test(group)) {
+      blocks.push({ _type: "block", _key: portableKey(), style: "h2", markDefs: [], children: inlineSpans(group.replace(/^#\s+/, "")) });
+      return;
+    }
+    blocks.push({ _type: "block", _key: portableKey(), style: "normal", markDefs: [], children: inlineSpans(lines.join(" ")) });
+  });
+  return blocks;
 }
 
 function slugify(value) {
@@ -169,4 +211,5 @@ module.exports = {
   publishToSanity,
   unpublishFromSanity,
   slugify,
+  textToPortableText,
 };

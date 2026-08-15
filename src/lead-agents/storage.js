@@ -13,6 +13,7 @@ const STORAGE_PURPOSES = Object.freeze([
   "device_snapshot",
   "camera_snapshot",
   "digital_twin_file",
+  "content_featured_image",
 ]);
 
 function parseDataUrl(value) {

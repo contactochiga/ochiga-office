@@ -4403,11 +4403,13 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
         }
         const body = await readJsonBody(req, 16 * 1024 * 1024);
         requireObject(body, "body");
-        // General file storage stays manage_storage-gated, except the
-        // one narrow case of a message attachment — any staff member
-        // who can send a message can attach a file to it, without
-        // granting the broader storage-write capability just for that.
-        authorizePermission(authContext, body.purpose === "message_attachment" ? "messages.send" : "manage_storage");
+        // General file storage stays manage_storage-gated, except two
+        // narrow cases: any staff member who can send a message can
+        // attach a file to it, and any staff member who can write
+        // content can upload that article's featured image — neither
+        // needs the broader storage-write capability just for that.
+        const PURPOSE_PERMISSION = { message_attachment: "messages.send", content_featured_image: "content.write" };
+        authorizePermission(authContext, PURPOSE_PERMISSION[body.purpose] || "manage_storage");
         const storedFile = await storageService.putDataUrl(body);
         const file =
           typeof store.createOfficeFile === "function"
