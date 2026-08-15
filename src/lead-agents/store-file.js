@@ -1171,6 +1171,10 @@ class FileLeadAgentsStore {
     );
   }
 
+  async getOfficeDocumentById(id) {
+    return this.state.office_documents.find((doc) => doc.id === id) || null;
+  }
+
   async createOfficeFile(input) {
     const file = {
       id: input.id,
@@ -1235,6 +1239,7 @@ class FileLeadAgentsStore {
       file_url: input.file_url || "",
       html_url: input.html_url || "",
       email_to: input.email_to || "",
+      share_token: input.share_token || "",
       metadata: input.metadata || {},
       created_at: input.created_at || nowIso,
       updated_at: nowIso,

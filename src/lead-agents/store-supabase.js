@@ -1003,6 +1003,11 @@ class SupabaseLeadAgentsStore {
     return this.safeGet("/office_documents?order=updated_at.desc");
   }
 
+  async getOfficeDocumentById(id) {
+    const response = await this.client.get(`/office_documents?id=eq.${encodeURIComponent(id)}&limit=1`);
+    return response.data[0] || null;
+  }
+
   async createOfficeFile(input) {
     try {
       const response = await this.client.post(
@@ -1066,6 +1071,7 @@ class SupabaseLeadAgentsStore {
       file_url: input.file_url || "",
       html_url: input.html_url || "",
       email_to: input.email_to || "",
+      share_token: input.share_token || "",
       metadata: input.metadata || {},
     };
     try {

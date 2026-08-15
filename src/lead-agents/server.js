@@ -1853,6 +1853,11 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
         pathname === "/api/lead-agents/admin/session/logout" ||
         pathname === "/api/lead-agents/admin/session/me";
       const isPublicWhatsappPath = pathname === "/webhooks/whatsapp";
+      // A document share link is meant to be opened by an external
+      // recipient (a lead/client with no Office login) — the token
+      // itself (validated inside the route handler) is what gates
+      // access here, not a staff session.
+      const isPublicDocumentSharePath = /^\/api\/lead-agents\/documents\/shared\/[^/]+\/[^/]+$/.test(pathname);
 
       if (
         pathname !== "/healthz" &&
@@ -1862,7 +1867,8 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
         !isPublicDashboardPath &&
         !isPublicOfficeShellPath &&
         !isPublicAdminSessionPath &&
-        !isPublicWhatsappPath
+        !isPublicWhatsappPath &&
+        !isPublicDocumentSharePath
       ) {
         authContext = tryEdgeAuth(req, config) || enforceAuth(req, config);
         authContext = await enrichAuthContext(authContext, store);
@@ -4471,6 +4477,7 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
             };
           }
         }
+        const shareToken = crypto.randomBytes(16).toString("hex");
         const documentRecord = await store.createOfficeDocument({
           id,
           title: body.title,
@@ -4484,6 +4491,7 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           html_url: storedHtml.url,
           file_url: storedHtml.url,
           email_to: body.email_to || "",
+          share_token: shareToken,
           metadata: {
             recipient: body.recipient || "",
             template_id: body.template_id || "basic",
@@ -4492,13 +4500,18 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
             source_file_url: body.file_url || "",
           },
         });
+        // A staff session URL (storedHtml.url) 401s for anyone without an
+        // Office login, and is relative anyway — this is the link that
+        // actually works for the external recipient.
+        const shareUrl = absoluteUrl(req, `/api/lead-agents/documents/shared/${id}/${shareToken}`);
+        documentRecord.share_url = shareUrl;
         if (body.email_to) {
           try {
             const emailDelivery = await sendOfficeEmail(config, {
               to: body.email_to,
               subject: body.email_subject || body.title,
-              text: `Ochiga Office generated ${body.document_type || "document"}: ${body.title}\n\n${storedHtml.url}`,
-              html: `<p>Ochiga Office generated <strong>${body.document_type || "document"}</strong>: ${body.title}</p><p><a href="${storedHtml.url}">Open document</a></p>`,
+              text: `Ochiga Office generated ${body.document_type || "document"}: ${body.title}\n\n${shareUrl}`,
+              html: `<p>Ochiga Office generated <strong>${body.document_type || "document"}</strong>: ${body.title}</p><p><a href="${shareUrl}">Open document</a></p>`,
             });
             documentRecord.email_delivery = emailDelivery;
             // CRM-logged outbound email (Phase 6, v2 audit: email existed
@@ -4968,6 +4981,33 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           asset: updated,
         });
         json(res, 200, { ok: true, kind, action, asset: updated }, { "x-request-id": ctx.requestId });
+        return;
+      }
+
+      // Public — deliberately not behind authorizePermission. Gated by
+      // the per-document share_token instead of a staff session, so a
+      // document emailed to an external lead/client is actually openable
+      // by them. See isPublicDocumentSharePath above.
+      const documentShareMatch = pathname.match(/^\/api\/lead-agents\/documents\/shared\/([^/]+)\/([^/]+)$/);
+      if (documentShareMatch) {
+        if (req.method !== "GET") {
+          methodNotAllowed(res, "GET");
+          return;
+        }
+        const [, sharedDocId, providedToken] = documentShareMatch;
+        const doc = typeof store.getOfficeDocumentById === "function" ? await store.getOfficeDocumentById(sharedDocId) : null;
+        if (!doc || !doc.share_token || !secureCompare(doc.share_token, providedToken)) {
+          notFound(res);
+          return;
+        }
+        const servedUrl = doc.html_url || doc.file_url || "";
+        const rawFilename = servedUrl.split("/").pop();
+        if (!rawFilename) {
+          notFound(res);
+          return;
+        }
+        const filename = path.basename(decodeURIComponent(rawFilename));
+        await serveFile(res, storageService.filePathFor(filename));
         return;
       }
 

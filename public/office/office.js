@@ -3741,21 +3741,68 @@ async function renderDocumentDetail(body, id, token) {
   }
   const related = resolveGenericRelation(record.related_type, record.related_id, { leads, contacts, organizations, opportunities, projects, portfolioEntries, supportCases, privateRelationships, partnerships });
 
-  const mainSections = [
-    el(`
-      <div class="detail-section">
-        <h3>Document</h3>
-        <div class="fact-grid">
-          ${factRow("Type", titleCase(record.document_type))}
-          ${factRow("Status", titleCase(record.status))}
-          ${factRow("Owner", record.owner)}
-          ${factRow("Related", related ? related.name : (record.related_type ? titleCase(record.related_type) : "—"))}
-        </div>
-        ${record.html_url || record.file_url
-          ? `<p><a href="${escapeHtml(record.html_url || record.file_url)}" target="_blank" rel="noopener">Open Document →</a></p>`
-          : `<p class="detail-note">No file is attached to this document record.</p>`}
+  const fileUrl = record.html_url || record.file_url;
+  const docSection = el(`
+    <div class="detail-section">
+      <h3>Document</h3>
+      <div class="fact-grid">
+        ${factRow("Type", titleCase(record.document_type))}
+        ${factRow("Status", titleCase(record.status))}
+        ${factRow("Owner", record.owner)}
+        ${factRow("Related", related ? related.name : (record.related_type ? titleCase(record.related_type) : "—"))}
       </div>
-    `),
+      ${fileUrl ? `<div class="doc-actions" style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px;"></div>` : `<p class="detail-note">No file is attached to this document record.</p>`}
+      <div class="doc-preview-frame" style="display:none;margin-top:12px;"></div>
+    </div>
+  `);
+  if (fileUrl) {
+    const actions = docSection.querySelector(".doc-actions");
+    const previewFrame = docSection.querySelector(".doc-preview-frame");
+
+    const openLink = el(`<a href="${escapeHtml(fileUrl)}" target="_blank" rel="noopener" class="btn btn-ghost btn-sm">Open →</a>`);
+    actions.appendChild(openLink);
+
+    const previewBtn = el(`<button type="button" class="btn btn-ghost btn-sm">Preview</button>`);
+    previewBtn.addEventListener("click", () => {
+      const showing = previewFrame.style.display !== "none";
+      if (showing) {
+        previewFrame.style.display = "none";
+        previewFrame.innerHTML = "";
+        previewBtn.textContent = "Preview";
+      } else {
+        previewFrame.innerHTML = `<iframe src="${escapeHtml(fileUrl)}" style="width:100%;height:480px;border:1px solid var(--line);border-radius:var(--radius);background:var(--white);"></iframe>`;
+        previewFrame.style.display = "block";
+        previewBtn.textContent = "Hide Preview";
+      }
+    });
+    actions.appendChild(previewBtn);
+
+    const downloadLink = el(`<a href="${escapeHtml(fileUrl)}" download="${escapeHtml((record.title || "document").replace(/[^a-z0-9]+/gi, "-"))}.html" class="btn btn-ghost btn-sm">Download</a>`);
+    actions.appendChild(downloadLink);
+
+    // The Open/Download links above require an Office login — fine for
+    // staff, useless if pasted into an email to an external client. The
+    // share link is token-gated instead, so it actually works for them.
+    const shareBtn = el(`<button type="button" class="btn btn-ghost btn-sm">Copy Share Link</button>`);
+    if (record.share_token) {
+      shareBtn.addEventListener("click", async () => {
+        const shareUrl = `${window.location.origin}/api/lead-agents/documents/shared/${encodeURIComponent(id)}/${encodeURIComponent(record.share_token)}`;
+        try {
+          await navigator.clipboard.writeText(shareUrl);
+          toast("Share link copied — this one works for anyone, no Office login needed.");
+        } catch {
+          toast(shareUrl);
+        }
+      });
+    } else {
+      shareBtn.disabled = true;
+      shareBtn.title = "This document was created before shareable links existed — regenerate it to get one.";
+    }
+    actions.appendChild(shareBtn);
+  }
+
+  const mainSections = [
+    docSection,
     renderTimeline(notes, { canAddNote: canManage, onAddNote: () => promptAddRelatedNote("document", id) }),
   ];
 

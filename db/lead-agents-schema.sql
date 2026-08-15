@@ -658,10 +658,12 @@ create table if not exists office_documents (
   file_url text,
   html_url text,
   email_to text,
+  share_token text,
   metadata jsonb not null default '{}'::jsonb,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
+alter table office_documents add column if not exists share_token text;
 
 drop trigger if exists office_documents_set_updated_at on office_documents;
 create trigger office_documents_set_updated_at
