@@ -6,6 +6,7 @@ const STORAGE_PURPOSES = Object.freeze([
   "staff_photo",
   "resident_photo",
   "document",
+  "message_attachment",
   "generated_pdf",
   "plan_upload",
   "estate_image",

@@ -22,7 +22,7 @@ const {
   verifyPassword,
 } = require("./auth");
 const { MemoryRateLimiter } = require("./rate-limit");
-const { PATCH_FIELDS, normalizeEmail, normalizeLeadInput } = require("./normalize-lead");
+const { PATCH_FIELDS, normalizeEmail, normalizeLeadInput, normalizeText } = require("./normalize-lead");
 const {
   findExistingIntakeLead,
   findOrUpsertLead,
@@ -4300,9 +4300,13 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           methodNotAllowed(res, "POST");
           return;
         }
-        authorizePermission(authContext, "manage_storage");
         const body = await readJsonBody(req, 16 * 1024 * 1024);
         requireObject(body, "body");
+        // General file storage stays manage_storage-gated, except the
+        // one narrow case of a message attachment — any staff member
+        // who can send a message can attach a file to it, without
+        // granting the broader storage-write capability just for that.
+        authorizePermission(authContext, body.purpose === "message_attachment" ? "messages.send" : "manage_storage");
         const storedFile = await storageService.putDataUrl(body);
         const file =
           typeof store.createOfficeFile === "function"
@@ -4409,6 +4413,170 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           relatedId: documentRecord.id,
         });
         json(res, 201, { document: documentRecord, html_file: storedHtml }, { "x-request-id": ctx.requestId });
+        return;
+      }
+
+      // ---------------------------------------------------------------
+      // Staff messaging (Phase 5) — staff-to-staff only, deliberately
+      // never touching the CRM lead/visitor `conversations` table.
+      // Reuses existing identity (authContext.email), RBAC
+      // (messages.read/messages.send), the fixed realtime hub
+      // (Phase 4), the notification pipeline (Phase 4), and the
+      // existing file storage service for attachments — the client
+      // uploads via POST /admin/storage first and references the
+      // resulting file_url here, same as every other attachment path.
+      // ---------------------------------------------------------------
+      // Minimal staff picker for starting a conversation — deliberately
+      // NOT the full Team admin_users list (that stays staff.manage-
+      // gated and includes role/status/audit-relevant fields no
+      // ordinary staff member needs to see about a colleague just to
+      // message them).
+      if (pathname === "/api/lead-agents/admin/staff/directory") {
+        if (req.method !== "GET") {
+          methodNotAllowed(res, "GET");
+          return;
+        }
+        authorizePermission(authContext, "messages.read");
+        const users = await store.listAdminUsers();
+        const directory = users
+          .filter((u) => u.status === "active" && normalizeEmail(u.email) !== normalizeEmail(authContext?.email || ""))
+          .map((u) => ({ email: u.email, display_name: u.display_name || u.email, office_position: u.office_position || "" }));
+        json(res, 200, { staff: directory }, { "x-request-id": ctx.requestId });
+        return;
+      }
+
+      if (pathname === "/api/lead-agents/admin/staff/conversations") {
+        if (req.method === "GET") {
+          authorizePermission(authContext, "messages.read");
+          const email = normalizeEmail(authContext?.email || "");
+          const conversations = await store.listStaffConversationsForStaff(email);
+          const enriched = await Promise.all(
+            conversations.map(async (conversation) => {
+              const participants = await store.listStaffConversationParticipants(conversation.id);
+              const messages = await store.listStaffMessages(conversation.id, 1);
+              const unread = await store.countUnreadStaffMessages(conversation.id, email);
+              return {
+                ...conversation,
+                participants: participants.map((p) => p.staff_email),
+                last_message: messages[messages.length - 1] || null,
+                unread_count: unread,
+              };
+            })
+          );
+          json(res, 200, { conversations: enriched }, { "x-request-id": ctx.requestId });
+          return;
+        }
+        if (req.method === "POST") {
+          authorizePermission(authContext, "messages.send");
+          const body = await readJsonBody(req);
+          requireObject(body, "body");
+          const createdBy = normalizeEmail(authContext?.email || "");
+          const participantEmails = Array.isArray(body.participant_emails) ? body.participant_emails.map(normalizeEmail).filter(Boolean) : [];
+          if (!participantEmails.length) {
+            json(res, 400, { error: "participant_emails is required" }, { "x-request-id": ctx.requestId });
+            return;
+          }
+          const type = participantEmails.length === 1 && body.type !== "group" ? "direct" : "group";
+          let conversation = null;
+          if (type === "direct") {
+            conversation = await store.findDirectStaffConversation(createdBy, participantEmails[0]);
+          }
+          if (!conversation) {
+            conversation = await store.createStaffConversation({
+              type,
+              title: type === "group" ? body.title || null : null,
+              createdBy,
+              participantEmails,
+            });
+            await appendAudit(store, authContext, "staff_conversation_created", "staff_conversation", conversation.id, {
+              type: conversation.type,
+              participants: participantEmails,
+            });
+          }
+          json(res, 201, { conversation }, { "x-request-id": ctx.requestId });
+          return;
+        }
+        methodNotAllowed(res, "GET,POST");
+        return;
+      }
+
+      const staffConversationMessagesMatch = pathname.match(/^\/api\/lead-agents\/admin\/staff\/conversations\/([^/]+)\/messages$/);
+      if (staffConversationMessagesMatch) {
+        const conversationId = staffConversationMessagesMatch[1];
+        const email = normalizeEmail(authContext?.email || "");
+        if (req.method === "GET") {
+          authorizePermission(authContext, "messages.read");
+          if (!(await store.isStaffConversationParticipant(conversationId, email))) {
+            json(res, 403, { error: "forbidden" }, { "x-request-id": ctx.requestId });
+            return;
+          }
+          const messages = await store.listStaffMessages(conversationId, 200);
+          json(res, 200, { messages }, { "x-request-id": ctx.requestId });
+          return;
+        }
+        if (req.method === "POST") {
+          authorizePermission(authContext, "messages.send");
+          if (!(await store.isStaffConversationParticipant(conversationId, email))) {
+            json(res, 403, { error: "forbidden" }, { "x-request-id": ctx.requestId });
+            return;
+          }
+          const body = await readJsonBody(req);
+          requireObject(body, "body");
+          const bodyText = normalizeText(body.body || "");
+          const attachments = Array.isArray(body.attachments) ? body.attachments.filter((a) => a && a.file_url) : [];
+          if (!bodyText && !attachments.length) {
+            json(res, 400, { error: "A message needs body text or at least one attachment." }, { "x-request-id": ctx.requestId });
+            return;
+          }
+          const message = await store.createStaffMessage({
+            conversationId,
+            senderEmail: email,
+            body: bodyText,
+            attachments,
+          });
+          const participants = await store.listStaffConversationParticipants(conversationId);
+          const otherEmails = participants.map((p) => p.staff_email).filter((e) => e !== email);
+          eventBus.publish(
+            "office.message",
+            { conversation_id: conversationId, message },
+            otherEmails.length ? { recipients: otherEmails } : undefined
+          );
+          // Guard against notifyRecipients' "no targets = broadcast"
+          // fallback — a message with no other participants (shouldn't
+          // happen; conversations always have >=2) must never fan out
+          // as a broadcast notification.
+          if (otherEmails.length) {
+            await notifyRecipients(store, eventBus, {
+              recipientEmails: otherEmails,
+              actorEmail: email,
+              type: "staff_message",
+              summary: `New message from ${email}${bodyText ? `: ${bodyText.slice(0, 80)}` : " (attachment)"}`,
+              relatedType: "staff_conversation",
+              relatedId: conversationId,
+            });
+          }
+          json(res, 201, { message }, { "x-request-id": ctx.requestId });
+          return;
+        }
+        methodNotAllowed(res, "GET,POST");
+        return;
+      }
+
+      const staffConversationReadMatch = pathname.match(/^\/api\/lead-agents\/admin\/staff\/conversations\/([^/]+)\/read$/);
+      if (staffConversationReadMatch) {
+        if (req.method !== "POST") {
+          methodNotAllowed(res, "POST");
+          return;
+        }
+        authorizePermission(authContext, "messages.read");
+        const conversationId = staffConversationReadMatch[1];
+        const email = normalizeEmail(authContext?.email || "");
+        if (!(await store.isStaffConversationParticipant(conversationId, email))) {
+          json(res, 403, { error: "forbidden" }, { "x-request-id": ctx.requestId });
+          return;
+        }
+        const marked = await store.markStaffMessagesRead(conversationId, email);
+        json(res, 200, { marked_read: marked }, { "x-request-id": ctx.requestId });
         return;
       }
 

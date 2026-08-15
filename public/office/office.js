@@ -194,6 +194,27 @@ async function apiListMyNotifications() {
 async function apiMarkNotificationRead(id) {
   return api(`/api/lead-agents/admin/notifications/${encodeURIComponent(id)}/read`, { method: "POST", body: {} });
 }
+async function apiListStaffDirectory() {
+  return api("/api/lead-agents/admin/staff/directory");
+}
+async function apiListConversations() {
+  return api("/api/lead-agents/admin/staff/conversations");
+}
+async function apiCreateConversation(participantEmails, type, title) {
+  return api("/api/lead-agents/admin/staff/conversations", { method: "POST", body: { participant_emails: participantEmails, type, title } });
+}
+async function apiListConversationMessages(conversationId) {
+  return api(`/api/lead-agents/admin/staff/conversations/${encodeURIComponent(conversationId)}/messages`);
+}
+async function apiSendMessage(conversationId, body, attachments) {
+  return api(`/api/lead-agents/admin/staff/conversations/${encodeURIComponent(conversationId)}/messages`, { method: "POST", body: { body, attachments } });
+}
+async function apiMarkConversationRead(conversationId) {
+  return api(`/api/lead-agents/admin/staff/conversations/${encodeURIComponent(conversationId)}/read`, { method: "POST", body: {} });
+}
+async function apiUploadAttachment(dataUrl, filename, mimeType) {
+  return api("/api/lead-agents/admin/storage", { method: "POST", body: { data_url: dataUrl, purpose: "message_attachment", filename, mime_type: mimeType } });
+}
 async function apiListIntegrations() {
   return api("/api/lead-agents/admin/integrations");
 }
@@ -336,8 +357,13 @@ const ADMIN_NAV = [
   { key: "audit", label: "Audit", permission: "audit.read", phase: null },
 ];
 
+// Inbox lives as a topbar icon (next to the notification bell), not a
+// sidebar item — still registered here so findNavItem() resolves its
+// permission gate and topbar title the same way every routed view does.
+const INBOX_NAV_ITEM = { key: "inbox", label: "Inbox", permission: "messages.read", phase: null };
+
 function allNavItems() {
-  return [...PRIMARY_NAV, ...ADMIN_NAV];
+  return [...PRIMARY_NAV, ...ADMIN_NAV, INBOX_NAV_ITEM];
 }
 function findNavItem(key) {
   return allNavItems().find((item) => item.key === key);
@@ -806,6 +832,10 @@ async function renderRoute() {
     await renderModuleRoute(outlet, "partnerships", rest, token);
   } else if (topKey === "documents") {
     await renderDocumentsRoute(outlet, rest, token);
+  } else if (topKey === "inbox") {
+    outlet.innerHTML = "";
+    outlet.appendChild(skeletonPanel(4));
+    await renderInboxRoute(outlet, rest, token);
   } else if (topKey === "team") {
     outlet.innerHTML = "";
     outlet.appendChild(skeletonPanel(4));
@@ -4077,6 +4107,7 @@ function routeForRelated(relatedType, relatedId) {
     meetings: `meetings/${relatedId}`,
     document: `documents/library/${relatedId}`,
     lead: `crm/leads/${relatedId}`,
+    staff_conversation: `inbox/${relatedId}`,
   };
   return routes[relatedType] || null;
 }
@@ -4178,12 +4209,25 @@ function wireNotifBell() {
 }
 
 let notifStream = null;
-function connectNotificationStream() {
+function connectRealtimeStream() {
   if (notifStream) return;
   try {
     notifStream = new EventSource("/api/lead-agents/admin/events");
     notifStream.addEventListener("office.notification", () => {
       refreshNotifications();
+    });
+    notifStream.addEventListener("office.message", (event) => {
+      refreshInboxBadge();
+      let payload = null;
+      try {
+        payload = JSON.parse(event.data);
+      } catch {
+        payload = null;
+      }
+      // Live-append if the thread this message belongs to is open right now.
+      if (payload && state.segments[0] === "inbox" && state.segments[1] === payload.conversation_id) {
+        appendMessageToOpenThread(payload.conversation_id, payload.message);
+      }
     });
     notifStream.onerror = () => {
       // EventSource retries on its own; nothing to do here besides not
@@ -4192,6 +4236,223 @@ function connectNotificationStream() {
   } catch {
     notifStream = null;
   }
+}
+
+// ---------------------------------------------------------------
+// Inbox — staff-to-staff messaging (Phase 5). Deliberately separate
+// data model from CRM lead conversations and from Notifications;
+// reuses RBAC (messages.read/messages.send), the same realtime hub as
+// Notifications (one EventSource, two event types), and the existing
+// storage service for attachments.
+// ---------------------------------------------------------------
+async function refreshInboxBadge() {
+  const badge_ = document.getElementById("inboxBadge");
+  if (!badge_) return;
+  try {
+    const data = await apiListConversations();
+    const totalUnread = (data.conversations || []).reduce((sum, c) => sum + (c.unread_count || 0), 0);
+    if (totalUnread > 0) {
+      badge_.textContent = totalUnread > 99 ? "99+" : String(totalUnread);
+      badge_.hidden = false;
+    } else {
+      badge_.hidden = true;
+    }
+  } catch {
+    // Quiet failure, same as the notification badge.
+  }
+}
+
+function conversationLabel(conversation) {
+  if (conversation.title) return conversation.title;
+  const others = (conversation.participants || []).filter((email) => email !== state.admin?.email);
+  return others.join(", ") || "Conversation";
+}
+
+async function renderInboxRoute(outlet, rest, token) {
+  const conversationId = rest[0];
+  if (conversationId) {
+    await renderInboxThread(outlet, conversationId, token);
+  } else {
+    await renderInboxList(outlet, token);
+  }
+}
+
+async function renderInboxList(outlet, token) {
+  setTopbar("Inbox", "");
+  setSelectedObject(null);
+  let conversations;
+  try {
+    const data = await apiListConversations();
+    conversations = data.conversations || [];
+  } catch (err) {
+    if (token !== state.renderToken) return;
+    outlet.innerHTML = "";
+    outlet.appendChild(el(`<div class="view-heading"><h1>Inbox</h1></div>`));
+    outlet.appendChild(errorPanel(err.message || "Could not load your messages."));
+    return;
+  }
+  if (token !== state.renderToken) return;
+
+  outlet.innerHTML = "";
+  const heading = el(`
+    <div class="view-heading">
+      <h1>Inbox</h1>
+      <p>Direct and group messages with Office staff.</p>
+    </div>
+  `);
+  outlet.appendChild(heading);
+
+  const newBtn = el(`<button type="button" class="btn btn-primary btn-sm" style="margin-bottom:14px;">New Message</button>`);
+  newBtn.addEventListener("click", () => openNewConversationDialog());
+  outlet.appendChild(newBtn);
+
+  if (!conversations.length) {
+    outlet.appendChild(emptyPanel({ kicker: "Inbox", title: "No conversations yet", body: "Start a conversation with a colleague using New Message." }));
+    return;
+  }
+
+  const list = el(`<div class="attention-list"></div>`);
+  conversations.forEach((conversation) => {
+    const preview = conversation.last_message?.body || (conversation.last_message?.attachments?.length ? "Attachment" : "No messages yet");
+    const row = el(`
+      <div class="attention-row clickable" style="grid-template-columns: 1fr auto 140px;">
+        <span class="attention-title">
+          <strong>${escapeHtml(conversationLabel(conversation))}</strong>
+          <span style="color:var(--text-tertiary);"> — ${escapeHtml(preview.slice(0, 60))}</span>
+        </span>
+        ${conversation.unread_count ? badge(String(conversation.unread_count), "red") : ""}
+        <span class="attention-owner">${escapeHtml(fmtRelative(conversation.last_message_at || conversation.created_at))}</span>
+      </div>
+    `);
+    row.addEventListener("click", () => navigate(`inbox/${conversation.id}`));
+    list.appendChild(row);
+  });
+  outlet.appendChild(list);
+}
+
+function openNewConversationDialog() {
+  apiListStaffDirectory().then((data) => {
+    const staff = data.staff || [];
+    openDialog("New Message", [
+      {
+        name: "participant_email", label: "To", type: "select",
+        options: staff.map((s) => ({ value: s.email, label: `${s.display_name}${s.office_position ? ` (${s.office_position})` : ""}` })),
+      },
+      { name: "body", label: "Message", type: "textarea" },
+    ], async (data_) => {
+      if (!data_.participant_email) throw new Error("Choose who to message.");
+      const { conversation } = await apiCreateConversation([data_.participant_email], "direct");
+      if (data_.body && data_.body.trim()) {
+        await apiSendMessage(conversation.id, data_.body.trim(), []);
+      }
+      navigate(`inbox/${conversation.id}`);
+    });
+  }).catch((err) => toast(err.message || "Could not load the staff directory."));
+}
+
+let pendingAttachments = [];
+async function renderInboxThread(outlet, conversationId, token) {
+  setTopbar("Inbox", "");
+  setSelectedObject(null);
+  pendingAttachments = [];
+  let messages;
+  try {
+    const data = await apiListConversationMessages(conversationId);
+    messages = data.messages || [];
+    await apiMarkConversationRead(conversationId);
+    refreshInboxBadge();
+  } catch (err) {
+    if (token !== state.renderToken) return;
+    outlet.innerHTML = "";
+    outlet.appendChild(el(`<div class="view-heading"><h1>Inbox</h1></div>`));
+    outlet.appendChild(err.status === 403 ? errorPanel("You're not part of this conversation.") : errorPanel(err.message || "Could not load this conversation."));
+    return;
+  }
+  if (token !== state.renderToken) return;
+
+  outlet.innerHTML = "";
+  const back = el(`<button type="button" class="detail-back">← Inbox</button>`);
+  back.addEventListener("click", () => navigate("inbox"));
+  outlet.appendChild(back);
+
+  const thread = el(`<div class="oyi-thread" id="inboxThread" style="max-height:60vh;border:1px solid var(--line);border-radius:var(--radius);margin:14px 0;"></div>`);
+  messages.forEach((message) => thread.appendChild(renderInboxMessage(message)));
+  outlet.appendChild(thread);
+  thread.scrollTop = thread.scrollHeight;
+
+  const composer = el(`
+    <form class="oyi-composer" id="inboxComposer" style="border:1px solid var(--line);border-radius:var(--radius);">
+      <input type="file" id="inboxAttachInput" style="display:none;" multiple />
+      <button type="button" class="btn btn-ghost btn-sm" id="inboxAttachBtn" title="Attach file">📎</button>
+      <textarea id="inboxComposerText" placeholder="Write a message…" rows="1"></textarea>
+      <button type="submit">➤</button>
+    </form>
+  `);
+  const attachList = el(`<div id="inboxAttachList" style="font-size:11px;color:var(--text-tertiary);"></div>`);
+  outlet.appendChild(attachList);
+  outlet.appendChild(composer);
+
+  composer.querySelector("#inboxAttachBtn").addEventListener("click", () => composer.querySelector("#inboxAttachInput").click());
+  composer.querySelector("#inboxAttachInput").addEventListener("change", async (event) => {
+    const files = Array.from(event.target.files || []);
+    for (const file of files) {
+      if (file.size > 6 * 1024 * 1024) {
+        toast(`${file.name} is too large (6MB max).`);
+        continue;
+      }
+      try {
+        const dataUrl = await readFileAsDataUrl(file);
+        const { file: stored } = await apiUploadAttachment(dataUrl, file.name, file.type);
+        pendingAttachments.push({ file_url: stored.url, filename: file.name, mime_type: file.type, size_bytes: file.size });
+        attachList.textContent = `Attached: ${pendingAttachments.map((a) => a.filename).join(", ")}`;
+      } catch (err) {
+        toast(err.message || `Could not attach ${file.name}.`);
+      }
+    }
+  });
+
+  composer.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const textarea = composer.querySelector("#inboxComposerText");
+    const text = textarea.value.trim();
+    if (!text && !pendingAttachments.length) return;
+    try {
+      const { message } = await apiSendMessage(conversationId, text, pendingAttachments);
+      thread.appendChild(renderInboxMessage(message));
+      thread.scrollTop = thread.scrollHeight;
+      textarea.value = "";
+      pendingAttachments = [];
+      attachList.textContent = "";
+    } catch (err) {
+      toast(err.message || "Could not send that message.");
+    }
+  });
+  composer.querySelector("#inboxComposerText").addEventListener("keydown", (event) => {
+    if (event.key === "Enter" && !event.shiftKey) {
+      event.preventDefault();
+      composer.requestSubmit();
+    }
+  });
+}
+
+function renderInboxMessage(message) {
+  const mine = message.sender_email === state.admin?.email;
+  const item = el(`
+    <div class="oyi-msg ${mine ? "user" : "assistant"}">
+      ${message.body ? `<div>${escapeHtml(message.body)}</div>` : ""}
+      ${(message.attachments || []).map((att) => `<div><a href="${escapeHtml(att.file_url)}" target="_blank" rel="noopener" style="color:inherit;text-decoration:underline;">${escapeHtml(att.filename || "Attachment")}</a></div>`).join("")}
+      <div style="font-size:10px;opacity:0.6;margin-top:4px;">${escapeHtml(mine ? "You" : message.sender_email)} · ${escapeHtml(fmtRelative(message.created_at))}</div>
+    </div>
+  `);
+  return item;
+}
+
+function appendMessageToOpenThread(conversationId, message) {
+  const thread = document.getElementById("inboxThread");
+  if (!thread || !message) return;
+  thread.appendChild(renderInboxMessage(message));
+  thread.scrollTop = thread.scrollHeight;
+  apiMarkConversationRead(conversationId).then(refreshInboxBadge).catch(() => null);
 }
 
 // ---------------------------------------------------------------
@@ -4204,11 +4465,14 @@ function showShell() {
   const bell = document.getElementById("notifBell");
   if (bell) {
     bell.style.display = hasPermission("notifications.read") ? "" : "none";
-    if (hasPermission("notifications.read")) {
-      refreshNotifications();
-      connectNotificationStream();
-    }
   }
+  const inboxBell = document.getElementById("inboxBell");
+  if (inboxBell) {
+    inboxBell.style.display = hasPermission("messages.read") ? "" : "none";
+    if (hasPermission("messages.read")) refreshInboxBadge();
+  }
+  if (hasPermission("notifications.read")) refreshNotifications();
+  if (hasPermission("notifications.read") || hasPermission("messages.read")) connectRealtimeStream();
   state.segments = currentSegmentsFromHash();
   renderRoute();
 }
@@ -4245,6 +4509,7 @@ function wireShellChrome() {
   document.getElementById("navToggle").addEventListener("click", openNav);
   document.getElementById("navScrim").addEventListener("click", closeNav);
   wireNotifBell();
+  document.getElementById("inboxBell").addEventListener("click", () => navigate("inbox"));
 }
 
 async function boot() {

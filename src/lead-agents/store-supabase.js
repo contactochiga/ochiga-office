@@ -539,6 +539,150 @@ class SupabaseLeadAgentsStore {
     return response.data[0] || null;
   }
 
+  // ---------------------------------------------------------------
+  // Staff messaging (Phase 5) — see store-file.js for the shape
+  // rationale; this mirrors it against PostgREST.
+  // ---------------------------------------------------------------
+  async createStaffConversation({ type, title, createdBy, participantEmails }) {
+    const response = await this.client.post(
+      "/staff_conversations",
+      { type: type === "group" ? "group" : "direct", title: title || null, created_by: createdBy },
+      { headers: this.selectHeaders() }
+    );
+    const conversation = response.data[0];
+    const emails = Array.from(new Set([...(participantEmails || []), createdBy].map((e) => normalizeEmail(e)).filter(Boolean)));
+    if (emails.length) {
+      await this.client.post(
+        "/staff_conversation_participants",
+        emails.map((email) => ({ conversation_id: conversation.id, staff_email: email })),
+        { headers: this.selectHeaders() }
+      );
+    }
+    return conversation;
+  }
+
+  async listStaffConversationParticipants(conversationId) {
+    const response = await this.client.get(`/staff_conversation_participants?conversation_id=eq.${conversationId}`);
+    return response.data;
+  }
+
+  async isStaffConversationParticipant(conversationId, email) {
+    const response = await this.client.get(
+      `/staff_conversation_participants?conversation_id=eq.${conversationId}&staff_email=eq.${encodeURIComponent(normalizeEmail(email))}&limit=1`
+    );
+    return response.data.length > 0;
+  }
+
+  async findDirectStaffConversation(emailA, emailB) {
+    const a = normalizeEmail(emailA);
+    const b = normalizeEmail(emailB);
+    const aRows = await this.client.get(`/staff_conversation_participants?staff_email=eq.${encodeURIComponent(a)}&select=conversation_id`);
+    const candidateIds = aRows.data.map((row) => row.conversation_id);
+    if (!candidateIds.length) return null;
+    const bRows = await this.client.get(
+      `/staff_conversation_participants?staff_email=eq.${encodeURIComponent(b)}&conversation_id=in.(${candidateIds.join(",")})&select=conversation_id`
+    );
+    for (const row of bRows.data) {
+      const conversation = await this.getStaffConversationById(row.conversation_id);
+      if (conversation && conversation.type === "direct") return conversation;
+    }
+    return null;
+  }
+
+  async listStaffConversationsForStaff(email) {
+    const rows = await this.client.get(
+      `/staff_conversation_participants?staff_email=eq.${encodeURIComponent(normalizeEmail(email))}&select=conversation_id`
+    );
+    const ids = rows.data.map((row) => row.conversation_id);
+    if (!ids.length) return [];
+    const response = await this.client.get(`/staff_conversations?id=in.(${ids.join(",")})&order=updated_at.desc`);
+    return response.data;
+  }
+
+  async getStaffConversationById(conversationId) {
+    const response = await this.client.get(`/staff_conversations?id=eq.${conversationId}&limit=1`);
+    return response.data[0] || null;
+  }
+
+  async createStaffMessage({ conversationId, senderEmail, body, attachments }) {
+    const response = await this.client.post(
+      "/staff_messages",
+      { conversation_id: conversationId, sender_email: normalizeEmail(senderEmail), body: body || "" },
+      { headers: this.selectHeaders() }
+    );
+    const message = response.data[0];
+    await this.client.patch(
+      `/staff_conversations?id=eq.${conversationId}`,
+      { last_message_at: message.created_at, updated_at: message.created_at },
+      { headers: this.selectHeaders() }
+    );
+    let attachmentRows = [];
+    if ((attachments || []).length) {
+      const attResponse = await this.client.post(
+        "/staff_message_attachments",
+        attachments.map((att) => ({
+          message_id: message.id,
+          file_id: att.file_id || null,
+          file_url: att.file_url,
+          filename: att.filename || null,
+          mime_type: att.mime_type || null,
+          size_bytes: att.size_bytes || null,
+        })),
+        { headers: this.selectHeaders() }
+      );
+      attachmentRows = attResponse.data;
+    }
+    await this.client.post(
+      "/staff_message_reads",
+      { message_id: message.id, staff_email: message.sender_email },
+      { headers: this.selectHeaders() }
+    );
+    return { ...message, attachments: attachmentRows };
+  }
+
+  async listStaffMessages(conversationId, limit = 200) {
+    const response = await this.client.get(
+      `/staff_messages?conversation_id=eq.${conversationId}&order=created_at.asc&limit=${limit}`
+    );
+    const messages = response.data;
+    if (!messages.length) return [];
+    const ids = messages.map((m) => m.id);
+    const attachmentsResponse = await this.client.get(`/staff_message_attachments?message_id=in.(${ids.join(",")})`);
+    return messages.map((message) => ({
+      ...message,
+      attachments: attachmentsResponse.data.filter((att) => att.message_id === message.id),
+    }));
+  }
+
+  async markStaffMessagesRead(conversationId, email) {
+    const normalized = normalizeEmail(email);
+    const messagesResponse = await this.client.get(`/staff_messages?conversation_id=eq.${conversationId}&select=id`);
+    const ids = messagesResponse.data.map((m) => m.id);
+    if (!ids.length) return 0;
+    const readResponse = await this.client.get(
+      `/staff_message_reads?staff_email=eq.${encodeURIComponent(normalized)}&message_id=in.(${ids.join(",")})&select=message_id`
+    );
+    const alreadyRead = new Set(readResponse.data.map((r) => r.message_id));
+    const toInsert = ids.filter((id) => !alreadyRead.has(id)).map((id) => ({ message_id: id, staff_email: normalized }));
+    if (!toInsert.length) return 0;
+    await this.client.post("/staff_message_reads", toInsert, { headers: this.selectHeaders() });
+    return toInsert.length;
+  }
+
+  async countUnreadStaffMessages(conversationId, email) {
+    const normalized = normalizeEmail(email);
+    const messagesResponse = await this.client.get(
+      `/staff_messages?conversation_id=eq.${conversationId}&sender_email=neq.${encodeURIComponent(normalized)}&select=id`
+    );
+    const ids = messagesResponse.data.map((m) => m.id);
+    if (!ids.length) return 0;
+    const readResponse = await this.client.get(
+      `/staff_message_reads?staff_email=eq.${encodeURIComponent(normalized)}&message_id=in.(${ids.join(",")})&select=message_id`
+    );
+    const readIds = new Set(readResponse.data.map((r) => r.message_id));
+    return ids.filter((id) => !readIds.has(id)).length;
+  }
+
   async appendTrace(input) {
     const response = await this.client.post(
       "/traces",

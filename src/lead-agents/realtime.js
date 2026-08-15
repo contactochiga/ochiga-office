@@ -6,6 +6,7 @@ const REALTIME_EVENT_NAMES = Object.freeze([
   "wallet.funded",
   "estate.updated",
   "office.notification",
+  "office.message",
   "edge.heartbeat",
   "twin.state.updated",
   "audit.recorded",

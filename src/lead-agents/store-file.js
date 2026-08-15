@@ -49,6 +49,11 @@ class FileLeadAgentsStore {
       deployment_projects: [],
       facility_workspaces: [],
       onboarding_emails: [],
+      staff_conversations: [],
+      staff_conversation_participants: [],
+      staff_messages: [],
+      staff_message_reads: [],
+      staff_message_attachments: [],
     };
     this.pendingWrite = Promise.resolve();
   }
@@ -105,6 +110,11 @@ class FileLeadAgentsStore {
         deployment_projects: Array.isArray(parsed.deployment_projects) ? parsed.deployment_projects : [],
         facility_workspaces: Array.isArray(parsed.facility_workspaces) ? parsed.facility_workspaces : [],
         onboarding_emails: Array.isArray(parsed.onboarding_emails) ? parsed.onboarding_emails : [],
+        staff_conversations: Array.isArray(parsed.staff_conversations) ? parsed.staff_conversations : [],
+        staff_conversation_participants: Array.isArray(parsed.staff_conversation_participants) ? parsed.staff_conversation_participants : [],
+        staff_messages: Array.isArray(parsed.staff_messages) ? parsed.staff_messages : [],
+        staff_message_reads: Array.isArray(parsed.staff_message_reads) ? parsed.staff_message_reads : [],
+        staff_message_attachments: Array.isArray(parsed.staff_message_attachments) ? parsed.staff_message_attachments : [],
       };
       if (await this.ensureOfficeSeedData()) {
         await this.persist();
@@ -686,6 +696,138 @@ class FileLeadAgentsStore {
     this.state.notifications[index] = updated;
     await this.persist();
     return updated;
+  }
+
+  // ---------------------------------------------------------------
+  // Staff messaging (Phase 5) — staff-to-staff only, keyed by email
+  // like the rest of admin_users/RBAC. Deliberately separate from the
+  // CRM `conversations` table (AI agent <-> public lead chat).
+  // ---------------------------------------------------------------
+  async createStaffConversation({ type, title, createdBy, participantEmails }) {
+    const conversation = {
+      id: crypto.randomUUID(),
+      type: type === "group" ? "group" : "direct",
+      title: title || null,
+      created_by: createdBy,
+      last_message_at: null,
+      created_at: this.nowIso(),
+      updated_at: this.nowIso(),
+    };
+    this.state.staff_conversations.push(conversation);
+    const emails = Array.from(new Set([...(participantEmails || []), createdBy].map((e) => normalizeEmail(e)).filter(Boolean)));
+    emails.forEach((email) => {
+      this.state.staff_conversation_participants.push({
+        id: crypto.randomUUID(),
+        conversation_id: conversation.id,
+        staff_email: email,
+        joined_at: this.nowIso(),
+      });
+    });
+    await this.persist();
+    return conversation;
+  }
+
+  async listStaffConversationParticipants(conversationId) {
+    return this.state.staff_conversation_participants.filter((item) => item.conversation_id === conversationId);
+  }
+
+  async isStaffConversationParticipant(conversationId, email) {
+    const normalized = normalizeEmail(email);
+    return this.state.staff_conversation_participants.some((item) => item.conversation_id === conversationId && item.staff_email === normalized);
+  }
+
+  async findDirectStaffConversation(emailA, emailB) {
+    const a = normalizeEmail(emailA);
+    const b = normalizeEmail(emailB);
+    const direct = this.state.staff_conversations.filter((item) => item.type === "direct");
+    for (const conversation of direct) {
+      const participants = this.state.staff_conversation_participants.filter((item) => item.conversation_id === conversation.id).map((item) => item.staff_email);
+      if (participants.length === 2 && participants.includes(a) && participants.includes(b)) return conversation;
+    }
+    return null;
+  }
+
+  async listStaffConversationsForStaff(email) {
+    const normalized = normalizeEmail(email);
+    const conversationIds = new Set(
+      this.state.staff_conversation_participants.filter((item) => item.staff_email === normalized).map((item) => item.conversation_id)
+    );
+    return this.state.staff_conversations
+      .filter((item) => conversationIds.has(item.id))
+      .sort((a, b) => String(b.last_message_at || b.created_at).localeCompare(String(a.last_message_at || a.created_at)));
+  }
+
+  async getStaffConversationById(conversationId) {
+    return this.state.staff_conversations.find((item) => item.id === conversationId) || null;
+  }
+
+  async createStaffMessage({ conversationId, senderEmail, body, attachments }) {
+    const message = {
+      id: crypto.randomUUID(),
+      conversation_id: conversationId,
+      sender_email: normalizeEmail(senderEmail),
+      body: body || "",
+      created_at: this.nowIso(),
+    };
+    this.state.staff_messages.push(message);
+    const conversation = this.state.staff_conversations.find((item) => item.id === conversationId);
+    if (conversation) {
+      conversation.last_message_at = message.created_at;
+      conversation.updated_at = message.created_at;
+    }
+    const attachmentRows = (attachments || []).map((att) => ({
+      id: crypto.randomUUID(),
+      message_id: message.id,
+      file_id: att.file_id || null,
+      file_url: att.file_url,
+      filename: att.filename || null,
+      mime_type: att.mime_type || null,
+      size_bytes: att.size_bytes || null,
+      created_at: message.created_at,
+    }));
+    this.state.staff_message_attachments.push(...attachmentRows);
+    // The sender has implicitly seen their own message.
+    this.state.staff_message_reads.push({
+      id: crypto.randomUUID(),
+      message_id: message.id,
+      staff_email: message.sender_email,
+      read_at: message.created_at,
+    });
+    await this.persist();
+    return { ...message, attachments: attachmentRows };
+  }
+
+  async listStaffMessages(conversationId, limit = 200) {
+    const messages = this.state.staff_messages
+      .filter((item) => item.conversation_id === conversationId)
+      .sort((a, b) => String(a.created_at).localeCompare(String(b.created_at)))
+      .slice(-limit);
+    return messages.map((message) => ({
+      ...message,
+      attachments: this.state.staff_message_attachments.filter((att) => att.message_id === message.id),
+    }));
+  }
+
+  async markStaffMessagesRead(conversationId, email) {
+    const normalized = normalizeEmail(email);
+    const messages = this.state.staff_messages.filter((item) => item.conversation_id === conversationId);
+    const now = this.nowIso();
+    let created = 0;
+    messages.forEach((message) => {
+      const alreadyRead = this.state.staff_message_reads.some((r) => r.message_id === message.id && r.staff_email === normalized);
+      if (!alreadyRead) {
+        this.state.staff_message_reads.push({ id: crypto.randomUUID(), message_id: message.id, staff_email: normalized, read_at: now });
+        created += 1;
+      }
+    });
+    if (created) await this.persist();
+    return created;
+  }
+
+  async countUnreadStaffMessages(conversationId, email) {
+    const normalized = normalizeEmail(email);
+    const messages = this.state.staff_messages.filter((item) => item.conversation_id === conversationId && item.sender_email !== normalized);
+    return messages.filter((message) => !this.state.staff_message_reads.some((r) => r.message_id === message.id && r.staff_email === normalized)).length;
   }
 
   async appendTrace(input) {
