@@ -5388,23 +5388,117 @@ function openOyiPanel() {
     appendOyiMessage("system", "Ask about what you're looking at, or anything else across Office.");
   }
 }
+// Floating/draggable orb (Universal Interaction Shell, Priority 3):
+// dragging is initiated only from the closed-state orb itself, using
+// Pointer Capture so the whole drag tracks correctly even if the
+// pointer leaves the small circular hit area mid-move. A `moved` flag
+// distinguishes an actual drag from a plain click/tap, since a
+// pointerup that lands back on the (now-relocated) orb would
+// otherwise also fire a native "click". Position persists in
+// localStorage so it survives reloads; anything short of that (e.g.
+// private browsing) just falls back to the CSS default bottom-right
+// dock, never an error.
+const OYI_POSITION_KEY = "oyi_orb_position";
+const OYI_DRAG_THRESHOLD = 4;
+
+function clampOyiPosition(control, x, y) {
+  const margin = 12;
+  const width = control.offsetWidth || 54;
+  const height = control.offsetHeight || 54;
+  const maxX = Math.max(margin, window.innerWidth - width - margin);
+  const maxY = Math.max(margin, window.innerHeight - height - margin);
+  return { x: Math.min(Math.max(x, margin), maxX), y: Math.min(Math.max(y, margin), maxY) };
+}
+
+function applyOyiPosition(control, x, y) {
+  control.style.left = `${x}px`;
+  control.style.top = `${y}px`;
+  control.style.right = "auto";
+  control.style.bottom = "auto";
+  // Flip the panel below the orb when there isn't roughly enough room
+  // for it to open upward (matches .oyi-panel's own max-height cap).
+  control.classList.toggle("panel-below", y < 420 && window.innerHeight - (y + control.offsetHeight) > y);
+}
+
 function wireOyiControl() {
   const control = document.getElementById("oyiControl");
-  const bar = document.getElementById("oyiBar");
+  const orb = document.getElementById("oyiBar");
   const closeBtn = document.getElementById("oyiClose");
   const composer = document.getElementById("oyiComposer");
   const input = document.getElementById("oyiInput");
 
-  bar.addEventListener("click", openOyiPanel);
-  bar.addEventListener("keydown", (event) => {
-    if (event.key === "Enter" || event.key === " ") {
-      event.preventDefault();
-      openOyiPanel();
-    }
+  let saved = null;
+  try {
+    saved = JSON.parse(localStorage.getItem(OYI_POSITION_KEY) || "null");
+  } catch {
+    saved = null;
+  }
+  if (saved && Number.isFinite(saved.x) && Number.isFinite(saved.y)) {
+    const clamped = clampOyiPosition(control, saved.x, saved.y);
+    applyOyiPosition(control, clamped.x, clamped.y);
+  }
+
+  let dragging = false;
+  let moved = false;
+  let startX = 0;
+  let startY = 0;
+  let originX = 0;
+  let originY = 0;
+
+  orb.addEventListener("pointerdown", (event) => {
+    if (event.button !== 0 && event.pointerType === "mouse") return;
+    dragging = true;
+    moved = false;
+    const rect = control.getBoundingClientRect();
+    startX = event.clientX;
+    startY = event.clientY;
+    originX = rect.left;
+    originY = rect.top;
+    orb.setPointerCapture(event.pointerId);
+    control.classList.add("dragging");
   });
+  orb.addEventListener("pointermove", (event) => {
+    if (!dragging) return;
+    const dx = event.clientX - startX;
+    const dy = event.clientY - startY;
+    if (!moved && Math.hypot(dx, dy) > OYI_DRAG_THRESHOLD) moved = true;
+    if (!moved) return;
+    const { x, y } = clampOyiPosition(control, originX + dx, originY + dy);
+    applyOyiPosition(control, x, y);
+  });
+  const endDrag = () => {
+    if (!dragging) return;
+    dragging = false;
+    control.classList.remove("dragging");
+    if (moved) {
+      const rect = control.getBoundingClientRect();
+      try {
+        localStorage.setItem(OYI_POSITION_KEY, JSON.stringify({ x: rect.left, y: rect.top }));
+      } catch {
+        // Position just won't persist across reloads — not worth surfacing.
+      }
+    }
+  };
+  orb.addEventListener("pointerup", endDrag);
+  orb.addEventListener("pointercancel", endDrag);
+  orb.addEventListener("click", (event) => {
+    if (moved) {
+      event.preventDefault();
+      moved = false;
+      return;
+    }
+    openOyiPanel();
+  });
+  window.addEventListener("resize", () => {
+    if (!control.style.left) return;
+    const rect = control.getBoundingClientRect();
+    const { x, y } = clampOyiPosition(control, rect.left, rect.top);
+    applyOyiPosition(control, x, y);
+  });
+
   closeBtn.addEventListener("click", () => {
     control.classList.remove("open");
-    bar.setAttribute("aria-expanded", "false");
+    orb.setAttribute("aria-expanded", "false");
   });
   composer.addEventListener("submit", (event) => {
     event.preventDefault();

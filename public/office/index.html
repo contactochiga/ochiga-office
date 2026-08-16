@@ -358,27 +358,31 @@
     position: fixed; right: 20px; bottom: 20px; z-index: 40;
     display: flex; flex-direction: column; align-items: flex-end;
   }
-  .oyi-bar {
-    display: flex; align-items: center; gap: 9px;
-    background: var(--charcoal); border: 1px solid var(--line-strong);
-    border-radius: 999px; padding: 9px 16px 9px 12px; cursor: pointer;
-    box-shadow: 0 8px 24px rgba(0,0,0,0.4);
-    transition: border-color var(--duration-fast) var(--ease);
+  /* Canonical Oyi orb — the closed-state identity for the Universal
+     Interaction Shell. A restrained, self-contained circular mark
+     (not a labeled pill) so it reads as Oyi's own presence, floating
+     over the shell rather than docked chrome. Draggable via
+     wireOyiControl() in office.js; position persists per browser. */
+  .oyi-orb {
+    width: 54px; height: 54px; border-radius: 50%; padding: 0;
+    background: radial-gradient(circle at 32% 28%, var(--red-bright), var(--red-muted) 55%, var(--charcoal) 100%);
+    border: 1px solid var(--line-strong);
+    box-shadow: 0 8px 24px rgba(0,0,0,0.45), 0 0 0 0 rgba(179,36,27,0.45);
+    cursor: grab; flex-shrink: 0;
+    display: flex; align-items: center; justify-content: center;
+    transition: box-shadow var(--duration-fast) var(--ease), transform var(--duration-fast) var(--ease);
+    touch-action: none;
   }
-  .oyi-bar:hover { border-color: var(--red-muted); }
-  .oyi-bar .orb {
-    width: 18px; height: 18px; border-radius: 50%;
-    background: radial-gradient(circle at 35% 30%, var(--red-bright), var(--red-muted));
-    flex-shrink: 0;
-  }
-  .oyi-bar span { font-size: 12.5px; color: var(--text-secondary); }
-  .oyi-bar kbd {
-    font-family: var(--font-mono); font-size: 10px; color: var(--text-tertiary);
-    border: 1px solid var(--line-strong); border-radius: 3px; padding: 1px 5px; margin-left: 2px;
+  .oyi-orb:hover { box-shadow: 0 8px 24px rgba(0,0,0,0.45), 0 0 0 6px rgba(179,36,27,0.12); }
+  .oyi-orb:focus-visible { outline: 2px solid var(--red-bright); outline-offset: 3px; }
+  .oyi-control.dragging .oyi-orb { cursor: grabbing; transform: scale(1.04); }
+  .oyi-orb-core {
+    width: 13px; height: 13px; border-radius: 50%;
+    background: radial-gradient(circle at 35% 30%, #fff, var(--red-bright) 60%);
+    box-shadow: 0 0 10px 2px rgba(179,36,27,0.55);
   }
 
   .oyi-panel {
-    display: none;
     width: min(400px, calc(100vw - 40px));
     max-height: min(560px, calc(100vh - 120px));
     background: var(--charcoal); border: 1px solid var(--line-strong);
@@ -387,6 +391,11 @@
     display: none; flex-direction: column; overflow: hidden;
   }
   .oyi-control.open .oyi-panel { display: flex; }
+  /* When the orb is dragged near the top of the viewport there isn't
+     room for the panel to open upward — office.js toggles this so it
+     opens below the orb instead. */
+  .oyi-control.panel-below { flex-direction: column-reverse; }
+  .oyi-control.panel-below .oyi-panel { margin-bottom: 0; margin-top: 12px; }
   .oyi-panel-head {
     display: flex; align-items: center; justify-content: space-between;
     padding: 12px 14px; border-bottom: 1px solid var(--line);
@@ -657,8 +666,7 @@
       background: none; color: var(--text-secondary); cursor: pointer;
     }
     .view-outlet { padding: 18px 16px 140px; }
-    .oyi-control { right: 12px; bottom: 12px; left: 12px; align-items: stretch; }
-    .oyi-bar { justify-content: center; }
+    .oyi-control { right: 12px; bottom: 12px; left: 12px; align-items: flex-end; }
     .oyi-panel { width: 100%; }
 
     /* Phase 2 — stack tables into label:value cards, never scroll horizontally */
@@ -789,10 +797,9 @@
           <button type="submit" id="oyiSend" aria-label="Send">→</button>
         </form>
       </div>
-      <div class="oyi-bar" id="oyiBar" role="button" tabindex="0" aria-expanded="false">
-        <span class="orb"></span>
-        <span>Ask Oyi</span>
-      </div>
+      <button type="button" class="oyi-orb" id="oyiBar" aria-expanded="false" aria-label="Ask Oyi" title="Ask Oyi">
+        <span class="oyi-orb-core"></span>
+      </button>
     </div>
   </div>
 
