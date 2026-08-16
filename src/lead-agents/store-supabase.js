@@ -738,6 +738,44 @@ class SupabaseLeadAgentsStore {
     return response.data;
   }
 
+  async createOfficeReport(input) {
+    const response = await this.client.post(
+      "/office_reports",
+      {
+        id: crypto.randomUUID(),
+        title: input.title || "Untitled Report",
+        body: input.body || "",
+        related_type: input.related_type || "",
+        related_id: input.related_id || "",
+        author: input.author || "office",
+        status: "submitted",
+        attachments: Array.isArray(input.attachments) ? input.attachments : [],
+      },
+      { headers: this.selectHeaders() }
+    );
+    return response.data[0];
+  }
+
+  async listOfficeReports(filter = {}) {
+    const query = new URLSearchParams();
+    query.set("order", "updated_at.desc");
+    if (filter.status) query.set("status", `eq.${filter.status}`);
+    const response = await this.client.get(`/office_reports?${query.toString()}`);
+    return response.data;
+  }
+
+  async getOfficeReportById(id) {
+    const response = await this.client.get(`/office_reports?id=eq.${encodeURIComponent(id)}&limit=1`);
+    return response.data[0] || null;
+  }
+
+  async updateOfficeReport(id, patch) {
+    const response = await this.client.patch(`/office_reports?id=eq.${encodeURIComponent(id)}`, patch, {
+      headers: this.selectHeaders(),
+    });
+    return response.data[0] || null;
+  }
+
   async appendTrace(input) {
     const response = await this.client.post(
       "/traces",

@@ -160,6 +160,18 @@ async function apiUpdateContent(id, patch) {
 async function apiContentAction(id, action, body) {
   return api(`/api/lead-agents/admin/content/${encodeURIComponent(id)}/${action}`, { method: "POST", body: body || {} });
 }
+async function apiListReports(status) {
+  return api(`/api/lead-agents/admin/reports${status ? `?status=${encodeURIComponent(status)}` : ""}`);
+}
+async function apiGetReport(id) {
+  return api(`/api/lead-agents/admin/reports/${encodeURIComponent(id)}`);
+}
+async function apiCreateReport(body) {
+  return api("/api/lead-agents/admin/reports", { method: "POST", body });
+}
+async function apiReportDecision(id, decision, body) {
+  return api(`/api/lead-agents/admin/reports/${encodeURIComponent(id)}/${decision}`, { method: "POST", body: body || {} });
+}
 async function apiListProposals() {
   return api("/api/lead-agents/admin/proposals");
 }
@@ -376,6 +388,7 @@ const PRIMARY_NAV = [
   { key: "partnerships", label: "Partnerships", permission: "partnerships.read", phase: null },
   { key: "documents", label: "Documents", permission: "documents.generate", phase: null },
   { key: "content", label: "Content", permission: "content.write", phase: null },
+  { key: "reports", label: "Reports", permission: "reports.write", phase: null },
 ];
 
 const ADMIN_NAV = [
@@ -877,6 +890,10 @@ async function renderRoute() {
     outlet.innerHTML = "";
     outlet.appendChild(skeletonPanel(4));
     await renderContentRoute(outlet, rest, token);
+  } else if (topKey === "reports") {
+    outlet.innerHTML = "";
+    outlet.appendChild(skeletonPanel(4));
+    await renderReportsRoute(outlet, rest, token);
   } else if (topKey === "inbox") {
     outlet.innerHTML = "";
     outlet.appendChild(skeletonPanel(4));
@@ -1000,6 +1017,7 @@ const HOME_KPI_CARDS = [
   { key: "private_queue", label: "Private Queue", permission: "private.read", route: "private" },
   { key: "partnership_queue", label: "Partnerships Queue", permission: "partnerships.read", route: "partnerships" },
   { key: "recent_documents", label: "Recent Documents", permission: "documents.generate", route: "documents" },
+  { key: "reports_awaiting_approval", label: "Reports Awaiting Approval", permission: "reports.review", route: "reports", alert: (s) => s.reports_awaiting_approval > 0 },
 ];
 function renderHomeKpiGrid(summary) {
   const grid = el(`<div class="home-section"><div class="kpi-grid"></div></div>`);
@@ -3496,6 +3514,202 @@ function startOfWeek() {
   const day = now.getDay();
   const diff = now.getDate() - day + (day === 0 ? -6 : 1);
   return new Date(now.getFullYear(), now.getMonth(), diff);
+}
+
+// ---------------------------------------------------------------
+// Reports + Approvals (Ecosystem Standardization Programme 9).
+// Comments/history reuse the existing crm_activities timeline (see
+// promptAddRelatedNote/renderTimeline below) — no second audit engine.
+// ---------------------------------------------------------------
+const REPORT_STATUS_TONE = { submitted: "amber", approved: "green", rejected: "red" };
+// Matches RELATED_TYPES keys in office-operational-workflows.js
+// (validateRelatedObject's vocabulary), not routeForRelated's — those
+// two route-key vocabularies already disagree elsewhere in this
+// codebase; kept local here rather than trying to reconcile both.
+const REPORT_RELATED_ROUTES = {
+  lead: (id) => `crm/leads/${id}`,
+  contact: (id) => `crm/contacts/${id}`,
+  organization: (id) => `crm/organizations/${id}`,
+  opportunity: (id) => `crm/opportunities/${id}`,
+  project: (id) => `projects/${id}`,
+  portfolio: (id) => `portfolio/${id}`,
+  support_case: (id) => `support/${id}`,
+  private_relationship: (id) => `private/${id}`,
+  partnership_relationship: (id) => `partnerships/${id}`,
+  meeting: (id) => `meetings/${id}`,
+  document: (id) => `documents/library/${id}`,
+};
+const REPORT_RELATED_TYPE_OPTIONS = [
+  { value: "", label: "General Office activity (no specific object)" },
+  { value: "project", label: "Project" },
+  { value: "portfolio", label: "Portfolio" },
+  { value: "support_case", label: "Support Case" },
+  { value: "meeting", label: "Meeting" },
+  { value: "private_relationship", label: "Private Relationship" },
+  { value: "partnership_relationship", label: "Partnership" },
+  { value: "lead", label: "CRM Lead" },
+  { value: "document", label: "Document" },
+];
+
+async function renderReportsRoute(outlet, rest, token) {
+  const reportId = rest[0];
+  if (reportId) await renderReportDetail(outlet, reportId, token);
+  else await renderReportsList(outlet, token);
+}
+
+async function renderReportsList(outlet, token) {
+  setTopbar("Reports", "");
+  setSelectedObject(null);
+  let reports;
+  try {
+    const data = await apiListReports();
+    reports = data.reports || [];
+  } catch (err) {
+    if (token !== state.renderToken) return;
+    outlet.innerHTML = "";
+    outlet.appendChild(el(`<div class="view-heading"><h1>Reports</h1></div>`));
+    outlet.appendChild(errorPanel(err.message || "Could not load reports."));
+    return;
+  }
+  if (token !== state.renderToken) return;
+
+  outlet.innerHTML = "";
+  outlet.appendChild(el(`
+    <div class="view-heading">
+      <h1>Reports</h1>
+      <p>Staff reports tied to Office work, submitted for review and decision.</p>
+    </div>
+  `));
+
+  outlet.appendChild(el(`
+    <div class="kpi-grid" style="margin-bottom:18px;">
+      <div class="kpi-card"><span class="kpi-label">Awaiting Decision</span><span class="kpi-value">${reports.filter((r) => r.status === "submitted").length}</span></div>
+      <div class="kpi-card"><span class="kpi-label">Approved</span><span class="kpi-value">${reports.filter((r) => r.status === "approved").length}</span></div>
+      <div class="kpi-card"><span class="kpi-label">Rejected</span><span class="kpi-value">${reports.filter((r) => r.status === "rejected").length}</span></div>
+    </div>
+  `));
+
+  const newBtn = el(`<button type="button" class="btn btn-primary btn-sm" style="margin-bottom:14px;">Submit Report</button>`);
+  newBtn.addEventListener("click", () => openNewReportDialog());
+  outlet.appendChild(newBtn);
+
+  outlet.appendChild(renderDataTable({
+    columns: [
+      { label: "Title", render: (r) => escapeHtml(r.title) },
+      { label: "Status", render: (r) => badge(titleCase(r.status), REPORT_STATUS_TONE[r.status] || "default") },
+      { label: "Author", render: (r) => escapeHtml(r.author || "—") },
+      { label: "Related", render: (r) => r.related_type ? escapeHtml(titleCase(r.related_type)) : "General" },
+      { label: "Updated", render: (r) => escapeHtml(fmtRelative(r.updated_at)) },
+    ],
+    rows: reports,
+    onRowClick: (r) => navigate(`reports/${r.id}`),
+    emptyMessage: "No reports yet. Start with Submit Report.",
+  }));
+}
+
+function openNewReportDialog() {
+  openDialog("Submit Report", [
+    { name: "title", label: "Title" },
+    { name: "related_type", label: "Related To", type: "select", value: "", options: REPORT_RELATED_TYPE_OPTIONS },
+    { name: "related_id", label: "Related Record ID (if applicable)" },
+    { name: "body", label: "Report", type: "textarea" },
+  ], async (data) => {
+    if (!data.title) throw new Error("Title is required.");
+    await apiCreateReport({
+      title: data.title,
+      body: data.body,
+      related_type: data.related_type || undefined,
+      related_id: data.related_type ? data.related_id : undefined,
+    });
+    invalidate("reports");
+    navigate("reports");
+  });
+}
+
+async function renderReportDetail(outlet, id, token) {
+  const [report, notes] = await Promise.all([
+    apiGetReport(id).then((d) => d.report).catch(() => null),
+    fetchRelatedActivities("report", id).catch(() => []),
+  ]);
+  if (token !== state.renderToken) return;
+  if (!report) {
+    outlet.innerHTML = "";
+    outlet.appendChild(errorPanel("This report could not be found."));
+    return;
+  }
+  // No dedicated report_context slot exists on Ochiga-backend's contract
+  // yet (that's a separate cross-repo change) — page_context
+  // (selected_type/selected_id, set by renderDetailShell below) is the
+  // honest signal for now, same as most object types before Phase 9's
+  // richer per-type slots were added.
+  outlet.innerHTML = "";
+  const back = el(`<button type="button" class="detail-back">← Reports</button>`);
+  back.addEventListener("click", () => navigate("reports"));
+  outlet.appendChild(back);
+
+  outlet.appendChild(el(`
+    <div class="detail-header">
+      <div>
+        <div class="detail-typeline">Report</div>
+        <h1>${escapeHtml(report.title)}</h1>
+        <div class="detail-badges">${badge(titleCase(report.status), REPORT_STATUS_TONE[report.status] || "default")}</div>
+      </div>
+    </div>
+  `));
+
+  const relatedRoute = report.related_type && REPORT_RELATED_ROUTES[report.related_type] && report.related_id
+    ? REPORT_RELATED_ROUTES[report.related_type](report.related_id)
+    : null;
+
+  const summarySection = el(`
+    <div class="detail-section">
+      <h3>Report</h3>
+      <div class="fact-grid">
+        ${factRow("Author", report.author)}
+        ${factRow("Related", report.related_type ? titleCase(report.related_type) : "General Office activity")}
+        ${factRow("Submitted", fmtDateTime(report.created_at))}
+        ${report.decided_at ? factRow("Decided", `${fmtDateTime(report.decided_at)} by ${report.reviewer || "—"}`) : ""}
+      </div>
+      ${relatedRoute ? `<p><a href="#/${relatedRoute}">View related record →</a></p>` : ""}
+      <p style="white-space:pre-wrap;">${escapeHtml(report.body || "")}</p>
+      ${report.decision_note ? `<div class="detail-note" style="margin-top:10px;"><strong>Decision note:</strong> ${escapeHtml(report.decision_note)}</div>` : ""}
+    </div>
+  `);
+
+  const mainSections = [summarySection];
+  if (report.status === "submitted" && hasPermission("reports.review")) {
+    const actions = el(`<div class="status-actions"></div>`);
+    const approveBtn = el(`<button type="button" class="btn btn-primary btn-sm">Approve</button>`);
+    approveBtn.addEventListener("click", () => openDialog("Approve Report", [{ name: "decision_note", label: "Note (optional)", type: "textarea" }], async (data) => {
+      await apiReportDecision(id, "approve", data);
+      navigate(`reports/${id}`);
+    }));
+    const rejectBtn = el(`<button type="button" class="btn btn-ghost btn-sm">Reject</button>`);
+    rejectBtn.addEventListener("click", () => openDialog("Reject Report", [{ name: "decision_note", label: "Reason", type: "textarea" }], async (data) => {
+      await apiReportDecision(id, "reject", data);
+      navigate(`reports/${id}`);
+    }));
+    actions.appendChild(approveBtn);
+    actions.appendChild(rejectBtn);
+    mainSections.push(el(`<div class="detail-section"><h3>Decision</h3></div>`));
+    mainSections[mainSections.length - 1].appendChild(actions);
+  }
+  mainSections.push(renderTimeline(notes, {
+    canAddNote: hasPermission("reports.write"),
+    onAddNote: () => promptAddRelatedNote("report", id),
+  }));
+
+  renderDetailShell(outlet, {
+    type: "report",
+    id,
+    label: report.title,
+    typeLine: "Report",
+    badges: [badge(titleCase(report.status), REPORT_STATUS_TONE[report.status] || "default")],
+    backLabel: "Reports",
+    onBack: () => navigate("reports"),
+    mainSections,
+    railSections: [],
+  });
 }
 
 function openNewContentDialog() {

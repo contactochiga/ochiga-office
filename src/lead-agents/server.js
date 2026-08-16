@@ -4737,6 +4737,101 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
       // second audit system) and notifyRecipients (Phase 4) for
       // editorial events.
       // ---------------------------------------------------------------
+      // ---------------------------------------------------------------
+      // Reports + Approvals (Ecosystem Standardization Programme 9).
+      // Comments/history reuse the existing crm_activities timeline via
+      // RELATED_TYPES.report — no second audit/history engine. Review is
+      // reports.review (senior-tier), matching "a useful CEO/super-admin
+      // approval/review surface" — no self-review guard is needed since,
+      // unlike content, ochiga_staff does NOT hold reports.review at all.
+      // ---------------------------------------------------------------
+      if (pathname === "/api/lead-agents/admin/reports") {
+        if (req.method === "GET") {
+          authorizePermission(authContext, "reports.write");
+          const url = new URL(req.url, "http://localhost");
+          const reports = await store.listOfficeReports({ status: url.searchParams.get("status") || undefined });
+          json(res, 200, { reports }, { "x-request-id": ctx.requestId });
+          return;
+        }
+        if (req.method === "POST") {
+          authorizePermission(authContext, "reports.write");
+          const body = await readJsonBody(req);
+          requireObject(body, "body");
+          if (!body.title) {
+            json(res, 400, { error: "title is required" }, { "x-request-id": ctx.requestId });
+            return;
+          }
+          if (body.related_type) {
+            await validateRelatedObject(store, authContext, body.related_type, body.related_id);
+          }
+          const report = await store.createOfficeReport({ ...body, author: authContext?.email || "office" });
+          await appendAudit(store, authContext, "report_submitted", "office_report", report.id, { title: report.title });
+          await notifyRecipients(store, eventBus, {
+            actorEmail: authContext?.email,
+            type: "report_submitted",
+            summary: `New report submitted: ${report.title}`,
+            relatedType: "report",
+            relatedId: report.id,
+          });
+          json(res, 201, { report }, { "x-request-id": ctx.requestId });
+          return;
+        }
+        methodNotAllowed(res, "GET,POST");
+        return;
+      }
+
+      const reportItemMatch = pathname.match(/^\/api\/lead-agents\/admin\/reports\/([^/]+)$/);
+      if (reportItemMatch) {
+        if (req.method !== "GET") {
+          methodNotAllowed(res, "GET");
+          return;
+        }
+        authorizePermission(authContext, "reports.write");
+        const report = await store.getOfficeReportById(reportItemMatch[1]);
+        if (!report) {
+          notFound(res);
+          return;
+        }
+        json(res, 200, { report }, { "x-request-id": ctx.requestId });
+        return;
+      }
+
+      const reportDecisionMatch = pathname.match(/^\/api\/lead-agents\/admin\/reports\/([^/]+)\/(approve|reject)$/);
+      if (reportDecisionMatch) {
+        if (req.method !== "POST") {
+          methodNotAllowed(res, "POST");
+          return;
+        }
+        authorizePermission(authContext, "reports.review");
+        const [, reportId, decision] = reportDecisionMatch;
+        const report = await store.getOfficeReportById(reportId);
+        if (!report) {
+          notFound(res);
+          return;
+        }
+        if (report.status !== "submitted") {
+          json(res, 400, { error: `Cannot ${decision} a report with status "${report.status}".` }, { "x-request-id": ctx.requestId });
+          return;
+        }
+        const body = await readJsonBody(req).catch(() => ({}));
+        const updated = await store.updateOfficeReport(reportId, {
+          status: decision === "approve" ? "approved" : "rejected",
+          reviewer: authContext?.email || "office",
+          decision_note: body.decision_note || "",
+          decided_at: new Date().toISOString(),
+        });
+        await appendAudit(store, authContext, `report_${decision}d`, "office_report", reportId, { title: report.title });
+        await notifyRecipients(store, eventBus, {
+          actorEmail: authContext?.email,
+          type: `report_${decision}d`,
+          summary: `Report ${decision === "approve" ? "approved" : "rejected"}: ${report.title}`,
+          relatedType: "report",
+          relatedId: reportId,
+        });
+        json(res, 200, { report: updated }, { "x-request-id": ctx.requestId });
+        return;
+      }
+
       if (pathname === "/api/lead-agents/admin/content") {
         if (req.method === "GET") {
           authorizePermission(authContext, "content.write");

@@ -55,6 +55,7 @@ class FileLeadAgentsStore {
       staff_message_reads: [],
       staff_message_attachments: [],
       office_content_items: [],
+      office_reports: [],
     };
     this.pendingWrite = Promise.resolve();
   }
@@ -117,6 +118,7 @@ class FileLeadAgentsStore {
         staff_message_reads: Array.isArray(parsed.staff_message_reads) ? parsed.staff_message_reads : [],
         staff_message_attachments: Array.isArray(parsed.staff_message_attachments) ? parsed.staff_message_attachments : [],
         office_content_items: Array.isArray(parsed.office_content_items) ? parsed.office_content_items : [],
+        office_reports: Array.isArray(parsed.office_reports) ? parsed.office_reports : [],
       };
       if (await this.ensureOfficeSeedData()) {
         await this.persist();
@@ -894,6 +896,49 @@ class FileLeadAgentsStore {
     return this.state.office_content_items.filter(
       (item) => item.workflow_status === "scheduled" && item.scheduled_publish_at && new Date(item.scheduled_publish_at).getTime() <= now.getTime()
     );
+  }
+
+  async createOfficeReport(input) {
+    const report = {
+      id: crypto.randomUUID(),
+      title: input.title || "Untitled Report",
+      body: input.body || "",
+      related_type: input.related_type || "",
+      related_id: input.related_id || "",
+      author: input.author || "office",
+      status: "submitted",
+      reviewer: null,
+      decision_note: null,
+      decided_at: null,
+      attachments: Array.isArray(input.attachments) ? input.attachments : [],
+      created_at: this.nowIso(),
+      updated_at: this.nowIso(),
+    };
+    this.state.office_reports.push(report);
+    await this.persist();
+    return report;
+  }
+
+  async listOfficeReports(filter = {}) {
+    return this.state.office_reports
+      .filter((r) => !filter.status || r.status === filter.status)
+      .sort((a, b) => String(b.updated_at).localeCompare(String(a.updated_at)));
+  }
+
+  async getOfficeReportById(id) {
+    return this.state.office_reports.find((r) => r.id === id) || null;
+  }
+
+  async updateOfficeReport(id, patch) {
+    const index = this.state.office_reports.findIndex((r) => r.id === id);
+    if (index === -1) return null;
+    this.state.office_reports[index] = {
+      ...this.state.office_reports[index],
+      ...patch,
+      updated_at: this.nowIso(),
+    };
+    await this.persist();
+    return this.state.office_reports[index];
   }
 
   async appendTrace(input) {

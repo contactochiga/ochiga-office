@@ -82,6 +82,7 @@ const RELATED_TYPES = Object.freeze({
   meeting: { collection: "meetings", permission: "meetings.read" },
   proposal: { collection: "proposals", permission: "crm.read" },
   document: { collection: "documents", permission: "documents.generate" },
+  report: { collection: "reports", permission: "reports.write" },
 });
 
 const ACTIVITY_MANAGE_PERMISSIONS = Object.freeze({
@@ -97,6 +98,7 @@ const ACTIVITY_MANAGE_PERMISSIONS = Object.freeze({
   meeting: "meetings.manage",
   proposal: "crm.manage",
   document: "documents.generate",
+  report: "reports.write",
 });
 
 function text(value, fallback = "") {
@@ -200,6 +202,9 @@ async function findCorporateRecord(store, collection, id) {
   if (collection === "proposals" && store?.getProposal) return store.getProposal(id);
   if (collection === "documents" && store?.state) {
     return (store.state.office_documents || []).find((item) => String(item.id) === String(id)) || null;
+  }
+  if (collection === "reports" && store?.getOfficeReportById) {
+    return store.getOfficeReportById(id);
   }
   const rows = await listCorporateRecords(store, collection);
   return rows.find((item) => String(item.id) === String(id)) || null;

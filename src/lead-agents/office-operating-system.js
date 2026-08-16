@@ -328,6 +328,16 @@ async function buildOfficeHomeProjection(store, options = {}) {
     contentAvailable = false;
     contentItems = [];
   }
+  // Same isolation discipline as Content above — Reports/Approvals
+  // (Programme 9) is its own additive module and must not collapse the
+  // rest of Home if unavailable.
+  let reportsAwaitingApproval = 0;
+  try {
+    const reports = store.listOfficeReports ? await store.listOfficeReports({ status: "submitted" }) : [];
+    reportsAwaitingApproval = reports.length;
+  } catch {
+    reportsAwaitingApproval = 0;
+  }
   const weekStart = (() => {
     const day = now.getDay();
     const diff = now.getDate() - day + (day === 0 ? -6 : 1);
@@ -413,6 +423,7 @@ async function buildOfficeHomeProjection(store, options = {}) {
       content_drafts: contentDrafts,
       content_awaiting_review: contentAwaitingReview,
       content_scheduled: contentScheduled.length,
+      reports_awaiting_approval: reportsAwaitingApproval,
     },
     attention_items,
     recent_activity,

@@ -52,6 +52,13 @@ const PERMISSION_KEYS = Object.freeze([
   "integrations.read",
   "integrations.manage",
   "auth.change_password",
+  // Reports/Approvals (Ecosystem Standardization Programme 9): writing
+  // a report is a normal staff capability; reviewing/deciding is a
+  // deliberately senior-tier grant ("a useful CEO/super-admin
+  // approval/review surface") — not handed to every writer the way
+  // content.review is, since this module has no self-review guard.
+  "reports.write",
+  "reports.review",
 ]);
 
 const ROLE_PERMISSIONS = Object.freeze({
@@ -93,6 +100,11 @@ const ROLE_PERMISSIONS = Object.freeze({
     "storage.read",
     "integrations.read",
     "auth.change_password",
+    // reports.write only — review/approve is the senior-tier grant,
+    // reserved for super_admin/ochiga_admin (full PERMISSION_KEYS) or
+    // per-user via permission_scopes, same additive pattern as
+    // content.publish above.
+    "reports.write",
   ],
   estate_admin: [
     "estates.read",
