@@ -30,6 +30,15 @@
     --red-bright: #d3372c;
     --amber: #c9862b;
     --green: #3f8f5f;
+    /* Universal Oyi Interaction Shell (Programme 2/3 cross-repo audit) —
+       the canonical "Oyi is speaking as itself" identity color, decided
+       against ochiga.com.ng and getoyi.com's existing #3B82F6 usage
+       (Oyi Consumer/Facility currently use #2563eb/#38bdf8 and will
+       reconcile to this value when they adopt the shared shell). Not
+       used for general Office chrome — Ochiga red remains that here —
+       only for shell surfaces that need to represent Oyi's own identity
+       distinct from the host product's branding. */
+    --oyi-blue: #3b82f6;
 
     --text-primary: var(--warmwhite);
     --text-secondary: var(--grey-300);
@@ -415,6 +424,12 @@
   .oyi-block-label { font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-tertiary); margin: 10px 0 6px; }
   .oyi-list { margin: 0; padding-left: 16px; }
   .oyi-list li { margin-bottom: 4px; }
+  .oyi-proposal {
+    border: 1px solid var(--line-strong); border-radius: var(--radius-sm);
+    padding: 8px 10px; margin-bottom: 6px;
+  }
+  .oyi-proposal-reason { font-size: 12px; color: var(--text-secondary); margin-bottom: 6px; }
+  .oyi-proposal-actions { display: flex; gap: 8px; align-items: center; }
 
   /* ---------------------------------------------------------------
      Phase 2 — Home + CRM

@@ -2056,7 +2056,7 @@ function openCreateMeetingDialog(prefill = {}) {
 function openCreateTaskDialog(prefill = {}) {
   openDialog("Create Task", [
     { name: "title", label: "Title" },
-    { name: "description", label: "Description", type: "textarea" },
+    { name: "description", label: "Description", type: "textarea", value: prefill.description || "" },
     { name: "priority", label: "Priority", value: "normal" },
     { name: "due_at", label: "Due At", type: "datetime-local" },
     { name: "business_unit", label: "Business Unit", value: prefill.business_unit || "" },
@@ -4750,6 +4750,63 @@ function renderOyiResponse(oyiCore) {
   return wrap;
 }
 
+// Approval Surface (Universal Interaction Shell, Programme 2/3/4) — every
+// tool proposal Oyi Core returns is governed "office_validates_before_
+// execution" (Ochiga-backend's corporateOfficeInternalPolicy.ts), meaning
+// staff review before persistence, not blind auto-execute. For Office's
+// higher-stakes proposals (creating a CRM task, drafting a commercial
+// document with real pricing) the correct confirmation policy is "review"
+// — open the real creation dialog, pre-filled with only what the proposal
+// actually supplied, so the existing form validation/permission checks
+// still apply and nothing gets created without a human looking at it
+// first. This replaces the previous bare "no action was taken" notice.
+const TASK_PREFILL_FK_BY_SELECTED_TYPE = {
+  lead: "lead_id",
+  opportunity: "opportunity_id",
+  project: "project_id",
+  portfolio: "portfolio_id",
+  support_case: "support_case_id",
+  partnership_relationship: "partnership_relationship_id",
+  private_relationship: "private_relationship_id",
+};
+function renderApprovalSurface(proposedActions) {
+  const wrap = el(`<div class="oyi-structured"></div>`);
+  wrap.appendChild(el(`<div class="oyi-block-label">Oyi Proposed</div>`));
+  proposedActions.forEach((action) => {
+    const row = el(`<div class="oyi-proposal"></div>`);
+    row.appendChild(el(`<div class="oyi-proposal-reason">${escapeHtml(action.reason || titleCase(action.tool || action.name || "action"))}</div>`));
+    const actionsRow = el(`<div class="oyi-proposal-actions"></div>`);
+    const selected = state.selectedObject;
+    const fkField = selected ? TASK_PREFILL_FK_BY_SELECTED_TYPE[selected.type] : null;
+
+    if (action.tool === "office.create_followup_task") {
+      const btn = el(`<button type="button" class="btn btn-ghost btn-sm">Review &amp; Create Task</button>`);
+      btn.addEventListener("click", () => openCreateTaskDialog({
+        description: action.reason || "",
+        business_unit: action.parameters?.business_unit || "",
+        ...(fkField ? { [fkField]: selected.id } : {}),
+      }));
+      actionsRow.appendChild(btn);
+    } else if (action.tool === "office.prepare_commercial_document") {
+      const btn = el(`<button type="button" class="btn btn-ghost btn-sm">Review &amp; Create Document</button>`);
+      btn.addEventListener("click", () => openCreateDocumentDialog({
+        related_type: selected?.type || "",
+        related_id: selected?.id || "",
+      }));
+      actionsRow.appendChild(btn);
+    } else if (action.tool === "office.review_meeting_context" && action.parameters?.selected_id) {
+      const btn = el(`<button type="button" class="btn btn-ghost btn-sm">View Meeting</button>`);
+      btn.addEventListener("click", () => navigate(`meetings/${action.parameters.selected_id}`));
+      actionsRow.appendChild(btn);
+    } else {
+      actionsRow.appendChild(el(`<span class="hint">No in-app review action for "${escapeHtml(action.tool || action.name || "this")}" yet — nothing was created.</span>`));
+    }
+    row.appendChild(actionsRow);
+    wrap.appendChild(row);
+  });
+  return wrap;
+}
+
 async function sendOyiMessage(message) {
   if (!message.trim() || state.oyiBusy) return;
   appendOyiMessage("user", message);
@@ -4763,8 +4820,7 @@ async function sendOyiMessage(message) {
     });
     appendOyiMessage("assistant", renderOyiResponse(data.oyi_core || {}));
     if (Array.isArray(data.proposed_actions) && data.proposed_actions.length) {
-      const summary = data.proposed_actions.map((action) => action.tool || action.name).join(", ");
-      appendOyiMessage("system", `Oyi proposed: ${summary}. Approval workflow isn't available yet — no action was taken.`);
+      appendOyiMessage("system", renderApprovalSurface(data.proposed_actions));
     }
   } catch (err) {
     if (err.status === 503) appendOyiMessage("system", "Oyi Core is unavailable right now. Nothing was answered from a separate reasoning path — please try again shortly.");
