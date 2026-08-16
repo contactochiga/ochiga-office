@@ -5794,10 +5794,20 @@ function wireShellChrome() {
   document.getElementById("inboxBell").addEventListener("click", () => navigate("inbox"));
 }
 
+// PWA (Programme 14) — app-shell caching only, never API responses; see
+// sw.js. Registration failure is silent/non-fatal: the app works
+// identically without it, this only affects install-ability/offline
+// shell speed.
+function registerServiceWorker() {
+  if (!("serviceWorker" in navigator)) return;
+  navigator.serviceWorker.register("/office/sw.js").catch(() => {});
+}
+
 async function boot() {
   wireLogin();
   wireShellChrome();
   wireOyiControl();
+  registerServiceWorker();
   const authed = await fetchSession();
   if (authed) showShell();
   else showLogin();

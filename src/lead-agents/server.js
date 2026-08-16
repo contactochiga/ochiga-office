@@ -1762,6 +1762,8 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
     "brand",
     "ochiga-logo-light.png"
   );
+  const officeManifestPath = path.join(process.cwd(), "public", "office", "manifest.json");
+  const officeServiceWorkerPath = path.join(process.cwd(), "public", "office", "sw.js");
   const digitalTwinIndexPath = path.join(
     process.cwd(),
     "public",
@@ -1848,7 +1850,9 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
         pathname === "/office/" ||
         pathname === "/office.js" ||
         pathname === "/office/brand/ochiga-logo-dark.png" ||
-        pathname === "/office/brand/ochiga-logo-light.png";
+        pathname === "/office/brand/ochiga-logo-light.png" ||
+        pathname === "/office/manifest.json" ||
+        pathname === "/office/sw.js";
       const isPublicAdminSessionPath =
         pathname === "/api/lead-agents/admin/session/login" ||
         pathname === "/api/lead-agents/admin/session/logout" ||
@@ -2345,6 +2349,24 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           return;
         }
         await serveFile(res, officeLogoLightPath);
+        return;
+      }
+
+      if (pathname === "/office/manifest.json") {
+        if (req.method !== "GET") {
+          methodNotAllowed(res, "GET");
+          return;
+        }
+        await serveFile(res, officeManifestPath);
+        return;
+      }
+
+      if (pathname === "/office/sw.js") {
+        if (req.method !== "GET") {
+          methodNotAllowed(res, "GET");
+          return;
+        }
+        await serveFile(res, officeServiceWorkerPath);
         return;
       }
 
