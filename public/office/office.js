@@ -5400,20 +5400,37 @@ function openOyiPanel() {
 // dock, never an error.
 const OYI_POSITION_KEY = "oyi_orb_position";
 const OYI_DRAG_THRESHOLD = 4;
+// .oyi-panel's own width rule: min(400px, calc(100vw - 40px)).
+const OYI_PANEL_MAX_WIDTH = 400;
 
 function clampOyiPosition(control, x, y) {
   const margin = 12;
   const width = control.offsetWidth || 54;
   const height = control.offsetHeight || 54;
-  const maxX = Math.max(margin, window.innerWidth - width - margin);
+  const panelWidth = Math.min(OYI_PANEL_MAX_WIDTH, window.innerWidth - margin * 2);
+  // .oyi-control right-aligns its children (align-items: flex-end), so
+  // the panel's right edge always matches the orb's right edge and it
+  // grows leftward when opened. Reserve that width on the left of
+  // wherever the orb ends up, or the panel would overflow off-screen
+  // once opened (it isn't present, and doesn't affect layout, while
+  // the orb sits closed).
+  const minX = Math.max(margin, panelWidth + margin - width);
+  const maxX = Math.max(minX, window.innerWidth - width - margin);
   const maxY = Math.max(margin, window.innerHeight - height - margin);
-  return { x: Math.min(Math.max(x, margin), maxX), y: Math.min(Math.max(y, margin), maxY) };
+  return { x: Math.min(Math.max(x, minX), maxX), y: Math.min(Math.max(y, margin), maxY) };
 }
 
 function applyOyiPosition(control, x, y) {
-  control.style.left = `${x}px`;
+  const width = control.offsetWidth || 54;
+  // Anchored via `right`, not `left`: .oyi-control's children are
+  // right-aligned (align-items: flex-end), so the box itself must grow
+  // leftward as the panel opens wider than the closed orb. Anchoring
+  // via `left` instead pins the box's LEFT edge and lets it grow
+  // rightward when the panel opens, overflowing the viewport whenever
+  // the orb sits anywhere near the right edge.
+  control.style.right = `${window.innerWidth - (x + width)}px`;
+  control.style.left = "auto";
   control.style.top = `${y}px`;
-  control.style.right = "auto";
   control.style.bottom = "auto";
   // Flip the panel below the orb when there isn't roughly enough room
   // for it to open upward (matches .oyi-panel's own max-height cap).
@@ -5490,7 +5507,7 @@ function wireOyiControl() {
     openOyiPanel();
   });
   window.addEventListener("resize", () => {
-    if (!control.style.left) return;
+    if (!control.style.right || control.style.right === "auto") return;
     const rect = control.getBoundingClientRect();
     const { x, y } = clampOyiPosition(control, rect.left, rect.top);
     applyOyiPosition(control, x, y);
