@@ -5,13 +5,12 @@
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>Ochiga Office</title>
 <meta name="robots" content="noindex" />
-<!-- PWA (Ecosystem Standardization Programme 14). Icon files referenced
-     by manifest.json (/office/brand/icon-192.png, icon-512.png,
-     icon-maskable-512.png) do not exist yet — a proper square crop of
-     the Ochiga mark is still needed; until then this manifest is valid
-     but Chrome's install-ability criteria won't be met (a real icon is
-     required, not just declared). Everything else here works today. -->
+<!-- PWA (Ecosystem Standardization Programme 14). Icons render the same
+     gradient-square "O" mark Ochiga-website already ships as its own
+     favicon/apple-touch-icon (app/icon.tsx, app/apple-icon.tsx). -->
 <link rel="manifest" href="/office/manifest.json" />
+<link rel="icon" href="/office/brand/icon-192.png" type="image/png" />
+<link rel="apple-touch-icon" href="/office/brand/icon-192.png" />
 <meta name="theme-color" content="#050505" />
 <meta name="apple-mobile-web-app-capable" content="yes" />
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />

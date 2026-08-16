@@ -1764,6 +1764,9 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
   );
   const officeManifestPath = path.join(process.cwd(), "public", "office", "manifest.json");
   const officeServiceWorkerPath = path.join(process.cwd(), "public", "office", "sw.js");
+  const officeIcon192Path = path.join(process.cwd(), "public", "office", "brand", "icon-192.png");
+  const officeIcon512Path = path.join(process.cwd(), "public", "office", "brand", "icon-512.png");
+  const officeIconMaskable512Path = path.join(process.cwd(), "public", "office", "brand", "icon-maskable-512.png");
   const digitalTwinIndexPath = path.join(
     process.cwd(),
     "public",
@@ -1851,6 +1854,9 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
         pathname === "/office.js" ||
         pathname === "/office/brand/ochiga-logo-dark.png" ||
         pathname === "/office/brand/ochiga-logo-light.png" ||
+        pathname === "/office/brand/icon-192.png" ||
+        pathname === "/office/brand/icon-512.png" ||
+        pathname === "/office/brand/icon-maskable-512.png" ||
         pathname === "/office/manifest.json" ||
         pathname === "/office/sw.js";
       const isPublicAdminSessionPath =
@@ -2349,6 +2355,33 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           return;
         }
         await serveFile(res, officeLogoLightPath);
+        return;
+      }
+
+      if (pathname === "/office/brand/icon-192.png") {
+        if (req.method !== "GET") {
+          methodNotAllowed(res, "GET");
+          return;
+        }
+        await serveFile(res, officeIcon192Path);
+        return;
+      }
+
+      if (pathname === "/office/brand/icon-512.png") {
+        if (req.method !== "GET") {
+          methodNotAllowed(res, "GET");
+          return;
+        }
+        await serveFile(res, officeIcon512Path);
+        return;
+      }
+
+      if (pathname === "/office/brand/icon-maskable-512.png") {
+        if (req.method !== "GET") {
+          methodNotAllowed(res, "GET");
+          return;
+        }
+        await serveFile(res, officeIconMaskable512Path);
         return;
       }
 

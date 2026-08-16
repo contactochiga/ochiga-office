@@ -7,13 +7,16 @@
 // another session on a shared machine. This exists purely so the shell
 // itself loads instantly/offline; every /api/lead-agents/* request
 // always goes to the network untouched.
-const CACHE_NAME = "ochiga-office-shell-v1";
+const CACHE_NAME = "ochiga-office-shell-v2";
 const SHELL_ASSETS = [
   "/office",
   "/office.js",
   "/office/manifest.json",
   "/office/brand/ochiga-logo-dark.png",
   "/office/brand/ochiga-logo-light.png",
+  "/office/brand/icon-192.png",
+  "/office/brand/icon-512.png",
+  "/office/brand/icon-maskable-512.png",
 ];
 
 self.addEventListener("install", (event) => {
