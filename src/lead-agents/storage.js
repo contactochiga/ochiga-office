@@ -1,6 +1,7 @@
 const crypto = require("crypto");
 const fs = require("fs/promises");
 const path = require("path");
+const axios = require("axios");
 
 const STORAGE_PURPOSES = Object.freeze([
   "staff_photo",
@@ -47,6 +48,16 @@ function sanitizePurpose(value) {
   return purpose || "document";
 }
 
+// Render's local filesystem is ephemeral — it does not survive a
+// redeploy, and on some plans not even a restart. Any driver other than
+// "supabase" here is local disk, which is fine for local dev (no
+// external dependency needed) but must never be relied on in
+// production. "supabase" persists into Supabase Storage (the same
+// proven pattern Ochiga-backend already uses for Consumer profile
+// avatars — supabaseAdmin.storage.from(bucket).upload/getPublicUrl in
+// src/routes/me.routes.ts) via a private bucket dedicated to Office, so
+// Office staff identity/media stays completely separate from Consumer's
+// user table and bucket.
 function createStorageService(config) {
   const driver = String(config.officeStorageDriver || config.storageDriver || "local").toLowerCase();
   const fallbackRootDir = path.join(process.cwd(), "data", "office-storage");
@@ -69,20 +80,52 @@ function createStorageService(config) {
     }
   }
 
-  async function putBuffer(input) {
-    if (driver !== "local") {
-      const error = new Error(`Unsupported storage driver: ${driver}`);
-      error.statusCode = 500;
+  const bucket = config.officeStorageBucket || "office-media";
+  const supabaseUrl = String(config.supabaseUrl || "").replace(/\/$/, "");
+  const supabaseClient = driver === "supabase"
+    ? axios.create({
+        baseURL: `${supabaseUrl}/storage/v1`,
+        timeout: config.requestTimeoutMs || 30000,
+        headers: {
+          apikey: config.supabaseServiceRoleKey,
+          authorization: `Bearer ${config.supabaseServiceRoleKey}`,
+        },
+        // Supabase returns raw bytes for object reads, not JSON.
+        responseType: "arraybuffer",
+        validateStatus: () => true,
+      })
+    : null;
+
+  async function putBufferLocal(input, id, filename, mimeType) {
+    const activeRootDir = await ensureRootDir();
+    const filePath = path.join(activeRootDir, filename);
+    await fs.writeFile(filePath, input.buffer);
+  }
+
+  async function putBufferSupabase(input, id, filename, mimeType) {
+    const response = await supabaseClient.post(
+      `/object/${encodeURIComponent(bucket)}/${encodeURIComponent(filename)}`,
+      input.buffer,
+      { headers: { "content-type": mimeType, "x-upsert": "true" }, responseType: "json" }
+    );
+    if (response.status < 200 || response.status >= 300) {
+      const error = new Error(`Supabase Storage upload failed (${response.status}): ${JSON.stringify(response.data)}`);
+      error.statusCode = 502;
       throw error;
     }
+  }
+
+  async function putBuffer(input) {
     const purpose = sanitizePurpose(input.purpose);
     const id = `${purpose}_${Date.now().toString(36)}_${crypto.randomBytes(6).toString("hex")}`;
     const mimeType = input.mime_type || input.mimeType || "application/octet-stream";
     const ext = input.extension || extensionForMime(mimeType);
-    const activeRootDir = await ensureRootDir();
     const filename = `${id}${ext}`;
-    const filePath = path.join(activeRootDir, filename);
-    await fs.writeFile(filePath, input.buffer);
+    if (driver === "supabase") {
+      await putBufferSupabase(input, id, filename, mimeType);
+    } else {
+      await putBufferLocal(input, id, filename, mimeType);
+    }
     return {
       id,
       filename,
@@ -123,6 +166,34 @@ function createStorageService(config) {
     });
   }
 
+  // Replaces the old filePathFor()+fs-based serveFile() pairing so the
+  // same authenticated route contract (GET /admin/storage/:filename,
+  // and the document share-token route) keeps working unchanged for
+  // callers — only where the bytes actually live has changed.
+  async function getObject(filename) {
+    const safeName = path.basename(String(filename || ""));
+    if (driver === "supabase") {
+      const response = await supabaseClient.get(`/object/${encodeURIComponent(bucket)}/${encodeURIComponent(safeName)}`);
+      if (response.status === 404) return null;
+      if (response.status < 200 || response.status >= 300) {
+        const error = new Error(`Supabase Storage download failed (${response.status})`);
+        error.statusCode = 502;
+        throw error;
+      }
+      return {
+        buffer: Buffer.from(response.data),
+        mimeType: response.headers["content-type"] || "application/octet-stream",
+      };
+    }
+    try {
+      const buffer = await fs.readFile(path.join(rootDir, safeName));
+      return { buffer, mimeType: undefined };
+    } catch (error) {
+      if (error && error.code === "ENOENT") return null;
+      throw error;
+    }
+  }
+
   return {
     driver,
     get rootDir() {
@@ -132,11 +203,14 @@ function createStorageService(config) {
     putBuffer,
     putDataUrl,
     putText,
+    getObject,
     filePathFor(filename) {
       return path.join(rootDir, path.basename(String(filename || "")));
     },
     health() {
-      return { driver, configured: Boolean(rootDir), root_dir: rootDir || "" };
+      return driver === "supabase"
+        ? { driver, configured: Boolean(supabaseUrl && config.supabaseServiceRoleKey), bucket }
+        : { driver, configured: Boolean(rootDir), root_dir: rootDir || "" };
     },
   };
 }

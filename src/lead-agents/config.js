@@ -196,7 +196,16 @@ function createConfig() {
     mapboxPublicToken: process.env.MAPBOX_PUBLIC_TOKEN || process.env.NEXT_PUBLIC_MAPBOX_TOKEN || "",
     googleMapsApiKey: process.env.GOOGLE_MAPS_API_KEY || process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY || "",
     officeDocumentBrandName: process.env.OFFICE_DOCUMENT_BRAND_NAME || "OCHIGA OFFICE",
-    officeStorageDriver: process.env.OFFICE_STORAGE_DRIVER || "local",
+    // Defaults to whatever the DB driver already is: Render's local disk
+    // does not survive a redeploy, so if we're already committed to
+    // Supabase for the database, media persistence should follow the
+    // same commitment rather than silently staying on ephemeral local
+    // disk until someone remembers to set a second env var. Explicit
+    // OFFICE_STORAGE_DRIVER always wins when set.
+    officeStorageDriver:
+      process.env.OFFICE_STORAGE_DRIVER ||
+      (process.env.LEAD_AGENTS_STORE_DRIVER === "supabase" ? "supabase" : "local"),
+    officeStorageBucket: process.env.OFFICE_STORAGE_BUCKET || "office-media",
     officeStorageDir:
       process.env.OFFICE_STORAGE_DIR || path.join(cwd, "data", "office-storage"),
   };

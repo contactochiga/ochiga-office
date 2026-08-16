@@ -142,6 +142,19 @@ async function serveFile(res, filePath) {
   res.end(body);
 }
 
+// Same response shape as serveFile, for bytes that didn't come from a
+// local path (e.g. storageService.getObject() reading from Supabase
+// Storage) — falls back to extension-based detection via
+// contentTypeForFile when the source didn't supply a content-type
+// (the local-disk storage driver doesn't track one separately).
+function serveBuffer(res, buffer, contentType, filenameForTypeGuess) {
+  res.writeHead(200, {
+    "content-type": contentType || contentTypeForFile(filenameForTypeGuess || ""),
+    "cache-control": "no-cache",
+  });
+  res.end(buffer);
+}
+
 module.exports = {
   createRequestContext,
   getPathname,
@@ -150,5 +163,6 @@ module.exports = {
   notFound,
   readJsonBody,
   serveFile,
+  serveBuffer,
   setCorsHeaders,
 };

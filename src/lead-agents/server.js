@@ -95,6 +95,7 @@ const {
   notFound,
   readJsonBody,
   serveFile,
+  serveBuffer,
   setCorsHeaders,
 } = require("./http");
 
@@ -5009,7 +5010,12 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           return;
         }
         const filename = path.basename(decodeURIComponent(rawFilename));
-        await serveFile(res, storageService.filePathFor(filename));
+        const shareObject = await storageService.getObject(filename);
+        if (!shareObject) {
+          notFound(res);
+          return;
+        }
+        serveBuffer(res, shareObject.buffer, shareObject.mimeType, filename);
         return;
       }
 
@@ -5021,7 +5027,12 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
         }
         authorizePermission(authContext, "view_storage");
         const filename = path.basename(decodeURIComponent(storageMatch[1]));
-        await serveFile(res, storageService.filePathFor(filename));
+        const storedObject = await storageService.getObject(filename);
+        if (!storedObject) {
+          notFound(res);
+          return;
+        }
+        serveBuffer(res, storedObject.buffer, storedObject.mimeType, filename);
         return;
       }
 
