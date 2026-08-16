@@ -5363,11 +5363,26 @@ function renderApprovalSurface(proposedActions) {
   return wrap;
 }
 
+// Presence (Universal Interaction Shell) — drives the orb's glow/pulse
+// from the shared vocabulary in shared/oyi-core/presence.mjs rather
+// than an ad-hoc busy flag, so Office and Website's orbs read the same
+// state the same way. Only idle/thinking are reachable from Office's
+// text-only composer today; listening/speaking/executing are real
+// states the vocabulary already supports for when voice/action-
+// execution UI lands here.
+function setOyiPresence(nextState) {
+  const orb = document.getElementById("oyiBar");
+  if (!orb) return;
+  orb.classList.remove("presence-idle", "presence-thinking");
+  orb.classList.add(`presence-${nextState}`);
+}
+
 async function sendOyiMessage(message) {
   if (!message.trim() || state.oyiBusy) return;
   appendOyiMessage("user", message);
   state.oyiBusy = true;
   document.getElementById("oyiSend").disabled = true;
+  setOyiPresence("thinking");
 
   try {
     const data = await api("/api/lead-agents/admin/office/intelligence/chat", {
@@ -5387,6 +5402,7 @@ async function sendOyiMessage(message) {
   } finally {
     state.oyiBusy = false;
     document.getElementById("oyiSend").disabled = false;
+    setOyiPresence("idle");
   }
 }
 

@@ -386,6 +386,20 @@
     width: 13px; height: 13px; border-radius: 50%;
     background: radial-gradient(circle at 35% 30%, #fff, var(--red-bright) 60%);
     box-shadow: 0 0 10px 2px rgba(179,36,27,0.55);
+    transition: box-shadow var(--duration-fast) var(--ease);
+  }
+  /* Presence (shared/oyi-core/presence.mjs) — restrained, not
+     decorative: a slow pulse on the core dot is the only signal while
+     Oyi is thinking, no motion at all at idle. */
+  .oyi-orb.presence-thinking .oyi-orb-core {
+    animation: oyi-presence-pulse 1.4s ease-in-out infinite;
+  }
+  @keyframes oyi-presence-pulse {
+    0%, 100% { box-shadow: 0 0 10px 2px rgba(179,36,27,0.55); opacity: 1; }
+    50% { box-shadow: 0 0 16px 5px rgba(179,36,27,0.85); opacity: 0.75; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .oyi-orb.presence-thinking .oyi-orb-core { animation: none; }
   }
   .oyi-avatar-dot {
     width: 22px; height: 22px; border-radius: 50%; flex-shrink: 0;
@@ -855,7 +869,7 @@
         <button type="button" id="oyiRestore" aria-label="Restore Oyi" title="Restore">▢</button>
         <button type="button" id="oyiMinimizedClose" aria-label="Close Oyi" title="Close">×</button>
       </div>
-      <button type="button" class="oyi-orb" id="oyiBar" aria-expanded="false" aria-label="Ask Oyi" title="Ask Oyi">
+      <button type="button" class="oyi-orb presence-idle" id="oyiBar" aria-expanded="false" aria-label="Ask Oyi" title="Ask Oyi">
         <span class="oyi-orb-core"></span>
       </button>
     </div>
