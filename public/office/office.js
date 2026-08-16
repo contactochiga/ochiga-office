@@ -4210,7 +4210,19 @@ function openInviteStaffDialog(canonicalRoles, token) {
   });
 }
 
-function toggleTeamEditRow(user, canonicalRoles, canManageSecurity) {
+// Groups PERMISSION_KEYS by their dotted prefix (e.g. "crm.read",
+// "crm.manage" -> group "crm") so the permission editor reads as
+// labeled sections instead of one 53-item flat list.
+function groupedPermissionKeys(scopes) {
+  const groups = {};
+  scopes.forEach((key) => {
+    const prefix = key.includes(".") ? key.split(".")[0] : "other";
+    (groups[prefix] = groups[prefix] || []).push(key);
+  });
+  return groups;
+}
+
+async function toggleTeamEditRow(user, canonicalRoles, canManageSecurity) {
   const wrap = document.getElementById("teamEditWrap");
   if (!wrap) return;
   wrap.innerHTML = "";
@@ -4220,16 +4232,26 @@ function toggleTeamEditRow(user, canonicalRoles, canManageSecurity) {
   // role to something else just by opening the form.
   const roles = canonicalRoles.includes(user.role) ? canonicalRoles : [user.role, ...canonicalRoles];
   const initials = (user.display_name || user.email || "?").trim().split(/\s+/).map((p) => p[0]).slice(0, 2).join("").toUpperCase();
+  let permissionsMeta;
+  try {
+    permissionsMeta = await apiGetPermissionsMeta();
+  } catch {
+    permissionsMeta = { scopes: [], roles: {} };
+  }
+  const allScopes = permissionsMeta.scopes || [];
+  const grantedScopes = new Set(Array.isArray(user.permission_scopes) ? user.permission_scopes : []);
+  const groups = groupedPermissionKeys(allScopes);
+
   const form = el(`
-    <form class="inline-form" style="margin-top:14px;">
+    <form class="inline-form" style="flex-direction:column;align-items:stretch;gap:14px;margin-top:14px;max-width:640px;">
       <div class="field">
         <label>Editing</label>
         <div style="padding-top:6px;color:var(--white);font-size:13px;">${escapeHtml(user.display_name || user.email)}</div>
       </div>
       <div class="field">
         <label for="teamEditPhoto">Photo</label>
-        <div style="display:flex;align-items:center;gap:10px;">
-          <div class="avatar" style="width:36px;height:36px;font-size:13px;">
+        <div style="display:flex;align-items:center;gap:14px;">
+          <div class="avatar" style="width:96px;height:96px;font-size:32px;">
             ${user.passport_photo_url ? `<img class="avatar-img" src="${escapeHtml(user.passport_photo_url)}" alt="" />` : `<span>${escapeHtml(initials || "?")}</span>`}
           </div>
           <input id="teamEditPhoto" type="file" accept="image/png,image/jpeg,image/webp,image/gif" />
@@ -4238,13 +4260,15 @@ function toggleTeamEditRow(user, canonicalRoles, canManageSecurity) {
       </div>
       <div class="field">
         <label for="teamEditPosition">Office Position</label>
-        <input id="teamEditPosition" type="text" value="${escapeHtml(user.office_position || "")}" placeholder="e.g. CEO, Sales Director" />
+        <input id="teamEditPosition" type="text" value="${escapeHtml(user.office_position || "")}" placeholder="e.g. Technical Advisor — AI &amp; Robotics" />
+        <span class="hint">The person's actual job title — never shown as their system role.</span>
       </div>
       <div class="field">
         <label for="teamEditRole">System Role</label>
         <select id="teamEditRole">
           ${roles.map((r) => `<option value="${escapeHtml(r)}" ${r === user.role ? "selected" : ""}>${escapeHtml(titleCase(r))}</option>`).join("")}
         </select>
+        <span class="hint">Determines the base set of Office capabilities below.</span>
       </div>
       <div class="field">
         <label for="teamEditStatus">Status</label>
@@ -4252,12 +4276,46 @@ function toggleTeamEditRow(user, canonicalRoles, canManageSecurity) {
           ${["active", "suspended"].map((s) => `<option value="${s}" ${s === (user.status || "active") ? "selected" : ""}>${titleCase(s)}</option>`).join("")}
         </select>
       </div>
-      <button class="btn btn-primary" type="submit">Save</button>
-      ${canManageSecurity ? `<button class="btn btn-ghost" type="button" id="teamResetPassword">Reset Password</button>` : ""}
-      <button class="btn btn-ghost" type="button" id="teamEditCancel">Cancel</button>
+      <div class="field">
+        <label>Permissions</label>
+        <span class="hint">Checked-and-locked items come from the System Role above. Check anything else to grant it to this person specifically, on top of their role.</span>
+        <div class="permission-editor" style="display:flex;flex-direction:column;gap:10px;margin-top:8px;max-height:320px;overflow-y:auto;border:1px solid var(--line);border-radius:var(--radius-sm);padding:10px;"></div>
+      </div>
+      <div>
+        <button class="btn btn-primary" type="submit">Save</button>
+        ${canManageSecurity ? `<button class="btn btn-ghost" type="button" id="teamResetPassword">Reset Password</button>` : ""}
+        <button class="btn btn-ghost" type="button" id="teamEditCancel">Cancel</button>
+      </div>
       <div class="form-error" id="teamEditError"></div>
     </form>
   `);
+
+  const permissionHost = form.querySelector(".permission-editor");
+  function renderPermissionGroups(selectedRole) {
+    const roleGranted = new Set(permissionsMeta.roles?.[selectedRole] || []);
+    permissionHost.innerHTML = "";
+    Object.entries(groups).forEach(([prefix, keys]) => {
+      const section = el(`<div></div>`);
+      section.appendChild(el(`<div style="font-size:10.5px;text-transform:uppercase;letter-spacing:0.04em;color:var(--text-tertiary);margin-bottom:4px;">${escapeHtml(titleCase(prefix))}</div>`));
+      const list = el(`<div style="display:flex;flex-wrap:wrap;gap:8px 16px;"></div>`);
+      keys.forEach((key) => {
+        const fromRole = roleGranted.has(key);
+        const checked = fromRole || grantedScopes.has(key);
+        const row = el(`
+          <label style="display:flex;align-items:center;gap:5px;font-size:12px;color:${fromRole ? "var(--text-tertiary)" : "var(--text-secondary)"};">
+            <input type="checkbox" data-scope="${escapeHtml(key)}" ${checked ? "checked" : ""} ${fromRole ? "disabled" : ""} />
+            ${escapeHtml(key)}
+          </label>
+        `);
+        list.appendChild(row);
+      });
+      section.appendChild(list);
+      permissionHost.appendChild(section);
+    });
+  }
+  renderPermissionGroups(user.role);
+  form.querySelector("#teamEditRole").addEventListener("change", (event) => renderPermissionGroups(event.target.value));
+
   form.querySelector("#teamEditCancel").addEventListener("click", () => { wrap.innerHTML = ""; });
   form.querySelector("#teamEditPhoto").addEventListener("change", async (event) => {
     const file = event.target.files?.[0];
@@ -4296,11 +4354,17 @@ function toggleTeamEditRow(user, canonicalRoles, canManageSecurity) {
     event.preventDefault();
     const errorBox = form.querySelector("#teamEditError");
     errorBox.classList.remove("visible");
+    const selectedRole = form.querySelector("#teamEditRole").value;
+    const roleGranted = new Set(permissionsMeta.roles?.[selectedRole] || []);
+    const permissionScopes = Array.from(permissionHost.querySelectorAll("input[type=checkbox]"))
+      .filter((input) => input.checked && !roleGranted.has(input.dataset.scope))
+      .map((input) => input.dataset.scope);
     try {
       await apiUpdateAdminUser(user.id, {
-        role: form.querySelector("#teamEditRole").value,
+        role: selectedRole,
         status: form.querySelector("#teamEditStatus").value,
         office_position: form.querySelector("#teamEditPosition").value,
+        permission_scopes: permissionScopes,
       });
       wrap.innerHTML = "";
       const token = ++state.renderToken;
