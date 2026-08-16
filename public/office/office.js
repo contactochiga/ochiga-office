@@ -5260,37 +5260,47 @@ function appendOyiMessage(role, contentNodeOrText) {
   thread.scrollTop = thread.scrollHeight;
 }
 
-// Defensive structured-response rendering: Oyi Core's response schema
-// isn't documented in this repo (external system), so this renders
-// whichever of these common shapes are present rather than assuming
-// one. Plain prose always falls back to a normal bubble.
-function renderOyiResponse(oyiCore) {
+// Rich response rendering (Universal Interaction Shell) — renders a
+// NormalizedInteractionResponse (see shared/oyi-core/responseNormalizer.mjs)
+// rather than sniffing Ochiga Backend's raw response shape by hand.
+// The normalizer is the single place that knows OfficeInternalOyiCoreResponse's
+// real field names; this function only ever sees the normalized shape,
+// so it can't silently drift from what Website's renderer expects too.
+const ATTENTION_SIGNAL_LABEL = {
+  follow_up: "Follow-up",
+  support: "Support",
+  project: "Project",
+  portfolio: "Portfolio",
+  private: "Private",
+  partnership: "Partnership",
+  handoff: "Handoff",
+  meeting: "Meeting",
+};
+function renderOyiResponse(normalized) {
   const wrap = el(`<div class="oyi-structured"></div>`);
-  const message = oyiCore.message || oyiCore.reply || oyiCore.text || oyiCore.summary;
-  if (message) wrap.appendChild(el(`<p>${escapeHtml(message)}</p>`));
 
-  if (Array.isArray(oyiCore.recommendations) && oyiCore.recommendations.length) {
+  if (normalized.attentionSignal) {
+    wrap.appendChild(
+      el(`<div class="oyi-attention-badge">${escapeHtml(ATTENTION_SIGNAL_LABEL[normalized.attentionSignal] || titleCase(normalized.attentionSignal))}</div>`)
+    );
+  }
+  if (normalized.answer) wrap.appendChild(el(`<p>${escapeHtml(normalized.answer)}</p>`));
+
+  if (normalized.suggestions.length) {
+    wrap.appendChild(el(`<div class="oyi-block-label">Suggested Next Step</div>`));
     const list = el(`<ul class="oyi-list"></ul>`);
-    oyiCore.recommendations.forEach((rec) => list.appendChild(el(`<li>${escapeHtml(typeof rec === "string" ? rec : rec.text || JSON.stringify(rec))}</li>`)));
-    wrap.appendChild(el(`<div class="oyi-block-label">Recommendations</div>`));
+    normalized.suggestions.forEach((suggestion) => list.appendChild(el(`<li>${escapeHtml(suggestion)}</li>`)));
     wrap.appendChild(list);
   }
-  if (Array.isArray(oyiCore.next_actions) && oyiCore.next_actions.length) {
-    const list = el(`<ul class="oyi-list"></ul>`);
-    oyiCore.next_actions.forEach((action) => list.appendChild(el(`<li>${escapeHtml(typeof action === "string" ? action : action.text || JSON.stringify(action))}</li>`)));
-    wrap.appendChild(el(`<div class="oyi-block-label">Next Actions</div>`));
+  if (normalized.knowledgeReferences.length) {
+    wrap.appendChild(el(`<div class="oyi-block-label">References</div>`));
+    const list = el(`<ul class="oyi-list oyi-references"></ul>`);
+    normalized.knowledgeReferences.forEach((ref) =>
+      list.appendChild(el(`<li>${escapeHtml(ref.title)}${ref.source ? ` <span class="oyi-reference-source">· ${escapeHtml(ref.source)}</span>` : ""}</li>`))
+    );
     wrap.appendChild(list);
   }
-  if (Array.isArray(oyiCore.table) && oyiCore.table.length) {
-    wrap.appendChild(el(`<div class="oyi-block-label">Details</div>`));
-    const columns = Object.keys(oyiCore.table[0]);
-    wrap.appendChild(renderDataTable({
-      columns: columns.map((c) => ({ label: titleCase(c), key: c })),
-      rows: oyiCore.table,
-      emptyMessage: "",
-    }));
-  }
-  if (!message && !wrap.children.length) {
+  if (!normalized.answer && !wrap.children.length) {
     wrap.appendChild(el(`<p>Oyi Core responded without a readable message field.</p>`));
   }
   return wrap;
@@ -5364,9 +5374,11 @@ async function sendOyiMessage(message) {
       method: "POST",
       body: { message, page_context: currentPageContext(), ...currentSelectedObjectContext() },
     });
-    appendOyiMessage("assistant", renderOyiResponse(data.oyi_core || {}));
-    if (Array.isArray(data.proposed_actions) && data.proposed_actions.length) {
-      appendOyiMessage("system", renderApprovalSurface(data.proposed_actions));
+    const { normalizeOfficeInternalResponse } = await import("/office/shared/oyi-core/responseNormalizer.mjs");
+    const normalized = normalizeOfficeInternalResponse(data.oyi_core || {}, data.proposed_actions);
+    appendOyiMessage("assistant", renderOyiResponse(normalized));
+    if (normalized.toolProposals.length) {
+      appendOyiMessage("system", renderApprovalSurface(normalized.toolProposals));
     }
   } catch (err) {
     if (err.status === 503) appendOyiMessage("system", "Oyi Core is unavailable right now. Nothing was answered from a separate reasoning path — please try again shortly.");

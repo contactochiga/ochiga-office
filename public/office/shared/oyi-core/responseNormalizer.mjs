@@ -33,11 +33,22 @@
  * @property {string|null} attentionSignal - office_internal's operational triage signal
  * @property {string|null} commercialSignal - corporate/public's sales-funnel signal
  * @property {boolean} handoffRecommended
+ * @property {Array<{id?:string, title:string, source:string}>} knowledgeReferences
  * @property {string[]} errors
  * @property {unknown} raw - original backend response, for renderer edge cases this layer doesn't yet cover
  */
 
 let _idCounter = 0;
+
+/**
+ * @param {Array<Record<string, any>>|undefined} refs
+ */
+function normalizeKnowledgeReferences(refs) {
+  if (!Array.isArray(refs)) return [];
+  return refs
+    .filter((ref) => ref && ref.title)
+    .map((ref) => ({ id: ref.id, title: ref.title, source: ref.source || "" }));
+}
 function makeProposalId(prefix) {
   _idCounter += 1;
   return `${prefix}_${Date.now().toString(36)}_${_idCounter}`;
@@ -75,6 +86,7 @@ export function normalizeCorporateResponse(response) {
     attentionSignal: null,
     commercialSignal: response?.commercial_signal || null,
     handoffRecommended: Boolean(response?.handoff_recommended),
+    knowledgeReferences: normalizeKnowledgeReferences(response?.knowledge_references),
     errors: response?.ok ? [] : [response?.error || response?.message || "corporate_response_error"],
     raw: response,
   };
@@ -102,6 +114,7 @@ export function normalizeOfficeInternalResponse(response, proposedActionsOverrid
     attentionSignal: response?.attention_signal && response.attention_signal !== "none" ? response.attention_signal : null,
     commercialSignal: null,
     handoffRecommended: response?.attention_signal === "handoff",
+    knowledgeReferences: normalizeKnowledgeReferences(response?.knowledge_references),
     errors: [],
     raw: response,
   };
@@ -128,6 +141,7 @@ export function normalizeCanonicalConversationResponse(response) {
     attentionSignal: null,
     commercialSignal: null,
     handoffRecommended: false,
+    knowledgeReferences: [],
     errors: Array.isArray(response?.warnings) ? response.warnings : [],
     raw: response,
   };
@@ -154,6 +168,7 @@ export function normalizeUnavailable(reason, message) {
     attentionSignal: null,
     commercialSignal: null,
     handoffRecommended: false,
+    knowledgeReferences: [],
     errors: [message || reason],
     raw: { reason, message },
   };
