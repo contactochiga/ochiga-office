@@ -1767,6 +1767,13 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
   const officeIcon192Path = path.join(process.cwd(), "public", "office", "brand", "icon-192.png");
   const officeIcon512Path = path.join(process.cwd(), "public", "office", "brand", "icon-512.png");
   const officeIconMaskable512Path = path.join(process.cwd(), "public", "office", "brand", "icon-maskable-512.png");
+  // Oyi Universal Interaction Shell shared core (vendored from
+  // Ochiga-website's lib/oyi-shell/core/ — see SYNC.md there). Plain
+  // dependency-free ES modules, imported natively by office.js's own
+  // <script type="module">.
+  const officeOyiCoreDockingPath = path.join(process.cwd(), "public", "office", "shared", "oyi-core", "docking.mjs");
+  const officeOyiCorePresencePath = path.join(process.cwd(), "public", "office", "shared", "oyi-core", "presence.mjs");
+  const officeOyiCoreResponseNormalizerPath = path.join(process.cwd(), "public", "office", "shared", "oyi-core", "responseNormalizer.mjs");
   const digitalTwinIndexPath = path.join(
     process.cwd(),
     "public",
@@ -1857,6 +1864,9 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
         pathname === "/office/brand/icon-192.png" ||
         pathname === "/office/brand/icon-512.png" ||
         pathname === "/office/brand/icon-maskable-512.png" ||
+        pathname === "/office/shared/oyi-core/docking.mjs" ||
+        pathname === "/office/shared/oyi-core/presence.mjs" ||
+        pathname === "/office/shared/oyi-core/responseNormalizer.mjs" ||
         pathname === "/office/manifest.json" ||
         pathname === "/office/sw.js";
       const isPublicAdminSessionPath =
@@ -2382,6 +2392,33 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           return;
         }
         await serveFile(res, officeIconMaskable512Path);
+        return;
+      }
+
+      if (pathname === "/office/shared/oyi-core/docking.mjs") {
+        if (req.method !== "GET") {
+          methodNotAllowed(res, "GET");
+          return;
+        }
+        await serveFile(res, officeOyiCoreDockingPath);
+        return;
+      }
+
+      if (pathname === "/office/shared/oyi-core/presence.mjs") {
+        if (req.method !== "GET") {
+          methodNotAllowed(res, "GET");
+          return;
+        }
+        await serveFile(res, officeOyiCorePresencePath);
+        return;
+      }
+
+      if (pathname === "/office/shared/oyi-core/responseNormalizer.mjs") {
+        if (req.method !== "GET") {
+          methodNotAllowed(res, "GET");
+          return;
+        }
+        await serveFile(res, officeOyiCoreResponseNormalizerPath);
         return;
       }
 

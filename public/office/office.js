@@ -5378,81 +5378,155 @@ async function sendOyiMessage(message) {
   }
 }
 
-function openOyiPanel() {
-  const control = document.getElementById("oyiControl");
-  control.classList.add("open");
-  document.getElementById("oyiBar").setAttribute("aria-expanded", "true");
-  document.getElementById("oyiInput").focus();
+function oyiStartThreadIfNeeded() {
   if (!state.oyiThreadStarted) {
     state.oyiThreadStarted = true;
     appendOyiMessage("system", "Ask about what you're looking at, or anything else across Office.");
   }
 }
-// Floating/draggable orb (Universal Interaction Shell, Priority 3):
-// dragging is initiated only from the closed-state orb itself, using
-// Pointer Capture so the whole drag tracks correctly even if the
-// pointer leaves the small circular hit area mid-move. A `moved` flag
-// distinguishes an actual drag from a plain click/tap, since a
-// pointerup that lands back on the (now-relocated) orb would
-// otherwise also fire a native "click". Position persists in
-// localStorage so it survives reloads; anything short of that (e.g.
-// private browsing) just falls back to the CSS default bottom-right
-// dock, never an error.
-const OYI_POSITION_KEY = "oyi_orb_position";
+
+function openOyiPanel() {
+  const control = document.getElementById("oyiControl");
+  control.classList.remove("minimized");
+  control.classList.add("open");
+  document.getElementById("oyiBar").setAttribute("aria-expanded", "true");
+  positionOyiSurfaces();
+  document.getElementById("oyiInput").focus();
+  oyiStartThreadIfNeeded();
+}
+
+function minimizeOyiPanel() {
+  const control = document.getElementById("oyiControl");
+  control.classList.remove("open");
+  control.classList.add("minimized");
+  document.getElementById("oyiBar").setAttribute("aria-expanded", "false");
+  positionOyiSurfaces();
+}
+
+function closeOyiPanel() {
+  const control = document.getElementById("oyiControl");
+  control.classList.remove("open", "minimized");
+  document.getElementById("oyiBar").setAttribute("aria-expanded", "false");
+}
+
+// Edge-docked Universal Interaction Shell orb (Consumer's visual
+// basis, red accent here) backed by the shared docking engine
+// (docking.mjs, vendored from Ochiga-website's lib/oyi-shell/core —
+// see that repo's SYNC.md). Dragging is initiated only from the
+// closed-state orb, using Pointer Capture so the drag tracks
+// correctly even if the pointer leaves the small circular hit area.
+// While dragging, the orb is projected onto whichever screen edge is
+// nearest (it never floats into the interior); on release it snaps to
+// the closest of the 6 canonical anchors. Position persists in
+// localStorage across reloads; docking is desktop-only — below the
+// mobile breakpoint the orb stays fixed bottom-right and CSS takes
+// over positioning the panel/minimized bar as a bottom sheet.
+const OYI_POSITION_KEY = "oyi_orb_anchor";
 const OYI_DRAG_THRESHOLD = 4;
-// .oyi-panel's own width rule: min(400px, calc(100vw - 40px)).
-const OYI_PANEL_MAX_WIDTH = 400;
+const OYI_MOBILE_BREAKPOINT = 640;
+const OYI_ORB_SIZE = 54;
+const OYI_EDGE_MARGIN = 20;
 
-function clampOyiPosition(control, x, y) {
-  const margin = 12;
-  const width = control.offsetWidth || 54;
-  const height = control.offsetHeight || 54;
-  const panelWidth = Math.min(OYI_PANEL_MAX_WIDTH, window.innerWidth - margin * 2);
-  // .oyi-control right-aligns its children (align-items: flex-end), so
-  // the panel's right edge always matches the orb's right edge and it
-  // grows leftward when opened. Reserve that width on the left of
-  // wherever the orb ends up, or the panel would overflow off-screen
-  // once opened (it isn't present, and doesn't affect layout, while
-  // the orb sits closed).
-  const minX = Math.max(margin, panelWidth + margin - width);
-  const maxX = Math.max(minX, window.innerWidth - width - margin);
-  const maxY = Math.max(margin, window.innerHeight - height - margin);
-  return { x: Math.min(Math.max(x, minX), maxX), y: Math.min(Math.max(y, margin), maxY) };
+function oyiDockingEnabled() {
+  return window.innerWidth >= OYI_MOBILE_BREAKPOINT;
 }
 
-function applyOyiPosition(control, x, y) {
-  const width = control.offsetWidth || 54;
-  // Anchored via `right`, not `left`: .oyi-control's children are
-  // right-aligned (align-items: flex-end), so the box itself must grow
-  // leftward as the panel opens wider than the closed orb. Anchoring
-  // via `left` instead pins the box's LEFT edge and lets it grow
-  // rightward when the panel opens, overflowing the viewport whenever
-  // the orb sits anywhere near the right edge.
-  control.style.right = `${window.innerWidth - (x + width)}px`;
-  control.style.left = "auto";
+function oyiDockingBounds() {
+  const panel = document.getElementById("oyiPanel");
+  return {
+    viewportWidth: window.innerWidth,
+    viewportHeight: window.innerHeight,
+    size: OYI_ORB_SIZE,
+    margin: OYI_EDGE_MARGIN,
+    panelWidth: Math.min(400, window.innerWidth - 40),
+    panelHeight: Math.min(panel.scrollHeight || 560, 560, window.innerHeight - 120),
+    panelGap: 0,
+  };
+}
+
+// Applies an orb position (top-left, in viewport px) to the orb
+// itself, then — if the panel or minimized bar is currently showing —
+// repositions it flush against whichever corner of the orb it should
+// visually extend from, per openDirection. The panel/minimized bar
+// deliberately share the orb's own corner rather than floating beside
+// it, so opening/closing reads as one surface changing shape in
+// place, matching the reference design.
+function applyOyiOrbPosition(x, y, openDirection) {
+  const control = document.getElementById("oyiControl");
+  control.style.left = `${x}px`;
   control.style.top = `${y}px`;
+  control.style.right = "auto";
   control.style.bottom = "auto";
-  // Flip the panel below the orb when there isn't roughly enough room
-  // for it to open upward (matches .oyi-panel's own max-height cap).
-  control.classList.toggle("panel-below", y < 420 && window.innerHeight - (y + control.offsetHeight) > y);
+  if (openDirection) positionOyiSurfaces(x, y, openDirection);
 }
 
-function wireOyiControl() {
+function positionOyiSurfaces(orbX, orbY, openDirection) {
+  const control = document.getElementById("oyiControl");
+  if (!oyiDockingEnabled()) return; // CSS media query owns positioning below the breakpoint
+  const rect = control.getBoundingClientRect();
+  const x = orbX ?? rect.left;
+  const y = orbY ?? rect.top;
+  const direction = openDirection || state.oyiOpenDirection || { horizontal: "left", vertical: "up" };
+  state.oyiOpenDirection = direction;
+  [document.getElementById("oyiPanel"), document.getElementById("oyiMinimizedBar")].forEach((surface) => {
+    if (direction.horizontal === "right") {
+      surface.style.left = `${x}px`;
+      surface.style.right = "auto";
+    } else {
+      surface.style.right = `${window.innerWidth - (x + OYI_ORB_SIZE)}px`;
+      surface.style.left = "auto";
+    }
+    if (direction.vertical === "down") {
+      surface.style.top = `${y}px`;
+      surface.style.bottom = "auto";
+    } else {
+      surface.style.bottom = `${window.innerHeight - (y + OYI_ORB_SIZE)}px`;
+      surface.style.top = "auto";
+    }
+  });
+}
+
+async function wireOyiControl() {
   const control = document.getElementById("oyiControl");
   const orb = document.getElementById("oyiBar");
   const closeBtn = document.getElementById("oyiClose");
+  const minimizeBtn = document.getElementById("oyiMinimize");
+  const restoreBtn = document.getElementById("oyiRestore");
+  const minimizedCloseBtn = document.getElementById("oyiMinimizedClose");
+  const newConversationBtn = document.getElementById("oyiNewConversation");
   const composer = document.getElementById("oyiComposer");
   const input = document.getElementById("oyiInput");
 
-  let saved = null;
+  let docking;
   try {
-    saved = JSON.parse(localStorage.getItem(OYI_POSITION_KEY) || "null");
+    docking = await import("/office/shared/oyi-core/docking.mjs");
   } catch {
-    saved = null;
+    docking = null; // Shared core failed to load — orb still opens/closes, just not draggable.
   }
-  if (saved && Number.isFinite(saved.x) && Number.isFinite(saved.y)) {
-    const clamped = clampOyiPosition(control, saved.x, saved.y);
-    applyOyiPosition(control, clamped.x, clamped.y);
+
+  if (docking && oyiDockingEnabled()) {
+    let saved = null;
+    try {
+      saved = JSON.parse(localStorage.getItem(OYI_POSITION_KEY) || "null");
+    } catch {
+      saved = null;
+    }
+    if (saved && docking.ANCHOR_IDS.includes(saved.anchor)) {
+      const anchors = docking.anchorPositions(oyiDockingBounds());
+      const position = anchors[saved.anchor];
+      const direction = docking.panelOpenDirection(saved.anchor);
+      const vertical =
+        direction.vertical === "auto"
+          ? docking.resolveVerticalOpenDirection({
+              orbY: position.y,
+              orbSize: OYI_ORB_SIZE,
+              panelHeight: oyiDockingBounds().panelHeight,
+              viewportHeight: window.innerHeight,
+              gap: 0,
+            })
+          : direction.vertical;
+      applyOyiOrbPosition(position.x, position.y, { horizontal: direction.horizontal, vertical });
+    }
   }
 
   let dragging = false;
@@ -5464,6 +5538,7 @@ function wireOyiControl() {
 
   orb.addEventListener("pointerdown", (event) => {
     if (event.button !== 0 && event.pointerType === "mouse") return;
+    if (!docking || !oyiDockingEnabled()) return;
     dragging = true;
     moved = false;
     const rect = control.getBoundingClientRect();
@@ -5480,8 +5555,8 @@ function wireOyiControl() {
     const dy = event.clientY - startY;
     if (!moved && Math.hypot(dx, dy) > OYI_DRAG_THRESHOLD) moved = true;
     if (!moved) return;
-    const { x, y } = clampOyiPosition(control, originX + dx, originY + dy);
-    applyOyiPosition(control, x, y);
+    const projected = docking.projectToNearestEdge({ x: originX + dx, y: originY + dy }, oyiDockingBounds());
+    applyOyiOrbPosition(projected.x, projected.y, null);
   });
   const endDrag = () => {
     if (!dragging) return;
@@ -5489,8 +5564,10 @@ function wireOyiControl() {
     control.classList.remove("dragging");
     if (moved) {
       const rect = control.getBoundingClientRect();
+      const resolved = docking.resolveDockedState({ x: rect.left, y: rect.top }, oyiDockingBounds());
+      applyOyiOrbPosition(resolved.position.x, resolved.position.y, resolved.openDirection);
       try {
-        localStorage.setItem(OYI_POSITION_KEY, JSON.stringify({ x: rect.left, y: rect.top }));
+        localStorage.setItem(OYI_POSITION_KEY, JSON.stringify({ anchor: resolved.anchor }));
       } catch {
         // Position just won't persist across reloads — not worth surfacing.
       }
@@ -5507,15 +5584,20 @@ function wireOyiControl() {
     openOyiPanel();
   });
   window.addEventListener("resize", () => {
-    if (!control.style.right || control.style.right === "auto") return;
+    if (!docking || !oyiDockingEnabled()) return;
     const rect = control.getBoundingClientRect();
-    const { x, y } = clampOyiPosition(control, rect.left, rect.top);
-    applyOyiPosition(control, x, y);
+    const resolved = docking.resolveDockedState({ x: rect.left, y: rect.top }, oyiDockingBounds());
+    applyOyiOrbPosition(resolved.position.x, resolved.position.y, resolved.openDirection);
   });
 
-  closeBtn.addEventListener("click", () => {
-    control.classList.remove("open");
-    orb.setAttribute("aria-expanded", "false");
+  closeBtn.addEventListener("click", closeOyiPanel);
+  minimizedCloseBtn.addEventListener("click", closeOyiPanel);
+  minimizeBtn.addEventListener("click", minimizeOyiPanel);
+  restoreBtn.addEventListener("click", openOyiPanel);
+  newConversationBtn.addEventListener("click", () => {
+    document.getElementById("oyiThread").innerHTML = "";
+    state.oyiThreadStarted = false;
+    oyiStartThreadIfNeeded();
   });
   composer.addEventListener("submit", (event) => {
     event.preventDefault();
