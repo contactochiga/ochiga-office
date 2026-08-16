@@ -172,6 +172,21 @@ async function apiCreateReport(body) {
 async function apiReportDecision(id, decision, body) {
   return api(`/api/lead-agents/admin/reports/${encodeURIComponent(id)}/${decision}`, { method: "POST", body: body || {} });
 }
+async function apiListDevelopmentProjects() {
+  return api("/api/lead-agents/admin/development-projects");
+}
+async function apiGetDevelopmentProject(id) {
+  return api(`/api/lead-agents/admin/development-projects/${encodeURIComponent(id)}`);
+}
+async function apiCreateDevelopmentProject(body) {
+  return api("/api/lead-agents/admin/development-projects", { method: "POST", body });
+}
+async function apiUpdateDevelopmentProject(id, patch) {
+  return api(`/api/lead-agents/admin/development-projects/${encodeURIComponent(id)}`, { method: "PATCH", body: patch });
+}
+async function apiSyncDevelopmentProject(id) {
+  return api(`/api/lead-agents/admin/development-projects/${encodeURIComponent(id)}/sync`, { method: "POST", body: {} });
+}
 async function apiListProposals() {
   return api("/api/lead-agents/admin/proposals");
 }
@@ -389,6 +404,7 @@ const PRIMARY_NAV = [
   { key: "documents", label: "Documents", permission: "documents.generate", phase: null },
   { key: "content", label: "Content", permission: "content.write", phase: null },
   { key: "reports", label: "Reports", permission: "reports.write", phase: null },
+  { key: "development-projects", label: "Development", permission: "development.manage", phase: null },
 ];
 
 const ADMIN_NAV = [
@@ -894,6 +910,10 @@ async function renderRoute() {
     outlet.innerHTML = "";
     outlet.appendChild(skeletonPanel(4));
     await renderReportsRoute(outlet, rest, token);
+  } else if (topKey === "development-projects") {
+    outlet.innerHTML = "";
+    outlet.appendChild(skeletonPanel(4));
+    await renderDevelopmentProjectsRoute(outlet, rest, token);
   } else if (topKey === "inbox") {
     outlet.innerHTML = "";
     outlet.appendChild(skeletonPanel(4));
@@ -3710,6 +3730,156 @@ async function renderReportDetail(outlet, id, token) {
     mainSections,
     railSections: [],
   });
+}
+
+// ---------------------------------------------------------------
+// Development Management (Ecosystem Standardization Programme 11).
+// Manages only status/progress/core-metadata — the hand-authored
+// multi-chapter tour narrative on the public website stays in code,
+// unmanaged. "Sync to Website" pushes the current saved state to
+// Sanity; edits here are NOT live on the public site until synced.
+// ---------------------------------------------------------------
+async function renderDevelopmentProjectsRoute(outlet, rest, token) {
+  const projectId = rest[0];
+  if (projectId) await renderDevelopmentProjectDetail(outlet, projectId, token);
+  else await renderDevelopmentProjectsList(outlet, token);
+}
+
+async function renderDevelopmentProjectsList(outlet, token) {
+  setTopbar("Development", "");
+  setSelectedObject(null);
+  let projects;
+  try {
+    const data = await apiListDevelopmentProjects();
+    projects = data.projects || [];
+  } catch (err) {
+    if (token !== state.renderToken) return;
+    outlet.innerHTML = "";
+    outlet.appendChild(el(`<div class="view-heading"><h1>Development</h1></div>`));
+    outlet.appendChild(errorPanel(err.message || "Could not load development projects."));
+    return;
+  }
+  if (token !== state.renderToken) return;
+
+  outlet.innerHTML = "";
+  outlet.appendChild(el(`
+    <div class="view-heading">
+      <h1>Development</h1>
+      <p>Status and milestone progress for public Development-section projects. The project narrative itself is managed on the website.</p>
+    </div>
+  `));
+
+  const newBtn = el(`<button type="button" class="btn btn-primary btn-sm" style="margin-bottom:14px;">New Project</button>`);
+  newBtn.addEventListener("click", () => openNewDevelopmentProjectDialog());
+  outlet.appendChild(newBtn);
+
+  outlet.appendChild(renderDataTable({
+    columns: [
+      { label: "Name", render: (p) => escapeHtml(p.name) },
+      { label: "Slug", render: (p) => escapeHtml(p.slug) },
+      { label: "Status", render: (p) => escapeHtml(p.status || "—") },
+      { label: "Milestone", render: (p) => (p.status_stages || [])[p.status_active_index] ? escapeHtml(p.status_stages[p.status_active_index]) : "—" },
+      { label: "Live", render: (p) => badge(p.published ? "Synced" : "Not Synced", p.published ? "green" : "default") },
+    ],
+    rows: projects,
+    onRowClick: (p) => navigate(`development-projects/${p.id}`),
+    emptyMessage: "No development projects yet. Start with New Project.",
+  }));
+}
+
+function openNewDevelopmentProjectDialog() {
+  openDialog("New Development Project", [
+    { name: "name", label: "Name" },
+    { name: "slug", label: "Slug (must match the website route, e.g. \"havana\")" },
+  ], async (data) => {
+    if (!data.name || !data.slug) throw new Error("Name and slug are required.");
+    const { project } = await apiCreateDevelopmentProject(data);
+    navigate(`development-projects/${project.id}`);
+  });
+}
+
+async function renderDevelopmentProjectDetail(outlet, id, token) {
+  let project;
+  try {
+    const data = await apiGetDevelopmentProject(id);
+    project = data.project;
+  } catch (err) {
+    if (token !== state.renderToken) return;
+    outlet.innerHTML = "";
+    outlet.appendChild(errorPanel(err.message || "This project could not be found."));
+    return;
+  }
+  if (token !== state.renderToken) return;
+
+  setSelectedObject("development_project", id, project.name);
+  outlet.innerHTML = "";
+  const back = el(`<button type="button" class="detail-back">← Development</button>`);
+  back.addEventListener("click", () => navigate("development-projects"));
+  outlet.appendChild(back);
+
+  outlet.appendChild(el(`
+    <div class="detail-header">
+      <div>
+        <div class="detail-typeline">Development Project</div>
+        <h1>${escapeHtml(project.name)}</h1>
+        <div class="detail-badges">${badge(project.published ? "Synced to Website" : "Not Synced", project.published ? "green" : "default")}</div>
+      </div>
+    </div>
+  `));
+
+  const stages = project.status_stages || [];
+  const form = el(`
+    <form class="inline-form" style="flex-direction:column;align-items:stretch;gap:12px;max-width:520px;">
+      <label>Name<input name="name" value="${escapeHtml(project.name)}" /></label>
+      <label>Slug<input name="slug" value="${escapeHtml(project.slug)}" /></label>
+      <label>Type / Classification<input name="type_line" value="${escapeHtml(project.type_line || "")}" placeholder="e.g. Premium Vertical Living" /></label>
+      <label>Location<input name="location" value="${escapeHtml(project.location || "")}" /></label>
+      <label>Status Label<input name="status" value="${escapeHtml(project.status || "")}" placeholder="e.g. In Design Development" /></label>
+      <label>Positioning Statement<textarea name="one_liner" rows="2">${escapeHtml(project.one_liner || "")}</textarea></label>
+      <label>Milestone Stages (comma separated, in order)<input name="status_stages" value="${escapeHtml(stages.join(", "))}" placeholder="Concept, Design Development, Project Preview, Delivery" /></label>
+      <label>Active Milestone Index<input name="status_active_index" type="number" min="0" value="${escapeHtml(String(project.status_active_index ?? 0))}" /></label>
+      <div>
+        <button type="submit" class="btn btn-primary btn-sm">Save</button>
+        <span class="form-status" id="devProjectSaveStatus"></span>
+      </div>
+    </form>
+  `);
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const statusEl = form.querySelector("#devProjectSaveStatus");
+    const formData = Object.fromEntries(new FormData(form).entries());
+    try {
+      await apiUpdateDevelopmentProject(id, {
+        ...formData,
+        status_stages: formData.status_stages.split(",").map((s) => s.trim()).filter(Boolean),
+        status_active_index: Number(formData.status_active_index) || 0,
+      });
+      statusEl.textContent = "Saved. Not live until synced.";
+    } catch (err) {
+      statusEl.textContent = err.message || "Could not save.";
+    }
+  });
+  outlet.appendChild(form);
+
+  const syncSection = el(`<div class="detail-section" style="margin-top:16px;"><h3>Publish</h3></div>`);
+  const syncBtn = el(`<button type="button" class="btn btn-ghost btn-sm">Sync to Website</button>`);
+  const syncStatus = el(`<span class="form-status"></span>`);
+  syncBtn.addEventListener("click", async () => {
+    syncStatus.textContent = "Syncing…";
+    try {
+      const result = await apiSyncDevelopmentProject(id);
+      syncStatus.textContent = result.sanity?.ok ? "Synced — live on the website." : `Not synced: ${result.sanity?.reason || "unknown reason"}.`;
+      if (result.sanity?.ok) {
+        const badgeEl = outlet.querySelector(".detail-badges");
+        if (badgeEl) badgeEl.innerHTML = badge("Synced to Website", "green");
+      }
+    } catch (err) {
+      syncStatus.textContent = err.message || "Sync failed.";
+    }
+  });
+  syncSection.appendChild(syncBtn);
+  syncSection.appendChild(syncStatus);
+  outlet.appendChild(syncSection);
 }
 
 function openNewContentDialog() {

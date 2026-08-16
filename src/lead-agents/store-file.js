@@ -56,6 +56,7 @@ class FileLeadAgentsStore {
       staff_message_attachments: [],
       office_content_items: [],
       office_reports: [],
+      office_development_projects: [],
     };
     this.pendingWrite = Promise.resolve();
   }
@@ -119,6 +120,7 @@ class FileLeadAgentsStore {
         staff_message_attachments: Array.isArray(parsed.staff_message_attachments) ? parsed.staff_message_attachments : [],
         office_content_items: Array.isArray(parsed.office_content_items) ? parsed.office_content_items : [],
         office_reports: Array.isArray(parsed.office_reports) ? parsed.office_reports : [],
+        office_development_projects: Array.isArray(parsed.office_development_projects) ? parsed.office_development_projects : [],
       };
       if (await this.ensureOfficeSeedData()) {
         await this.persist();
@@ -939,6 +941,48 @@ class FileLeadAgentsStore {
     };
     await this.persist();
     return this.state.office_reports[index];
+  }
+
+  async createDevelopmentProject(input) {
+    const project = {
+      id: crypto.randomUUID(),
+      name: input.name || "Untitled Project",
+      slug: input.slug || "",
+      type_line: input.type_line || "",
+      location: input.location || "",
+      status: input.status || "",
+      one_liner: input.one_liner || "",
+      status_stages: Array.isArray(input.status_stages) ? input.status_stages : [],
+      status_active_index: Number.isFinite(input.status_active_index) ? input.status_active_index : 0,
+      sanity_document_id: null,
+      published: false,
+      created_by: input.created_by || "office",
+      created_at: this.nowIso(),
+      updated_at: this.nowIso(),
+    };
+    this.state.office_development_projects.push(project);
+    await this.persist();
+    return project;
+  }
+
+  async listDevelopmentProjects() {
+    return [...this.state.office_development_projects].sort((a, b) => a.name.localeCompare(b.name));
+  }
+
+  async getDevelopmentProjectById(id) {
+    return this.state.office_development_projects.find((p) => p.id === id) || null;
+  }
+
+  async updateDevelopmentProject(id, patch) {
+    const index = this.state.office_development_projects.findIndex((p) => p.id === id);
+    if (index === -1) return null;
+    this.state.office_development_projects[index] = {
+      ...this.state.office_development_projects[index],
+      ...patch,
+      updated_at: this.nowIso(),
+    };
+    await this.persist();
+    return this.state.office_development_projects[index];
   }
 
   async appendTrace(input) {

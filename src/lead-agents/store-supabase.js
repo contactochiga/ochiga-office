@@ -738,6 +738,44 @@ class SupabaseLeadAgentsStore {
     return response.data;
   }
 
+  async createDevelopmentProject(input) {
+    const response = await this.client.post(
+      "/office_development_projects",
+      {
+        id: crypto.randomUUID(),
+        name: input.name || "Untitled Project",
+        slug: input.slug || "",
+        type_line: input.type_line || "",
+        location: input.location || "",
+        status: input.status || "",
+        one_liner: input.one_liner || "",
+        status_stages: Array.isArray(input.status_stages) ? input.status_stages : [],
+        status_active_index: Number.isFinite(input.status_active_index) ? input.status_active_index : 0,
+        published: false,
+        created_by: input.created_by || "office",
+      },
+      { headers: this.selectHeaders() }
+    );
+    return response.data[0];
+  }
+
+  async listDevelopmentProjects() {
+    const response = await this.client.get("/office_development_projects?order=name.asc");
+    return response.data;
+  }
+
+  async getDevelopmentProjectById(id) {
+    const response = await this.client.get(`/office_development_projects?id=eq.${encodeURIComponent(id)}&limit=1`);
+    return response.data[0] || null;
+  }
+
+  async updateDevelopmentProject(id, patch) {
+    const response = await this.client.patch(`/office_development_projects?id=eq.${encodeURIComponent(id)}`, patch, {
+      headers: this.selectHeaders(),
+    });
+    return response.data[0] || null;
+  }
+
   async createOfficeReport(input) {
     const response = await this.client.post(
       "/office_reports",

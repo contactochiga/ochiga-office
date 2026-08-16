@@ -47,7 +47,7 @@ const {
 } = require("./oyi-core-gateway");
 const { executeGovernedOfficeToolProposals } = require("./office-tool-governance");
 const { listDocumentTemplates, renderDocumentFromTemplate } = require("./office-document-templates");
-const { sanityConfigured, saveDraftToSanity, publishToSanity, unpublishFromSanity, slugify } = require("./sanity-adapter");
+const { sanityConfigured, saveDraftToSanity, publishToSanity, unpublishFromSanity, syncDevelopmentProjectToSanity, slugify } = require("./sanity-adapter");
 const { fetchBackendPortfolioProjection } = require("./backend-portfolio-gateway");
 const {
   CORPORATE_COLLECTIONS,
@@ -4829,6 +4829,94 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           relatedId: reportId,
         });
         json(res, 200, { report: updated }, { "x-request-id": ctx.requestId });
+        return;
+      }
+
+      // ---------------------------------------------------------------
+      // Development Management (Ecosystem Standardization Programme 11).
+      // Manages only the status/progress/core-metadata fields that
+      // actually change as construction progresses — the hand-authored
+      // multi-chapter tour narrative on the public website stays in
+      // code, unmanaged. Syncs to Sanity's developmentProject schema
+      // using the same adapter pattern as Content/Publishing.
+      // ---------------------------------------------------------------
+      if (pathname === "/api/lead-agents/admin/development-projects") {
+        if (req.method === "GET") {
+          authorizePermission(authContext, "development.manage");
+          const projects = await store.listDevelopmentProjects();
+          json(res, 200, { projects }, { "x-request-id": ctx.requestId });
+          return;
+        }
+        if (req.method === "POST") {
+          authorizePermission(authContext, "development.manage");
+          const body = await readJsonBody(req);
+          requireObject(body, "body");
+          if (!body.name || !body.slug) {
+            json(res, 400, { error: "name and slug are required" }, { "x-request-id": ctx.requestId });
+            return;
+          }
+          const project = await store.createDevelopmentProject({ ...body, created_by: authContext?.email || "office" });
+          await appendAudit(store, authContext, "development_project_created", "office_development_project", project.id, { name: project.name });
+          json(res, 201, { project }, { "x-request-id": ctx.requestId });
+          return;
+        }
+        methodNotAllowed(res, "GET,POST");
+        return;
+      }
+
+      const developmentProjectMatch = pathname.match(/^\/api\/lead-agents\/admin\/development-projects\/([^/]+)$/);
+      if (developmentProjectMatch) {
+        const projectId = developmentProjectMatch[1];
+        if (req.method === "GET") {
+          authorizePermission(authContext, "development.manage");
+          const project = await store.getDevelopmentProjectById(projectId);
+          if (!project) {
+            notFound(res);
+            return;
+          }
+          json(res, 200, { project }, { "x-request-id": ctx.requestId });
+          return;
+        }
+        if (req.method === "PATCH") {
+          authorizePermission(authContext, "development.manage");
+          const body = await readJsonBody(req);
+          requireObject(body, "body");
+          const patch = {};
+          ["name", "slug", "type_line", "location", "status", "one_liner", "status_stages", "status_active_index"].forEach((field) => {
+            if (body[field] !== undefined) patch[field] = body[field];
+          });
+          const project = await store.updateDevelopmentProject(projectId, patch);
+          if (!project) {
+            notFound(res);
+            return;
+          }
+          await appendAudit(store, authContext, "development_project_edited", "office_development_project", projectId, { fields: Object.keys(patch) });
+          json(res, 200, { project }, { "x-request-id": ctx.requestId });
+          return;
+        }
+        methodNotAllowed(res, "GET,PATCH");
+        return;
+      }
+
+      const developmentProjectSyncMatch = pathname.match(/^\/api\/lead-agents\/admin\/development-projects\/([^/]+)\/sync$/);
+      if (developmentProjectSyncMatch) {
+        if (req.method !== "POST") {
+          methodNotAllowed(res, "POST");
+          return;
+        }
+        authorizePermission(authContext, "development.manage");
+        const projectId = developmentProjectSyncMatch[1];
+        const project = await store.getDevelopmentProjectById(projectId);
+        if (!project) {
+          notFound(res);
+          return;
+        }
+        const syncResult = await syncDevelopmentProjectToSanity(project);
+        const updated = syncResult.ok
+          ? await store.updateDevelopmentProject(projectId, { sanity_document_id: syncResult.document_id, published: true })
+          : project;
+        await appendAudit(store, authContext, "development_project_synced", "office_development_project", projectId, { ok: syncResult.ok, reason: syncResult.reason });
+        json(res, 200, { project: updated, sanity: syncResult }, { "x-request-id": ctx.requestId });
         return;
       }
 

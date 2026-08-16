@@ -59,6 +59,10 @@ const PERMISSION_KEYS = Object.freeze([
   // content.review is, since this module has no self-review guard.
   "reports.write",
   "reports.review",
+  // Development Management (Programme 11) — publishes to the public
+  // website via Sanity, so kept senior-tier like reports.review and
+  // content.publish rather than broadly granted.
+  "development.manage",
 ]);
 
 const ROLE_PERMISSIONS = Object.freeze({

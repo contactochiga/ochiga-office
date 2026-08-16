@@ -205,11 +205,40 @@ async function unpublishFromSanity(documentId) {
   return { ok: true, document_id: documentId };
 }
 
+// Development Management (Programme 11) — deliberately simpler than the
+// post workflow: no author/category references, no draft/publish
+// distinction. A synced project is always "live" (these 3 projects are
+// already on the public site today; this only takes over managing
+// their status/progress fields, not introducing a new unpublished
+// state for content that already exists publicly). One direct
+// createOrReplace per save.
+async function syncDevelopmentProjectToSanity(project) {
+  const client = sanityClient();
+  if (!client) return { ok: false, skipped: true, reason: "sanity_not_configured" };
+  const id = project.sanity_document_id || `development-project-${project.slug || project.id}`;
+  const doc = {
+    _id: id,
+    _type: "developmentProject",
+    name: project.name,
+    slug: { _type: "slug", current: project.slug || slugify(project.name) },
+    typeLine: project.type_line || undefined,
+    location: project.location || undefined,
+    status: project.status || undefined,
+    oneLiner: project.one_liner || undefined,
+    statusStages: project.status_stages || [],
+    statusActiveIndex: project.status_active_index ?? 0,
+    updatedAt: new Date().toISOString(),
+  };
+  await client.createOrReplace(doc);
+  return { ok: true, document_id: id };
+}
+
 module.exports = {
   sanityConfigured,
   saveDraftToSanity,
   publishToSanity,
   unpublishFromSanity,
+  syncDevelopmentProjectToSanity,
   slugify,
   textToPortableText,
 };
