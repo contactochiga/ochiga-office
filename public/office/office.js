@@ -4570,7 +4570,9 @@ function renderUserFooter() {
     initialsSpan.style.display = "block";
     initialsSpan.textContent = initials || "?";
   }
-  document.getElementById("navUserName").textContent = state.admin.display_name || state.admin.email;
+  const nameEl = document.getElementById("navUserName");
+  nameEl.textContent = state.admin.display_name || state.admin.email;
+  nameEl.title = state.admin.email || "";
   // Position and system role are deliberately different concepts (see
   // Phase 2) — show both where a position is set, role alone otherwise.
   const roleLabel = (state.admin.role || "").replace(/_/g, " ");
