@@ -175,6 +175,25 @@ function createStorageService(config) {
     if (driver === "supabase") {
       const response = await supabaseClient.get(`/object/${encodeURIComponent(bucket)}/${encodeURIComponent(safeName)}`);
       if (response.status === 404) return null;
+      if (response.status >= 400 && response.status < 500) {
+        // Supabase Storage's real "not found" wraps a 404 inside a 400
+        // response body (statusCode/error/code all say not-found) rather
+        // than using a plain HTTP 404 — verified directly against the
+        // live API, not assumed. Anything else in the 4xx range is a
+        // genuine error, not a miss.
+        let parsed = null;
+        try {
+          parsed = JSON.parse(Buffer.from(response.data).toString("utf8"));
+        } catch {
+          parsed = null;
+        }
+        if (parsed && (parsed.statusCode === "404" || parsed.error === "not_found" || parsed.code === "NoSuchKey")) {
+          return null;
+        }
+        const error = new Error(`Supabase Storage download failed (${response.status}): ${JSON.stringify(parsed)}`);
+        error.statusCode = 502;
+        throw error;
+      }
       if (response.status < 200 || response.status >= 300) {
         const error = new Error(`Supabase Storage download failed (${response.status})`);
         error.statusCode = 502;
