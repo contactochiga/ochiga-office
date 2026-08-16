@@ -187,6 +187,9 @@ async function apiUpdateDevelopmentProject(id, patch) {
 async function apiSyncDevelopmentProject(id) {
   return api(`/api/lead-agents/admin/development-projects/${encodeURIComponent(id)}/sync`, { method: "POST", body: {} });
 }
+async function apiUnpublishDevelopmentProject(id) {
+  return api(`/api/lead-agents/admin/development-projects/${encodeURIComponent(id)}/unpublish`, { method: "POST", body: {} });
+}
 async function apiListProposals() {
   return api("/api/lead-agents/admin/proposals");
 }
@@ -267,6 +270,9 @@ async function apiUploadAttachment(dataUrl, filename, mimeType) {
 }
 async function apiUploadContentImage(dataUrl, filename, mimeType) {
   return api("/api/lead-agents/admin/storage", { method: "POST", body: { data_url: dataUrl, purpose: "content_featured_image", filename, mime_type: mimeType } });
+}
+async function apiUploadDevelopmentImage(dataUrl, filename, mimeType) {
+  return api("/api/lead-agents/admin/storage", { method: "POST", body: { data_url: dataUrl, purpose: "development_cover_image", filename, mime_type: mimeType } });
 }
 async function apiListIntegrations() {
   return api("/api/lead-agents/admin/integrations");
@@ -3843,12 +3849,45 @@ async function renderDevelopmentProjectDetail(outlet, id, token) {
       <label>Positioning Statement<textarea name="one_liner" rows="2">${escapeHtml(project.one_liner || "")}</textarea></label>
       <label>Milestone Stages (comma separated, in order)<input name="status_stages" value="${escapeHtml(stages.join(", "))}" placeholder="Concept, Design Development, Project Preview, Delivery" /></label>
       <label>Active Milestone Index<input name="status_active_index" type="number" min="0" value="${escapeHtml(String(project.status_active_index ?? 0))}" /></label>
+      <label>Display Order<input name="display_order" type="number" value="${escapeHtml(String(project.display_order ?? 0))}" />
+        <span class="hint">Lower numbers appear first on the public Development listing page.</span>
+      </label>
+      <label>Cover Image
+        <div class="cover-image-field" style="display:flex;align-items:center;gap:10px;">
+          <img class="cover-image-thumb" src="${escapeHtml(project.cover_image_url || "")}" style="width:64px;height:64px;object-fit:cover;border-radius:var(--radius-sm);border:1px solid var(--line);display:${project.cover_image_url ? "block" : "none"};" alt="" />
+          <input type="file" accept="image/*" class="cover-image-input" />
+          <span class="cover-image-status" style="font-size:11px;color:var(--text-tertiary);"></span>
+        </div>
+        <input type="hidden" name="cover_image_url" value="${escapeHtml(project.cover_image_url || "")}" />
+      </label>
+      <label>Cover Image Alt Text<input name="cover_image_alt" value="${escapeHtml(project.cover_image_alt || "")}" /></label>
       <div>
         <button type="submit" class="btn btn-primary btn-sm">Save</button>
         <span class="form-status" id="devProjectSaveStatus"></span>
       </div>
     </form>
   `);
+
+  const coverInput = form.querySelector(".cover-image-input");
+  const coverThumb = form.querySelector(".cover-image-thumb");
+  const coverStatus = form.querySelector(".cover-image-status");
+  const coverUrlField = form.querySelector('input[name="cover_image_url"]');
+  coverInput.addEventListener("change", async () => {
+    const file = coverInput.files && coverInput.files[0];
+    if (!file) return;
+    coverStatus.textContent = "Uploading…";
+    try {
+      const dataUrl = await readFileAsDataUrl(file);
+      const result = await apiUploadDevelopmentImage(dataUrl, file.name, file.type);
+      coverUrlField.value = result.file.url;
+      coverThumb.src = result.file.url;
+      coverThumb.style.display = "block";
+      coverStatus.textContent = "Uploaded — click Save to keep it.";
+    } catch (err) {
+      coverStatus.textContent = err.message || "Could not upload image.";
+    }
+  });
+
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
     const statusEl = form.querySelector("#devProjectSaveStatus");
@@ -3858,6 +3897,7 @@ async function renderDevelopmentProjectDetail(outlet, id, token) {
         ...formData,
         status_stages: formData.status_stages.split(",").map((s) => s.trim()).filter(Boolean),
         status_active_index: Number(formData.status_active_index) || 0,
+        display_order: Number(formData.display_order) || 0,
       });
       statusEl.textContent = "Saved. Not live until synced.";
     } catch (err) {
@@ -3868,6 +3908,7 @@ async function renderDevelopmentProjectDetail(outlet, id, token) {
 
   const syncSection = el(`<div class="detail-section" style="margin-top:16px;"><h3>Publish</h3></div>`);
   const syncBtn = el(`<button type="button" class="btn btn-ghost btn-sm">Sync to Website</button>`);
+  const unpublishBtn = el(`<button type="button" class="btn btn-ghost btn-sm" style="margin-left:8px;">Unpublish</button>`);
   const syncStatus = el(`<span class="form-status"></span>`);
   syncBtn.addEventListener("click", async () => {
     syncStatus.textContent = "Syncing…";
@@ -3882,7 +3923,22 @@ async function renderDevelopmentProjectDetail(outlet, id, token) {
       syncStatus.textContent = err.message || "Sync failed.";
     }
   });
+  unpublishBtn.addEventListener("click", async () => {
+    if (!confirm(`Unpublish ${project.name}? The public page will revert to its last hardcoded fallback content — the page itself stays live, only the Office-managed status/progress overrides are removed.`)) return;
+    syncStatus.textContent = "Unpublishing…";
+    try {
+      const result = await apiUnpublishDevelopmentProject(id);
+      syncStatus.textContent = result.sanity?.ok ? "Unpublished — website now shows its fallback content." : `Not unpublished: ${result.sanity?.reason || "unknown reason"}.`;
+      if (result.sanity?.ok) {
+        const badgeEl = outlet.querySelector(".detail-badges");
+        if (badgeEl) badgeEl.innerHTML = badge("Not Synced", "default");
+      }
+    } catch (err) {
+      syncStatus.textContent = err.message || "Unpublish failed.";
+    }
+  });
   syncSection.appendChild(syncBtn);
+  syncSection.appendChild(unpublishBtn);
   syncSection.appendChild(syncStatus);
   outlet.appendChild(syncSection);
 }

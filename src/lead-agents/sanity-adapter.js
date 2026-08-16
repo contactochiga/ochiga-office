@@ -212,10 +212,16 @@ async function unpublishFromSanity(documentId) {
 // their status/progress fields, not introducing a new unpublished
 // state for content that already exists publicly). One direct
 // createOrReplace per save.
-async function syncDevelopmentProjectToSanity(project) {
+async function syncDevelopmentProjectToSanity(project, { baseUrl } = {}) {
   const client = sanityClient();
   if (!client) return { ok: false, skipped: true, reason: "sanity_not_configured" };
   const id = project.sanity_document_id || `development-project-${project.slug || project.id}`;
+
+  const warnings = [];
+  const coverImage = await uploadImageIfNeeded(client, project.cover_image_url, baseUrl);
+  if (project.cover_image_url && !coverImage) warnings.push("Cover image could not be uploaded to Sanity — syncing without it.");
+  if (coverImage && project.cover_image_alt) coverImage.alt = project.cover_image_alt;
+
   const doc = {
     _id: id,
     _type: "developmentProject",
@@ -227,10 +233,12 @@ async function syncDevelopmentProjectToSanity(project) {
     oneLiner: project.one_liner || undefined,
     statusStages: project.status_stages || [],
     statusActiveIndex: project.status_active_index ?? 0,
+    order: Number.isFinite(project.display_order) ? project.display_order : 0,
     updatedAt: new Date().toISOString(),
   };
+  if (coverImage) doc.coverImage = coverImage;
   await client.createOrReplace(doc);
-  return { ok: true, document_id: id };
+  return { ok: true, document_id: id, warnings };
 }
 
 module.exports = {

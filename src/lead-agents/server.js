@@ -4452,7 +4452,11 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
         // attach a file to it, and any staff member who can write
         // content can upload that article's featured image — neither
         // needs the broader storage-write capability just for that.
-        const PURPOSE_PERMISSION = { message_attachment: "messages.send", content_featured_image: "content.write" };
+        const PURPOSE_PERMISSION = {
+          message_attachment: "messages.send",
+          content_featured_image: "content.write",
+          development_cover_image: "development.manage",
+        };
         authorizePermission(authContext, PURPOSE_PERMISSION[body.purpose] || "manage_storage");
         const storedFile = await storageService.putDataUrl(body);
         const file =
@@ -4925,7 +4929,19 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           const body = await readJsonBody(req);
           requireObject(body, "body");
           const patch = {};
-          ["name", "slug", "type_line", "location", "status", "one_liner", "status_stages", "status_active_index"].forEach((field) => {
+          [
+            "name",
+            "slug",
+            "type_line",
+            "location",
+            "status",
+            "one_liner",
+            "status_stages",
+            "status_active_index",
+            "display_order",
+            "cover_image_url",
+            "cover_image_alt",
+          ].forEach((field) => {
             if (body[field] !== undefined) patch[field] = body[field];
           });
           const project = await store.updateDevelopmentProject(projectId, patch);
@@ -4954,12 +4970,36 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           notFound(res);
           return;
         }
-        const syncResult = await syncDevelopmentProjectToSanity(project);
+        const syncResult = await syncDevelopmentProjectToSanity(project, { baseUrl: config.officePublicBaseUrl });
         const updated = syncResult.ok
           ? await store.updateDevelopmentProject(projectId, { sanity_document_id: syncResult.document_id, published: true })
           : project;
         await appendAudit(store, authContext, "development_project_synced", "office_development_project", projectId, { ok: syncResult.ok, reason: syncResult.reason });
         json(res, 200, { project: updated, sanity: syncResult }, { "x-request-id": ctx.requestId });
+        return;
+      }
+
+      const developmentProjectUnpublishMatch = pathname.match(/^\/api\/lead-agents\/admin\/development-projects\/([^/]+)\/unpublish$/);
+      if (developmentProjectUnpublishMatch) {
+        if (req.method !== "POST") {
+          methodNotAllowed(res, "POST");
+          return;
+        }
+        authorizePermission(authContext, "development.manage");
+        const projectId = developmentProjectUnpublishMatch[1];
+        const project = await store.getDevelopmentProjectById(projectId);
+        if (!project) {
+          notFound(res);
+          return;
+        }
+        if (!project.sanity_document_id) {
+          json(res, 200, { project, sanity: { ok: false, reason: "not_synced" } }, { "x-request-id": ctx.requestId });
+          return;
+        }
+        const unpublishResult = await unpublishFromSanity(project.sanity_document_id);
+        const updated = unpublishResult.ok ? await store.updateDevelopmentProject(projectId, { published: false }) : project;
+        await appendAudit(store, authContext, "development_project_unpublished", "office_development_project", projectId, { ok: unpublishResult.ok, reason: unpublishResult.reason });
+        json(res, 200, { project: updated, sanity: unpublishResult }, { "x-request-id": ctx.requestId });
         return;
       }
 

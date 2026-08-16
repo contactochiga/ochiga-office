@@ -152,6 +152,12 @@ function createConfig() {
       process.env.OYI_BACKEND_BASE_URL ||
       process.env.NEXT_PUBLIC_API_URL ||
       "",
+    // Office's own publicly-reachable base URL — distinct from
+    // officeBackendBaseUrl above (the separate Oyi/lead-agent backend
+    // service). Used to resolve Office-hosted storage URLs (e.g.
+    // /api/lead-agents/admin/storage/<file>) into fetchable absolute
+    // URLs when uploading an asset onward to Sanity.
+    officePublicBaseUrl: process.env.OFFICE_PUBLIC_BASE_URL || "",
     officeBackendApiKey:
       process.env.OFFICE_BACKEND_API_KEY ||
       process.env.OFFICE_SYNC_API_KEY ||
