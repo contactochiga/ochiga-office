@@ -106,6 +106,7 @@ function contentTypeForFile(filePath) {
     case ".html":
       return "text/html; charset=utf-8";
     case ".js":
+    case ".mjs":
       return "application/javascript; charset=utf-8";
     case ".css":
       return "text/css; charset=utf-8";

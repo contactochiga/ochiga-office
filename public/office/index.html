@@ -354,15 +354,20 @@
   /* ---------------------------------------------------------------
      Persistent Oyi intelligence control
   ----------------------------------------------------------------*/
-  .oyi-control {
-    position: fixed; right: 20px; bottom: 20px; z-index: 40;
-    display: flex; flex-direction: column; align-items: flex-end;
-  }
+  /* Edge-docked Universal Interaction Shell control (Oyi Consumer
+     visual basis, red accent here — see docking.mjs). .oyi-control is
+     purely the orb's own positioning anchor now; .oyi-panel and
+     .oyi-minimized-bar are independently `position: fixed`, placed by
+     office.js from resolveDockedState()'s openDirection so they always
+     expand inward from whichever of the 6 anchors the orb is docked
+     to, never off-screen. */
+  .oyi-control { position: fixed; right: 20px; bottom: 20px; z-index: 40; }
   /* Canonical Oyi orb — the closed-state identity for the Universal
-     Interaction Shell. A restrained, self-contained circular mark
-     (not a labeled pill) so it reads as Oyi's own presence, floating
-     over the shell rather than docked chrome. Draggable via
-     wireOyiControl() in office.js; position persists per browser. */
+     Interaction Shell, shared visual language across every Oyi
+     surface (Office red here, Oyi blue elsewhere). A restrained,
+     self-contained circular mark, not a labeled pill. Draggable via
+     wireOyiControl() in office.js using the shared docking engine;
+     position persists per browser. */
   .oyi-orb {
     width: 54px; height: 54px; border-radius: 50%; padding: 0;
     background: radial-gradient(circle at 32% 28%, var(--red-bright), var(--red-muted) 55%, var(--charcoal) 100%);
@@ -376,36 +381,78 @@
   .oyi-orb:hover { box-shadow: 0 8px 24px rgba(0,0,0,0.45), 0 0 0 6px rgba(179,36,27,0.12); }
   .oyi-orb:focus-visible { outline: 2px solid var(--red-bright); outline-offset: 3px; }
   .oyi-control.dragging .oyi-orb { cursor: grabbing; transform: scale(1.04); }
+  .oyi-control.open .oyi-orb, .oyi-control.minimized .oyi-orb { display: none; }
   .oyi-orb-core {
     width: 13px; height: 13px; border-radius: 50%;
     background: radial-gradient(circle at 35% 30%, #fff, var(--red-bright) 60%);
     box-shadow: 0 0 10px 2px rgba(179,36,27,0.55);
+    transition: box-shadow var(--duration-fast) var(--ease);
+  }
+  /* Presence (shared/oyi-core/presence.mjs) — restrained, not
+     decorative: a slow pulse on the core dot is the only signal while
+     Oyi is thinking, no motion at all at idle. */
+  .oyi-orb.presence-thinking .oyi-orb-core {
+    animation: oyi-presence-pulse 1.4s ease-in-out infinite;
+  }
+  @keyframes oyi-presence-pulse {
+    0%, 100% { box-shadow: 0 0 10px 2px rgba(179,36,27,0.55); opacity: 1; }
+    50% { box-shadow: 0 0 16px 5px rgba(179,36,27,0.85); opacity: 0.75; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .oyi-orb.presence-thinking .oyi-orb-core { animation: none; }
+  }
+  .oyi-avatar-dot {
+    width: 22px; height: 22px; border-radius: 50%; flex-shrink: 0;
+    background: radial-gradient(circle at 32% 28%, var(--red-bright), var(--red-muted) 55%, var(--charcoal) 100%);
+    box-shadow: 0 0 0 1px var(--line-strong);
   }
 
   .oyi-panel {
+    position: fixed;
     width: min(400px, calc(100vw - 40px));
     max-height: min(560px, calc(100vh - 120px));
     background: var(--charcoal); border: 1px solid var(--line-strong);
-    border-radius: var(--radius); margin-bottom: 12px;
+    border-radius: var(--radius);
     box-shadow: 0 20px 60px rgba(0,0,0,0.55);
     display: none; flex-direction: column; overflow: hidden;
+    z-index: 41;
   }
   .oyi-control.open .oyi-panel { display: flex; }
-  /* When the orb is dragged near the top of the viewport there isn't
-     room for the panel to open upward — office.js toggles this so it
-     opens below the orb instead. */
-  .oyi-control.panel-below { flex-direction: column-reverse; }
-  .oyi-control.panel-below .oyi-panel { margin-bottom: 0; margin-top: 12px; }
   .oyi-panel-head {
-    display: flex; align-items: center; justify-content: space-between;
+    display: flex; align-items: center; gap: 10px;
     padding: 12px 14px; border-bottom: 1px solid var(--line);
   }
-  .oyi-panel-head .title { display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--white); font-weight: 600; }
+  .oyi-panel-head .title-group { flex: 1; min-width: 0; }
+  .oyi-panel-head .title { font-size: 12.5px; color: var(--white); font-weight: 600; line-height: 1.3; }
+  .oyi-panel-head .subtitle { font-size: 10.5px; color: var(--text-tertiary); line-height: 1.3; }
   .oyi-panel-head .context { font-size: 10.5px; color: var(--text-tertiary); }
   .oyi-panel-head button {
     background: none; border: none; color: var(--text-tertiary); cursor: pointer; font-size: 15px; line-height: 1;
+    width: 24px; height: 24px; flex-shrink: 0; display: flex; align-items: center; justify-content: center; border-radius: 6px;
   }
-  .oyi-panel-head button:hover { color: var(--white); }
+  .oyi-panel-head button:hover { color: var(--white); background: rgba(255,255,255,0.06); }
+
+  /* Minimized state — distinct from closed. Keeps the active
+     conversation's presence visible without the full panel, per the
+     Universal Shell spec: minimize must never equal close. */
+  .oyi-minimized-bar {
+    position: fixed;
+    display: none; align-items: center; gap: 10px;
+    min-width: 220px;
+    background: var(--charcoal); border: 1px solid var(--line-strong);
+    border-radius: 999px; padding: 8px 10px 8px 8px;
+    box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+    z-index: 41;
+  }
+  .oyi-control.minimized .oyi-minimized-bar { display: flex; }
+  .oyi-minimized-text { flex: 1; min-width: 0; }
+  .oyi-minimized-title { font-size: 12px; font-weight: 600; color: var(--white); line-height: 1.3; }
+  .oyi-minimized-subtitle { font-size: 10px; color: var(--text-tertiary); line-height: 1.3; }
+  .oyi-minimized-bar button {
+    background: none; border: none; color: var(--text-tertiary); cursor: pointer;
+    width: 22px; height: 22px; flex-shrink: 0; display: flex; align-items: center; justify-content: center; border-radius: 6px;
+  }
+  .oyi-minimized-bar button:hover { color: var(--white); background: rgba(255,255,255,0.06); }
 
   .oyi-thread { flex: 1; overflow-y: auto; padding: 14px; display: flex; flex-direction: column; gap: 10px; min-height: 0; }
   .oyi-msg { max-width: 88%; font-size: 12.5px; line-height: 1.55; padding: 8px 11px; border-radius: var(--radius); }
@@ -441,8 +488,14 @@
   .oyi-structured p { margin: 0 0 8px; }
   .oyi-structured p:last-child { margin-bottom: 0; }
   .oyi-block-label { font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-tertiary); margin: 10px 0 6px; }
+  .oyi-attention-badge {
+    display: inline-block; font-size: 10px; text-transform: uppercase; letter-spacing: 0.05em;
+    color: var(--red-bright); background: rgba(179, 36, 27, 0.12); border: 1px solid rgba(179, 36, 27, 0.3);
+    border-radius: 999px; padding: 2px 8px; margin-bottom: 8px;
+  }
   .oyi-list { margin: 0; padding-left: 16px; }
   .oyi-list li { margin-bottom: 4px; }
+  .oyi-reference-source { color: var(--text-tertiary); }
   .oyi-proposal {
     border: 1px solid var(--line-strong); border-radius: var(--radius-sm);
     padding: 8px 10px; margin-bottom: 6px;
@@ -666,8 +719,12 @@
       background: none; color: var(--text-secondary); cursor: pointer;
     }
     .view-outlet { padding: 18px 16px 140px; }
-    .oyi-control { right: 12px; bottom: 12px; left: 12px; align-items: flex-end; }
-    .oyi-panel { width: 100%; }
+    /* Docking is desktop-only — office.js skips edge-drag positioning
+       below the mobile breakpoint and leaves these rules in charge:
+       the orb stays a fixed bottom-right circle, and the panel /
+       minimized bar become a full-width bottom sheet regardless of
+       whichever anchor was last docked to on a larger screen. */
+    .oyi-panel, .oyi-minimized-bar { left: 12px; right: 12px; bottom: 12px; top: auto; width: auto; min-width: 0; }
 
     /* Phase 2 — stack tables into label:value cards, never scroll horizontally */
     .detail-body { grid-template-columns: 1fr; }
@@ -786,9 +843,15 @@
     <div class="oyi-control" id="oyiControl">
       <div class="oyi-panel" id="oyiPanel">
         <div class="oyi-panel-head">
-          <div class="title"><span>Oyi</span></div>
+          <span class="oyi-avatar-dot" aria-hidden="true"></span>
+          <div class="title-group">
+            <div class="title">Oyi</div>
+            <div class="subtitle">Living Intelligence</div>
+          </div>
           <div class="context" id="oyiContext"></div>
-          <button id="oyiClose" aria-label="Close Oyi">×</button>
+          <button type="button" id="oyiNewConversation" aria-label="New conversation" title="New conversation">+</button>
+          <button type="button" id="oyiMinimize" aria-label="Minimize Oyi" title="Minimize">−</button>
+          <button type="button" id="oyiClose" aria-label="Close Oyi" title="Close">×</button>
         </div>
         <div class="oyi-thread" id="oyiThread"></div>
         <div class="oyi-quick-prompts" id="oyiQuickPrompts"></div>
@@ -797,7 +860,16 @@
           <button type="submit" id="oyiSend" aria-label="Send">→</button>
         </form>
       </div>
-      <button type="button" class="oyi-orb" id="oyiBar" aria-expanded="false" aria-label="Ask Oyi" title="Ask Oyi">
+      <div class="oyi-minimized-bar" id="oyiMinimizedBar">
+        <span class="oyi-avatar-dot" aria-hidden="true"></span>
+        <div class="oyi-minimized-text">
+          <div class="oyi-minimized-title">Oyi</div>
+          <div class="oyi-minimized-subtitle">Living Intelligence</div>
+        </div>
+        <button type="button" id="oyiRestore" aria-label="Restore Oyi" title="Restore">▢</button>
+        <button type="button" id="oyiMinimizedClose" aria-label="Close Oyi" title="Close">×</button>
+      </div>
+      <button type="button" class="oyi-orb presence-idle" id="oyiBar" aria-expanded="false" aria-label="Ask Oyi" title="Ask Oyi">
         <span class="oyi-orb-core"></span>
       </button>
     </div>
