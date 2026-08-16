@@ -4190,7 +4190,28 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           body,
           requestId: ctx.requestId,
         });
+        const chatStartedAt = Date.now();
         const oyiCoreResult = await callOyiCoreOfficeInternalConversation(config, oyiCoreRequest);
+        // Agent Observatory (Programme 13) — office_internal previously had
+        // zero observability of its own, unlike the older lead-agent
+        // runtime.js chat path, which already writes real trace rows.
+        // Extends the same existing traces table rather than building a
+        // second one.
+        if (store.appendTrace) {
+          await store.appendTrace({
+            type: oyiCoreResult.ok ? "office_internal_chat_completed" : "office_internal_chat_failed",
+            agent: "office_internal",
+            source: "office",
+            request_id: ctx.requestId,
+            payload: {
+              staff_email: authContext?.email || "",
+              latency_ms: Date.now() - chatStartedAt,
+              attention_signal: oyiCoreResult.ok ? oyiCoreResult.response.attention_signal || null : null,
+              tool_proposal_count: oyiCoreResult.ok ? (oyiCoreResult.response.tool_proposals || []).length : 0,
+              failure_reason: oyiCoreResult.ok ? null : oyiCoreResult.reason || "oyi_core_unavailable",
+            },
+          }).catch(() => null);
+        }
         if (!oyiCoreResult.ok) {
           json(res, 503, {
             error: "oyi_core_unavailable",

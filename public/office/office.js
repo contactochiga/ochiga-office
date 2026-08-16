@@ -411,6 +411,7 @@ const ADMIN_NAV = [
   { key: "team", label: "Team", permission: "staff.manage", phase: null },
   { key: "settings", label: "Settings", permission: "settings.manage", phase: null },
   { key: "audit", label: "Audit", permission: "audit.read", phase: null },
+  { key: "observatory", label: "Agent Observatory", permission: "audit.read", phase: null },
 ];
 
 // Inbox lives as a topbar icon (next to the notification bell), not a
@@ -930,6 +931,10 @@ async function renderRoute() {
     outlet.innerHTML = "";
     outlet.appendChild(skeletonPanel(4));
     await renderAuditView(outlet, token);
+  } else if (topKey === "observatory") {
+    outlet.innerHTML = "";
+    outlet.appendChild(skeletonPanel(4));
+    await renderObservatoryView(outlet, token);
   } else {
     setTopbar(item.label, item.phase ? `Phase ${item.phase}` : "");
     setSelectedObject(null);
@@ -4907,6 +4912,107 @@ async function renderAuditView(outlet, token) {
   }
   renderFiltered("");
   toolbar.querySelector("#auditSearch").addEventListener("input", (event) => renderFiltered(event.target.value));
+}
+
+// ---------------------------------------------------------------
+// Agent Observatory (Ecosystem Standardization Programme 13).
+// Observability only, not another agent runtime — reuses the existing
+// traces table and the already-built GET /admin/traces route (found
+// during Programme 2's audit: fully implemented backend, zero frontend
+// consumer). Real data for the two surfaces Office can actually see
+// (its own office_internal Oyi chat, and the public-website lead-agent
+// conversation runtime, both of which write real trace rows) — Oyi
+// Consumer/Facility/Website-widget/Backend Oyi Core are separate repos
+// with their own data stores Office has no access to, so they're shown
+// honestly as not-yet-connected rather than inventing numbers for them.
+// ---------------------------------------------------------------
+async function apiListTraces() {
+  return api("/api/lead-agents/admin/traces");
+}
+const OBSERVATORY_KNOWN_SURFACES = [
+  { key: "office_internal", label: "Ochiga Office", types: ["office_internal_chat_completed", "office_internal_chat_failed"] },
+  { key: "public_website_widget", label: "Ochiga Website (lead-agent widget)", types: ["chat_started", "tool_executed", "chat_completed"] },
+];
+const OBSERVATORY_UNCONNECTED_SURFACES = [
+  "Oyi Consumer",
+  "Oyi Facility",
+  "getoyi.com (Oyi Website)",
+  "Ochiga Backend / Oyi Core (direct)",
+];
+
+async function renderObservatoryView(outlet, token) {
+  setTopbar("Agent Observatory", "");
+  setSelectedObject(null);
+  outlet.innerHTML = "";
+  outlet.appendChild(skeletonPanel(4));
+
+  let traces;
+  try {
+    const data = await apiListTraces();
+    traces = data.traces || [];
+  } catch (err) {
+    if (token !== state.renderToken) return;
+    outlet.innerHTML = "";
+    outlet.appendChild(el(`<div class="view-heading"><h1>Agent Observatory</h1></div>`));
+    outlet.appendChild(errorPanel(err.message || "Could not load agent traces."));
+    return;
+  }
+  if (token !== state.renderToken) return;
+
+  outlet.innerHTML = "";
+  outlet.appendChild(el(`
+    <div class="view-heading">
+      <h1>Agent Observatory</h1>
+      <p>Real interaction data from surfaces that report into Office. This is observability, not a second intelligence runtime — numbers below are computed only from what was actually recorded.</p>
+    </div>
+  `));
+
+  const toolExecutions = traces.filter((t) => t.type === "tool_executed");
+  const toolCounts = {};
+  toolExecutions.forEach((t) => { const name = t.tool_name || "unknown"; toolCounts[name] = (toolCounts[name] || 0) + 1; });
+  const failures = traces.filter((t) => t.type === "office_internal_chat_failed").length;
+
+  outlet.appendChild(el(`
+    <div class="kpi-grid" style="margin-bottom:18px;">
+      <div class="kpi-card"><span class="kpi-label">Recorded Interactions</span><span class="kpi-value">${traces.length}</span></div>
+      <div class="kpi-card"><span class="kpi-label">Tool Executions</span><span class="kpi-value">${toolExecutions.length}</span></div>
+      <div class="kpi-card"><span class="kpi-label">Office Chat Failures</span><span class="kpi-value">${failures}</span></div>
+    </div>
+  `));
+
+  const surfacesSection = el(`<div class="detail-section"><h3>Surfaces</h3></div>`);
+  const surfaceRows = OBSERVATORY_KNOWN_SURFACES.map((surface) => {
+    const rows = traces.filter((t) => surface.types.includes(t.type));
+    const lastAt = rows[0]?.created_at;
+    return `<div class="fact"><span class="fact-label">${escapeHtml(surface.label)}</span><span class="fact-value">${rows.length} interactions${lastAt ? ` · last ${escapeHtml(fmtRelative(lastAt))}` : " · no data yet"}</span></div>`;
+  }).join("");
+  const unconnectedRows = OBSERVATORY_UNCONNECTED_SURFACES.map((label) =>
+    `<div class="fact"><span class="fact-label">${escapeHtml(label)}</span><span class="fact-value" style="color:var(--text-tertiary);">Not connected to Office yet</span></div>`
+  ).join("");
+  surfacesSection.appendChild(el(`<div class="fact-grid">${surfaceRows}${unconnectedRows}</div>`));
+  outlet.appendChild(surfacesSection);
+
+  if (Object.keys(toolCounts).length) {
+    const toolSection = el(`<div class="detail-section"><h3>Tool Usage</h3></div>`);
+    toolSection.appendChild(el(`<div class="fact-grid">${Object.entries(toolCounts).map(([name, count]) => `<div class="fact"><span class="fact-label">${escapeHtml(name)}</span><span class="fact-value">${count}</span></div>`).join("")}</div>`));
+    outlet.appendChild(toolSection);
+  }
+
+  outlet.appendChild(el(`<div class="detail-section"><h3>Recent Activity</h3></div>`));
+  if (!traces.length) {
+    outlet.appendChild(emptyPanel({ kicker: "Agent Observatory", title: "No interactions recorded yet", body: "Real activity will appear here as staff use Office's Oyi chat or the public website's lead-agent widget." }));
+  } else {
+    outlet.appendChild(renderDataTable({
+      columns: [
+        { label: "Type", render: (t) => escapeHtml(titleCase(t.type)) },
+        { label: "Agent", render: (t) => escapeHtml(t.agent || "—") },
+        { label: "Tool", render: (t) => escapeHtml(t.tool_name || "—") },
+        { label: "When", render: (t) => escapeHtml(fmtRelative(t.created_at)) },
+      ],
+      rows: traces.slice(0, 50),
+      emptyMessage: "",
+    }));
+  }
 }
 
 // ---------------------------------------------------------------
