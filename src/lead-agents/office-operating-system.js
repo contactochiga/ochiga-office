@@ -350,6 +350,13 @@ async function buildOfficeHomeProjection(store, options = {}) {
     .filter((item) => item.workflow_status === "scheduled" && item.scheduled_publish_at)
     .sort((a, b) => String(a.scheduled_publish_at).localeCompare(String(b.scheduled_publish_at)));
   const openTasks = tasks.filter((task) => !["done", "completed", "cancelled"].includes(String(task.status || "").toLowerCase()));
+  // Home redesign (Programme 4 Part 6) — the only genuinely-missing field
+  // needed for an honest "This Week" completion view; derived from the
+  // same task records already loaded above, not a new query.
+  const tasksCompletedThisWeek = tasks.filter((task) =>
+    ["done", "completed"].includes(String(task.status || "").toLowerCase()) &&
+    task.updated_at && new Date(task.updated_at) >= weekStart
+  ).length;
   const overdueTasks = openTasks
     .filter((task) => task.due_at && new Date(task.due_at).getTime() < now.getTime())
     .sort((a, b) => String(a.due_at || "").localeCompare(String(b.due_at || "")));
@@ -424,6 +431,7 @@ async function buildOfficeHomeProjection(store, options = {}) {
       content_awaiting_review: contentAwaitingReview,
       content_scheduled: contentScheduled.length,
       reports_awaiting_approval: reportsAwaitingApproval,
+      tasks_completed_this_week: tasksCompletedThisWeek,
     },
     attention_items,
     recent_activity,
