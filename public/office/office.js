@@ -3829,6 +3829,7 @@ async function renderDevelopmentProjectsList(outlet, token) {
       { label: "Slug", render: (p) => escapeHtml(p.slug) },
       { label: "Status", render: (p) => escapeHtml(p.status || "—") },
       { label: "Milestone", render: (p) => (p.status_stages || [])[p.status_active_index] ? escapeHtml(p.status_stages[p.status_active_index]) : "—" },
+      { label: "Progress", render: (p) => ProgressBar(p.status_active_index, (p.status_stages || []).length - 1, null) || "—" },
       { label: "Live", render: (p) => badge(p.published ? "Synced" : "Not Synced", p.published ? "green" : "default") },
     ],
     rows: projects,
@@ -3878,6 +3879,14 @@ async function renderDevelopmentProjectDetail(outlet, id, token) {
   `));
 
   const stages = project.status_stages || [];
+  const currentMilestone = stages[project.status_active_index];
+  const progressBar = ProgressBar(project.status_active_index, stages.length - 1, currentMilestone ? `Milestone: ${currentMilestone}` : "Milestone progress");
+  if (progressBar) {
+    const progressSection = el(`<div class="detail-section" style="max-width:520px;"></div>`);
+    progressSection.appendChild(progressBar);
+    outlet.appendChild(progressSection);
+  }
+
   const form = el(`
     <form class="inline-form" style="flex-direction:column;align-items:stretch;gap:12px;max-width:520px;">
       <label>Name<input name="name" value="${escapeHtml(project.name)}" /></label>
