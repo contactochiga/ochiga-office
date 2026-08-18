@@ -578,6 +578,9 @@
   }
   .home-panel-head a.panel-link:hover, .home-panel-head button.panel-link:hover { color: var(--red-bright); }
   .home-panel-empty { font-size: 12px; color: var(--text-tertiary); padding: var(--space-2) 0; }
+  /* renderTimeline() bakes in its own "Timeline" section-head — redundant
+     once nested inside a .home-panel, which already has its own title. */
+  .home-panel .timeline-block .section-head { display: none; }
   .home-subhead {
     font-size: 10.5px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em;
     color: var(--text-tertiary); margin: 0 0 var(--space-2);

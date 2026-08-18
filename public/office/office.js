@@ -1558,6 +1558,13 @@ async function renderCrmRoute(outlet, rest, token) {
   }
 }
 
+// Overview recomposed onto the Home design template (Programme 4 Part
+// 9) — .home-panel cards, KPIGroup/StageStrip primitives, same density
+// and icon treatment as Home. No new primitives; "Leads by Source" is
+// the only new visualization, and only because it clears the bar Home
+// review set: a stated operational question ("where are our leads
+// coming from?") answered by a real, already-used field (lead.source —
+// see leadChannelLabel() below, which already reads this same field).
 async function renderCrmOverview(body, token) {
   setSelectedObject(null);
   const [leads, opportunities, contacts, organizations] = await Promise.all([
@@ -1574,8 +1581,20 @@ async function renderCrmOverview(body, token) {
     /follow|proposal|demo|meeting/i.test(String(lead.next_action || "")) ||
     (lead.next_action_at && new Date(lead.next_action_at).getTime() < Date.now())
   );
-  body.appendChild(el(`<div class="overview-section"><h3>Leads Needing Attention <span class="count-pill">${hotLeads.length}</span></h3></div>`));
-  body.lastElementChild.appendChild(renderDataTable({
+  const openOpportunities = opportunities.filter((opp) => !/closed|won|lost/i.test(String(opp.status || "")));
+
+  body.appendChild(KPIGroup([
+    { label: "Total Leads", value: leads.length, icon: iconSvg("crm", "kpi-icon") },
+    { label: "Needing Attention", value: hotLeads.length, icon: iconSvg("attention", "kpi-icon"), alert: hotLeads.length > 0 },
+    { label: "Open Opportunities", value: openOpportunities.length, icon: iconSvg("crm", "kpi-icon") },
+    { label: "Contacts & Orgs", value: contacts.length + organizations.length, icon: iconSvg("team", "kpi-icon") },
+  ]));
+
+  const rowA = el(`<div class="home-grid"></div>`);
+  body.appendChild(rowA);
+
+  const attentionPanel = homePanel(`Leads Needing Attention (${hotLeads.length})`);
+  attentionPanel.appendChild(renderDataTable({
     columns: [
       { label: "Lead", render: (l) => escapeHtml(l.company || l.name || "Untitled") },
       { label: "Next Action", render: nextActionCell },
@@ -1585,26 +1604,44 @@ async function renderCrmOverview(body, token) {
     onRowClick: (lead) => navigate(`crm/leads/${lead.id}`),
     emptyMessage: "No leads currently need attention.",
   }));
+  rowA.appendChild(homePanelWrap("span-6", attentionPanel));
 
   const stageGroups = {};
   opportunities.forEach((opp) => {
     const stage = opp.stage || "intake_received";
     (stageGroups[stage] = stageGroups[stage] || []).push(opp);
   });
-  const stageSection = el(`<div class="overview-section"><h3>Opportunities by Stage</h3></div>`);
-  stageSection.appendChild(StageStrip(
+  const stagePanel = homePanel("Opportunities by Stage");
+  stagePanel.appendChild(StageStrip(
     Object.entries(stageGroups)
       .sort((a, b) => b[1].length - a[1].length)
       .map(([stage, items]) => ({ label: titleCase(stage), count: items.length })),
     "No opportunities recorded yet."
   ));
-  body.appendChild(stageSection);
+  rowA.appendChild(homePanelWrap("span-6", stagePanel));
+
+  const rowB = el(`<div class="home-grid"></div>`);
+  body.appendChild(rowB);
+
+  const sourceGroups = {};
+  leads.forEach((lead) => {
+    const source = lead.source || "unknown";
+    (sourceGroups[source] = sourceGroups[source] || []).push(lead);
+  });
+  const sourcePanel = homePanel("Leads by Source");
+  sourcePanel.appendChild(StageStrip(
+    Object.entries(sourceGroups)
+      .sort((a, b) => b[1].length - a[1].length)
+      .map(([source, items]) => ({ label: titleCase(source), count: items.length })),
+    "No leads recorded yet."
+  ));
+  rowB.appendChild(homePanelWrap("span-4", sourcePanel));
 
   const recentPeople = [...contacts, ...organizations.map((o) => ({ ...o, __org: true }))]
     .sort((a, b) => String(b.updated_at || "").localeCompare(String(a.updated_at || "")))
     .slice(0, 6);
-  const peopleSection = el(`<div class="overview-section"><h3>Recently Active Contacts &amp; Organizations</h3></div>`);
-  peopleSection.appendChild(renderDataTable({
+  const peoplePanel = homePanel("Recently Active Contacts & Organizations");
+  peoplePanel.appendChild(renderDataTable({
     columns: [
       { label: "Name", render: (r) => escapeHtml(r.name || "Untitled") },
       { label: "Type", render: (r) => badge(r.__org ? "Organization" : "Contact") },
@@ -1615,19 +1652,19 @@ async function renderCrmOverview(body, token) {
     onRowClick: (r) => navigate(`crm/${r.__org ? "organizations" : "contacts"}/${r.id}`),
     emptyMessage: "No contacts or organizations yet.",
   }));
-  body.appendChild(peopleSection);
+  rowB.appendChild(homePanelWrap("span-4", peoplePanel));
 
   const buDistribution = {};
   [...leads, ...opportunities].forEach((r) => {
     const bu = r.business_unit || "corporate";
     buDistribution[bu] = (buDistribution[bu] || 0) + 1;
   });
-  const buSection = el(`<div class="overview-section"><h3>Business Unit Distribution</h3></div>`);
-  buSection.appendChild(StageStrip(
+  const buPanel = homePanel("Business Unit Distribution");
+  buPanel.appendChild(StageStrip(
     Object.entries(buDistribution).map(([bu, count]) => ({ label: titleCase(bu), count })),
     "No records yet."
   ));
-  body.appendChild(buSection);
+  rowB.appendChild(homePanelWrap("span-4", buPanel));
 }
 
 // Channel is the communication medium (whatsapp/email/website_chat);
@@ -5303,8 +5340,22 @@ const OBSERVATORY_UNCONNECTED_SURFACES = [
   "Ochiga Backend / Oyi Core (direct)",
 ];
 
+// Trace records ({type, agent, tool_name, created_at, ...}) don't match
+// renderTimeline's expected shape ({activity_type, title, body, actor,
+// created_at}) — small adapter so Recent Activity here uses the same
+// row pattern as Home's Recent Activity, instead of a bespoke layout.
+function traceToTimelineItem(trace) {
+  return {
+    activity_type: trace.type,
+    title: titleCase(trace.type),
+    body: trace.tool_name ? `Tool: ${trace.tool_name}` : null,
+    actor: trace.agent || trace.source || "",
+    created_at: trace.created_at,
+  };
+}
+
 async function renderObservatoryView(outlet, token) {
-  setTopbar("Agent Observatory", "");
+  setTopbar("AI Agents", "");
   setSelectedObject(null);
   outlet.innerHTML = "";
   outlet.appendChild(skeletonPanel(4));
@@ -5316,7 +5367,7 @@ async function renderObservatoryView(outlet, token) {
   } catch (err) {
     if (token !== state.renderToken) return;
     outlet.innerHTML = "";
-    outlet.appendChild(el(`<div class="view-heading"><h1>Agent Observatory</h1></div>`));
+    outlet.appendChild(el(`<div class="view-heading"><h1>AI Agents</h1></div>`));
     outlet.appendChild(errorPanel(err.message || "Could not load agent traces."));
     return;
   }
@@ -5325,7 +5376,7 @@ async function renderObservatoryView(outlet, token) {
   outlet.innerHTML = "";
   outlet.appendChild(el(`
     <div class="view-heading">
-      <h1>Agent Observatory</h1>
+      <h1>AI Agents</h1>
       <p>Real interaction data from surfaces that report into Office. This is observability, not a second intelligence runtime — numbers below are computed only from what was actually recorded.</p>
     </div>
   `));
@@ -5336,44 +5387,50 @@ async function renderObservatoryView(outlet, token) {
   const failures = traces.filter((t) => t.type === "office_internal_chat_failed").length;
 
   const kpiGroup = KPIGroup([
-    { label: "Recorded Interactions", value: traces.length },
-    { label: "Tool Executions", value: toolExecutions.length },
-    { label: "Office Chat Failures", value: failures, alert: failures > 0 },
+    { label: "Recorded Interactions", value: traces.length, icon: iconSvg("observatory", "kpi-icon") },
+    { label: "Tool Executions", value: toolExecutions.length, icon: iconSvg("observatory", "kpi-icon") },
+    { label: "Office Chat Failures", value: failures, icon: iconSvg("attention", "kpi-icon"), alert: failures > 0 },
   ]);
   kpiGroup.style.marginBottom = "var(--space-5)";
   outlet.appendChild(kpiGroup);
 
-  const surfacesSection = el(`<div class="detail-section"><h3>Surfaces</h3></div>`);
+  const rowA = el(`<div class="home-grid"></div>`);
+  outlet.appendChild(rowA);
+
+  const surfacesPanel = homePanel("Surfaces");
   const surfaceRows = OBSERVATORY_KNOWN_SURFACES.map((surface) => {
     const rows = traces.filter((t) => surface.types.includes(t.type));
     const lastAt = rows[0]?.created_at;
     return { label: surface.label, value: `${rows.length} interactions${lastAt ? ` · last ${fmtRelative(lastAt)}` : " · no data yet"}` };
   });
+  // Never implied as operational — a plain unstyled note, distinct from
+  // the real (StageStrip/FactGrid) values above it.
   const unconnectedRows = OBSERVATORY_UNCONNECTED_SURFACES.map((label) => ({ label, html: `<span style="color:var(--text-tertiary);">Not connected to Office yet</span>` }));
-  surfacesSection.appendChild(FactGrid([...surfaceRows, ...unconnectedRows]));
-  outlet.appendChild(surfacesSection);
+  surfacesPanel.appendChild(FactGrid([...surfaceRows, ...unconnectedRows]));
+  rowA.appendChild(homePanelWrap("span-6", surfacesPanel));
 
+  // Tool Usage as a proportional strip, not a plain count list — answers
+  // "which tools does Oyi invoke most, relative to each other?" using
+  // the real tool_name field already computed into toolCounts above.
+  const toolPanel = homePanel("Tool Usage");
   if (Object.keys(toolCounts).length) {
-    const toolSection = el(`<div class="detail-section"><h3>Tool Usage</h3></div>`);
-    toolSection.appendChild(FactGrid(Object.entries(toolCounts).map(([name, count]) => ({ label: name, value: String(count) }))));
-    outlet.appendChild(toolSection);
-  }
-
-  outlet.appendChild(el(`<div class="detail-section"><h3>Recent Activity</h3></div>`));
-  if (!traces.length) {
-    outlet.appendChild(emptyPanel({ kicker: "Agent Observatory", title: "No interactions recorded yet", body: "Real activity will appear here as staff use Office's Oyi chat or the public website's lead-agent widget." }));
+    toolPanel.appendChild(StageStrip(
+      Object.entries(toolCounts).sort((a, b) => b[1] - a[1]).map(([name, count]) => ({ label: name, count })),
+      "No tool executions recorded yet."
+    ));
   } else {
-    outlet.appendChild(renderDataTable({
-      columns: [
-        { label: "Type", render: (t) => escapeHtml(titleCase(t.type)) },
-        { label: "Agent", render: (t) => escapeHtml(t.agent || "—") },
-        { label: "Tool", render: (t) => escapeHtml(t.tool_name || "—") },
-        { label: "When", render: (t) => escapeHtml(fmtRelative(t.created_at)) },
-      ],
-      rows: traces.slice(0, 50),
-      emptyMessage: "",
-    }));
+    toolPanel.appendChild(el(`<p class="home-panel-empty">No tool executions recorded yet.</p>`));
   }
+  rowA.appendChild(homePanelWrap("span-6", toolPanel));
+
+  const activityPanel = homePanel("Recent Activity");
+  activityPanel.style.marginTop = "var(--space-4)";
+  if (!traces.length) {
+    activityPanel.appendChild(el(`<p class="home-panel-empty">No interactions recorded yet. Real activity will appear here as staff use Office's Oyi chat or the public website's lead-agent widget.</p>`));
+  } else {
+    activityPanel.appendChild(renderTimeline(traces.slice(0, 12).map(traceToTimelineItem)));
+  }
+  outlet.appendChild(activityPanel);
 }
 
 // ---------------------------------------------------------------
