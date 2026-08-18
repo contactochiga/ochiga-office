@@ -1,4 +1,6 @@
 const axios = require("axios");
+const { hasPermission } = require("./permissions");
+const { listCorporateRecords } = require("./office-operating-system");
 
 function text(value) {
   return String(value ?? "").trim();
@@ -6,6 +8,143 @@ function text(value) {
 
 function recordOf(value) {
   return value && typeof value === "object" && !Array.isArray(value) ? value : {};
+}
+
+// Oyi Core (Ochiga-backend) has no direct connection to Office's CRM/
+// reports/development store — it's a separate Supabase project from
+// Consumer/Facility's. Office computes this compact, permission-gated
+// read itself (reusing its own existing store functions and the same
+// hasPermission() check every CRM/Reports/Development route already
+// uses) and attaches it to the outbound request; Oyi Core's office
+// capability modules only ever read evidence from this snapshot. A
+// null section means "actor lacks that permission or the store call
+// failed" — reported honestly as unavailable, never fabricated.
+const OPEN_LEAD_STATUS_EXCLUDE = /closed|won|lost|converted|declined|rejected|disqualified/i;
+const OPEN_RECORD_STATUS_EXCLUDE = /closed|won|lost|declined|rejected/i;
+const STALE_LEAD_DAYS = 5;
+const STALE_OPPORTUNITY_DAYS = 7;
+const SNAPSHOT_LIST_LIMIT = 20;
+
+function daysSince(isoValue) {
+  const parsed = isoValue ? Date.parse(isoValue) : NaN;
+  if (Number.isNaN(parsed)) return null;
+  return Math.floor((Date.now() - parsed) / 86_400_000);
+}
+
+function leadAttentionReason(lead) {
+  const nextActionAt = lead.next_action_at ? Date.parse(lead.next_action_at) : NaN;
+  if (!Number.isNaN(nextActionAt) && nextActionAt <= Date.now()) {
+    return `Next action overdue since ${new Date(nextActionAt).toISOString().slice(0, 10)}`;
+  }
+  const since = daysSince(lead.last_contact_at || lead.updated_at);
+  if (since === null) return "No recorded contact yet";
+  if (since >= STALE_LEAD_DAYS) return `No activity in ${since} day${since === 1 ? "" : "s"}`;
+  return null;
+}
+
+async function buildLeadsSnapshot(store) {
+  const leads = Array.isArray(await store.listLeads()) ? await store.listLeads() : [];
+  const open = leads.filter((lead) => !OPEN_LEAD_STATUS_EXCLUDE.test(text(lead.status)));
+  const needingAttention = [];
+  for (const lead of open) {
+    const reason = leadAttentionReason(lead);
+    if (!reason) continue;
+    needingAttention.push({
+      id: text(lead.id),
+      name: text(lead.summary || lead.company_name || lead.next_action || `Lead ${text(lead.id)}`),
+      status: text(lead.status || "new"),
+      reason,
+      last_activity_at: lead.last_contact_at || lead.updated_at || null,
+    });
+  }
+  return { needing_attention: needingAttention.slice(0, SNAPSHOT_LIST_LIMIT), total_open: open.length };
+}
+
+async function buildOpportunitiesSnapshot(store) {
+  const opportunities = await listCorporateRecords(store, "opportunities");
+  const open = (Array.isArray(opportunities) ? opportunities : []).filter(
+    (record) => !OPEN_RECORD_STATUS_EXCLUDE.test(text(record.status))
+  );
+  const stale = [];
+  for (const record of open) {
+    const since = daysSince(record.updated_at || record.created_at);
+    if (since !== null && since < STALE_OPPORTUNITY_DAYS) continue;
+    const metadata = recordOf(record.metadata);
+    stale.push({
+      id: text(record.id),
+      name: text(metadata.name || metadata.title || record.inquiry_type || `Opportunity ${text(record.id)}`),
+      stage: text(record.stage || record.status || "unknown"),
+      days_since_activity: since,
+      owner: text(record.owner) || null,
+    });
+  }
+  return { stale: stale.slice(0, SNAPSHOT_LIST_LIMIT), total_open: open.length };
+}
+
+async function buildReportsSnapshot(store) {
+  const pending = await store.listOfficeReports({ status: "submitted" });
+  return {
+    pending_approval: (Array.isArray(pending) ? pending : []).slice(0, SNAPSHOT_LIST_LIMIT).map((report) => ({
+      id: text(report.id),
+      title: text(report.title || `Report ${text(report.id)}`),
+      submitted_by: text(report.author) || null,
+      submitted_at: report.created_at || null,
+    })),
+  };
+}
+
+// Development Management has no percent/units-sold fields — only a free-
+// text status plus a stage stepper (status_stages/status_active_index).
+// percent_complete is honestly derived from that stepper position rather
+// than fabricated; units_sold/units_total stay null since no such data
+// exists in this store (Part 7/10: derive honestly or leave unsupported).
+function percentFromStageStepper(project) {
+  const stages = Array.isArray(project.status_stages) ? project.status_stages : [];
+  const index = Number(project.status_active_index);
+  if (stages.length < 2 || !Number.isFinite(index)) return null;
+  return Math.round((index / (stages.length - 1)) * 100);
+}
+
+async function buildDevelopmentSnapshot(store) {
+  const projects = await store.listDevelopmentProjects();
+  return {
+    projects: (Array.isArray(projects) ? projects : []).map((project) => ({
+      id: text(project.id),
+      name: text(project.name),
+      status: text(project.status) || text((project.status_stages || [])[project.status_active_index]) || "unknown",
+      percent_complete: percentFromStageStepper(project),
+      units_sold: null,
+      units_total: null,
+    })),
+  };
+}
+
+async function buildOperationalSnapshot({ authContext, store } = {}) {
+  if (!store) return null;
+  const snapshot = { generated_at: new Date().toISOString(), leads: null, opportunities: null, reports: null, development: null };
+  try {
+    if (hasPermission(authContext, "crm.read")) {
+      if (typeof store.listLeads === "function") snapshot.leads = await buildLeadsSnapshot(store);
+      snapshot.opportunities = await buildOpportunitiesSnapshot(store);
+    }
+  } catch {
+    // Leave leads/opportunities null — reported honestly as unavailable.
+  }
+  try {
+    if (hasPermission(authContext, "reports.write") && typeof store.listOfficeReports === "function") {
+      snapshot.reports = await buildReportsSnapshot(store);
+    }
+  } catch {
+    // Leave reports null.
+  }
+  try {
+    if (hasPermission(authContext, "development.manage") && typeof store.listDevelopmentProjects === "function") {
+      snapshot.development = await buildDevelopmentSnapshot(store);
+    }
+  } catch {
+    // Leave development null.
+  }
+  return snapshot;
 }
 
 function oyiCoreConversationUrl(config = {}) {
@@ -64,10 +203,11 @@ function buildOyiCoreCorporateConversationRequest({ session, message, lead, body
   };
 }
 
-function buildOyiCoreOfficeInternalRequest({ authContext, message, body, requestId } = {}) {
+async function buildOyiCoreOfficeInternalRequest({ authContext, message, body, requestId, store } = {}) {
   const safeBody = recordOf(body);
   const page = recordOf(safeBody.page_context);
   const staff = recordOf(safeBody.staff);
+  const operationalSnapshot = await buildOperationalSnapshot({ authContext, store });
   return {
     request_id: text(requestId || safeBody.request_id),
     message: text(message || safeBody.message),
@@ -107,6 +247,7 @@ function buildOyiCoreOfficeInternalRequest({ authContext, message, body, request
       surface: "office_internal",
       mode: text(safeBody.mode || "text_conversation"),
     },
+    operational_snapshot: operationalSnapshot,
   };
 }
 
