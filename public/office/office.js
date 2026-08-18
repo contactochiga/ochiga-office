@@ -719,6 +719,58 @@ function railList(items, renderItem) {
 }
 
 // ---------------------------------------------------------------
+// Shared design primitives (Programme 4 Part 5/6) — consolidates
+// kpi-grid/fact-grid/stage-strip markup that was previously
+// hand-written 2-3 times across Home/CRM/Observatory with the exact
+// same CSS classes but slightly different call shapes. These reuse the
+// existing .kpi-*/.stage-*/.fact-* CSS untouched — no new styling for
+// them. Callers still own their own data/permission logic; these only
+// take already-computed values and never fetch or fabricate anything.
+// ---------------------------------------------------------------
+function KPIGroup(cards) {
+  const grid = el(`<div class="kpi-grid"></div>`);
+  cards.forEach((card) => {
+    const node = el(`
+      <div class="kpi-card${card.onClick ? " clickable" : ""}${card.alert ? " kpi-alert" : ""}">
+        <span class="kpi-label">${escapeHtml(card.label)}</span>
+        <span class="kpi-value">${escapeHtml(String(card.value))}</span>
+        ${card.sub ? `<span class="kpi-sub">${escapeHtml(card.sub)}</span>` : ""}
+      </div>
+    `);
+    if (card.onClick) node.addEventListener("click", card.onClick);
+    grid.appendChild(node);
+  });
+  return grid;
+}
+// rows: Array<{ label, value }|{ label, html }> — `html` is for values
+// that already contain markup (e.g. a badge), mirroring factRow/
+// factRowHtml's existing escape-vs-trusted-markup split.
+function FactGrid(rows) {
+  return el(`<div class="fact-grid">${rows.map((row) => (row.html !== undefined ? factRowHtml(row.label, row.html) : factRow(row.label, row.value))).join("")}</div>`);
+}
+function StageStrip(items, emptyText) {
+  const strip = el(`<div class="stage-strip"></div>`);
+  items.forEach(({ label, count }) => {
+    strip.appendChild(el(`<div class="stage-chip"><span class="stage-count">${escapeHtml(String(count))}</span><span>${escapeHtml(label)}</span></div>`));
+  });
+  if (!items.length) strip.appendChild(el(`<p class="rail-empty">${escapeHtml(emptyText || "No records yet.")}</p>`));
+  return strip;
+}
+// Returns null (never a fabricated 0%) when current/total aren't real,
+// finite numbers — callers must check before appending, same pattern as
+// "unsupported" evidence elsewhere in this codebase.
+function ProgressBar(current, total, label) {
+  if (!Number.isFinite(current) || !Number.isFinite(total) || total <= 0) return null;
+  const pct = Math.max(0, Math.min(100, Math.round((current / total) * 100)));
+  return el(`
+    <div class="progress-bar-wrap">
+      ${label ? `<div class="progress-bar-label"><span>${escapeHtml(label)}</span><span>${pct}%</span></div>` : ""}
+      <div class="progress-bar-track"><div class="progress-bar-fill" style="width:${pct}%;"></div></div>
+    </div>
+  `);
+}
+
+// ---------------------------------------------------------------
 // Restrained status actions — mirrors
 // src/lead-agents/office-operational-workflows.js STATUS_TRANSITIONS
 // exactly. The backend is the source of truth and validates every
@@ -1051,23 +1103,21 @@ const HOME_KPI_CARDS = [
   { key: "reports_awaiting_approval", label: "Reports Awaiting Approval", permission: "reports.review", route: "reports", alert: (s) => s.reports_awaiting_approval > 0 },
 ];
 function renderHomeKpiGrid(summary) {
-  const grid = el(`<div class="home-section"><div class="kpi-grid"></div></div>`);
-  const list = grid.querySelector(".kpi-grid");
-  HOME_KPI_CARDS.filter((card) => hasPermission(card.permission)).forEach((card) => {
-    const value = summary[card.key];
-    if (value === undefined) return;
-    const sub = card.sub ? card.sub(summary) : null;
-    const alert = card.alert ? card.alert(summary) : false;
-    const el_ = el(`
-      <div class="kpi-card${card.route ? " clickable" : ""}${alert ? " kpi-alert" : ""}">
-        <span class="kpi-label">${escapeHtml(card.label)}</span>
-        <span class="kpi-value">${escapeHtml(String(value))}</span>
-        ${sub ? `<span class="kpi-sub">${escapeHtml(sub)}</span>` : ""}
-      </div>
-    `);
-    if (card.route) el_.addEventListener("click", () => navigate(card.route));
-    list.appendChild(el_);
-  });
+  const grid = el(`<div class="home-section"></div>`);
+  const cards = HOME_KPI_CARDS.filter((card) => hasPermission(card.permission))
+    .map((card) => {
+      const value = summary[card.key];
+      if (value === undefined) return null;
+      return {
+        label: card.label,
+        value,
+        sub: card.sub ? card.sub(summary) : null,
+        alert: card.alert ? card.alert(summary) : false,
+        onClick: card.route ? () => navigate(card.route) : null,
+      };
+    })
+    .filter(Boolean);
+  grid.appendChild(KPIGroup(cards));
   return grid;
 }
 
@@ -1130,19 +1180,13 @@ function renderContentWidget(content) {
   // No "on track" / "behind" judgment here — that would need
   // day-of-week awareness this widget doesn't have. Just the honest
   // count against the target, nothing editorialized.
-  const card = el(`
-    <div class="kpi-grid">
-      <div class="kpi-card clickable">
-        <span class="kpi-label">Published This Week</span>
-        <span class="kpi-value">${content.published_this_week} / ${content.target_per_week}</span>
-      </div>
-      <div class="kpi-card clickable"><span class="kpi-label">Drafts</span><span class="kpi-value">${content.drafts}</span></div>
-      <div class="kpi-card clickable"><span class="kpi-label">Awaiting Review</span><span class="kpi-value">${content.awaiting_review}</span></div>
-      <div class="kpi-card clickable"><span class="kpi-label">Scheduled</span><span class="kpi-value">${content.scheduled}</span>${content.next_scheduled_publish_at ? `<span class="kpi-sub">Next: ${escapeHtml(fmtDateTime(content.next_scheduled_publish_at))}</span>` : ""}</div>
-    </div>
-  `);
-  card.querySelectorAll(".kpi-card").forEach((node) => node.addEventListener("click", () => navigate("content")));
-  section.appendChild(card);
+  const toContent = () => navigate("content");
+  section.appendChild(KPIGroup([
+    { label: "Published This Week", value: `${content.published_this_week} / ${content.target_per_week}`, onClick: toContent },
+    { label: "Drafts", value: content.drafts, onClick: toContent },
+    { label: "Awaiting Review", value: content.awaiting_review, onClick: toContent },
+    { label: "Scheduled", value: content.scheduled, sub: content.next_scheduled_publish_at ? `Next: ${fmtDateTime(content.next_scheduled_publish_at)}` : null, onClick: toContent },
+  ]));
   return section;
 }
 
@@ -1289,15 +1333,12 @@ async function renderCrmOverview(body, token) {
     (stageGroups[stage] = stageGroups[stage] || []).push(opp);
   });
   const stageSection = el(`<div class="overview-section"><h3>Opportunities by Stage</h3></div>`);
-  const strip = el(`<div class="stage-strip"></div>`);
-  Object.entries(stageGroups)
-    .sort((a, b) => b[1].length - a[1].length)
-    .forEach(([stage, items]) => {
-      const chip = el(`<div class="stage-chip"><span class="stage-count">${items.length}</span><span>${escapeHtml(titleCase(stage))}</span></div>`);
-      strip.appendChild(chip);
-    });
-  if (!opportunities.length) strip.appendChild(el(`<p class="rail-empty">No opportunities recorded yet.</p>`));
-  stageSection.appendChild(strip);
+  stageSection.appendChild(StageStrip(
+    Object.entries(stageGroups)
+      .sort((a, b) => b[1].length - a[1].length)
+      .map(([stage, items]) => ({ label: titleCase(stage), count: items.length })),
+    "No opportunities recorded yet."
+  ));
   body.appendChild(stageSection);
 
   const recentPeople = [...contacts, ...organizations.map((o) => ({ ...o, __org: true }))]
@@ -1323,12 +1364,10 @@ async function renderCrmOverview(body, token) {
     buDistribution[bu] = (buDistribution[bu] || 0) + 1;
   });
   const buSection = el(`<div class="overview-section"><h3>Business Unit Distribution</h3></div>`);
-  const buStrip = el(`<div class="stage-strip"></div>`);
-  Object.entries(buDistribution).forEach(([bu, count]) => {
-    buStrip.appendChild(el(`<div class="stage-chip"><span class="stage-count">${count}</span><span>${escapeHtml(titleCase(bu))}</span></div>`));
-  });
-  if (!Object.keys(buDistribution).length) buStrip.appendChild(el(`<p class="rail-empty">No records yet.</p>`));
-  buSection.appendChild(buStrip);
+  buSection.appendChild(StageStrip(
+    Object.entries(buDistribution).map(([bu, count]) => ({ label: titleCase(bu), count })),
+    "No records yet."
+  ));
   body.appendChild(buSection);
 }
 
@@ -5028,29 +5067,27 @@ async function renderObservatoryView(outlet, token) {
   toolExecutions.forEach((t) => { const name = t.tool_name || "unknown"; toolCounts[name] = (toolCounts[name] || 0) + 1; });
   const failures = traces.filter((t) => t.type === "office_internal_chat_failed").length;
 
-  outlet.appendChild(el(`
-    <div class="kpi-grid" style="margin-bottom:18px;">
-      <div class="kpi-card"><span class="kpi-label">Recorded Interactions</span><span class="kpi-value">${traces.length}</span></div>
-      <div class="kpi-card"><span class="kpi-label">Tool Executions</span><span class="kpi-value">${toolExecutions.length}</span></div>
-      <div class="kpi-card"><span class="kpi-label">Office Chat Failures</span><span class="kpi-value">${failures}</span></div>
-    </div>
-  `));
+  const kpiGroup = KPIGroup([
+    { label: "Recorded Interactions", value: traces.length },
+    { label: "Tool Executions", value: toolExecutions.length },
+    { label: "Office Chat Failures", value: failures, alert: failures > 0 },
+  ]);
+  kpiGroup.style.marginBottom = "var(--space-5)";
+  outlet.appendChild(kpiGroup);
 
   const surfacesSection = el(`<div class="detail-section"><h3>Surfaces</h3></div>`);
   const surfaceRows = OBSERVATORY_KNOWN_SURFACES.map((surface) => {
     const rows = traces.filter((t) => surface.types.includes(t.type));
     const lastAt = rows[0]?.created_at;
-    return `<div class="fact"><span class="fact-label">${escapeHtml(surface.label)}</span><span class="fact-value">${rows.length} interactions${lastAt ? ` · last ${escapeHtml(fmtRelative(lastAt))}` : " · no data yet"}</span></div>`;
-  }).join("");
-  const unconnectedRows = OBSERVATORY_UNCONNECTED_SURFACES.map((label) =>
-    `<div class="fact"><span class="fact-label">${escapeHtml(label)}</span><span class="fact-value" style="color:var(--text-tertiary);">Not connected to Office yet</span></div>`
-  ).join("");
-  surfacesSection.appendChild(el(`<div class="fact-grid">${surfaceRows}${unconnectedRows}</div>`));
+    return { label: surface.label, value: `${rows.length} interactions${lastAt ? ` · last ${fmtRelative(lastAt)}` : " · no data yet"}` };
+  });
+  const unconnectedRows = OBSERVATORY_UNCONNECTED_SURFACES.map((label) => ({ label, html: `<span style="color:var(--text-tertiary);">Not connected to Office yet</span>` }));
+  surfacesSection.appendChild(FactGrid([...surfaceRows, ...unconnectedRows]));
   outlet.appendChild(surfacesSection);
 
   if (Object.keys(toolCounts).length) {
     const toolSection = el(`<div class="detail-section"><h3>Tool Usage</h3></div>`);
-    toolSection.appendChild(el(`<div class="fact-grid">${Object.entries(toolCounts).map(([name, count]) => `<div class="fact"><span class="fact-label">${escapeHtml(name)}</span><span class="fact-value">${count}</span></div>`).join("")}</div>`));
+    toolSection.appendChild(FactGrid(Object.entries(toolCounts).map(([name, count]) => ({ label: name, value: String(count) }))));
     outlet.appendChild(toolSection);
   }
 

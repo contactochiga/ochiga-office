@@ -59,6 +59,20 @@
     --nav-width: 232px;
     --topbar-height: 56px;
 
+    /* Spacing scale (Programme 4 Part 5/6 — design-primitive
+       consolidation) — 4px base, used by new shared primitives
+       (KPIGroup/FactGrid/StageChip/ProgressRing) so density stays
+       consistent instead of ad hoc hardcoded px per section. Existing
+       hardcoded spacing elsewhere is untouched; adopt incrementally. */
+    --space-1: 4px;
+    --space-2: 8px;
+    --space-3: 12px;
+    --space-4: 16px;
+    --space-5: 20px;
+    --space-6: 24px;
+    --space-8: 32px;
+    --space-10: 40px;
+
     --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Helvetica, Arial, sans-serif;
     --font-mono: "SF Mono", "Menlo", "Consolas", monospace;
 
@@ -645,6 +659,13 @@
   .fact { display: flex; flex-direction: column; gap: 3px; }
   .fact-label { font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-tertiary); }
   .fact-value { font-size: 13px; color: var(--text-primary); }
+
+  /* ProgressBar primitive (Programme 4 Part 5/6) — only rendered when a
+     caller has real current/total data; never decorative. */
+  .progress-bar-wrap { display: flex; flex-direction: column; gap: var(--space-1); }
+  .progress-bar-label { display: flex; justify-content: space-between; font-size: 11px; color: var(--text-tertiary); }
+  .progress-bar-track { height: 4px; border-radius: 2px; background: var(--line); overflow: hidden; }
+  .progress-bar-fill { height: 100%; background: var(--red-bright); border-radius: 2px; transition: width var(--duration-base) var(--ease); }
 
   .rail-card { border: 1px solid var(--line); border-radius: var(--radius); padding: 14px; background: rgba(255,255,255,0.015); }
   .rail-card h4 { font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-tertiary); margin: 0; }
