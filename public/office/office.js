@@ -417,8 +417,47 @@ const ADMIN_NAV = [
   { key: "team", label: "Team", permission: "staff.manage", phase: null },
   { key: "settings", label: "Settings", permission: "settings.manage", phase: null },
   { key: "audit", label: "Audit", permission: "audit.read", phase: null },
-  { key: "observatory", label: "Agent Observatory", permission: "audit.read", phase: null },
+  // Route/key/permission unchanged — label-only rename (Programme 4 Home
+  // redesign brief).
+  { key: "observatory", label: "AI Agents", permission: "audit.read", phase: null },
 ];
+
+// Small, restrained outline icons (16x16, stroke-based, currentColor) for
+// the sidebar — Programme 4 Home redesign brief asked for "consistent
+// professional outline icon beside every menu item... small, clean and
+// restrained." No icon library exists in this codebase (confirmed: only
+// 2 static state-panel icons anywhere), so these are hand-authored
+// geometric outlines rather than a new asset/font dependency.
+const NAV_ICONS = {
+  home: '<path d="M2.5 7.5 8 3l5.5 4.5"/><path d="M4 6.5V13h3v-3.5h2V13h3V6.5"/>',
+  crm: '<circle cx="6" cy="5.5" r="2"/><path d="M2 13c0-2.2 1.8-4 4-4s4 1.8 4 4"/><circle cx="11.5" cy="4.5" r="1.4"/><path d="M9.6 9.1c1.6.3 2.9 1.7 3 3.4"/>',
+  projects: '<path d="M2.5 4.5h3.5l1.2 1.5H13.5v6.5h-11z"/>',
+  portfolio: '<rect x="3" y="2" width="10" height="12" rx="0.5"/><path d="M5.5 5h1.5M9 5h1.5M5.5 8h1.5M9 8h1.5M5.5 11h1.5M9 11h1.5"/>',
+  support: '<circle cx="8" cy="8" r="5.5"/><circle cx="8" cy="8" r="1.6"/><path d="M8 2.5V4M8 12v1.5M2.5 8H4M12 8h1.5"/>',
+  tasks: '<rect x="3" y="2.5" width="10" height="11" rx="0.5"/><path d="M5.5 6.5 7 8l3-3.3M5.5 11h5"/>',
+  meetings: '<rect x="2.5" y="3.5" width="11" height="10" rx="0.5"/><path d="M2.5 6.5h11M5.5 2v3M10.5 2v3"/>',
+  private: '<rect x="4" y="7" width="8" height="6" rx="0.5"/><path d="M5.5 7V5a2.5 2.5 0 0 1 5 0v2"/>',
+  partnerships: '<path d="M2.5 8.5 5 6l2 1.7L9.5 5 13.5 8.5"/><path d="M5 6 3 8l2 2 2-1.7M9.5 5l2 2-2 2-2-1.7"/>',
+  documents: '<path d="M4.5 2.5h5l2 2v9h-7z"/><path d="M6 7h4M6 9.5h4M6 12h2.5"/>',
+  content: '<path d="M3.5 12.5 3 14l1.5-.5 8-8-1-1z"/><path d="M10.5 3.5 12.5 5.5"/>',
+  reports: '<rect x="4" y="2.5" width="8" height="11" rx="0.5"/><path d="M6 2.5V4h4V2.5M6 8l1.5 1.5L10 6.5"/>',
+  "development-projects": '<path d="M3 13.5V6l5-2 5 2v7.5"/><path d="M3 13.5h10M6.5 13.5V9.5h3v4"/>',
+  team: '<circle cx="5.5" cy="5.5" r="2"/><circle cx="11" cy="6" r="1.6"/><path d="M2 13c0-2.1 1.6-3.7 3.5-3.7S9 10.9 9 13"/><path d="M9.7 10c1.4.2 2.5 1.5 2.6 3"/>',
+  settings: '<circle cx="8" cy="8" r="2.2"/><path d="M8 2.5v1.6M8 11.9v1.6M13.5 8h-1.6M4.1 8H2.5M11.8 4.2l-1.1 1.1M5.3 10.7l-1.1 1.1M11.8 11.8l-1.1-1.1M5.3 5.3 4.2 4.2"/>',
+  audit: '<path d="M8 2 3 4v4c0 3.3 2.1 5.4 5 6 2.9-.6 5-2.7 5-6V4z"/><path d="M6 8l1.5 1.5L10.5 6"/>',
+  observatory: '<rect x="5.5" y="5.5" width="5" height="5" rx="0.5"/><path d="M8 2.5V4M8 12v1.5M2.5 8H4M12 8h1.5M5 5.5l-.9-.9M11.9 5.5l.9-.9M5 10.5l-.9.9M11.9 10.5l.9.9"/><circle cx="8" cy="8" r="1"/>',
+  inbox: '<path d="M2.5 4.5h11v7h-11z"/><path d="M2.5 4.5 8 9l5.5-4.5"/>',
+  attention: '<path d="M8 1.8 14.5 13H1.5z"/><path d="M8 6.5v3.2"/><circle cx="8" cy="11.6" r="0.4" fill="currentColor" stroke="none"/>',
+  briefing: '<circle cx="8" cy="8" r="6"/><path d="M8 5.2v3.3l2.2 1.3"/>',
+};
+function iconSvg(key, className) {
+  const inner = NAV_ICONS[key];
+  if (!inner) return "";
+  return `<svg class="${className}" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${inner}</svg>`;
+}
+function navIconSvg(key) {
+  return iconSvg(key, "nav-icon");
+}
 
 // Inbox lives as a topbar icon (next to the notification bell), not a
 // sidebar item — still registered here so findNavItem() resolves its
@@ -719,6 +758,59 @@ function railList(items, renderItem) {
 }
 
 // ---------------------------------------------------------------
+// Shared design primitives (Programme 4 Part 5/6) — consolidates
+// kpi-grid/fact-grid/stage-strip markup that was previously
+// hand-written 2-3 times across Home/CRM/Observatory with the exact
+// same CSS classes but slightly different call shapes. These reuse the
+// existing .kpi-*/.stage-*/.fact-* CSS untouched — no new styling for
+// them. Callers still own their own data/permission logic; these only
+// take already-computed values and never fetch or fabricate anything.
+// ---------------------------------------------------------------
+function KPIGroup(cards) {
+  const grid = el(`<div class="kpi-grid"></div>`);
+  cards.forEach((card) => {
+    const node = el(`
+      <div class="kpi-card${card.onClick ? " clickable" : ""}${card.alert ? " kpi-alert" : ""}">
+        ${card.icon ? `<span class="kpi-icon">${card.icon}</span>` : ""}
+        <span class="kpi-label">${escapeHtml(card.label)}</span>
+        <span class="kpi-value">${escapeHtml(String(card.value))}</span>
+        ${card.sub ? `<span class="kpi-sub">${escapeHtml(card.sub)}</span>` : ""}
+      </div>
+    `);
+    if (card.onClick) node.addEventListener("click", card.onClick);
+    grid.appendChild(node);
+  });
+  return grid;
+}
+// rows: Array<{ label, value }|{ label, html }> — `html` is for values
+// that already contain markup (e.g. a badge), mirroring factRow/
+// factRowHtml's existing escape-vs-trusted-markup split.
+function FactGrid(rows) {
+  return el(`<div class="fact-grid">${rows.map((row) => (row.html !== undefined ? factRowHtml(row.label, row.html) : factRow(row.label, row.value))).join("")}</div>`);
+}
+function StageStrip(items, emptyText) {
+  const strip = el(`<div class="stage-strip"></div>`);
+  items.forEach(({ label, count }) => {
+    strip.appendChild(el(`<div class="stage-chip"><span class="stage-count">${escapeHtml(String(count))}</span><span>${escapeHtml(label)}</span></div>`));
+  });
+  if (!items.length) strip.appendChild(el(`<p class="rail-empty">${escapeHtml(emptyText || "No records yet.")}</p>`));
+  return strip;
+}
+// Returns null (never a fabricated 0%) when current/total aren't real,
+// finite numbers — callers must check before appending, same pattern as
+// "unsupported" evidence elsewhere in this codebase.
+function ProgressBar(current, total, label) {
+  if (!Number.isFinite(current) || !Number.isFinite(total) || total <= 0) return null;
+  const pct = Math.max(0, Math.min(100, Math.round((current / total) * 100)));
+  return el(`
+    <div class="progress-bar-wrap">
+      ${label ? `<div class="progress-bar-label"><span>${escapeHtml(label)}</span><span>${pct}%</span></div>` : ""}
+      <div class="progress-bar-track"><div class="progress-bar-fill" style="width:${pct}%;"></div></div>
+    </div>
+  `);
+}
+
+// ---------------------------------------------------------------
 // Restrained status actions — mirrors
 // src/lead-agents/office-operational-workflows.js STATUS_TRANSITIONS
 // exactly. The backend is the source of truth and validates every
@@ -974,6 +1066,25 @@ function renderForbiddenView(outlet) {
 // signed-in staff member lacks the related permission.
 // ---------------------------------------------------------------
 const ATTENTION_PERMISSION = { task: "tasks.read", support_case: "support.read", proposal: "crm.read", lead: "crm.read" };
+// attention_items carries only {type, id, title, priority, owner} — no
+// timestamp, no secondary description (confirmed absent server-side:
+// office-operating-system.js buildOfficeHomeProjection). route/
+// actionLabel are honest because id IS the item's own record id for
+// every type except "proposal", which has no known detail route (the
+// pre-redesign Home never made proposal rows clickable either).
+const ATTENTION_TYPE_META = {
+  task: { label: "Tasks", icon: "tasks", route: (id) => `tasks/${id}`, actionLabel: "View" },
+  support_case: { label: "Support", icon: "support", route: (id) => `support/${id}`, actionLabel: "Open" },
+  lead: { label: "CRM", icon: "crm", route: (id) => `crm/leads/${id}`, actionLabel: "Open" },
+  proposal: { label: "Proposals", icon: "documents", route: null, actionLabel: null },
+};
+
+function homeGreeting() {
+  const hour = new Date().getHours();
+  const time = hour < 12 ? "morning" : hour < 18 ? "afternoon" : "evening";
+  const name = (state.admin?.display_name || state.admin?.email || "").trim().split(/\s+/)[0] || "there";
+  return `Good ${time}, ${escapeHtml(name)}`;
+}
 
 async function renderHomeView(outlet, token) {
   let home;
@@ -990,217 +1101,409 @@ async function renderHomeView(outlet, token) {
 
   const visibleItems = home.attention_items.filter((item) => hasPermission(ATTENTION_PERMISSION[item.type] || "office.read"));
   const mine = visibleItems.filter((item) => isMine(item.owner));
+  const summary = home.summary || {};
 
   outlet.innerHTML = "";
   outlet.appendChild(el(`
     <div class="view-heading">
-      <h1>Home</h1>
-      <p>What's happening across Ochiga right now, and what needs attention.</p>
+      <h1>${homeGreeting()} 👋</h1>
+      <p>Here's what needs your attention across Ochiga today.</p>
     </div>
   `));
 
-  outlet.appendChild(renderHomeKpiGrid(home.summary || {}));
-  outlet.appendChild(renderHomeSection("Needs Attention", visibleItems, "Nothing needs attention right now."));
-  outlet.appendChild(renderHomeSection("My Work", mine, "Nothing assigned to you right now."));
+  outlet.appendChild(renderHomeKpiGrid(summary));
 
-  if (hasPermission("tasks.read") && (home.overdue_tasks || []).length) {
-    outlet.appendChild(renderOverdueTasksSection(home.overdue_tasks));
-  }
-  if (hasPermission("meetings.read") && (home.upcoming_meetings || []).length) {
-    outlet.appendChild(renderUpcomingMeetingsSection(home.upcoming_meetings));
-  }
-  if (hasPermission("documents.generate") && (home.recent_documents || []).length) {
-    outlet.appendChild(renderRecentDocumentsSection(home.recent_documents));
-  }
-  if (hasPermission("content.write") && home.content_publishing) {
-    outlet.appendChild(renderContentWidget(home.content_publishing));
-  }
+  const rowTop = el(`<div class="home-grid"></div>`);
+  rowTop.appendChild(homePanelWrap("span-5", renderAttentionPanel(visibleItems)));
+  rowTop.appendChild(homePanelWrap("span-4", renderMyWorkPanel(summary, mine)));
+  rowTop.appendChild(homePanelWrap("span-3", renderOyiBriefingPanel(summary, mine)));
+  outlet.appendChild(rowTop);
 
-  // Commercial movement — leads with meaningful recent change, permission-gated.
-  if (hasPermission("crm.read")) {
-    try {
-      const leads = await fetchLeads();
-      if (token !== state.renderToken) return;
-      const moved = leads
-        .filter((lead) => lead.updated_at)
-        .sort((a, b) => String(b.updated_at).localeCompare(String(a.updated_at)))
-        .slice(0, 6);
-      outlet.appendChild(renderCommercialMovement(moved));
-    } catch {
-      outlet.appendChild(errorPanel("Could not load recent commercial movement."));
-    }
-  }
+  const rowMid = el(`<div class="home-grid"></div>`);
+  outlet.appendChild(rowMid);
+  if (hasPermission("crm.read")) rowMid.appendChild(homePanelWrap("span-4", await renderCrmSnapshotPanel(token)));
+  if (hasPermission("development.manage")) rowMid.appendChild(homePanelWrap("span-4", await renderDevelopmentHomePanel(token)));
+  if (hasPermission("portfolio.read")) rowMid.appendChild(homePanelWrap("span-2", renderPortfolioPanel(summary)));
+  if (hasPermission("meetings.read")) rowMid.appendChild(homePanelWrap("span-2", renderMeetingsPanel(home.upcoming_meetings || [])));
+  if (token !== state.renderToken) return;
 
-  outlet.appendChild(renderRecentActivitySection(home.recent_activity || []));
+  const rowBottom = el(`<div class="home-grid"></div>`);
+  outlet.appendChild(rowBottom);
+  if (hasPermission("reports.write")) rowBottom.appendChild(homePanelWrap("span-3", await renderReportsHomePanel(token)));
+  rowBottom.appendChild(homePanelWrap("span-3", renderRecentActivityPanel(home.recent_activity || [])));
+  if (hasPermission("content.write") && home.content_publishing) rowBottom.appendChild(homePanelWrap("span-3", renderContentPanel(home.content_publishing)));
+  if (hasPermission("audit.read")) rowBottom.appendChild(homePanelWrap("span-3", await renderAiAgentsHomePanel(token)));
+}
+
+function homePanelWrap(spanClass, panelNode) {
+  const wrap = el(`<div class="${spanClass}"></div>`);
+  if (panelNode) wrap.appendChild(panelNode);
+  return wrap;
+}
+function homePanel(title, linkLabel, onLink) {
+  const head = el(`<div class="home-panel-head"><h3>${escapeHtml(title)}</h3></div>`);
+  if (linkLabel && onLink) {
+    const link = el(`<button type="button" class="panel-link">${escapeHtml(linkLabel)}</button>`);
+    link.addEventListener("click", onLink);
+    head.appendChild(link);
+  }
+  const panel = el(`<div class="home-panel"></div>`);
+  panel.appendChild(head);
+  return panel;
 }
 
 // KPI grid — one card per module the signed-in staff member can see,
 // pulled entirely from the summary buildOfficeHomeProjection() already
 // computes server-side. No client-side aggregation, no fabricated values.
+// Ordered by executive priority — the top summary row shows only the
+// first HOME_KPI_PRIORITY_COUNT permission-visible cards (Home redesign
+// brief: "Do not display all metrics just because they exist"). The
+// rest of these numbers aren't lost — they surface inside their own
+// dedicated panels further down Home (CRM/Development/Portfolio/etc.).
 const HOME_KPI_CARDS = [
-  { key: "attention_count", label: "Needs Attention", permission: "office.read" },
-  { key: "crm_leads", label: "CRM Leads", permission: "crm.read", route: "crm/leads" },
-  { key: "active_projects", label: "Active Projects", permission: "projects.read", route: "projects" },
-  { key: "portfolio_entries", label: "Portfolio", permission: "portfolio.read", route: "portfolio" },
-  { key: "open_support_cases", label: "Open Support", permission: "support.read", route: "support" },
-  { key: "open_tasks", label: "Open Tasks", permission: "tasks.read", route: "tasks", sub: (s) => (s.overdue_tasks ? `${s.overdue_tasks} overdue` : null), alert: (s) => s.overdue_tasks > 0 },
-  { key: "upcoming_meetings", label: "Upcoming Meetings", permission: "meetings.read", route: "meetings" },
-  { key: "private_queue", label: "Private Queue", permission: "private.read", route: "private" },
-  { key: "partnership_queue", label: "Partnerships Queue", permission: "partnerships.read", route: "partnerships" },
-  { key: "recent_documents", label: "Recent Documents", permission: "documents.generate", route: "documents" },
-  { key: "reports_awaiting_approval", label: "Reports Awaiting Approval", permission: "reports.review", route: "reports", alert: (s) => s.reports_awaiting_approval > 0 },
+  { key: "attention_count", label: "Needs Attention", permission: "office.read", icon: "attention", alert: (s) => s.attention_count > 0 },
+  { key: "open_tasks", label: "My Tasks", permission: "tasks.read", route: "tasks", icon: "tasks", sub: (s) => (s.overdue_tasks ? `${s.overdue_tasks} overdue` : null), alert: (s) => s.overdue_tasks > 0 },
+  { key: "reports_awaiting_approval", label: "Pending Approvals", permission: "reports.review", route: "reports", icon: "reports", alert: (s) => s.reports_awaiting_approval > 0 },
+  { key: "active_projects", label: "Active Projects", permission: "projects.read", route: "projects", icon: "projects" },
+  { key: "crm_leads", label: "CRM Leads", permission: "crm.read", route: "crm/leads", icon: "crm" },
+  { key: "portfolio_entries", label: "Portfolio", permission: "portfolio.read", route: "portfolio", icon: "portfolio" },
+  { key: "open_support_cases", label: "Open Support", permission: "support.read", route: "support", icon: "support" },
+  { key: "upcoming_meetings", label: "Upcoming Meetings", permission: "meetings.read", route: "meetings", icon: "meetings" },
+  { key: "private_queue", label: "Private Queue", permission: "private.read", route: "private", icon: "private" },
+  { key: "partnership_queue", label: "Partnerships Queue", permission: "partnerships.read", route: "partnerships", icon: "partnerships" },
+  { key: "recent_documents", label: "Recent Documents", permission: "documents.generate", route: "documents", icon: "documents" },
 ];
+const HOME_KPI_PRIORITY_COUNT = 5;
 function renderHomeKpiGrid(summary) {
-  const grid = el(`<div class="home-section"><div class="kpi-grid"></div></div>`);
-  const list = grid.querySelector(".kpi-grid");
-  HOME_KPI_CARDS.filter((card) => hasPermission(card.permission)).forEach((card) => {
-    const value = summary[card.key];
-    if (value === undefined) return;
-    const sub = card.sub ? card.sub(summary) : null;
-    const alert = card.alert ? card.alert(summary) : false;
-    const el_ = el(`
-      <div class="kpi-card${card.route ? " clickable" : ""}${alert ? " kpi-alert" : ""}">
-        <span class="kpi-label">${escapeHtml(card.label)}</span>
-        <span class="kpi-value">${escapeHtml(String(value))}</span>
-        ${sub ? `<span class="kpi-sub">${escapeHtml(sub)}</span>` : ""}
-      </div>
-    `);
-    if (card.route) el_.addEventListener("click", () => navigate(card.route));
-    list.appendChild(el_);
-  });
+  const grid = el(`<div class="home-section"></div>`);
+  const cards = HOME_KPI_CARDS.filter((card) => hasPermission(card.permission))
+    .map((card) => {
+      const value = summary[card.key];
+      if (value === undefined) return null;
+      return {
+        label: card.label,
+        value,
+        icon: card.icon ? iconSvg(card.icon, "kpi-icon") : null,
+        sub: card.sub ? card.sub(summary) : null,
+        alert: card.alert ? card.alert(summary) : false,
+        onClick: card.route ? () => navigate(card.route) : null,
+      };
+    })
+    .filter(Boolean)
+    .slice(0, HOME_KPI_PRIORITY_COUNT);
+  grid.appendChild(KPIGroup(cards));
   return grid;
 }
 
-function renderOverdueTasksSection(tasks) {
-  const section = el(`<div class="home-section"><h3>Overdue Tasks</h3></div>`);
-  section.appendChild(renderDataTable({
+function renderAttentionPanel(items) {
+  const panel = homePanel("Needs Attention");
+  if (!items.length) {
+    panel.appendChild(el(`<p class="home-panel-empty">Nothing needs attention right now.</p>`));
+    return panel;
+  }
+  panel.appendChild(renderDataTable({
     columns: [
-      { label: "Task", render: (t) => escapeHtml(t.title || "Untitled") },
-      { label: "Due", render: (t) => badge(fmtRelative(t.due_at), "red") },
-      { label: "Assignee", render: (t) => escapeHtml(t.assignee || "Unassigned") },
+      {
+        label: "Item",
+        render: (item) => {
+          const meta = ATTENTION_TYPE_META[item.type];
+          const wrap = el(`<div class="attention-item-cell"></div>`);
+          if (meta?.icon) wrap.appendChild(el(iconSvg(meta.icon, "kpi-icon")));
+          wrap.appendChild(el(`<span>${escapeHtml(item.title || "Untitled")}</span>`));
+          return wrap;
+        },
+      },
+      { label: "Domain", width: "96px", render: (item) => badge((ATTENTION_TYPE_META[item.type] || {}).label || titleCase(item.type)) },
+      { label: "Priority", width: "104px", render: (item) => badge(titleCase(item.priority || "normal"), toneForStatus(item.priority)) },
+      {
+        label: "", width: "76px",
+        render: (item) => {
+          const meta = ATTENTION_TYPE_META[item.type];
+          if (!meta?.route) return "—";
+          const btn = el(`<button type="button" class="btn btn-ghost btn-sm" style="margin:0;">${escapeHtml(meta.actionLabel)}</button>`);
+          btn.addEventListener("click", (event) => { event.stopPropagation(); navigate(meta.route(item.id)); });
+          return btn;
+        },
+      },
     ],
-    rows: tasks,
-    onRowClick: (t) => navigate(`tasks/${t.id}`),
-    emptyMessage: "No overdue tasks.",
+    rows: items,
+    emptyMessage: "",
   }));
-  return section;
+  return panel;
 }
 
-function renderUpcomingMeetingsSection(meetings) {
-  const section = el(`<div class="home-section"><h3>Upcoming Meetings</h3></div>`);
-  section.appendChild(renderDataTable({
-    columns: [
-      { label: "Meeting", render: (m) => escapeHtml(m.title || "Untitled") },
-      { label: "When", render: (m) => escapeHtml(fmtDateTime(m.scheduled_at)) },
-    ],
-    rows: meetings,
-    onRowClick: (m) => navigate(`meetings/${m.id}`),
-    emptyMessage: "No upcoming meetings.",
-  }));
-  return section;
+function renderMyWorkPanel(summary, mine) {
+  const panel = homePanel("My Work", "View all", () => navigate("tasks"));
+  if (!mine.length) {
+    panel.appendChild(el(`<p class="home-panel-empty">Nothing assigned to you right now.</p>`));
+  } else {
+    const grouped = {};
+    mine.forEach((item) => { grouped[item.type] = (grouped[item.type] || 0) + 1; });
+    const today = el(`<div></div>`);
+    today.appendChild(el(`<h4 class="home-subhead">Today</h4>`));
+    today.insertAdjacentHTML("beforeend", railList(Object.entries(grouped), ([type, count]) => {
+      const meta = ATTENTION_TYPE_META[type] || { label: titleCase(type) };
+      return `${meta.icon ? iconSvg(meta.icon, "kpi-icon") : ""}<span>${count} ${escapeHtml(meta.label)}</span>`;
+    }));
+    panel.appendChild(today);
+  }
+  // "This Week" is company-wide, not owner-filtered — attention_items'
+  // trimmed shape (no owner-scoped weekly completion data exists) means
+  // an honest per-person figure isn't derivable; a company-wide real
+  // count is more honest than a falsely-personalized one.
+  const completed = summary.tasks_completed_this_week || 0;
+  const pending = summary.open_tasks || 0;
+  const bar = ProgressBar(completed, completed + pending, "This Week (Office-wide)");
+  if (bar) {
+    const thisWeek = el(`<div></div>`);
+    thisWeek.appendChild(bar);
+    thisWeek.appendChild(el(`<p class="home-panel-empty" style="padding:4px 0 0;">${completed} completed, ${pending} pending.</p>`));
+    panel.appendChild(thisWeek);
+  }
+  return panel;
 }
 
-function renderRecentDocumentsSection(documents) {
-  const section = el(`<div class="home-section"><h3>Recent Documents</h3></div>`);
-  section.appendChild(renderDataTable({
-    columns: [
-      { label: "Document", render: (d) => escapeHtml(d.title || "Untitled") },
-      { label: "Type", render: (d) => badge(titleCase(d.document_type || "document")) },
-      { label: "Updated", render: (d) => escapeHtml(fmtRelative(d.updated_at)) },
-    ],
-    rows: documents,
-    onRowClick: (d) => navigate(`documents/library/${d.id}`),
-    emptyMessage: "No documents yet.",
-  }));
-  return section;
+function homeBriefingText(summary, mine) {
+  const parts = [];
+  if (summary.attention_count) parts.push(`${summary.attention_count} item${summary.attention_count === 1 ? "" : "s"} need${summary.attention_count === 1 ? "s" : ""} attention today`);
+  const overdueLeads = mine.filter((item) => item.type === "lead").length;
+  if (overdueLeads) parts.push(`${overdueLeads} commercial follow-up${overdueLeads === 1 ? "" : "s"} overdue`);
+  if (summary.reports_awaiting_approval) parts.push(`${summary.reports_awaiting_approval} report${summary.reports_awaiting_approval === 1 ? "" : "s"} awaiting approval`);
+  if (summary.overdue_tasks) parts.push(`${summary.overdue_tasks} task${summary.overdue_tasks === 1 ? "" : "s"} overdue`);
+  if (summary.content_awaiting_review) parts.push(`${summary.content_awaiting_review} content item${summary.content_awaiting_review === 1 ? "" : "s"} awaiting review`);
+  if (!parts.length) return "Nothing needs your attention right now — Office is clear.";
+  return `${parts.join("; ")}.`;
+}
+// Deterministic, derived entirely from the same real Home projection
+// counts already on the page — no LLM call for this passive summary,
+// and no hardcoded paragraph. Quick actions route through the real Oyi
+// chat pipeline (sendOyiMessage → office_internal capability pipeline),
+// so once the office_internal capability modules are merged, these
+// answers improve automatically with zero UI changes needed.
+const HOME_QUICK_ACTIONS = [
+  { label: "Show priorities", permission: "office.read", message: "What needs my attention today?" },
+  { label: "Review approvals", permission: "reports.review", message: "What reports are awaiting approval?" },
+  { label: "Summarize commercial activity", permission: "crm.read", message: "Summarize our commercial activity." },
+  { label: "What changed today?", permission: "office.read", message: "What changed today?" },
+];
+function renderOyiBriefingPanel(summary, mine) {
+  const panel = homePanel("Oyi Briefing");
+  panel.appendChild(el(`<p style="font-size:12.5px;color:var(--text-secondary);line-height:1.5;margin:0;">${escapeHtml(homeBriefingText(summary, mine))}</p>`));
+  const actions = HOME_QUICK_ACTIONS.filter((action) => hasPermission(action.permission));
+  if (actions.length) {
+    const list = el(`<div style="display:flex;flex-direction:column;gap:6px;"></div>`);
+    actions.forEach((action) => {
+      const btn = el(`<button type="button" class="btn btn-ghost btn-sm" style="margin:0;width:100%;text-align:left;">${escapeHtml(action.label)}</button>`);
+      btn.addEventListener("click", () => { openOyiPanel(); sendOyiMessage(action.message); });
+      list.appendChild(btn);
+    });
+    panel.appendChild(list);
+  }
+  return panel;
+}
+
+async function renderCrmSnapshotPanel(token) {
+  const panel = homePanel("CRM / Commercial", "Full CRM", () => navigate("crm"));
+  try {
+    const [leads, opportunities] = await Promise.all([fetchLeads(), fetchOpportunities()]);
+    if (token !== state.renderToken) return panel;
+    const activeLeads = leads.filter((lead) => !/closed|won|lost|converted|disqualified/i.test(String(lead.status || "")));
+    const qualifiedLeads = activeLeads.filter((lead) => /qualified/i.test(String(lead.qualification_status || lead.status || "")));
+    const openOpportunities = opportunities.filter((opp) => !/closed|won|lost/i.test(String(opp.status || "")));
+    panel.appendChild(KPIGroup([
+      { label: "Active Leads", value: activeLeads.length },
+      { label: "Qualified", value: qualifiedLeads.length },
+      { label: "Opportunities", value: openOpportunities.length },
+    ]));
+    const stageGroups = {};
+    openOpportunities.forEach((opp) => { const stage = opp.stage || "intake_received"; (stageGroups[stage] = stageGroups[stage] || []).push(opp); });
+    if (Object.keys(stageGroups).length) {
+      panel.appendChild(StageStrip(Object.entries(stageGroups).sort((a, b) => b[1].length - a[1].length).map(([stage, group]) => ({ label: titleCase(stage), count: group.length }))));
+    }
+    const recent = leads.filter((lead) => lead.updated_at).sort((a, b) => String(b.updated_at).localeCompare(String(a.updated_at))).slice(0, 4);
+    if (recent.length) {
+      panel.appendChild(renderDataTable({
+        columns: [
+          { label: "Lead", render: (lead) => escapeHtml(lead.company || lead.name || "Untitled") },
+          { label: "Stage", render: (lead) => badge(titleCase(lead.stage || lead.status || "new"), toneForStatus(lead.stage || lead.status)) },
+          { label: "Updated", render: (lead) => escapeHtml(fmtRelative(lead.updated_at)) },
+        ],
+        rows: recent,
+        onRowClick: (lead) => navigate(`crm/leads/${lead.id}`),
+        emptyMessage: "",
+      }));
+    }
+  } catch {
+    panel.appendChild(errorPanel("Could not load CRM data."));
+  }
+  return panel;
+}
+
+async function renderDevelopmentHomePanel(token) {
+  const panel = homePanel("Projects / Development", "View all", () => navigate("development-projects"));
+  try {
+    const data = await apiListDevelopmentProjects();
+    if (token !== state.renderToken) return panel;
+    const projects = (data.projects || []).slice(0, 4);
+    if (!projects.length) {
+      panel.appendChild(el(`<p class="home-panel-empty">No development projects yet.</p>`));
+      return panel;
+    }
+    projects.forEach((project) => {
+      const stages = project.status_stages || [];
+      const row = el(`<div class="dev-home-row clickable"></div>`);
+      if (project.cover_image_url) row.appendChild(el(`<img src="${escapeHtml(project.cover_image_url)}" alt="" class="dev-home-thumb" />`));
+      const info = el(`<div class="dev-home-info"></div>`);
+      info.appendChild(el(`<div class="dev-home-name">${escapeHtml(project.name)}</div>`));
+      info.appendChild(el(`<div class="dev-home-status">${escapeHtml(project.status || stages[project.status_active_index] || "—")}</div>`));
+      const bar = ProgressBar(project.status_active_index, stages.length - 1, null);
+      if (bar) info.appendChild(bar);
+      row.appendChild(info);
+      row.addEventListener("click", () => navigate(`development-projects/${project.id}`));
+      panel.appendChild(row);
+    });
+  } catch {
+    panel.appendChild(errorPanel("Could not load development projects."));
+  }
+  return panel;
+}
+
+function renderPortfolioPanel(summary) {
+  const panel = homePanel("Portfolio", "View all", () => navigate("portfolio"));
+  const rows = [];
+  if (hasPermission("portfolio.read")) rows.push({ label: "Portfolio Entries", value: String(summary.portfolio_entries ?? 0) });
+  if (hasPermission("private.read")) rows.push({ label: "Private Queue", value: String(summary.private_queue ?? 0) });
+  if (hasPermission("partnerships.read")) rows.push({ label: "Partnerships Queue", value: String(summary.partnership_queue ?? 0) });
+  if (!rows.length) {
+    panel.appendChild(el(`<p class="home-panel-empty">No portfolio data available.</p>`));
+    return panel;
+  }
+  panel.appendChild(FactGrid(rows));
+  return panel;
+}
+
+function renderMeetingsPanel(meetings) {
+  const panel = homePanel("Upcoming Meetings", "View all", () => navigate("meetings"));
+  if (!meetings.length) {
+    panel.appendChild(el(`<p class="home-panel-empty">No upcoming meetings.</p>`));
+    return panel;
+  }
+  // A narrow panel (span-2/3) is too tight for a 2-column data table
+  // without cramped truncation — a stacked compact list reads better
+  // at this width, matching the reference's meeting-row treatment.
+  const list = el(`<div class="meeting-list"></div>`);
+  meetings.slice(0, 4).forEach((meeting) => {
+    const row = el(`
+      <div class="meeting-row clickable">
+        <div class="meeting-when">${escapeHtml(fmtDateTime(meeting.scheduled_at))}</div>
+        <div class="meeting-title">${escapeHtml(meeting.title || "Untitled")}</div>
+      </div>
+    `);
+    row.addEventListener("click", () => navigate(`meetings/${meeting.id}`));
+    list.appendChild(row);
+  });
+  panel.appendChild(list);
+  return panel;
+}
+
+async function renderReportsHomePanel(token) {
+  const panel = homePanel("Reports & Approvals", "View all", () => navigate("reports"));
+  try {
+    const data = await apiListReports("submitted");
+    if (token !== state.renderToken) return panel;
+    const reports = data.reports || [];
+    if (!reports.length) {
+      panel.appendChild(el(`<p class="home-panel-empty">No reports awaiting approval.</p>`));
+      return panel;
+    }
+    panel.appendChild(renderDataTable({
+      columns: [
+        { label: "Report", render: (r) => escapeHtml(r.title || "Untitled") },
+        { label: "Type", render: (r) => badge(titleCase(r.related_type || "report")) },
+        {
+          label: "", width: "70px",
+          render: (r) => {
+            // RBAC preserved: this is a link to the existing report
+            // detail page, which itself already enforces reports.review
+            // server-side for the actual approve/reject action — no
+            // approval logic or self-escalation happens here.
+            if (!hasPermission("reports.review")) return badge("Awaiting", "amber");
+            const btn = el(`<button type="button" class="btn btn-ghost btn-sm" style="margin:0;">Review</button>`);
+            btn.addEventListener("click", (event) => { event.stopPropagation(); navigate(`reports/${r.id}`); });
+            return btn;
+          },
+        },
+      ],
+      rows: reports.slice(0, 5),
+      onRowClick: (r) => navigate(`reports/${r.id}`),
+      emptyMessage: "",
+    }));
+  } catch {
+    panel.appendChild(errorPanel("Could not load reports."));
+  }
+  return panel;
+}
+
+function renderRecentActivityPanel(activities) {
+  const panel = homePanel("Recent Activity");
+  const recent = [...activities]
+    .sort((a, b) => String(b.occurred_at || b.created_at || "").localeCompare(String(a.occurred_at || a.created_at || "")))
+    .slice(0, 6);
+  if (!recent.length) {
+    panel.appendChild(el(`<p class="home-panel-empty">No recent activity.</p>`));
+    return panel;
+  }
+  panel.appendChild(renderTimeline(recent));
+  return panel;
 }
 
 // Honest cadence widget — never fabricates progress toward the 2/week
 // target; 0/2 renders as 0/2.
-function renderContentWidget(content) {
-  const section = el(`<div class="home-section"><h3>Content / Publishing</h3></div>`);
+function renderContentPanel(content) {
+  const panel = homePanel("Content & Public Presence", "View all", () => navigate("content"));
   if (content.available === false) {
-    section.appendChild(emptyPanel({
-      kicker: "Content / Publishing",
+    panel.appendChild(emptyPanel({
+      kicker: "Content",
       title: "Content is temporarily unavailable",
-      body: "The rest of Home loaded normally. Publishing counts couldn't be read just now — try again shortly.",
+      body: "Publishing counts couldn't be read just now — try again shortly.",
     }));
-    return section;
+    return panel;
   }
-  // No "on track" / "behind" judgment here — that would need
-  // day-of-week awareness this widget doesn't have. Just the honest
-  // count against the target, nothing editorialized.
-  const card = el(`
-    <div class="kpi-grid">
-      <div class="kpi-card clickable">
-        <span class="kpi-label">Published This Week</span>
-        <span class="kpi-value">${content.published_this_week} / ${content.target_per_week}</span>
-      </div>
-      <div class="kpi-card clickable"><span class="kpi-label">Drafts</span><span class="kpi-value">${content.drafts}</span></div>
-      <div class="kpi-card clickable"><span class="kpi-label">Awaiting Review</span><span class="kpi-value">${content.awaiting_review}</span></div>
-      <div class="kpi-card clickable"><span class="kpi-label">Scheduled</span><span class="kpi-value">${content.scheduled}</span>${content.next_scheduled_publish_at ? `<span class="kpi-sub">Next: ${escapeHtml(fmtDateTime(content.next_scheduled_publish_at))}</span>` : ""}</div>
-    </div>
-  `);
-  card.querySelectorAll(".kpi-card").forEach((node) => node.addEventListener("click", () => navigate("content")));
-  section.appendChild(card);
-  return section;
+  const toContent = () => navigate("content");
+  panel.appendChild(KPIGroup([
+    { label: "Published This Week", value: `${content.published_this_week} / ${content.target_per_week}`, onClick: toContent },
+    { label: "Drafts", value: content.drafts, onClick: toContent },
+    { label: "Awaiting Review", value: content.awaiting_review, onClick: toContent },
+    { label: "Scheduled", value: content.scheduled, sub: content.next_scheduled_publish_at ? `Next: ${fmtDateTime(content.next_scheduled_publish_at)}` : null, onClick: toContent },
+  ]));
+  return panel;
 }
 
-function renderHomeSection(title, items, emptyText) {
-  const section = el(`<div class="home-section"><h3>${escapeHtml(title)}</h3></div>`);
-  if (!items.length) {
-    section.appendChild(emptyPanel({ kicker: title, title: "All clear", body: emptyText }));
-    return section;
+async function renderAiAgentsHomePanel(token) {
+  const panel = homePanel("AI Agents", "View all", () => navigate("observatory"));
+  try {
+    const data = await apiListTraces();
+    if (token !== state.renderToken) return panel;
+    const traces = data.traces || [];
+    const toolExecutions = traces.filter((t) => t.type === "tool_executed");
+    const failures = traces.filter((t) => t.type === "office_internal_chat_failed").length;
+    panel.appendChild(KPIGroup([
+      { label: "Interactions", value: traces.length },
+      { label: "Tool Executions", value: toolExecutions.length },
+      { label: "Failures", value: failures, alert: failures > 0 },
+    ]));
+    // Only the surfaces Office genuinely tracks — never claim Consumer/
+    // Facility/GetOyi are connected (they render as "Not connected to
+    // Office yet" on the full AI Agents page; Home simply doesn't list
+    // what it can't honestly report on).
+    panel.appendChild(FactGrid(OBSERVATORY_KNOWN_SURFACES.map((surface) => ({
+      label: surface.label,
+      value: String(traces.filter((t) => surface.types.includes(t.type)).length),
+    }))));
+  } catch {
+    panel.appendChild(errorPanel("Could not load agent activity."));
   }
-  const list = el(`<div class="attention-list"></div>`);
-  items.forEach((item) => {
-    const row = el(`
-      <div class="attention-row">
-        <span class="attention-type">${escapeHtml(titleCase(item.type))}</span>
-        <span class="attention-title">${escapeHtml(item.title || "Untitled")}</span>
-        ${badge(titleCase(item.priority || "normal"), toneForStatus(item.priority))}
-        <span class="attention-owner">${escapeHtml(item.owner || "Unassigned")}</span>
-      </div>
-    `);
-    if (item.type === "lead") {
-      row.classList.add("clickable");
-      row.addEventListener("click", () => navigate(`crm/leads/${item.id}`));
-    } else if (item.type === "support_case") {
-      row.classList.add("clickable");
-      row.addEventListener("click", () => navigate(`support/${item.id}`));
-    } else if (item.type === "task") {
-      row.classList.add("clickable");
-      row.addEventListener("click", () => navigate(`tasks/${item.id}`));
-    }
-    list.appendChild(row);
-  });
-  section.appendChild(list);
-  return section;
-}
-
-function renderCommercialMovement(leads) {
-  const section = el(`<div class="home-section"><h3>Commercial Movement</h3></div>`);
-  section.appendChild(renderDataTable({
-    columns: [
-      { label: "Lead", key: "name", render: (l) => escapeHtml(l.company || l.name || "Untitled") },
-      { label: "Stage", render: (l) => badge(titleCase(l.stage || l.status || "new"), toneForStatus(l.stage || l.status)) },
-      { label: "Owner", render: (l) => escapeHtml(l.owner || "Unassigned") },
-      { label: "Updated", render: (l) => escapeHtml(fmtRelative(l.updated_at)) },
-    ],
-    rows: leads,
-    onRowClick: (lead) => navigate(`crm/leads/${lead.id}`),
-    emptyMessage: "No recent commercial movement.",
-  }));
-  return section;
-}
-
-function renderRecentActivitySection(activities) {
-  const section = el(`<div class="home-section"><h3>Recent Activity</h3></div>`);
-  const recent = [...activities]
-    .sort((a, b) => String(b.occurred_at || b.created_at || "").localeCompare(String(a.occurred_at || a.created_at || "")))
-    .slice(0, 6);
-  section.appendChild(renderTimeline(recent));
-  return section;
+  return panel;
 }
 
 // Ask Oyi's large Home card was removed (Phase 1) — it opened the exact
@@ -1255,6 +1558,13 @@ async function renderCrmRoute(outlet, rest, token) {
   }
 }
 
+// Overview recomposed onto the Home design template (Programme 4 Part
+// 9) — .home-panel cards, KPIGroup/StageStrip primitives, same density
+// and icon treatment as Home. No new primitives; "Leads by Source" is
+// the only new visualization, and only because it clears the bar Home
+// review set: a stated operational question ("where are our leads
+// coming from?") answered by a real, already-used field (lead.source —
+// see leadChannelLabel() below, which already reads this same field).
 async function renderCrmOverview(body, token) {
   setSelectedObject(null);
   const [leads, opportunities, contacts, organizations] = await Promise.all([
@@ -1271,8 +1581,20 @@ async function renderCrmOverview(body, token) {
     /follow|proposal|demo|meeting/i.test(String(lead.next_action || "")) ||
     (lead.next_action_at && new Date(lead.next_action_at).getTime() < Date.now())
   );
-  body.appendChild(el(`<div class="overview-section"><h3>Leads Needing Attention <span class="count-pill">${hotLeads.length}</span></h3></div>`));
-  body.lastElementChild.appendChild(renderDataTable({
+  const openOpportunities = opportunities.filter((opp) => !/closed|won|lost/i.test(String(opp.status || "")));
+
+  body.appendChild(KPIGroup([
+    { label: "Total Leads", value: leads.length, icon: iconSvg("crm", "kpi-icon") },
+    { label: "Needing Attention", value: hotLeads.length, icon: iconSvg("attention", "kpi-icon"), alert: hotLeads.length > 0 },
+    { label: "Open Opportunities", value: openOpportunities.length, icon: iconSvg("crm", "kpi-icon") },
+    { label: "Contacts & Orgs", value: contacts.length + organizations.length, icon: iconSvg("team", "kpi-icon") },
+  ]));
+
+  const rowA = el(`<div class="home-grid"></div>`);
+  body.appendChild(rowA);
+
+  const attentionPanel = homePanel(`Leads Needing Attention (${hotLeads.length})`);
+  attentionPanel.appendChild(renderDataTable({
     columns: [
       { label: "Lead", render: (l) => escapeHtml(l.company || l.name || "Untitled") },
       { label: "Next Action", render: nextActionCell },
@@ -1282,29 +1604,44 @@ async function renderCrmOverview(body, token) {
     onRowClick: (lead) => navigate(`crm/leads/${lead.id}`),
     emptyMessage: "No leads currently need attention.",
   }));
+  rowA.appendChild(homePanelWrap("span-6", attentionPanel));
 
   const stageGroups = {};
   opportunities.forEach((opp) => {
     const stage = opp.stage || "intake_received";
     (stageGroups[stage] = stageGroups[stage] || []).push(opp);
   });
-  const stageSection = el(`<div class="overview-section"><h3>Opportunities by Stage</h3></div>`);
-  const strip = el(`<div class="stage-strip"></div>`);
-  Object.entries(stageGroups)
-    .sort((a, b) => b[1].length - a[1].length)
-    .forEach(([stage, items]) => {
-      const chip = el(`<div class="stage-chip"><span class="stage-count">${items.length}</span><span>${escapeHtml(titleCase(stage))}</span></div>`);
-      strip.appendChild(chip);
-    });
-  if (!opportunities.length) strip.appendChild(el(`<p class="rail-empty">No opportunities recorded yet.</p>`));
-  stageSection.appendChild(strip);
-  body.appendChild(stageSection);
+  const stagePanel = homePanel("Opportunities by Stage");
+  stagePanel.appendChild(StageStrip(
+    Object.entries(stageGroups)
+      .sort((a, b) => b[1].length - a[1].length)
+      .map(([stage, items]) => ({ label: titleCase(stage), count: items.length })),
+    "No opportunities recorded yet."
+  ));
+  rowA.appendChild(homePanelWrap("span-6", stagePanel));
+
+  const rowB = el(`<div class="home-grid"></div>`);
+  body.appendChild(rowB);
+
+  const sourceGroups = {};
+  leads.forEach((lead) => {
+    const source = lead.source || "unknown";
+    (sourceGroups[source] = sourceGroups[source] || []).push(lead);
+  });
+  const sourcePanel = homePanel("Leads by Source");
+  sourcePanel.appendChild(StageStrip(
+    Object.entries(sourceGroups)
+      .sort((a, b) => b[1].length - a[1].length)
+      .map(([source, items]) => ({ label: titleCase(source), count: items.length })),
+    "No leads recorded yet."
+  ));
+  rowB.appendChild(homePanelWrap("span-4", sourcePanel));
 
   const recentPeople = [...contacts, ...organizations.map((o) => ({ ...o, __org: true }))]
     .sort((a, b) => String(b.updated_at || "").localeCompare(String(a.updated_at || "")))
     .slice(0, 6);
-  const peopleSection = el(`<div class="overview-section"><h3>Recently Active Contacts &amp; Organizations</h3></div>`);
-  peopleSection.appendChild(renderDataTable({
+  const peoplePanel = homePanel("Recently Active Contacts & Organizations");
+  peoplePanel.appendChild(renderDataTable({
     columns: [
       { label: "Name", render: (r) => escapeHtml(r.name || "Untitled") },
       { label: "Type", render: (r) => badge(r.__org ? "Organization" : "Contact") },
@@ -1315,21 +1652,19 @@ async function renderCrmOverview(body, token) {
     onRowClick: (r) => navigate(`crm/${r.__org ? "organizations" : "contacts"}/${r.id}`),
     emptyMessage: "No contacts or organizations yet.",
   }));
-  body.appendChild(peopleSection);
+  rowB.appendChild(homePanelWrap("span-4", peoplePanel));
 
   const buDistribution = {};
   [...leads, ...opportunities].forEach((r) => {
     const bu = r.business_unit || "corporate";
     buDistribution[bu] = (buDistribution[bu] || 0) + 1;
   });
-  const buSection = el(`<div class="overview-section"><h3>Business Unit Distribution</h3></div>`);
-  const buStrip = el(`<div class="stage-strip"></div>`);
-  Object.entries(buDistribution).forEach(([bu, count]) => {
-    buStrip.appendChild(el(`<div class="stage-chip"><span class="stage-count">${count}</span><span>${escapeHtml(titleCase(bu))}</span></div>`));
-  });
-  if (!Object.keys(buDistribution).length) buStrip.appendChild(el(`<p class="rail-empty">No records yet.</p>`));
-  buSection.appendChild(buStrip);
-  body.appendChild(buSection);
+  const buPanel = homePanel("Business Unit Distribution");
+  buPanel.appendChild(StageStrip(
+    Object.entries(buDistribution).map(([bu, count]) => ({ label: titleCase(bu), count })),
+    "No records yet."
+  ));
+  rowB.appendChild(homePanelWrap("span-4", buPanel));
 }
 
 // Channel is the communication medium (whatsapp/email/website_chat);
@@ -3790,6 +4125,7 @@ async function renderDevelopmentProjectsList(outlet, token) {
       { label: "Slug", render: (p) => escapeHtml(p.slug) },
       { label: "Status", render: (p) => escapeHtml(p.status || "—") },
       { label: "Milestone", render: (p) => (p.status_stages || [])[p.status_active_index] ? escapeHtml(p.status_stages[p.status_active_index]) : "—" },
+      { label: "Progress", render: (p) => ProgressBar(p.status_active_index, (p.status_stages || []).length - 1, null) || "—" },
       { label: "Live", render: (p) => badge(p.published ? "Synced" : "Not Synced", p.published ? "green" : "default") },
     ],
     rows: projects,
@@ -3839,6 +4175,14 @@ async function renderDevelopmentProjectDetail(outlet, id, token) {
   `));
 
   const stages = project.status_stages || [];
+  const currentMilestone = stages[project.status_active_index];
+  const progressBar = ProgressBar(project.status_active_index, stages.length - 1, currentMilestone ? `Milestone: ${currentMilestone}` : "Milestone progress");
+  if (progressBar) {
+    const progressSection = el(`<div class="detail-section" style="max-width:520px;"></div>`);
+    progressSection.appendChild(progressBar);
+    outlet.appendChild(progressSection);
+  }
+
   const form = el(`
     <form class="inline-form" style="flex-direction:column;align-items:stretch;gap:12px;max-width:520px;">
       <label>Name<input name="name" value="${escapeHtml(project.name)}" /></label>
@@ -4996,8 +5340,22 @@ const OBSERVATORY_UNCONNECTED_SURFACES = [
   "Ochiga Backend / Oyi Core (direct)",
 ];
 
+// Trace records ({type, agent, tool_name, created_at, ...}) don't match
+// renderTimeline's expected shape ({activity_type, title, body, actor,
+// created_at}) — small adapter so Recent Activity here uses the same
+// row pattern as Home's Recent Activity, instead of a bespoke layout.
+function traceToTimelineItem(trace) {
+  return {
+    activity_type: trace.type,
+    title: titleCase(trace.type),
+    body: trace.tool_name ? `Tool: ${trace.tool_name}` : null,
+    actor: trace.agent || trace.source || "",
+    created_at: trace.created_at,
+  };
+}
+
 async function renderObservatoryView(outlet, token) {
-  setTopbar("Agent Observatory", "");
+  setTopbar("AI Agents", "");
   setSelectedObject(null);
   outlet.innerHTML = "";
   outlet.appendChild(skeletonPanel(4));
@@ -5009,7 +5367,7 @@ async function renderObservatoryView(outlet, token) {
   } catch (err) {
     if (token !== state.renderToken) return;
     outlet.innerHTML = "";
-    outlet.appendChild(el(`<div class="view-heading"><h1>Agent Observatory</h1></div>`));
+    outlet.appendChild(el(`<div class="view-heading"><h1>AI Agents</h1></div>`));
     outlet.appendChild(errorPanel(err.message || "Could not load agent traces."));
     return;
   }
@@ -5018,7 +5376,7 @@ async function renderObservatoryView(outlet, token) {
   outlet.innerHTML = "";
   outlet.appendChild(el(`
     <div class="view-heading">
-      <h1>Agent Observatory</h1>
+      <h1>AI Agents</h1>
       <p>Real interaction data from surfaces that report into Office. This is observability, not a second intelligence runtime — numbers below are computed only from what was actually recorded.</p>
     </div>
   `));
@@ -5028,47 +5386,51 @@ async function renderObservatoryView(outlet, token) {
   toolExecutions.forEach((t) => { const name = t.tool_name || "unknown"; toolCounts[name] = (toolCounts[name] || 0) + 1; });
   const failures = traces.filter((t) => t.type === "office_internal_chat_failed").length;
 
-  outlet.appendChild(el(`
-    <div class="kpi-grid" style="margin-bottom:18px;">
-      <div class="kpi-card"><span class="kpi-label">Recorded Interactions</span><span class="kpi-value">${traces.length}</span></div>
-      <div class="kpi-card"><span class="kpi-label">Tool Executions</span><span class="kpi-value">${toolExecutions.length}</span></div>
-      <div class="kpi-card"><span class="kpi-label">Office Chat Failures</span><span class="kpi-value">${failures}</span></div>
-    </div>
-  `));
+  const kpiGroup = KPIGroup([
+    { label: "Recorded Interactions", value: traces.length, icon: iconSvg("observatory", "kpi-icon") },
+    { label: "Tool Executions", value: toolExecutions.length, icon: iconSvg("observatory", "kpi-icon") },
+    { label: "Office Chat Failures", value: failures, icon: iconSvg("attention", "kpi-icon"), alert: failures > 0 },
+  ]);
+  kpiGroup.style.marginBottom = "var(--space-5)";
+  outlet.appendChild(kpiGroup);
 
-  const surfacesSection = el(`<div class="detail-section"><h3>Surfaces</h3></div>`);
+  const rowA = el(`<div class="home-grid"></div>`);
+  outlet.appendChild(rowA);
+
+  const surfacesPanel = homePanel("Surfaces");
   const surfaceRows = OBSERVATORY_KNOWN_SURFACES.map((surface) => {
     const rows = traces.filter((t) => surface.types.includes(t.type));
     const lastAt = rows[0]?.created_at;
-    return `<div class="fact"><span class="fact-label">${escapeHtml(surface.label)}</span><span class="fact-value">${rows.length} interactions${lastAt ? ` · last ${escapeHtml(fmtRelative(lastAt))}` : " · no data yet"}</span></div>`;
-  }).join("");
-  const unconnectedRows = OBSERVATORY_UNCONNECTED_SURFACES.map((label) =>
-    `<div class="fact"><span class="fact-label">${escapeHtml(label)}</span><span class="fact-value" style="color:var(--text-tertiary);">Not connected to Office yet</span></div>`
-  ).join("");
-  surfacesSection.appendChild(el(`<div class="fact-grid">${surfaceRows}${unconnectedRows}</div>`));
-  outlet.appendChild(surfacesSection);
+    return { label: surface.label, value: `${rows.length} interactions${lastAt ? ` · last ${fmtRelative(lastAt)}` : " · no data yet"}` };
+  });
+  // Never implied as operational — a plain unstyled note, distinct from
+  // the real (StageStrip/FactGrid) values above it.
+  const unconnectedRows = OBSERVATORY_UNCONNECTED_SURFACES.map((label) => ({ label, html: `<span style="color:var(--text-tertiary);">Not connected to Office yet</span>` }));
+  surfacesPanel.appendChild(FactGrid([...surfaceRows, ...unconnectedRows]));
+  rowA.appendChild(homePanelWrap("span-6", surfacesPanel));
 
+  // Tool Usage as a proportional strip, not a plain count list — answers
+  // "which tools does Oyi invoke most, relative to each other?" using
+  // the real tool_name field already computed into toolCounts above.
+  const toolPanel = homePanel("Tool Usage");
   if (Object.keys(toolCounts).length) {
-    const toolSection = el(`<div class="detail-section"><h3>Tool Usage</h3></div>`);
-    toolSection.appendChild(el(`<div class="fact-grid">${Object.entries(toolCounts).map(([name, count]) => `<div class="fact"><span class="fact-label">${escapeHtml(name)}</span><span class="fact-value">${count}</span></div>`).join("")}</div>`));
-    outlet.appendChild(toolSection);
-  }
-
-  outlet.appendChild(el(`<div class="detail-section"><h3>Recent Activity</h3></div>`));
-  if (!traces.length) {
-    outlet.appendChild(emptyPanel({ kicker: "Agent Observatory", title: "No interactions recorded yet", body: "Real activity will appear here as staff use Office's Oyi chat or the public website's lead-agent widget." }));
+    toolPanel.appendChild(StageStrip(
+      Object.entries(toolCounts).sort((a, b) => b[1] - a[1]).map(([name, count]) => ({ label: name, count })),
+      "No tool executions recorded yet."
+    ));
   } else {
-    outlet.appendChild(renderDataTable({
-      columns: [
-        { label: "Type", render: (t) => escapeHtml(titleCase(t.type)) },
-        { label: "Agent", render: (t) => escapeHtml(t.agent || "—") },
-        { label: "Tool", render: (t) => escapeHtml(t.tool_name || "—") },
-        { label: "When", render: (t) => escapeHtml(fmtRelative(t.created_at)) },
-      ],
-      rows: traces.slice(0, 50),
-      emptyMessage: "",
-    }));
+    toolPanel.appendChild(el(`<p class="home-panel-empty">No tool executions recorded yet.</p>`));
   }
+  rowA.appendChild(homePanelWrap("span-6", toolPanel));
+
+  const activityPanel = homePanel("Recent Activity");
+  activityPanel.style.marginTop = "var(--space-4)";
+  if (!traces.length) {
+    activityPanel.appendChild(el(`<p class="home-panel-empty">No interactions recorded yet. Real activity will appear here as staff use Office's Oyi chat or the public website's lead-agent widget.</p>`));
+  } else {
+    activityPanel.appendChild(renderTimeline(traces.slice(0, 12).map(traceToTimelineItem)));
+  }
+  outlet.appendChild(activityPanel);
 }
 
 // ---------------------------------------------------------------
@@ -5092,7 +5454,7 @@ function renderNav() {
   }
 }
 function navButton(item) {
-  const button = el(`<button class="nav-item" data-nav-key="${item.key}" type="button"><span class="dot"></span><span>${escapeHtml(item.label)}</span></button>`);
+  const button = el(`<button class="nav-item" data-nav-key="${item.key}" type="button">${navIconSvg(item.key)}<span>${escapeHtml(item.label)}</span></button>`);
   button.addEventListener("click", () => navigate(item.key));
   return button;
 }

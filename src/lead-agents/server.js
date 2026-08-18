@@ -3029,11 +3029,12 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           return;
         }
 
-        const oyiCoreRequest = buildOyiCoreOfficeInternalRequest({
+        const oyiCoreRequest = await buildOyiCoreOfficeInternalRequest({
           authContext,
           message: body.message,
           body,
           requestId: ctx.requestId,
+          store,
         });
         const oyiCoreResult = await callOyiCoreOfficeInternalConversation(config, oyiCoreRequest);
         if (!oyiCoreResult.ok) {
@@ -4276,11 +4277,12 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           json(res, 400, { error: "message is required" });
           return;
         }
-        const oyiCoreRequest = buildOyiCoreOfficeInternalRequest({
+        const oyiCoreRequest = await buildOyiCoreOfficeInternalRequest({
           authContext,
           message: body.message,
           body,
           requestId: ctx.requestId,
+          store,
         });
         const chatStartedAt = Date.now();
         const oyiCoreResult = await callOyiCoreOfficeInternalConversation(config, oyiCoreRequest);
