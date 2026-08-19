@@ -1,6 +1,7 @@
 const axios = require("axios");
 const { hasPermission } = require("./permissions");
 const { listCorporateRecords } = require("./office-operating-system");
+const { fetchBackendFinancialSummary } = require("./backend-financial-gateway");
 
 function text(value) {
   return String(value ?? "").trim();
@@ -119,9 +120,26 @@ async function buildDevelopmentSnapshot(store) {
   };
 }
 
-async function buildOperationalSnapshot({ authContext, store } = {}) {
+// Unlike leads/opportunities/reports/development (Office's own store),
+// the financial section is sourced live from Ochiga-backend's canonical
+// aggregation contract (GET /office/financial-summary) via the same
+// backend-financial-gateway used by the Financial Summary REST route —
+// there is no separate/second financial computation here.
+async function buildFinancialSnapshot(config) {
+  const result = await fetchBackendFinancialSummary(config || {});
+  if (!result.ok) return null;
+  return {
+    generated_at: result.generated_at,
+    period_start: result.period_start,
+    period_end: result.period_end,
+    portfolio: result.portfolio,
+    estates: result.estates,
+  };
+}
+
+async function buildOperationalSnapshot({ authContext, store, config } = {}) {
   if (!store) return null;
-  const snapshot = { generated_at: new Date().toISOString(), leads: null, opportunities: null, reports: null, development: null };
+  const snapshot = { generated_at: new Date().toISOString(), leads: null, opportunities: null, reports: null, development: null, financial: null };
   try {
     if (hasPermission(authContext, "crm.read")) {
       if (typeof store.listLeads === "function") snapshot.leads = await buildLeadsSnapshot(store);
@@ -143,6 +161,13 @@ async function buildOperationalSnapshot({ authContext, store } = {}) {
     }
   } catch {
     // Leave development null.
+  }
+  try {
+    if (hasPermission(authContext, "financial.read")) {
+      snapshot.financial = await buildFinancialSnapshot(config);
+    }
+  } catch {
+    // Leave financial null.
   }
   return snapshot;
 }
@@ -203,11 +228,11 @@ function buildOyiCoreCorporateConversationRequest({ session, message, lead, body
   };
 }
 
-async function buildOyiCoreOfficeInternalRequest({ authContext, message, body, requestId, store } = {}) {
+async function buildOyiCoreOfficeInternalRequest({ authContext, message, body, requestId, store, config } = {}) {
   const safeBody = recordOf(body);
   const page = recordOf(safeBody.page_context);
   const staff = recordOf(safeBody.staff);
-  const operationalSnapshot = await buildOperationalSnapshot({ authContext, store });
+  const operationalSnapshot = await buildOperationalSnapshot({ authContext, store, config });
   return {
     request_id: text(requestId || safeBody.request_id),
     message: text(message || safeBody.message),

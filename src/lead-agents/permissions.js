@@ -63,6 +63,13 @@ const PERMISSION_KEYS = Object.freeze([
   // website via Sanity, so kept senior-tier like reports.review and
   // content.publish rather than broadly granted.
   "development.manage",
+  // Financial aggregation contract (Financial Unification Programme) —
+  // read-only access to the estate/portfolio financial summary (current
+  // balance, period revenue, utility sales, service-charge collections).
+  // Kept senior-tier like reports.review/development.manage rather than
+  // broadly granted to every ochiga_staff account; grant per-user via the
+  // existing permission_scopes additive mechanism for staff who need it.
+  "financial.read",
 ]);
 
 const ROLE_PERMISSIONS = Object.freeze({

@@ -49,6 +49,7 @@ const { executeGovernedOfficeToolProposals } = require("./office-tool-governance
 const { listDocumentTemplates, renderDocumentFromTemplate } = require("./office-document-templates");
 const { sanityConfigured, saveDraftToSanity, publishToSanity, unpublishFromSanity, syncDevelopmentProjectToSanity, slugify } = require("./sanity-adapter");
 const { fetchBackendPortfolioProjection } = require("./backend-portfolio-gateway");
+const { fetchBackendFinancialSummary } = require("./backend-financial-gateway");
 const {
   CORPORATE_COLLECTIONS,
   buildOfficeHomeProjection,
@@ -3035,6 +3036,7 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           body,
           requestId: ctx.requestId,
           store,
+          config,
         });
         const oyiCoreResult = await callOyiCoreOfficeInternalConversation(config, oyiCoreRequest);
         if (!oyiCoreResult.ok) {
@@ -3974,6 +3976,8 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
         authorizePermission(authContext, "office.read");
         const home = await buildOfficeHomeProjection(store, {
           includeRecentActivity: authContext.type === "api_key" || hasPermission(authContext, "crm.read"),
+          includeFinancial: hasPermission(authContext, "financial.read"),
+          config,
         });
         json(res, 200, { home }, { "x-request-id": ctx.requestId });
         return;
@@ -4098,6 +4102,25 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           return;
         }
         methodNotAllowed(res, "GET,POST");
+        return;
+      }
+
+      const financialSummaryMatch = pathname.match(/^\/api\/lead-agents\/admin\/office\/financial-summary$/);
+      if (financialSummaryMatch) {
+        if (req.method === "GET") {
+          authorizePermission(authContext, "financial.read");
+          const requestUrl = new URL(req.url, "http://localhost");
+          const estateId = requestUrl.searchParams.get("estate_id") || null;
+          const periodDaysRaw = requestUrl.searchParams.get("period_days");
+          const periodDays = periodDaysRaw ? Number(periodDaysRaw) : null;
+          const summary = await fetchBackendFinancialSummary(config, {
+            estateId,
+            periodDays: Number.isFinite(periodDays) ? periodDays : null,
+          });
+          json(res, 200, summary, { "x-request-id": ctx.requestId });
+          return;
+        }
+        methodNotAllowed(res, "GET");
         return;
       }
 
@@ -4283,6 +4306,7 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           body,
           requestId: ctx.requestId,
           store,
+          config,
         });
         const chatStartedAt = Date.now();
         const oyiCoreResult = await callOyiCoreOfficeInternalConversation(config, oyiCoreRequest);
