@@ -174,6 +174,16 @@ function sanitizePatch(collection, input = {}, current = {}) {
     patch.resolution_notes = resolution;
     patch.resolved_at = current.resolved_at || nowIso();
   }
+  // A meeting's "scheduled" status is meant to mean "has a confirmed
+  // date/time" — without this guard, the generic Mark-{status} action
+  // let a meeting sit as status: "scheduled" with scheduled_at: null
+  // forever, since assertTransition only validates the status graph and
+  // never cross-checks scheduled_at. Same pattern as resolution_notes
+  // above: the field the status implies must actually be present.
+  if (collection === "meetings" && patch.status === "scheduled") {
+    const scheduledAt = text(patch.scheduled_at || current.scheduled_at);
+    if (!scheduledAt) throw errorWithStatus("scheduled_at_required", 400);
+  }
   if (collection === "meetings" && ["completed", "cancelled"].includes(patch.status)) {
     patch.completed_at = patch.status === "completed" ? current.completed_at || nowIso() : current.completed_at || null;
     patch.cancelled_at = patch.status === "cancelled" ? current.cancelled_at || nowIso() : current.cancelled_at || null;
