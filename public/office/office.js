@@ -1922,26 +1922,22 @@ async function renderCrmRoute(outlet, rest, token) {
   setTopbar("CRM", objectId ? "" : titleCase(subKey));
 
   outlet.innerHTML = "";
-  if (!objectId) {
-    const heading = el(`
-      <div class="view-heading">
-        <h1>CRM</h1>
-        <p>Manage relationships, leads, opportunities and client interactions.</p>
-      </div>
-    `);
-    if (hasPermission("crm.manage")) {
-      const newLeadBtn = el(`<button type="button" class="btn btn-primary btn-sm" style="margin-left:auto;">+ New Lead</button>`);
-      newLeadBtn.addEventListener("click", () => openCreateLeadDialog());
-      heading.appendChild(newLeadBtn);
-    }
-    outlet.appendChild(heading);
-  }
+  // Compact tab row only — the standalone "CRM / Manage relationships…"
+  // heading block was a duplicate of the Office topbar title set just
+  // above and was removed. New Lead lives inline here instead of as a
+  // full-width action.
   const tabs = el(`<div class="crm-tabs"></div>`);
   CRM_TABS.forEach((tab) => {
     const tabBtn = el(`<button type="button" class="crm-tab ${tab.key === subKey ? "active" : ""}" data-crm-tab="${tab.key}">${escapeHtml(tab.label)}</button>`);
     tabBtn.addEventListener("click", () => navigate(`crm/${tab.key}`));
     tabs.appendChild(tabBtn);
   });
+  if (!objectId && hasPermission("crm.manage")) {
+    tabs.appendChild(el(`<div class="crm-tabs-spacer"></div>`));
+    const newLeadBtn = el(`<button type="button" class="btn btn-primary btn-sm crm-tabs-action">New Lead +</button>`);
+    newLeadBtn.addEventListener("click", () => openCreateLeadDialog());
+    tabs.appendChild(newLeadBtn);
+  }
   outlet.appendChild(tabs);
 
   const body = el(`<div class="crm-body"></div>`);
@@ -2247,6 +2243,7 @@ const CRM_LIST_CONFIG = {
       },
       { label: "Source", render: (r) => `${escapeHtml(leadSourceLabel(r.source))}${leadChannelLabel(r) ? ` <span class="rail-sub">· ${escapeHtml(leadChannelLabel(r))}</span>` : ""}` },
       { label: "Owner", render: (r) => escapeHtml(r.owner || "Unassigned") },
+      { label: "Last Activity", render: (r) => escapeHtml(fmtRelative(r.updated_at)) },
       { label: "Next Action", render: nextActionCell },
     ],
     exportColumns: [
@@ -2270,11 +2267,18 @@ const CRM_LIST_CONFIG = {
     fetch: fetchContacts,
     manage: "crm.manage",
     searchFields: ["name", "email", "phone"],
+    // The "Contact" column carries email+phone as a subline (same
+    // compression pattern as Leads' name+company) so the row stays
+    // scannable — Organization is prepended dynamically in
+    // renderCrmList (needs an org-id lookup fetched alongside
+    // contacts). Source stays available on the detail page rather than
+    // adding an 8th column here.
     columns: [
-      { label: "Name", width: "1.4fr", render: (r) => escapeHtml(r.name || "Untitled") },
-      { label: "Email", render: (r) => escapeHtml(r.email || "—") },
+      { label: "Contact", width: "1.4fr", render: (r) => `${escapeHtml(r.name || "Untitled")}${r.email || r.phone ? ` <span class="rail-sub">· ${escapeHtml(r.email || r.phone)}</span>` : ""}` },
       { label: "Role", render: (r) => escapeHtml(r.role || "—") },
       { label: "Business Unit", render: (r) => escapeHtml(titleCase(r.business_unit)) },
+      { label: "Owner", render: (r) => escapeHtml(r.owner || "Unassigned") },
+      { label: "Status", render: (r) => badge(titleCase(r.status || "active"), toneForStatus(r.status || "active")) },
       { label: "Updated", render: (r) => escapeHtml(fmtRelative(r.updated_at)) },
     ],
     filters: [{ key: "business_unit", label: "Business Unit" }],
@@ -2291,14 +2295,18 @@ const CRM_LIST_CONFIG = {
       { label: "Updated", render: (r) => escapeHtml(fmtRelative(r.updated_at)) },
     ],
     filters: [{ key: "business_unit", label: "Business Unit" }, { key: "account_type", label: "Type" }],
-    emptyMessage: "No organizations yet. Link a lead to a company to build this out, or add one directly.",
+    emptyMessage: "No organizations yet. Organizations linked to CRM contacts and commercial relationships will appear here.",
   },
   opportunities: {
     fetch: fetchOpportunities,
     manage: "crm.manage",
     searchFields: ["inquiry_type", "pipeline"],
+    // No Value/Probability/Expected Close columns — this backend has no
+    // such fields on crm_opportunities (see the detail page's own note).
+    // Account/Contact is prepended dynamically in renderCrmList via the
+    // same contact/organization lookup used on Contacts.
     columns: [
-      { label: "Opportunity", width: "1.4fr", render: (r) => escapeHtml(titleCase(r.inquiry_type || "General Enquiry")) },
+      { label: "Opportunity", width: "1.3fr", render: (r) => escapeHtml(titleCase(r.inquiry_type || "General Enquiry")) },
       { label: "Stage", render: (r) => badge(titleCase(r.stage), toneForStatus(r.stage)) },
       { label: "Business Unit", render: (r) => escapeHtml(titleCase(r.business_unit)) },
       { label: "Owner", render: (r) => escapeHtml(r.owner || "Unassigned") },
@@ -2309,11 +2317,72 @@ const CRM_LIST_CONFIG = {
   },
 };
 
+// Compact real metrics strip above the Leads table — same
+// metricCellGrid language as Overview/Home, always computed from
+// non-test leads regardless of the table's own Hide Test Records
+// toggle state, matching Overview's own convention.
+function leadsMetricsStrip(records) {
+  const real = records.filter((l) => !isTestLead(l));
+  const active = real.filter((l) => !leadIsClosed(l));
+  const attention = real.filter((l) => leadNeedsAttention(l));
+  const qualified = real.filter((l) => leadIsQualified(l));
+  const unassigned = active.filter((l) => !l.owner);
+  const weekAgo = Date.now() - 7 * 86400000;
+  const recentlyAdded = real.filter((l) => l.created_at && new Date(l.created_at).getTime() >= weekAgo);
+  const wrap = el(`<div class="crm-metrics-strip"></div>`);
+  wrap.appendChild(metricCellGrid([
+    { label: "Active Leads", value: active.length, icon: iconSvg("crm", "kpi-icon"), tone: "red" },
+    { label: "Needing Attention", value: attention.length, icon: iconSvg("attention", "kpi-icon"), tone: "red" },
+    { label: "Qualified", value: qualified.length, icon: iconSvg("attention", "kpi-icon"), tone: "green" },
+    { label: "Unassigned", value: unassigned.length, icon: iconSvg("team", "kpi-icon"), tone: "amber" },
+    { label: "Added This Week", value: recentlyAdded.length, icon: iconSvg("trend", "kpi-icon"), tone: "blue" },
+  ]));
+  return wrap;
+}
+
+function contactsMetricsStrip(records, organizations) {
+  const linked = records.filter((c) => c.organization_id).length;
+  const weekAgo = Date.now() - 7 * 86400000;
+  const addedThisWeek = records.filter((c) => c.created_at && new Date(c.created_at).getTime() >= weekAgo).length;
+  const wrap = el(`<div class="crm-metrics-strip"></div>`);
+  wrap.appendChild(metricCellGrid([
+    { label: "Total Contacts", value: records.length, icon: iconSvg("team", "kpi-icon"), tone: "violet" },
+    { label: "Linked to Organization", value: linked, icon: iconSvg("partnerships", "kpi-icon"), tone: "blue" },
+    { label: "Added This Week", value: addedThisWeek, icon: iconSvg("trend", "kpi-icon"), tone: "green" },
+  ]));
+  return wrap;
+}
+
 async function renderCrmList(body, key, token) {
   setSelectedObject(null);
   const config = CRM_LIST_CONFIG[key];
   const records = await config.fetch();
   if (token !== state.renderToken) return;
+
+  let columns = config.columns;
+  if (key === "leads" && body.parentElement) {
+    body.parentElement.insertBefore(leadsMetricsStrip(records), body);
+  }
+  if (key === "contacts") {
+    const organizations = await fetchOrganizations().catch(() => []);
+    if (token !== state.renderToken) return;
+    const orgById = Object.fromEntries(organizations.map((o) => [o.id, o]));
+    columns = [
+      { label: "Organization", render: (r) => escapeHtml(r.organization_id && orgById[r.organization_id] ? orgById[r.organization_id].name : "—") },
+      ...config.columns,
+    ];
+    if (body.parentElement) body.parentElement.insertBefore(contactsMetricsStrip(records, organizations), body);
+  }
+  if (key === "opportunities") {
+    const [contacts, organizations] = await Promise.all([fetchContacts().catch(() => []), fetchOrganizations().catch(() => [])]);
+    if (token !== state.renderToken) return;
+    const contactById = Object.fromEntries(contacts.map((c) => [c.id, c]));
+    const orgById = Object.fromEntries(organizations.map((o) => [o.id, o]));
+    columns = [
+      { label: "Account / Contact", render: (r) => escapeHtml((r.organization_id && orgById[r.organization_id]?.name) || (r.contact_id && contactById[r.contact_id]?.name) || "—") },
+      ...config.columns,
+    ];
+  }
 
   const listState = { hideTest: key === "leads" };
   function currentPreFilter(r) {
@@ -2341,7 +2410,7 @@ async function renderCrmList(body, key, token) {
     renderStandardList(body, {
       title: titleCase(key),
       records,
-      columns: config.columns,
+      columns,
       searchFields: config.searchFields,
       filters: config.filters,
       canManage: hasPermission(config.manage),
@@ -2570,6 +2639,7 @@ async function renderLeadDetail(body, id, token) {
         ${factRow("Source", `${leadSourceLabel(record.source)}${channelLabel ? ` · ${channelLabel}` : ""}`)}
         ${factRow("Owner", record.owner || "Unassigned")}
         ${factRow("Last Communication", lastCommunicationAt ? fmtRelative(lastCommunicationAt) : "No recorded contact yet")}
+        ${factRow("Last Contact (Logged)", record.last_contact_at ? fmtRelative(record.last_contact_at) : null)}
         ${factRowHtml("Next Action", nextActionCell(record))}
         ${factRow("Summary", record.summary)}
       </div>

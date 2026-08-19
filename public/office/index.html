@@ -711,7 +711,7 @@
   @keyframes toast-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
 
   /* CRM tabs */
-  .crm-tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--line); margin-bottom: 20px; }
+  .crm-tabs { display: flex; align-items: center; gap: 4px; border-bottom: 1px solid var(--line); margin-bottom: 20px; }
   .crm-tab {
     background: none; border: none; color: var(--text-tertiary); font-size: 12.5px;
     padding: 8px 4px; margin-right: 16px; cursor: pointer; border-bottom: 2px solid transparent;
@@ -719,6 +719,12 @@
   }
   .crm-tab:hover { color: var(--white); }
   .crm-tab.active { color: var(--white); border-color: var(--red); font-weight: 500; }
+  .crm-tabs-spacer { flex: 1; }
+  .crm-tabs-action { width: auto; margin-top: 0; margin-bottom: 8px; flex-shrink: 0; }
+  .crm-metrics-strip {
+    border: 1px solid var(--line); border-radius: var(--radius);
+    background: rgba(255,255,255,0.015); padding: var(--space-3); margin-bottom: var(--space-4);
+  }
 
   .overview-section { margin-bottom: 26px; }
   .overview-section h3 {
