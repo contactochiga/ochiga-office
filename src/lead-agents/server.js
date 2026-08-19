@@ -46,6 +46,7 @@ const {
   callOyiCoreOfficeInternalConversation,
   callOyiCoreObservabilityEvents,
 } = require("./oyi-core-gateway");
+const { bridgeWorkflow, transitionLinkedWorkflow } = require("./workflow-bridge");
 const { executeGovernedOfficeToolProposals } = require("./office-tool-governance");
 const { listDocumentTemplates, renderDocumentFromTemplate } = require("./office-document-templates");
 const { sanityConfigured, saveDraftToSanity, publishToSanity, unpublishFromSanity, syncDevelopmentProjectToSanity, slugify } = require("./sanity-adapter");
@@ -3377,10 +3378,27 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           authorizePermission(authContext, "manage_leads");
           const body = await readJsonBody(req);
           requireObject(body, "body");
+          const before = await store.getLead(leadMatch[1]);
           const updated = await store.updateLead(leadMatch[1], sparseLeadPatchFromBody(body));
           if (!updated) {
             notFound(res);
             return;
+          }
+          // Oyi Runtime Contract, Domain 3 (Task) — customer_converted.
+          // Fires only on the real transition into "won" (not every
+          // subsequent edit to an already-won lead), matching the one
+          // event this actually represents.
+          if (before && before.commercial_stage !== "won" && updated.commercial_stage === "won") {
+            void bridgeWorkflow({
+              config,
+              store,
+              workflowType: "customer_converted",
+              recordType: "lead",
+              recordId: updated.id,
+              title: `Customer converted — ${updated.company || updated.name || updated.id}`,
+              summary: `Lead ${updated.company || updated.name || updated.id} moved to won.`,
+              sourceRef: `lead:${updated.id}`,
+            });
           }
           json(res, 200, { lead: updated }, { "x-request-id": ctx.requestId });
           return;
@@ -3684,6 +3702,20 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
               calendar_links: calendarLinks,
             }),
           });
+          // Oyi Runtime Contract, Domain 3 (Task) — meeting_requested.
+          // Every real demo booking is a new meeting request; no
+          // before/after transition check needed (unlike stage-change
+          // triggers) since creation itself is the event.
+          void bridgeWorkflow({
+            config,
+            store,
+            workflowType: "meeting_requested",
+            recordType: "demo",
+            recordId: demo.id,
+            title: `Demo requested — ${lead.company || lead.name || lead.id}`,
+            summary: schedule.scheduled_for ? `Demo requested for ${schedule.display_text}.` : "Demo requested, time to be confirmed.",
+            sourceRef: `demo:${demo.id}`,
+          });
           if (parseBoolean(body.update_lead_status, true)) {
             await store.updateLead(demosMatch[1], {
               status: "booked",
@@ -3781,6 +3813,19 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
             actor: authContext?.email || "office",
           });
           await appendAudit(store, authContext, "deployment_project_created", "deployment", deployment.id, deployment);
+          // Oyi Runtime Contract, Domain 3 (Task) — deployment_required.
+          // Creation itself is the event; origin_agent osa -> Facility,
+          // the real cross-agent handoff this workflow_type exists for.
+          void bridgeWorkflow({
+            config,
+            store,
+            workflowType: "deployment_required",
+            recordType: "deployment",
+            recordId: deployment.id,
+            title: `Deployment required — ${deployment.name || deployment.company || deployment.id}`,
+            summary: `New deployment project created: ${deployment.name || deployment.id}.`,
+            sourceRef: `deployment:${deployment.id}`,
+          });
           json(res, 201, { deployment }, { "x-request-id": ctx.requestId });
           return;
         }
@@ -3844,6 +3889,25 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           status: updatedProposal.status,
           lead_id: proposal.lead_id,
         });
+        // Oyi Runtime Contract, Domain 3 (Task) — proposal_accepted.
+        // Fires only on the real transition into "accepted" (proposal.
+        // status was something else before this PATCH), matching the
+        // one event this represents. This is the moment the lead also
+        // moves to "won" above — deliberately NOT also firing
+        // customer_converted for the same fact (that bridges only from
+        // a direct lead-stage PATCH with no proposal involved).
+        if (proposal.status !== "accepted" && proposalStatus === "accepted") {
+          void bridgeWorkflow({
+            config,
+            store,
+            workflowType: "proposal_accepted",
+            recordType: "proposal",
+            recordId: updatedProposal.id,
+            title: `Proposal accepted — ${updatedLead?.company || updatedLead?.name || proposal.lead_id}`,
+            summary: `Proposal ${updatedProposal.tier_name || updatedProposal.id} accepted.`,
+            sourceRef: `proposal:${updatedProposal.id}`,
+          });
+        }
         json(
           res,
           200,

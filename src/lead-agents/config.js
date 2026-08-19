@@ -161,6 +161,13 @@ function createConfig() {
     // own local traces table has no visibility into).
     officeObservabilityEventsPath:
       process.env.OFFICE_OBSERVABILITY_EVENTS_PATH || "/office/observability/events",
+    // Oyi Runtime Contract, Domain 3 (Task) — additive projection of the
+    // 4 genuine overlapping commercial workflow types into Backend's
+    // ochiga_workflows. Default ON, but a single env flag disables the
+    // bridge entirely without touching any call site — that IS the
+    // rollback mechanism.
+    officeWorkflowBridgeEnabled: booleanFromEnv(process.env.OFFICE_WORKFLOW_BRIDGE_ENABLED, true),
+    officeWorkflowsPath: process.env.OFFICE_WORKFLOWS_PATH || "/office/workflows",
     officeBackendBaseUrl:
       process.env.OFFICE_BACKEND_BASE_URL ||
       process.env.OYI_BACKEND_BASE_URL ||
