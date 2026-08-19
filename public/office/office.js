@@ -1142,8 +1142,12 @@ function homeGreeting() {
 
 async function renderHomeView(outlet, token) {
   let home;
+  // Real freshness signal for the Oyi Briefing header — the moment this
+  // Home payload actually arrived, not a fabricated/cached timestamp.
+  let homeFetchedAt;
   try {
     home = await getHome().then((d) => d.home);
+    homeFetchedAt = new Date();
   } catch (err) {
     if (token !== state.renderToken) return;
     outlet.innerHTML = "";
@@ -1185,7 +1189,7 @@ async function renderHomeView(outlet, token) {
   const rowTop = el(`<div class="home-grid"></div>`);
   rowTop.appendChild(homePanelWrap("span-5", renderAttentionPanel(visibleItems)));
   rowTop.appendChild(homePanelWrap("span-4", renderMyWorkPanel(summary, mine)));
-  rowTop.appendChild(homePanelWrap("span-3", renderOyiBriefingPanel(summary, mine, developmentProjects)));
+  rowTop.appendChild(homePanelWrap("span-3", renderOyiBriefingPanel(summary, mine, developmentProjects, homeFetchedAt)));
   outlet.appendChild(rowTop);
 
   const rowMid = el(`<div class="home-grid"></div>`);
@@ -1209,12 +1213,18 @@ function homePanelWrap(spanClass, panelNode) {
   if (panelNode) wrap.appendChild(panelNode);
   return wrap;
 }
-function homePanel(title, linkLabel, onLink) {
+// freshnessLabel is for panels backed by a real captured timestamp (e.g.
+// Oyi Briefing's "Updated Xm ago", from the moment this Home payload was
+// actually fetched) — mutually exclusive with linkLabel/onLink since the
+// reference only ever shows one or the other in that header slot.
+function homePanel(title, linkLabel, onLink, freshnessLabel) {
   const head = el(`<div class="home-panel-head"><h3>${escapeHtml(title)}</h3></div>`);
   if (linkLabel && onLink) {
     const link = el(`<button type="button" class="panel-link">${escapeHtml(linkLabel)}</button>`);
     link.addEventListener("click", onLink);
     head.appendChild(link);
+  } else if (freshnessLabel) {
+    head.appendChild(el(`<span class="home-panel-freshness">${escapeHtml(freshnessLabel)}</span>`));
   }
   const panel = el(`<div class="home-panel"></div>`);
   panel.appendChild(head);
@@ -1229,19 +1239,22 @@ function homePanel(title, linkLabel, onLink) {
 // brief: "Do not display all metrics just because they exist"). The
 // rest of these numbers aren't lost — they surface inside their own
 // dedicated panels further down Home (CRM/Development/Portfolio/etc.).
+// Final Home closure pass — fixed six-card executive order (Needs
+// Attention, Active Projects, My Tasks, Pending Approvals, CRM Leads,
+// Estate Cash Position). Cards not in this priority set (Portfolio, Open
+// Support, Upcoming Meetings, Private/Partnerships Queue, Recent
+// Documents) aren't lost — they surface inside their own dedicated panels
+// further down Home.
 const HOME_KPI_CARDS = [
   { key: "attention_count", label: "Needs Attention", permission: "office.read", icon: "attention", tone: "red", alert: (s) => s.attention_count > 0 },
-  // Financial Unification Programme — the one Home financial executive
-  // KPI, real aggregate current balance across estate wallets (see
-  // /office/financial-summary). Placed early so it actually surfaces
-  // within HOME_KPI_PRIORITY_COUNT for the senior roles financial.read is
-  // granted to, matching "CEO/Super Admin gets the broadest authorized
-  // summary".
-  { key: "financial_current_balance", label: "Estate Cash Position", permission: "financial.read", icon: "financial", tone: "green", format: (s) => fmtCompactNaira(s.financial_current_balance) },
+  { key: "active_projects", label: "Active Projects", permission: "projects.read", route: "projects", icon: "projects", tone: "green" },
   { key: "open_tasks", label: "My Tasks", permission: "tasks.read", route: "tasks", icon: "tasks", tone: "blue", sub: (s) => (s.overdue_tasks ? `${s.overdue_tasks} overdue` : null), alert: (s) => s.overdue_tasks > 0 },
   { key: "reports_awaiting_approval", label: "Pending Approvals", permission: "reports.review", route: "reports", icon: "reports", tone: "amber", alert: (s) => s.reports_awaiting_approval > 0 },
-  { key: "active_projects", label: "Active Projects", permission: "projects.read", route: "projects", icon: "projects", tone: "green" },
   { key: "crm_leads", label: "CRM Leads", permission: "crm.read", route: "crm/leads", icon: "crm", tone: "violet" },
+  // Financial Unification Programme — the one Home financial executive
+  // KPI, real aggregate current balance across estate wallets (see
+  // /office/financial-summary).
+  { key: "financial_current_balance", label: "Estate Cash Position", permission: "financial.read", icon: "financial", tone: "green", format: (s) => fmtCompactNaira(s.financial_current_balance) },
   { key: "portfolio_entries", label: "Portfolio", permission: "portfolio.read", route: "portfolio", icon: "portfolio", tone: "blue" },
   { key: "open_support_cases", label: "Open Support", permission: "support.read", route: "support", icon: "support", tone: "amber" },
   { key: "upcoming_meetings", label: "Upcoming Meetings", permission: "meetings.read", route: "meetings", icon: "meetings", tone: "violet" },
@@ -1249,7 +1262,7 @@ const HOME_KPI_CARDS = [
   { key: "partnership_queue", label: "Partnerships Queue", permission: "partnerships.read", route: "partnerships", icon: "partnerships", tone: "violet" },
   { key: "recent_documents", label: "Recent Documents", permission: "documents.generate", route: "documents", icon: "documents", tone: "blue" },
 ];
-const HOME_KPI_PRIORITY_COUNT = 5;
+const HOME_KPI_PRIORITY_COUNT = 6;
 function renderHomeKpiGrid(summary) {
   const grid = el(`<div class="home-section"></div>`);
   const cards = HOME_KPI_CARDS.filter((card) => hasPermission(card.permission))
@@ -1393,8 +1406,8 @@ const HOME_QUICK_ACTIONS = [
   { label: "Summarize commercial activity", icon: "trend", permission: "crm.read", message: "Summarize our commercial activity." },
   { label: "What changed today?", icon: "lightning", permission: "office.read", message: "What changed today?" },
 ];
-function renderOyiBriefingPanel(summary, mine, developmentProjects) {
-  const panel = homePanel("Oyi Briefing");
+function renderOyiBriefingPanel(summary, mine, developmentProjects, fetchedAt) {
+  const panel = homePanel("Oyi Briefing", null, null, fetchedAt ? `Updated ${fmtRelative(fetchedAt.toISOString())}` : null);
   panel.appendChild(el(`<p class="oyi-briefing-text">${escapeHtml(homeBriefingText(summary, mine, developmentProjects))}</p>`));
   const actions = HOME_QUICK_ACTIONS.filter((action) => hasPermission(action.permission));
   if (actions.length) {
@@ -1520,6 +1533,12 @@ function renderMeetingsPanel(meetings) {
   return panel;
 }
 
+// Compact icon-led rows (Home final closure pass) — reuses the exact
+// attention-row-v2 row language (icon box, stacked title/detail, domain
+// badge, action) already established by the Needs Attention panel, so
+// Reports & Approvals reads as the same dashboard system rather than an
+// unrelated table block. Still only ever the real "submitted" (awaiting
+// approval) reports this panel has always fetched — no new data source.
 async function renderReportsHomePanel(token) {
   const panel = homePanel("Reports & Approvals", "View all", () => navigate("reports"));
   try {
@@ -1530,34 +1549,52 @@ async function renderReportsHomePanel(token) {
       panel.appendChild(el(`<p class="home-panel-empty">No reports awaiting approval.</p>`));
       return panel;
     }
-    panel.appendChild(renderDataTable({
-      columns: [
-        { label: "Report", render: (r) => escapeHtml(r.title || "Untitled") },
-        { label: "Type", render: (r) => badge(titleCase(r.related_type || "report")) },
-        {
-          label: "", width: "70px",
-          render: (r) => {
-            // RBAC preserved: this is a link to the existing report
-            // detail page, which itself already enforces reports.review
-            // server-side for the actual approve/reject action — no
-            // approval logic or self-escalation happens here.
-            if (!hasPermission("reports.review")) return badge("Awaiting", "amber");
-            const btn = el(`<button type="button" class="btn btn-ghost btn-sm" style="margin:0;">Review</button>`);
-            btn.addEventListener("click", (event) => { event.stopPropagation(); navigate(`reports/${r.id}`); });
-            return btn;
-          },
-        },
-      ],
-      rows: reports.slice(0, 5),
-      onRowClick: (r) => navigate(`reports/${r.id}`),
-      emptyMessage: "",
-    }));
+    const canReview = hasPermission("reports.review");
+    const list = el(`<div class="attention-list-v2"></div>`);
+    reports.slice(0, 5).forEach((r) => {
+      const row = el(`
+        <div class="attention-row-v2 clickable" style="border-left-color:var(--amber);">
+          <span class="kpi-icon-box kpi-icon-amber attention-row-icon">${iconSvg("reports", "kpi-icon")}</span>
+          <div class="attention-row-text">
+            <div class="attention-row-title">${escapeHtml(r.title || "Untitled")}</div>
+            <div class="attention-row-detail">${r.author ? `Submitted by ${escapeHtml(r.author)}` : (canReview ? "Awaiting your approval" : "Awaiting review")}</div>
+          </div>
+          <span class="badge badge-default attention-row-domain">${escapeHtml(titleCase(r.related_type || "report"))}</span>
+        </div>
+      `);
+      // RBAC preserved: this is a link to the existing report detail page,
+      // which itself already enforces reports.review server-side for the
+      // actual approve/reject action — no approval logic or
+      // self-escalation happens here.
+      if (canReview) {
+        const btn = el(`<button type="button" class="btn btn-ghost btn-sm attention-row-action">Review</button>`);
+        btn.addEventListener("click", (event) => { event.stopPropagation(); navigate(`reports/${r.id}`); });
+        row.appendChild(btn);
+      } else {
+        row.appendChild(el(`<span class="badge badge-amber attention-row-action">Awaiting</span>`));
+      }
+      row.addEventListener("click", () => navigate(`reports/${r.id}`));
+      list.appendChild(row);
+    });
+    panel.appendChild(list);
   } catch {
     panel.appendChild(errorPanel("Could not load reports."));
   }
   return panel;
 }
 
+// related_object_type comes straight from buildOfficeHomeProjection's
+// recent_activity mapping (task/support_case/lead/proposal/portfolio/
+// project/meeting/opportunity/organization/contact) — reusing
+// ATTENTION_TYPE_META's icon/tone/label gives Recent Activity the same
+// semantic icon language as Needs Attention instead of a separate map to
+// keep in sync. Falls back to a generic icon with no domain badge for
+// activity not tied to a specific record type, rather than guessing.
+function activityRowMeta(activity) {
+  const known = ATTENTION_TYPE_META[activity.related_object_type];
+  if (known) return { icon: known.icon, tone: known.tone, label: known.label };
+  return { icon: "briefing", tone: null, label: null };
+}
 function renderRecentActivityPanel(activities) {
   const panel = homePanel("Recent Activity");
   const recent = [...activities]
@@ -1567,7 +1604,22 @@ function renderRecentActivityPanel(activities) {
     panel.appendChild(el(`<p class="home-panel-empty">No recent activity.</p>`));
     return panel;
   }
-  panel.appendChild(renderTimeline(recent));
+  const list = el(`<div class="attention-list-v2"></div>`);
+  recent.forEach((activity) => {
+    const meta = activityRowMeta(activity);
+    const row = el(`
+      <div class="attention-row-v2" style="border-left-color:var(--line-strong);">
+        <span class="kpi-icon-box${meta.tone ? ` kpi-icon-${meta.tone}` : ""} attention-row-icon">${iconSvg(meta.icon, "kpi-icon")}</span>
+        <div class="attention-row-text">
+          <div class="attention-row-title">${escapeHtml(activity.title || activity.summary || "Office activity")}</div>
+        </div>
+        ${meta.label ? `<span class="badge badge-default attention-row-domain">${escapeHtml(meta.label)}</span>` : ""}
+        <span class="attention-row-age">${escapeHtml(fmtRelative(activity.created_at))}</span>
+      </div>
+    `);
+    list.appendChild(row);
+  });
+  panel.appendChild(list);
   return panel;
 }
 
@@ -1583,13 +1635,15 @@ function renderContentPanel(content) {
     }));
     return panel;
   }
-  const toContent = () => navigate("content");
-  panel.appendChild(KPIGroup([
-    { label: "Published This Week", value: `${content.published_this_week} / ${content.target_per_week}`, onClick: toContent },
-    { label: "Drafts", value: content.drafts, onClick: toContent },
-    { label: "Awaiting Review", value: content.awaiting_review, onClick: toContent },
-    { label: "Scheduled", value: content.scheduled, sub: content.next_scheduled_publish_at ? `Next: ${fmtDateTime(content.next_scheduled_publish_at)}` : null, onClick: toContent },
+  panel.appendChild(metricCellGrid([
+    { label: "Published This Week", value: `${content.published_this_week} / ${content.target_per_week}`, icon: iconSvg("content", "kpi-icon"), tone: "green" },
+    { label: "Drafts", value: content.drafts, icon: iconSvg("documents", "kpi-icon"), tone: "blue" },
+    { label: "Awaiting Review", value: content.awaiting_review, icon: iconSvg("reports", "kpi-icon"), tone: "amber" },
+    { label: "Scheduled", value: content.scheduled, icon: iconSvg("meetings", "kpi-icon"), tone: "violet" },
   ]));
+  if (content.next_scheduled_publish_at) {
+    panel.appendChild(el(`<p class="home-panel-empty" style="padding:4px 0 0;">Next: ${escapeHtml(fmtDateTime(content.next_scheduled_publish_at))}</p>`));
+  }
   return panel;
 }
 
@@ -1601,18 +1655,27 @@ async function renderAiAgentsHomePanel(token) {
     const traces = data.traces || [];
     const toolExecutions = traces.filter((t) => t.type === "tool_executed");
     const failures = traces.filter((t) => t.type === "office_internal_chat_failed").length;
-    panel.appendChild(KPIGroup([
-      { label: "Interactions", value: traces.length },
-      { label: "Tool Executions", value: toolExecutions.length },
-      { label: "Failures", value: failures, alert: failures > 0 },
+    const surfaceCounts = OBSERVATORY_KNOWN_SURFACES.map((surface) => ({
+      label: surface.label,
+      count: traces.filter((t) => surface.types.includes(t.type)).length,
+    }));
+    // "Active Surfaces" is a genuinely derivable count (surfaces with at
+    // least one recorded trace) — not a fabricated "Operational" status.
+    const activeSurfaces = surfaceCounts.filter((surface) => surface.count > 0).length;
+    panel.appendChild(metricCellGrid([
+      { label: "Interactions", value: traces.length, icon: iconSvg("observatory", "kpi-icon"), tone: "blue" },
+      { label: "Tool Executions", value: toolExecutions.length, icon: iconSvg("lightning", "kpi-icon"), tone: "violet" },
+      { label: "Failures", value: failures, icon: iconSvg("attention", "kpi-icon"), tone: failures > 0 ? "red" : "green" },
+      { label: "Active Surfaces", value: `${activeSurfaces} / ${OBSERVATORY_KNOWN_SURFACES.length}`, icon: iconSvg("briefing", "kpi-icon"), tone: "blue" },
     ]));
     // Only the surfaces Office genuinely tracks — never claim Consumer/
     // Facility/GetOyi are connected (they render as "Not connected to
     // Office yet" on the full AI Agents page; Home simply doesn't list
-    // what it can't honestly report on).
-    panel.appendChild(FactGrid(OBSERVATORY_KNOWN_SURFACES.map((surface) => ({
+    // what it can't honestly report on). No status pill here since
+    // system health isn't genuinely known from trace counts alone.
+    panel.appendChild(FactGrid(surfaceCounts.map((surface) => ({
       label: surface.label,
-      value: String(traces.filter((t) => surface.types.includes(t.type)).length),
+      value: String(surface.count),
     }))));
   } catch {
     panel.appendChild(errorPanel("Could not load agent activity."));
