@@ -389,6 +389,10 @@ async function buildOfficeHomeProjection(store, options = {}) {
       created_at: activity.occurred_at || activity.created_at || activity.updated_at || null,
       priority: activity.priority || null,
     }));
+  // `at`/`detail` (Home closure pass) — real, already-loaded fields only:
+  // a genuine timestamp per type (never fabricated) and a short secondary
+  // line sourced from a real field on the same record, or null when
+  // nothing real exists to show. No new queries.
   const attention_items = [
     ...openTasks.slice(0, 5).map((task) => {
       const related = task.private_relationship_id
@@ -406,11 +410,32 @@ async function buildOfficeHomeProjection(store, options = {}) {
                   : task.lead_id
                     ? { related_object_type: "lead", related_object_id: task.lead_id }
                     : {};
-      return { type: "task", id: task.id, title: task.title, priority: task.priority || "normal", owner: task.assignee || task.owner || "", ...related };
+      return {
+        type: "task", id: task.id, title: task.title, priority: task.priority || "normal",
+        owner: task.assignee || task.owner || "",
+        at: task.due_at || task.updated_at || null,
+        detail: task.description ? String(task.description).slice(0, 140) : null,
+        ...related,
+      };
     }),
-    ...openSupport.slice(0, 5).map((item) => ({ type: "support_case", id: item.id, title: item.title, priority: item.priority || item.severity || "normal", owner: item.assigned_staff || item.owner || "" })),
-    ...proposalAwaiting.slice(0, 5).map((proposal) => ({ type: "proposal", id: proposal.id, title: proposal.title, priority: "follow_up", owner: proposal.lead?.owner || "" })),
-    ...hotLeads.slice(0, 5).map((lead) => ({ type: "lead", id: lead.id, title: lead.company || lead.name || "Lead", priority: "follow_up", owner: lead.owner || "" })),
+    ...openSupport.slice(0, 5).map((item) => ({
+      type: "support_case", id: item.id, title: item.title, priority: item.priority || item.severity || "normal",
+      owner: item.assigned_staff || item.owner || "",
+      at: item.updated_at || null,
+      detail: item.category || item.product_area || null,
+    })),
+    ...proposalAwaiting.slice(0, 5).map((proposal) => ({
+      type: "proposal", id: proposal.id, title: proposal.title, priority: "follow_up",
+      owner: proposal.lead?.owner || "",
+      at: proposal.updated_at || null,
+      detail: proposal.status ? `Status: ${proposal.status}` : null,
+    })),
+    ...hotLeads.slice(0, 5).map((lead) => ({
+      type: "lead", id: lead.id, title: lead.company || lead.name || "Lead", priority: "follow_up",
+      owner: lead.owner || "",
+      at: lead.next_action_at || lead.last_contact_at || lead.updated_at || null,
+      detail: lead.next_action || null,
+    })),
   ];
   return {
     summary: {
