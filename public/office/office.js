@@ -942,6 +942,16 @@ function renderStatusActions(namespace, collection, record, onDone, options = {}
         openDialog("Resolve Support Case", [{ name: "resolution_notes", label: "Resolution Notes", type: "textarea" }], (data) => apply(status, { resolution_notes: data.resolution_notes }));
         return;
       }
+      // A meeting can only become "scheduled" with a real date/time — the
+      // backend now enforces this too (scheduled_at_required), this just
+      // prompts for it instead of a confusing generic error.
+      if (status === "scheduled" && collection === "meetings" && !record.scheduled_at) {
+        openDialog("Confirm Meeting Time", [{ name: "scheduled_at", label: "Scheduled At", type: "datetime-local" }], (data) => {
+          if (!data.scheduled_at) throw new Error("A scheduled date/time is required to mark this meeting as scheduled.");
+          return apply(status, { scheduled_at: new Date(data.scheduled_at).toISOString() });
+        });
+        return;
+      }
       apply(status);
     });
     wrap.appendChild(btn);
@@ -3593,6 +3603,20 @@ async function renderMeetingsList(outlet, token) {
   });
 }
 
+// Purely a derived DISPLAY label — never mutates the stored status.
+// Once a meeting's scheduled_at has passed and nobody has recorded it as
+// completed/cancelled, "Scheduled" is misleading; this only changes what
+// the detail page shows, not the record itself, so it stays honest about
+// what's actually stored while still answering "did this happen?".
+function meetingDisplayStatus(record) {
+  if (["completed", "cancelled"].includes(record.status)) return record.status;
+  if (record.scheduled_at && new Date(record.scheduled_at).getTime() < Date.now()) return "past_awaiting_outcome";
+  return record.status;
+}
+function meetingStatusLabel(status) {
+  return status === "past_awaiting_outcome" ? "Past — Awaiting Outcome" : titleCase(status);
+}
+
 async function renderMeetingDetail(outlet, id, token) {
   const canManage = hasPermission("meetings.manage");
   const [meetings, leads, contacts, organizations, opportunities, projects, portfolioEntries, supportCases, privateRelationships, partnerships, tasks, notes] = await Promise.all([
@@ -3624,7 +3648,7 @@ async function renderMeetingDetail(outlet, id, token) {
       <div class="detail-section">
         <h3>Meeting Summary</h3>
         <div class="fact-grid">
-          ${factRow("Status", titleCase(record.status))}
+          ${factRow("Status", meetingStatusLabel(meetingDisplayStatus(record)))}
           ${factRow("Scheduled", record.scheduled_at ? fmtDateTime(record.scheduled_at) : "—")}
           ${factRow("Owner", record.owner)}
           ${factRow("Related", related ? related.name : "—")}
@@ -3657,7 +3681,7 @@ async function renderMeetingDetail(outlet, id, token) {
     id,
     label: record.title,
     typeLine: `Meeting · ${titleCase(record.business_unit)}`,
-    badges: [badge(titleCase(record.status), toneForStatus(record.status)), badge(record.scheduled_at ? fmtDateTime(record.scheduled_at) : "Unscheduled")],
+    badges: [badge(meetingStatusLabel(meetingDisplayStatus(record)), toneForStatus(meetingDisplayStatus(record))), badge(record.scheduled_at ? fmtDateTime(record.scheduled_at) : "Unscheduled")],
     backLabel: "Meetings",
     onBack: () => navigate("meetings"),
     oyiContext: {
@@ -3672,7 +3696,7 @@ async function renderMeetingDetail(outlet, id, token) {
 // Built ONLY from fields already rendered on the Meeting detail page.
 function meetingOyiSafeSummary(record, { related, followUpTask } = {}) {
   const parts = [
-    `${record.title || "Meeting"} · ${titleCase(record.status || "unknown")}`.trim(),
+    `${record.title || "Meeting"} · ${meetingStatusLabel(meetingDisplayStatus(record))}`.trim(),
     record.scheduled_at ? `Scheduled: ${fmtDateTime(record.scheduled_at)}.` : "Not yet scheduled.",
   ];
   if (record.owner) parts.push(`Owner: ${record.owner}.`);
