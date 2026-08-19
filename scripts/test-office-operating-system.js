@@ -122,7 +122,12 @@ async function main() {
   assert.ok(hasPermission({ type: "session", role: "ochiga_staff", permissionScopes: [] }, "office.intelligence"));
   assert.equal(hasPermission({ type: "session", role: "sales", permissionScopes: [] }, "devices.control"), false);
 
-  const request = buildOyiCoreOfficeInternalRequest({
+  // buildOyiCoreOfficeInternalRequest is async (it computes a real
+  // permission-gated operational_snapshot from `store` — see
+  // oyi-core-gateway.js) — must be awaited, and passing the real temp
+  // store here exercises that snapshot computation for real instead of
+  // silently getting operational_snapshot: null.
+  const request = await buildOyiCoreOfficeInternalRequest({
     authContext: {
       userId: "staff-1",
       email: "staff@example.com",
@@ -136,6 +141,7 @@ async function main() {
       support_context: { support_case_ref: support.id, safe_summary: support.title },
     },
     requestId: "req-office-1",
+    store,
   });
   assert.equal(request.office_session_id, "office-session-1");
   assert.equal(request.staff.email, "staff@example.com");
