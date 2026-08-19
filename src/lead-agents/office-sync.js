@@ -168,7 +168,6 @@ function buildFacilityCollections({ overview, estates, homesByEstate }) {
         0
       ),
       wallet_balance: estateWallet,
-      monthly_recurring_revenue: toNumber(estate.monthly_fee || estate.subscription_fee),
       support_open:
         toNumber(estate.open_support) +
         (String(overview?.estate_id || "") === estateId ? toNumber(overview?.alerts) : 0),

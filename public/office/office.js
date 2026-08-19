@@ -451,6 +451,7 @@ const NAV_ICONS = {
   briefing: '<circle cx="8" cy="8" r="6"/><path d="M8 5.2v3.3l2.2 1.3"/>',
   trend: '<path d="M2.5 11 6 7.5l2.5 2L13.5 4"/><path d="M10.5 4h3v3"/>',
   lightning: '<path d="M8.5 2 4 9h3.2L7 14l4.5-7H8.3z"/>',
+  financial: '<rect x="2" y="4.5" width="12" height="8.5" rx="1"/><path d="M2 7h12"/><circle cx="11" cy="10" r="0.9" fill="currentColor" stroke="none"/>',
 };
 function iconSvg(key, className) {
   const inner = NAV_ICONS[key];
@@ -489,6 +490,19 @@ function fmtDate(value) {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return "—";
   return date.toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" });
+}
+// Compact currency for KPI cards (Financial Unification Programme) — e.g.
+// "₦2.4M". Only ever fed a real aggregate from /office/financial-summary,
+// never a fabricated value.
+function fmtCompactNaira(value) {
+  const amount = Number(value);
+  if (!Number.isFinite(amount)) return "—";
+  const abs = Math.abs(amount);
+  const sign = amount < 0 ? "-" : "";
+  if (abs >= 1_000_000_000) return `${sign}₦${(abs / 1_000_000_000).toFixed(1)}B`;
+  if (abs >= 1_000_000) return `${sign}₦${(abs / 1_000_000).toFixed(1)}M`;
+  if (abs >= 1_000) return `${sign}₦${(abs / 1_000).toFixed(1)}K`;
+  return `${sign}₦${Math.round(abs).toLocaleString("en-NG")}`;
 }
 function fmtDateTime(value) {
   if (!value) return "—";
@@ -1217,6 +1231,13 @@ function homePanel(title, linkLabel, onLink) {
 // dedicated panels further down Home (CRM/Development/Portfolio/etc.).
 const HOME_KPI_CARDS = [
   { key: "attention_count", label: "Needs Attention", permission: "office.read", icon: "attention", tone: "red", alert: (s) => s.attention_count > 0 },
+  // Financial Unification Programme — the one Home financial executive
+  // KPI, real aggregate current balance across estate wallets (see
+  // /office/financial-summary). Placed early so it actually surfaces
+  // within HOME_KPI_PRIORITY_COUNT for the senior roles financial.read is
+  // granted to, matching "CEO/Super Admin gets the broadest authorized
+  // summary".
+  { key: "financial_current_balance", label: "Estate Cash Position", permission: "financial.read", icon: "financial", tone: "green", format: (s) => fmtCompactNaira(s.financial_current_balance) },
   { key: "open_tasks", label: "My Tasks", permission: "tasks.read", route: "tasks", icon: "tasks", tone: "blue", sub: (s) => (s.overdue_tasks ? `${s.overdue_tasks} overdue` : null), alert: (s) => s.overdue_tasks > 0 },
   { key: "reports_awaiting_approval", label: "Pending Approvals", permission: "reports.review", route: "reports", icon: "reports", tone: "amber", alert: (s) => s.reports_awaiting_approval > 0 },
   { key: "active_projects", label: "Active Projects", permission: "projects.read", route: "projects", icon: "projects", tone: "green" },
@@ -1237,7 +1258,7 @@ function renderHomeKpiGrid(summary) {
       if (value === undefined) return null;
       return {
         label: card.label,
-        value,
+        value: card.format ? card.format(summary) : value,
         icon: card.icon ? iconSvg(card.icon, "kpi-icon") : null,
         tone: card.tone,
         sub: card.sub ? card.sub(summary) : null,

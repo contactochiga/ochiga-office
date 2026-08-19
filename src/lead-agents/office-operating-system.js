@@ -1,5 +1,6 @@
 const crypto = require("crypto");
 const { normalizeEmail, normalizeText } = require("./normalize-lead");
+const { fetchBackendFinancialSummary } = require("./backend-financial-gateway");
 
 const BUSINESS_UNITS = Object.freeze(["development", "technology", "private", "partnerships", "corporate"]);
 
@@ -338,6 +339,25 @@ async function buildOfficeHomeProjection(store, options = {}) {
   } catch {
     reportsAwaitingApproval = 0;
   }
+  // Same isolation discipline — the one Home financial KPI (Financial
+  // Unification Programme) is sourced live from Ochiga-backend's canonical
+  // /office/financial-summary aggregate via the same gateway the Office
+  // Internal Oyi snapshot uses, never a second/duplicate computation. Only
+  // fetched when the caller has already confirmed financial.read (same
+  // includeRecentActivity-style caller-computed gate below); left
+  // undefined (not zero) when unavailable so the KPI card simply doesn't
+  // render rather than showing a fabricated number.
+  let financialCurrentBalanceTotal;
+  if (options.includeFinancial) {
+    try {
+      const financial = await fetchBackendFinancialSummary(options.config || {});
+      if (financial.ok && financial.portfolio) {
+        financialCurrentBalanceTotal = financial.portfolio.current_balance_total;
+      }
+    } catch {
+      financialCurrentBalanceTotal = undefined;
+    }
+  }
   const weekStart = (() => {
     const day = now.getDay();
     const diff = now.getDate() - day + (day === 0 ? -6 : 1);
@@ -457,6 +477,7 @@ async function buildOfficeHomeProjection(store, options = {}) {
       content_scheduled: contentScheduled.length,
       reports_awaiting_approval: reportsAwaitingApproval,
       tasks_completed_this_week: tasksCompletedThisWeek,
+      ...(financialCurrentBalanceTotal !== undefined ? { financial_current_balance: financialCurrentBalanceTotal } : {}),
     },
     attention_items,
     recent_activity,
