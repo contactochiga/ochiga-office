@@ -147,6 +147,20 @@ function createConfig() {
     officeConsumerApiKey: process.env.OFFICE_CONSUMER_API_KEY || "",
     officeConsumerBearerToken: process.env.OFFICE_CONSUMER_BEARER_TOKEN || "",
     officeConsumerExportPath: process.env.OFFICE_CONSUMER_EXPORT_PATH || "",
+    // Ochiga Website's own real health endpoint (added alongside its
+    // Oyi Cross-Surface Observability Closure work) — replaces trace-
+    // inference in System Health with a genuine probe, same pattern as
+    // Facility/Consumer above. www. is the real production alias
+    // (bare ochiga.com.ng 307-redirects here) — pointing directly at
+    // it avoids an unnecessary redirect hop on every probe.
+    officeWebsiteBaseUrl: process.env.OFFICE_WEBSITE_BASE_URL || "https://www.ochiga.com.ng",
+    officeWebsiteHealthPath: process.env.OFFICE_WEBSITE_HEALTH_PATH || "/api/health",
+    // Oyi Cross-Surface Observability Closure — Backend's new safe,
+    // cross-surface read endpoint (Consumer/Facility/Website-Oyi-widget
+    // conversation, voice, vision and device-execution activity Office's
+    // own local traces table has no visibility into).
+    officeObservabilityEventsPath:
+      process.env.OFFICE_OBSERVABILITY_EVENTS_PATH || "/office/observability/events",
     officeBackendBaseUrl:
       process.env.OFFICE_BACKEND_BASE_URL ||
       process.env.OYI_BACKEND_BASE_URL ||
