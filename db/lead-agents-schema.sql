@@ -1156,3 +1156,24 @@ create table if not exists office_development_projects (
 
 create index if not exists office_development_projects_slug_idx
 on office_development_projects (slug);
+
+-- Oyi Runtime Contract, Domain 3 (Task) — durable link between an
+-- Office-owned record (lead/proposal/demo/deployment) and the
+-- ochiga_workflows row it was additively projected into on Backend,
+-- via the office-backend-intelligence-events platform boundary
+-- contract (Ochiga-backend's src/contracts/platformBoundaries.ts).
+-- Office remains the source of truth for the linked record itself —
+-- this table exists only so the bridge (src/lead-agents/
+-- workflow-bridge.js) is idempotent (one workflow per record, not one
+-- per PATCH) and can be disabled by simply stopping writes here,
+-- without touching any other table.
+create table if not exists ochiga_workflow_links (
+  id uuid primary key default gen_random_uuid(),
+  record_type text not null,
+  record_id text not null,
+  workflow_id text not null,
+  created_at timestamptz not null default now()
+);
+
+create unique index if not exists ochiga_workflow_links_record_idx
+on ochiga_workflow_links (record_type, record_id);

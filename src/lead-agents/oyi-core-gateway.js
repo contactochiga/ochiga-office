@@ -369,11 +369,70 @@ async function callOyiCoreObservabilityEvents(config = {}, options = {}) {
   }
 }
 
+// Oyi Runtime Contract, Domain 3 (Task) — Backend's additive
+// office-backend-intelligence-events projection into ochiga_workflows.
+// Same credential/timeout convention as every other Backend call here.
+// Never throws — a failed bridge call must never fail the real Office
+// operation (lead update, proposal accept, demo booking, deployment
+// creation) it was triggered from.
+function officeWorkflowHeaders(config) {
+  const headers = { "content-type": "application/json" };
+  if (config.officeBackendApiKey) headers["x-office-api-key"] = config.officeBackendApiKey;
+  if (config.officeBackendBearerToken) headers.authorization = `Bearer ${config.officeBackendBearerToken}`;
+  return headers;
+}
+
+async function callOyiCoreCreateWorkflow(config = {}, payload = {}, options = {}) {
+  const baseUrl = String(config.officeBackendBaseUrl || "").replace(/\/+$/, "");
+  const path = config.officeWorkflowsPath || "/office/workflows";
+  if (!baseUrl) return { ok: false, unavailable: true, reason: "not_configured" };
+  const post = options.httpPost || ((targetUrl, body, requestConfig) => axios.post(targetUrl, body, requestConfig));
+  try {
+    const response = await post(`${baseUrl}${path}`, payload, {
+      timeout: config.officeBackendEventTimeoutMs || 10_000,
+      headers: officeWorkflowHeaders(config),
+      validateStatus: () => true,
+    });
+    const status = Number(response && response.status) || 0;
+    const body = response && response.data && typeof response.data === "object" ? response.data : {};
+    if (status >= 200 && status < 300 && body.ok !== false) {
+      return { ok: true, workflow: body.workflow || null };
+    }
+    return { ok: false, unavailable: true, status, reason: text(body.error || "backend_rejected") };
+  } catch (error) {
+    return { ok: false, unavailable: true, status: 0, reason: "network_error", error: error && error.code ? String(error.code) : "request_failed" };
+  }
+}
+
+async function callOyiCoreTransitionWorkflow(config = {}, workflowId, payload = {}, options = {}) {
+  const baseUrl = String(config.officeBackendBaseUrl || "").replace(/\/+$/, "");
+  const path = `${config.officeWorkflowsPath || "/office/workflows"}/${encodeURIComponent(workflowId)}`;
+  if (!baseUrl) return { ok: false, unavailable: true, reason: "not_configured" };
+  const patch = options.httpPatch || ((targetUrl, body, requestConfig) => axios.patch(targetUrl, body, requestConfig));
+  try {
+    const response = await patch(`${baseUrl}${path}`, payload, {
+      timeout: config.officeBackendEventTimeoutMs || 10_000,
+      headers: officeWorkflowHeaders(config),
+      validateStatus: () => true,
+    });
+    const status = Number(response && response.status) || 0;
+    const body = response && response.data && typeof response.data === "object" ? response.data : {};
+    if (status >= 200 && status < 300 && body.ok !== false) {
+      return { ok: true, workflow: body.workflow || null };
+    }
+    return { ok: false, unavailable: true, status, reason: text(body.error || "backend_rejected") };
+  } catch (error) {
+    return { ok: false, unavailable: true, status: 0, reason: "network_error", error: error && error.code ? String(error.code) : "request_failed" };
+  }
+}
+
 module.exports = {
   buildOyiCoreCorporateConversationRequest,
   buildOyiCoreOfficeInternalRequest,
   callOyiCoreCorporateConversation,
   callOyiCoreOfficeInternalConversation,
   callOyiCoreObservabilityEvents,
+  callOyiCoreCreateWorkflow,
+  callOyiCoreTransitionWorkflow,
   oyiCoreConversationUrl,
 };
