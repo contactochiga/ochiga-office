@@ -104,6 +104,9 @@ async function apiGetLead(id) {
 async function apiUpdateLead(id, patch) {
   return api(`/api/lead-agents/leads/${encodeURIComponent(id)}`, { method: "PATCH", body: patch });
 }
+async function apiCreateLead(body) {
+  return api("/api/lead-agents/admin/crm/leads", { method: "POST", body });
+}
 async function apiGetLeadTimeline(id) {
   return api(`/api/lead-agents/leads/${encodeURIComponent(id)}/timeline`);
 }
@@ -631,7 +634,10 @@ function renderDataTable({ columns, rows, onRowClick, emptyMessage }) {
   return table;
 }
 
-function renderToolbar({ query, onQuery, filters, primaryAction, secondaryAction }) {
+// secondaryActions accepts either the legacy single `secondaryAction`
+// object or an array of them (Leads needs My Records + Hide Test +
+// Export simultaneously) — both forms render as ghost buttons in order.
+function renderToolbar({ query, onQuery, filters, primaryAction, secondaryAction, secondaryActions }) {
   const bar = el(`<div class="list-toolbar"></div>`);
   const search = el(`<input type="search" class="toolbar-search" placeholder="Search…" />`);
   search.value = query || "";
@@ -653,11 +659,12 @@ function renderToolbar({ query, onQuery, filters, primaryAction, secondaryAction
   const spacer = el(`<div class="toolbar-spacer"></div>`);
   bar.appendChild(spacer);
 
-  if (secondaryAction) {
-    const btn = el(`<button type="button" class="btn btn-ghost btn-sm">${escapeHtml(secondaryAction.label)}</button>`);
-    btn.addEventListener("click", secondaryAction.onClick);
+  const allSecondary = [...(secondaryActions || []), ...(secondaryAction ? [secondaryAction] : [])];
+  allSecondary.forEach((action) => {
+    const btn = el(`<button type="button" class="btn btn-ghost btn-sm${action.active ? " active" : ""}">${escapeHtml(action.label)}</button>`);
+    btn.addEventListener("click", (event) => action.onClick(event));
     bar.appendChild(btn);
-  }
+  });
   if (primaryAction) {
     const btn = el(`<button type="button" class="btn btn-primary btn-sm">${escapeHtml(primaryAction.label)}</button>`);
     btn.addEventListener("click", primaryAction.onClick);
@@ -815,6 +822,66 @@ function StageStrip(items, emptyText) {
   });
   if (!items.length) strip.appendChild(el(`<p class="rail-empty">${escapeHtml(emptyText || "No records yet.")}</p>`));
   return strip;
+}
+// Ordered horizontal proportional-width bars — a "funnel" without
+// drawing an actual triangle, so it stays honest/legible even with a
+// single record (a triangle SVG would look broken with sparse data; a
+// width-proportional bar never does). Reusable anywhere Office needs an
+// ordered stage/distribution visualization, not just CRM.
+// Dependency-free CSS conic-gradient donut + legend. segments/items:
+// tone must be one of the existing semantic KPI tones (red/green/amber/
+// blue/violet) so charts never introduce a color the rest of Office
+// doesn't already use.
+const DONUT_TONE_VAR = { red: "--red-bright", green: "--green", amber: "--amber", blue: "--info-blue", violet: "--violet", default: "--line-strong" };
+function barDistribution(items, emptyText) {
+  const wrap = el(`<div class="bar-distribution"></div>`);
+  if (!items.length) {
+    wrap.appendChild(el(`<p class="rail-empty">${escapeHtml(emptyText || "No records yet.")}</p>`));
+    return wrap;
+  }
+  const max = Math.max(...items.map((i) => i.count), 1);
+  items.forEach((item) => {
+    const pct = Math.max(Math.round((item.count / max) * 100), item.count > 0 ? 3 : 0);
+    const row = el(`
+      <div class="bar-row">
+        <span class="bar-row-label">${escapeHtml(item.label)}</span>
+        <div class="bar-row-track"><div class="bar-row-fill" style="width:${pct}%;background:var(${DONUT_TONE_VAR[item.tone] || DONUT_TONE_VAR.default});"></div></div>
+        <span class="bar-row-count">${escapeHtml(String(item.count))}</span>
+      </div>
+    `);
+    wrap.appendChild(row);
+  });
+  return wrap;
+}
+function donutChart(segments, emptyText) {
+  const wrap = el(`<div class="donut-chart"></div>`);
+  const total = segments.reduce((sum, s) => sum + s.count, 0);
+  if (!total) {
+    wrap.appendChild(el(`<p class="rail-empty">${escapeHtml(emptyText || "No records yet.")}</p>`));
+    return wrap;
+  }
+  let cursor = 0;
+  const stops = segments.filter((s) => s.count > 0).map((s) => {
+    const start = (cursor / total) * 360;
+    cursor += s.count;
+    const end = (cursor / total) * 360;
+    return `var(${DONUT_TONE_VAR[s.tone] || DONUT_TONE_VAR.default}) ${start}deg ${end}deg`;
+  });
+  const ring = el(`<div class="donut-ring" style="background:conic-gradient(${stops.join(",")});"><div class="donut-hole"><span class="donut-total">${total}</span><span class="donut-total-label">Total</span></div></div>`);
+  wrap.appendChild(ring);
+  const legend = el(`<div class="donut-legend"></div>`);
+  segments.filter((s) => s.count > 0).forEach((s) => {
+    const pct = Math.round((s.count / total) * 100);
+    legend.appendChild(el(`
+      <div class="donut-legend-row">
+        <span class="donut-swatch" style="background:var(${DONUT_TONE_VAR[s.tone] || DONUT_TONE_VAR.default});"></span>
+        <span class="donut-legend-label">${escapeHtml(s.label)}</span>
+        <span class="donut-legend-value">${s.count} <span class="donut-legend-pct">(${pct}%)</span></span>
+      </div>
+    `));
+  });
+  wrap.appendChild(legend);
+  return wrap;
 }
 // Returns null (never a fabricated 0%) when current/total aren't real,
 // finite numbers — callers must check before appending, same pattern as
@@ -1701,6 +1768,147 @@ async function renderAiAgentsHomePanel(token) {
 // ---------------------------------------------------------------
 // CRM
 // ---------------------------------------------------------------
+
+// Canonical stage model (CRM production closure pass). Real production
+// leads carry stage values from more than one historical intake
+// generation (new, intake_received, discovery, sales, proposal, quote,
+// negotiation, procurement, won, lost, escalated) — this maps only the
+// values whose funnel position is semantically unambiguous. "sales" and
+// "escalated" are NOT stage/funnel positions (sales reads as a team/
+// routing label that leaked into this column historically; escalated is
+// an urgency flag, not a pipeline step) so they are deliberately left
+// unmapped rather than guessed — any raw stage value not in this map
+// (including a genuinely empty one) is bucketed honestly rather than
+// silently dropped or force-fit into an invented funnel.
+const LEAD_STAGE_CANON = [
+  { key: "unstaged", label: "Unstaged", tone: "default" },
+  { key: "new", label: "New", tone: "red" },
+  { key: "discovery", label: "Discovery", tone: "amber" },
+  { key: "proposal", label: "Proposal", tone: "blue" },
+  { key: "negotiation", label: "Negotiation", tone: "violet" },
+  { key: "won", label: "Won", tone: "green" },
+  { key: "lost", label: "Lost", tone: "default" },
+  { key: "other", label: "Other", tone: "default" },
+];
+const LEAD_STAGE_BUCKET_MAP = {
+  new: "new",
+  intake_received: "new",
+  discovery: "discovery",
+  proposal: "proposal",
+  quote: "proposal",
+  negotiation: "negotiation",
+  procurement: "negotiation",
+  won: "won",
+  lost: "lost",
+};
+function leadStageBucket(lead) {
+  const raw = String(lead.stage || "").trim().toLowerCase();
+  if (!raw) return LEAD_STAGE_CANON[0];
+  const key = LEAD_STAGE_BUCKET_MAP[raw] || "other";
+  return LEAD_STAGE_CANON.find((s) => s.key === key);
+}
+function leadStageRawLabel(lead) {
+  return lead.stage ? titleCase(lead.stage) : (lead.commercial_stage ? titleCase(lead.commercial_stage) : "Unstaged");
+}
+function leadStageBadge(lead) {
+  return badge(leadStageRawLabel(lead), leadStageBucket(lead).tone);
+}
+function leadIsClosed(lead) {
+  const bucket = leadStageBucket(lead).key;
+  return bucket === "won" || bucket === "lost";
+}
+
+// Real production lead sources (ochiga_website:general_contact,
+// ochiga_website_deployment_request, website_widget, website_chat,
+// oyi_command_center, smoke_test) plus the LEAD_SOURCES enum
+// (commercial-ops.js) for anything normalized to the shorter form.
+// Raw value is never altered in the record — this only affects display.
+const LEAD_SOURCE_LABELS = {
+  "ochiga_website:general_contact": "Ochiga Website",
+  ochiga_website_deployment_request: "Deployment Request",
+  website_widget: "Website Assistant / Widget",
+  website_chat: "Website Chat",
+  oyi_command_center: "Oyi Command Center",
+  smoke_test: "Internal / Test",
+  website: "Website",
+  widget: "Widget",
+  whatsapp: "WhatsApp",
+  linkedin: "LinkedIn",
+  meta: "Meta",
+  facebook: "Facebook",
+  instagram: "Instagram",
+  google: "Google",
+  referral: "Referral",
+  manual: "Manual",
+};
+function leadSourceLabel(source) {
+  if (!source) return "Unknown";
+  return LEAD_SOURCE_LABELS[source] || titleCase(String(source).replace(/[:_]/g, " "));
+}
+// A known-real value, not a heuristic guess — smoke_test is the exact
+// source recorded by the platform's own smoke-test script.
+function isTestLead(lead) {
+  return lead.source === "smoke_test";
+}
+function leadDisplayName(lead) {
+  return lead.name || lead.company || lead.email || lead.phone || "Unnamed Lead";
+}
+// Real operational criteria, not a hardcoded count: overdue next action,
+// escalated, unassigned, or genuinely no follow-up plan at all — never
+// applied to a lead that's already won/lost.
+function leadNeedsAttention(lead) {
+  if (leadIsClosed(lead)) return false;
+  if (lead.next_action_at && new Date(lead.next_action_at).getTime() < Date.now()) return true;
+  if (/escalated/i.test(String(lead.status || lead.stage || ""))) return true;
+  if (!lead.owner) return true;
+  if (!lead.next_action && !lead.next_action_at) return true;
+  return false;
+}
+function leadAttentionReasonLabel(lead) {
+  if (lead.next_action_at && new Date(lead.next_action_at).getTime() < Date.now()) return "Follow-up overdue";
+  if (/escalated/i.test(String(lead.status || lead.stage || ""))) return "Escalated";
+  if (!lead.owner) return "Unassigned";
+  if (!lead.next_action && !lead.next_action_at) return "No follow-up planned";
+  return "";
+}
+// qualification_status is only ever populated when a lead goes through
+// POST /leads/:id/qualify (AI tool-use flow) — most leads may not have
+// it set. Falls back to the exact same score thresholds
+// commercial-ops.js's qualificationStatus() uses server-side (75/50/25),
+// applied client-side only as a display derivation, never a new rule.
+function leadQualificationLabel(lead) {
+  if (lead.qualification_status) return lead.qualification_status;
+  const score = Number(lead.score ?? lead.lead_score);
+  if (!Number.isFinite(score)) return null;
+  if (score >= 75) return "qualified";
+  if (score >= 50) return "needs_discovery";
+  if (score >= 25) return "nurture";
+  return "unqualified";
+}
+function leadIsQualified(lead) {
+  return leadQualificationLabel(lead) === "qualified";
+}
+
+function downloadCsv(filename, columns, rows) {
+  const escapeCsv = (value) => {
+    const str = String(value ?? "");
+    return /[",\n]/.test(str) ? `"${str.replace(/"/g, '""')}"` : str;
+  };
+  const lines = [
+    columns.map((c) => escapeCsv(c.label)).join(","),
+    ...rows.map((row) => columns.map((c) => escapeCsv(c.value(row))).join(",")),
+  ];
+  const blob = new Blob([lines.join("\n")], { type: "text/csv;charset=utf-8;" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+}
+
 const CRM_TABS = [
   { key: "overview", label: "Overview" },
   { key: "leads", label: "Leads" },
@@ -1714,6 +1922,20 @@ async function renderCrmRoute(outlet, rest, token) {
   setTopbar("CRM", objectId ? "" : titleCase(subKey));
 
   outlet.innerHTML = "";
+  if (!objectId) {
+    const heading = el(`
+      <div class="view-heading">
+        <h1>CRM</h1>
+        <p>Manage relationships, leads, opportunities and client interactions.</p>
+      </div>
+    `);
+    if (hasPermission("crm.manage")) {
+      const newLeadBtn = el(`<button type="button" class="btn btn-primary btn-sm" style="margin-left:auto;">+ New Lead</button>`);
+      newLeadBtn.addEventListener("click", () => openCreateLeadDialog());
+      heading.appendChild(newLeadBtn);
+    }
+    outlet.appendChild(heading);
+  }
   const tabs = el(`<div class="crm-tabs"></div>`);
   CRM_TABS.forEach((tab) => {
     const tabBtn = el(`<button type="button" class="crm-tab ${tab.key === subKey ? "active" : ""}" data-crm-tab="${tab.key}">${escapeHtml(tab.label)}</button>`);
@@ -1745,113 +1967,247 @@ async function renderCrmRoute(outlet, rest, token) {
   }
 }
 
-// Overview recomposed onto the Home design template (Programme 4 Part
-// 9) — .home-panel cards, KPIGroup/StageStrip primitives, same density
-// and icon treatment as Home. No new primitives; "Leads by Source" is
-// the only new visualization, and only because it clears the bar Home
-// review set: a stated operational question ("where are our leads
-// coming from?") answered by a real, already-used field (lead.source —
-// see leadChannelLabel() below, which already reads this same field).
+// Real activity_type values written to crm_activities (see
+// office-intake.js, office-tool-governance.js, server.js) mapped to the
+// same semantic icon language as Home's Needs Attention / Recent
+// Activity rows. "note" and anything unrecognized falls back to a
+// generic icon rather than guessing a category.
+const CRM_ACTIVITY_META = {
+  website_intake_received: { icon: "crm", tone: "violet", label: "Intake" },
+  whatsapp_message: { icon: "messages", tone: "green", label: "WhatsApp" },
+  email_sent: { icon: "documents", tone: "blue", label: "Email" },
+  task_created: { icon: "tasks", tone: "blue", label: "Task" },
+  document_draft_requested: { icon: "documents", tone: "blue", label: "Document" },
+  note: { icon: "briefing", tone: null, label: "Note" },
+};
+function crmActivityMeta(activity) {
+  return CRM_ACTIVITY_META[activity.activity_type] || { icon: "crm", tone: null, label: titleCase(activity.activity_type || "Activity") };
+}
+
+// Overview recomposed onto the Home design template — .home-panel cards,
+// the same icon-led row/metric-cell language established on Home, and
+// the funnel/donut primitives above. Every figure here is computed from
+// the four already-fetched collections plus activities/tasks/meetings —
+// no new endpoints, no second aggregation pass on the backend.
 async function renderCrmOverview(body, token) {
   setSelectedObject(null);
-  const [leads, opportunities, contacts, organizations] = await Promise.all([
+  const [leads, opportunities, contacts, organizations, activities, tasks, meetings] = await Promise.all([
     fetchLeads().catch(() => []),
     fetchOpportunities().catch(() => []),
     fetchContacts().catch(() => []),
     fetchOrganizations().catch(() => []),
+    fetchActivities().catch(() => []),
+    hasPermission("tasks.read") ? fetchTasks().catch(() => []) : Promise.resolve([]),
+    hasPermission("meetings.read") ? fetchMeetings().catch(() => []) : Promise.resolve([]),
   ]);
   if (token !== state.renderToken) return;
   body.innerHTML = "";
 
-  const hotLeads = leads.filter((lead) =>
-    Number(lead.score || lead.lead_score || 0) >= 70 ||
-    /follow|proposal|demo|meeting/i.test(String(lead.next_action || "")) ||
-    (lead.next_action_at && new Date(lead.next_action_at).getTime() < Date.now())
-  );
-  const openOpportunities = opportunities.filter((opp) => !/closed|won|lost/i.test(String(opp.status || "")));
+  const realLeads = leads.filter((l) => !isTestLead(l));
+  const activeLeads = realLeads.filter((l) => !leadIsClosed(l));
+  const qualifiedLeads = realLeads.filter((l) => leadIsQualified(l));
+  const attentionLeads = realLeads.filter((l) => leadNeedsAttention(l));
+  const wonLeads = realLeads.filter((l) => leadStageBucket(l).key === "won");
+  const lostLeads = realLeads.filter((l) => leadStageBucket(l).key === "lost");
 
-  body.appendChild(KPIGroup([
-    { label: "Total Leads", value: leads.length, icon: iconSvg("crm", "kpi-icon") },
-    { label: "Needing Attention", value: hotLeads.length, icon: iconSvg("attention", "kpi-icon"), alert: hotLeads.length > 0 },
-    { label: "Open Opportunities", value: openOpportunities.length, icon: iconSvg("crm", "kpi-icon") },
-    { label: "Contacts & Orgs", value: contacts.length + organizations.length, icon: iconSvg("team", "kpi-icon") },
+  // KPI strip — Active/Qualified/Opportunities/Contacts/Organizations are
+  // always real counts (zero is a genuine measured zero here, not a
+  // placeholder). Pipeline Value and Average Sales Cycle from the
+  // reference are omitted entirely: opportunities carry no value/
+  // probability field in this backend (see the Opportunity detail note),
+  // and no canonical stage-transition timestamp exists to compute a
+  // sales-cycle duration honestly.
+  body.appendChild(el(`<div class="home-section"></div>`)).appendChild(KPIGroup([
+    { label: "Active Leads", value: activeLeads.length, icon: iconSvg("crm", "kpi-icon"), tone: "red" },
+    { label: "Qualified Leads", value: qualifiedLeads.length, icon: iconSvg("attention", "kpi-icon"), tone: "green" },
+    { label: "Opportunities", value: opportunities.length, icon: iconSvg("portfolio", "kpi-icon"), tone: "blue" },
+    { label: "Contacts", value: contacts.length, icon: iconSvg("team", "kpi-icon"), tone: "violet" },
+    { label: "Organizations", value: organizations.length, icon: iconSvg("partnerships", "kpi-icon"), tone: "amber" },
+    { label: "Needing Attention", value: attentionLeads.length, icon: iconSvg("attention", "kpi-icon"), tone: "red", alert: attentionLeads.length > 0 },
   ]));
 
   const rowA = el(`<div class="home-grid"></div>`);
   body.appendChild(rowA);
 
-  const attentionPanel = homePanel(`Leads Needing Attention (${hotLeads.length})`);
-  attentionPanel.appendChild(renderDataTable({
-    columns: [
-      { label: "Lead", render: (l) => escapeHtml(l.company || l.name || "Untitled") },
-      { label: "Next Action", render: nextActionCell },
-      { label: "Owner", render: (l) => escapeHtml(l.owner || "Unassigned") },
-    ],
-    rows: hotLeads.slice(0, 8),
-    onRowClick: (lead) => navigate(`crm/leads/${lead.id}`),
-    emptyMessage: "No leads currently need attention.",
-  }));
-  rowA.appendChild(homePanelWrap("span-6", attentionPanel));
+  // Pipeline Overview — canonical stage buckets (see LEAD_STAGE_CANON),
+  // only buckets with a real count render, in funnel order.
+  const stageCounts = LEAD_STAGE_CANON.map((s) => ({
+    ...s,
+    count: realLeads.filter((l) => leadStageBucket(l).key === s.key).length,
+  })).filter((s) => s.count > 0);
+  const pipelinePanel = homePanel("Pipeline Overview", "View Leads", () => navigate("crm/leads"));
+  pipelinePanel.appendChild(barDistribution(stageCounts, "No leads recorded yet."));
+  rowA.appendChild(homePanelWrap("span-7", pipelinePanel));
 
-  const stageGroups = {};
-  opportunities.forEach((opp) => {
-    const stage = opp.stage || "intake_received";
-    (stageGroups[stage] = stageGroups[stage] || []).push(opp);
-  });
-  const stagePanel = homePanel("Opportunities by Stage");
-  stagePanel.appendChild(StageStrip(
-    Object.entries(stageGroups)
-      .sort((a, b) => b[1].length - a[1].length)
-      .map(([stage, items]) => ({ label: titleCase(stage), count: items.length })),
-    "No opportunities recorded yet."
-  ));
-  rowA.appendChild(homePanelWrap("span-6", stagePanel));
+  const sourceCounts = {};
+  realLeads.forEach((lead) => { const key = lead.source || ""; sourceCounts[key] = (sourceCounts[key] || 0) + 1; });
+  const sourceTones = ["red", "blue", "violet", "green", "amber"];
+  const sourceSegments = Object.entries(sourceCounts)
+    .sort((a, b) => b[1] - a[1])
+    .map(([source, count], index) => ({ label: leadSourceLabel(source || null), count, tone: sourceTones[index % sourceTones.length] }));
+  const sourcePanel = homePanel("Lead Sources");
+  sourcePanel.appendChild(donutChart(sourceSegments, "No leads recorded yet."));
+  rowA.appendChild(homePanelWrap("span-5", sourcePanel));
 
   const rowB = el(`<div class="home-grid"></div>`);
   body.appendChild(rowB);
 
-  const sourceGroups = {};
-  leads.forEach((lead) => {
-    const source = lead.source || "unknown";
-    (sourceGroups[source] = sourceGroups[source] || []).push(lead);
-  });
-  const sourcePanel = homePanel("Leads by Source");
-  sourcePanel.appendChild(StageStrip(
-    Object.entries(sourceGroups)
-      .sort((a, b) => b[1].length - a[1].length)
-      .map(([source, items]) => ({ label: titleCase(source), count: items.length })),
-    "No leads recorded yet."
-  ));
-  rowB.appendChild(homePanelWrap("span-4", sourcePanel));
+  const attentionPanel = homePanel(`Leads Needing Attention (${attentionLeads.length})`, "View all", () => navigate("crm/leads"));
+  attentionPanel.appendChild(renderDataTable({
+    columns: [
+      { label: "Lead", render: (l) => escapeHtml(leadDisplayName(l)) },
+      { label: "Reason", render: (l) => badge(leadAttentionReasonLabel(l), "red") },
+      { label: "Owner", render: (l) => escapeHtml(l.owner || "Unassigned") },
+    ],
+    rows: attentionLeads.slice(0, 8),
+    onRowClick: (lead) => navigate(`crm/leads/${lead.id}`),
+    emptyMessage: "No leads currently need attention.",
+  }));
+  rowB.appendChild(homePanelWrap("span-7", attentionPanel));
+
+  const crmActivities = activities
+    .filter((a) => a.lead_id || a.contact_id || a.organization_id || a.opportunity_id)
+    .sort((a, b) => String(b.occurred_at || b.created_at || "").localeCompare(String(a.occurred_at || a.created_at || "")))
+    .slice(0, 6);
+  const interactionsPanel = homePanel("Recent Interactions");
+  if (!crmActivities.length) {
+    interactionsPanel.appendChild(el(`<p class="home-panel-empty">No recent interactions recorded.</p>`));
+  } else {
+    const list = el(`<div class="attention-list-v2"></div>`);
+    crmActivities.forEach((activity) => {
+      const meta = crmActivityMeta(activity);
+      list.appendChild(el(`
+        <div class="attention-row-v2" style="border-left-color:var(--line-strong);">
+          <span class="kpi-icon-box${meta.tone ? ` kpi-icon-${meta.tone}` : ""} attention-row-icon">${iconSvg(meta.icon, "kpi-icon")}</span>
+          <div class="attention-row-text">
+            <div class="attention-row-title">${escapeHtml(activity.title || meta.label)}</div>
+          </div>
+          <span class="badge badge-default attention-row-domain">${escapeHtml(meta.label)}</span>
+          <span class="attention-row-age">${escapeHtml(fmtRelative(activity.occurred_at || activity.created_at))}</span>
+        </div>
+      `));
+    });
+    interactionsPanel.appendChild(list);
+  }
+  rowB.appendChild(homePanelWrap("span-5", interactionsPanel));
+
+  const rowC = el(`<div class="home-grid"></div>`);
+  body.appendChild(rowC);
+
+  const opportunitiesPanel = homePanel("Opportunities", "View all", () => navigate("crm/opportunities"));
+  if (!opportunities.length) {
+    opportunitiesPanel.appendChild(emptyPanel({
+      kicker: "Opportunities",
+      title: "No opportunities yet",
+      body: "Qualified leads converted into commercial opportunities will appear here.",
+    }));
+  } else {
+    const stageGroups = {};
+    opportunities.forEach((opp) => { const stage = opp.stage || "intake_received"; (stageGroups[stage] = stageGroups[stage] || []).push(opp); });
+    opportunitiesPanel.appendChild(StageStrip(
+      Object.entries(stageGroups).sort((a, b) => b[1].length - a[1].length).map(([stage, items]) => ({ label: titleCase(stage), count: items.length })),
+      "No opportunities recorded yet."
+    ));
+  }
+  rowC.appendChild(homePanelWrap("span-6", opportunitiesPanel));
+
+  // Upcoming Follow-ups — real next_action_at on leads, plus CRM-linked
+  // tasks/meetings only (lead_id/opportunity_id or related_type in
+  // lead/opportunity/contact/organization) so unrelated Office work
+  // never leaks into a CRM panel.
+  const now = Date.now();
+  const followUps = [
+    ...realLeads.filter((l) => l.next_action_at).map((l) => ({
+      at: l.next_action_at, label: l.next_action || "Follow-up", subject: leadDisplayName(l), route: `crm/leads/${l.id}`,
+    })),
+    ...tasks.filter((t) => (t.lead_id || t.opportunity_id) && t.due_at && !["done", "completed", "cancelled"].includes(String(t.status || "").toLowerCase())).map((t) => ({
+      at: t.due_at, label: t.title, subject: "Task", route: null,
+    })),
+    ...meetings.filter((m) => ["lead", "opportunity", "contact", "organization"].includes(m.related_type) && m.scheduled_at && !["completed", "cancelled"].includes(String(m.status || "").toLowerCase())).map((m) => ({
+      at: m.scheduled_at, label: m.title, subject: "Meeting", route: `meetings/${m.id}`,
+    })),
+  ].sort((a, b) => String(a.at).localeCompare(String(b.at))).slice(0, 8);
+  const followUpsPanel = homePanel("Upcoming Follow-ups");
+  if (!followUps.length) {
+    followUpsPanel.appendChild(el(`<p class="home-panel-empty">No commercial follow-ups scheduled.</p>`));
+  } else {
+    const list = el(`<div class="meeting-list"></div>`);
+    followUps.forEach((item) => {
+      const overdue = new Date(item.at).getTime() < now;
+      const row = el(`
+        <div class="meeting-row${item.route ? " clickable" : ""}">
+          <div class="meeting-when">${overdue ? badge(fmtDateTime(item.at), "red") : escapeHtml(fmtDateTime(item.at))}</div>
+          <div class="meeting-title">${escapeHtml(item.label)} <span class="rail-sub">· ${escapeHtml(item.subject)}</span></div>
+        </div>
+      `);
+      if (item.route) row.addEventListener("click", () => navigate(item.route));
+      list.appendChild(row);
+    });
+    followUpsPanel.appendChild(list);
+  }
+  rowC.appendChild(homePanelWrap("span-6", followUpsPanel));
+
+  const rowD = el(`<div class="home-grid"></div>`);
+  body.appendChild(rowD);
 
   const recentPeople = [...contacts, ...organizations.map((o) => ({ ...o, __org: true }))]
     .sort((a, b) => String(b.updated_at || "").localeCompare(String(a.updated_at || "")))
     .slice(0, 6);
-  const peoplePanel = homePanel("Recently Active Contacts & Organizations");
+  const peoplePanel = homePanel("Contacts & Organizations", "View Contacts", () => navigate("crm/contacts"));
   peoplePanel.appendChild(renderDataTable({
     columns: [
       { label: "Name", render: (r) => escapeHtml(r.name || "Untitled") },
       { label: "Type", render: (r) => badge(r.__org ? "Organization" : "Contact") },
-      { label: "Business Unit", render: (r) => escapeHtml(titleCase(r.business_unit)) },
       { label: "Updated", render: (r) => escapeHtml(fmtRelative(r.updated_at)) },
     ],
     rows: recentPeople,
     onRowClick: (r) => navigate(`crm/${r.__org ? "organizations" : "contacts"}/${r.id}`),
     emptyMessage: "No contacts or organizations yet.",
   }));
-  rowB.appendChild(homePanelWrap("span-4", peoplePanel));
+  rowD.appendChild(homePanelWrap("span-6", peoplePanel));
 
-  const buDistribution = {};
-  [...leads, ...opportunities].forEach((r) => {
-    const bu = r.business_unit || "corporate";
-    buDistribution[bu] = (buDistribution[bu] || 0) + 1;
-  });
-  const buPanel = homePanel("Business Unit Distribution");
-  buPanel.appendChild(StageStrip(
-    Object.entries(buDistribution).map(([bu, count]) => ({ label: titleCase(bu), count })),
-    "No records yet."
+  // Commercial snapshot — Conversion Rate only renders when there's a
+  // real non-zero denominator (won+lost); Won/Lost This Month are always
+  // real counts (a genuine zero is a measured zero, not missing data).
+  // No Revenue Forecast: no real monetary opportunity data exists.
+  const totalClosed = wonLeads.length + lostLeads.length;
+  const wonThisMonth = wonLeads.filter((l) => isThisMonth(l.updated_at)).length;
+  const lostThisMonth = lostLeads.filter((l) => isThisMonth(l.updated_at)).length;
+  const commercialCells = [];
+  if (totalClosed > 0) {
+    commercialCells.push({ label: "Conversion Rate", value: `${Math.round((wonLeads.length / totalClosed) * 100)}%`, icon: iconSvg("trend", "kpi-icon"), tone: "green" });
+  }
+  commercialCells.push({ label: "Won This Month", value: wonThisMonth, icon: iconSvg("crm", "kpi-icon"), tone: "green" });
+  commercialCells.push({ label: "Lost This Month", value: lostThisMonth, icon: iconSvg("attention", "kpi-icon"), tone: "default" });
+  const commercialPanel = homePanel("Commercial Snapshot");
+  commercialPanel.appendChild(metricCellGrid(commercialCells));
+  if (!totalClosed) {
+    commercialPanel.appendChild(el(`<p class="home-panel-empty" style="padding:4px 0 0;">Conversion rate will appear once a lead reaches Won or Lost.</p>`));
+  }
+  rowD.appendChild(homePanelWrap("span-6", commercialPanel));
+
+  // Workload by Owner — the reference's "Top Performing Agents" would
+  // require won/lost-deal outcomes tied to owner + real values, which
+  // doesn't exist; ownership/workload distribution is real and
+  // operationally useful instead. Grouping by "Unassigned" for a falsy
+  // owner also directly answers "how many leads are unassigned?".
+  const ownerCounts = {};
+  activeLeads.forEach((l) => { const key = l.owner || "Unassigned"; ownerCounts[key] = (ownerCounts[key] || 0) + 1; });
+  const rowE = el(`<div class="home-grid"></div>`);
+  body.appendChild(rowE);
+  const ownerPanel = homePanel("Workload by Owner (Active Leads)");
+  ownerPanel.appendChild(barDistribution(
+    Object.entries(ownerCounts).sort((a, b) => b[1] - a[1]).map(([owner, count]) => ({ label: owner, count, tone: owner === "Unassigned" ? "red" : "blue" })),
+    "No active leads yet."
   ));
-  rowB.appendChild(homePanelWrap("span-4", buPanel));
+  rowE.appendChild(homePanelWrap("span-12", ownerPanel));
+}
+function isThisMonth(value) {
+  if (!value) return false;
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return false;
+  const now = new Date();
+  return date.getFullYear() === now.getFullYear() && date.getMonth() === now.getMonth();
 }
 
 // Channel is the communication medium (whatsapp/email/website_chat);
@@ -1879,15 +2235,36 @@ const CRM_LIST_CONFIG = {
     manage: "crm.manage",
     searchFields: ["name", "company", "email"],
     columns: [
-      { label: "Name / Organization", width: "1.6fr", render: (r) => escapeHtml(r.company || r.name || "Untitled") },
-      { label: "Interest", render: (r) => escapeHtml(titleCase(r.inquiry_type || r.project_type || "—")) },
-      { label: "Business Unit", render: (r) => escapeHtml(titleCase(r.business_unit)) },
-      { label: "Source", render: (r) => `${escapeHtml(titleCase(r.source))}${leadChannelLabel(r) ? ` <span class="rail-sub">· ${escapeHtml(leadChannelLabel(r))}</span>` : ""}` },
-      { label: "Status", render: (r) => badge(titleCase(r.status || r.stage || "new"), toneForStatus(r.status || r.stage)) },
+      { label: "Lead", width: "1.5fr", render: (r) => `${escapeHtml(leadDisplayName(r))}${r.company && r.name ? ` <span class="rail-sub">· ${escapeHtml(r.company)}</span>` : ""}` },
+      { label: "Stage", render: leadStageBadge },
+      {
+        label: "Qualification",
+        render: (r) => {
+          const q = leadQualificationLabel(r);
+          if (!q) return "—";
+          return badge(titleCase(q), q === "qualified" ? "green" : q === "unqualified" ? "default" : "amber");
+        },
+      },
+      { label: "Source", render: (r) => `${escapeHtml(leadSourceLabel(r.source))}${leadChannelLabel(r) ? ` <span class="rail-sub">· ${escapeHtml(leadChannelLabel(r))}</span>` : ""}` },
       { label: "Owner", render: (r) => escapeHtml(r.owner || "Unassigned") },
       { label: "Next Action", render: nextActionCell },
     ],
-    filters: [{ key: "business_unit", label: "Business Unit" }, { key: "status", label: "Status" }],
+    exportColumns: [
+      { label: "Name", value: (r) => leadDisplayName(r) },
+      { label: "Company", value: (r) => r.company || "" },
+      { label: "Email", value: (r) => r.email || "" },
+      { label: "Phone", value: (r) => r.phone || "" },
+      { label: "Stage", value: (r) => leadStageRawLabel(r) },
+      { label: "Qualification", value: (r) => leadQualificationLabel(r) || "" },
+      { label: "Source", value: (r) => leadSourceLabel(r.source) },
+      { label: "Owner", value: (r) => r.owner || "" },
+      { label: "Business Unit", value: (r) => r.business_unit || "" },
+      { label: "Next Action", value: (r) => r.next_action || "" },
+      { label: "Next Action At", value: (r) => r.next_action_at || "" },
+      { label: "Created", value: (r) => r.created_at || "" },
+      { label: "Updated", value: (r) => r.updated_at || "" },
+    ],
+    filters: [{ key: "business_unit", label: "Business Unit" }, { key: "stage", label: "Stage" }],
   },
   contacts: {
     fetch: fetchContacts,
@@ -1914,6 +2291,7 @@ const CRM_LIST_CONFIG = {
       { label: "Updated", render: (r) => escapeHtml(fmtRelative(r.updated_at)) },
     ],
     filters: [{ key: "business_unit", label: "Business Unit" }, { key: "account_type", label: "Type" }],
+    emptyMessage: "No organizations yet. Link a lead to a company to build this out, or add one directly.",
   },
   opportunities: {
     fetch: fetchOpportunities,
@@ -1927,6 +2305,7 @@ const CRM_LIST_CONFIG = {
       { label: "Updated", render: (r) => escapeHtml(fmtRelative(r.updated_at)) },
     ],
     filters: [{ key: "business_unit", label: "Business Unit" }, { key: "stage", label: "Stage" }],
+    emptyMessage: "No opportunities yet. Qualified leads converted into commercial opportunities will appear here.",
   },
 };
 
@@ -1935,17 +2314,45 @@ async function renderCrmList(body, key, token) {
   const config = CRM_LIST_CONFIG[key];
   const records = await config.fetch();
   if (token !== state.renderToken) return;
-  renderStandardList(body, {
-    title: titleCase(key),
-    records,
-    columns: config.columns,
-    searchFields: config.searchFields,
-    filters: config.filters,
-    canManage: hasPermission(config.manage),
-    onCreate: () => openCreateDialog(key),
-    onRowClick: (row) => navigate(`crm/${key}/${row.id}`),
-    emptyMessage: "No records yet.",
-  });
+
+  const listState = { hideTest: key === "leads" };
+  function currentPreFilter(r) {
+    return key === "leads" && listState.hideTest ? !isTestLead(r) : true;
+  }
+
+  const secondaryActions = [];
+  if (key === "leads") {
+    secondaryActions.push({
+      label: "Hide Test Records",
+      active: true,
+      onClick: (event) => {
+        listState.hideTest = !listState.hideTest;
+        event.target.classList.toggle("active", listState.hideTest);
+        rerender();
+      },
+    });
+    secondaryActions.push({
+      label: "Export",
+      onClick: () => downloadCsv(`ochiga-leads-${new Date().toISOString().slice(0, 10)}.csv`, config.exportColumns, records.filter(currentPreFilter)),
+    });
+  }
+
+  function rerender() {
+    renderStandardList(body, {
+      title: titleCase(key),
+      records,
+      columns: config.columns,
+      searchFields: config.searchFields,
+      filters: config.filters,
+      canManage: hasPermission(config.manage),
+      onCreate: key === "leads" ? () => openCreateLeadDialog() : () => openCreateDialog(key),
+      onRowClick: (row) => navigate(`crm/${key}/${row.id}`),
+      emptyMessage: config.emptyMessage || "No records yet.",
+      preFilter: currentPreFilter,
+      secondaryActions: secondaryActions.length ? secondaryActions : undefined,
+    });
+  }
+  rerender();
 }
 
 // ---------------------------------------------------------------
@@ -1955,11 +2362,47 @@ async function renderCrmList(body, key, token) {
 // Support/Tasks/Meetings) below, so every list in Office behaves
 // identically.
 // ---------------------------------------------------------------
-function renderStandardList(body, { title, records, columns, searchFields, filters, canManage, onCreate, onRowClick, emptyMessage, secondaryAction, ownerField }) {
-  const listState = { query: "", filters: {}, mineOnly: false };
+const LIST_PAGE_SIZE = 20;
+// Real client-side pagination — every list here already loads its full
+// collection up front (no server-side paging endpoint exists), so this
+// slices the already-filtered rows rather than adding fake page controls
+// that don't do anything.
+function renderPaginationControls(page, totalPages, onChange) {
+  const wrap = el(`<div class="pagination"></div>`);
+  const prev = el(`<button type="button" class="btn btn-ghost btn-sm" ${page <= 1 ? "disabled" : ""}>‹</button>`);
+  prev.addEventListener("click", () => onChange(page - 1));
+  wrap.appendChild(prev);
+  const maxButtons = 7;
+  const pages = [];
+  if (totalPages <= maxButtons) {
+    for (let p = 1; p <= totalPages; p += 1) pages.push(p);
+  } else {
+    pages.push(1);
+    if (page > 3) pages.push("…");
+    for (let p = Math.max(2, page - 1); p <= Math.min(totalPages - 1, page + 1); p += 1) pages.push(p);
+    if (page < totalPages - 2) pages.push("…");
+    pages.push(totalPages);
+  }
+  pages.forEach((p) => {
+    if (p === "…") {
+      wrap.appendChild(el(`<span class="pagination-ellipsis">…</span>`));
+      return;
+    }
+    const btn = el(`<button type="button" class="pagination-page${p === page ? " active" : ""}">${p}</button>`);
+    btn.addEventListener("click", () => onChange(p));
+    wrap.appendChild(btn);
+  });
+  const next = el(`<button type="button" class="btn btn-ghost btn-sm" ${page >= totalPages ? "disabled" : ""}>›</button>`);
+  next.addEventListener("click", () => onChange(page + 1));
+  wrap.appendChild(next);
+  return wrap;
+}
+
+function renderStandardList(body, { title, records, columns, searchFields, filters, canManage, onCreate, onRowClick, emptyMessage, secondaryAction, secondaryActions, ownerField, preFilter, pageSize = LIST_PAGE_SIZE }) {
+  const listState = { query: "", filters: {}, mineOnly: false, page: 1 };
 
   function draw() {
-    let rows = records;
+    let rows = preFilter ? records.filter(preFilter) : records;
     if (listState.mineOnly) rows = rows.filter((r) => isMine(ownerField ? r[ownerField] : (r.owner || r.assignee)));
     Object.entries(listState.filters).forEach(([field, value]) => {
       if (value) rows = rows.filter((r) => String(r[field] || "") === value);
@@ -1968,14 +2411,24 @@ function renderStandardList(body, { title, records, columns, searchFields, filte
       const q = listState.query.toLowerCase();
       rows = rows.filter((r) => searchFields.some((field) => String(r[field] || "").toLowerCase().includes(q)));
     }
+    const totalPages = Math.max(1, Math.ceil(rows.length / pageSize));
+    if (listState.page > totalPages) listState.page = totalPages;
+    const pageRows = rows.slice((listState.page - 1) * pageSize, listState.page * pageSize);
     resultsHost.innerHTML = "";
     resultsHost.appendChild(renderDataTable({
       columns,
-      rows,
+      rows: pageRows,
       onRowClick,
       emptyMessage: records.length ? "No records match your filters." : (emptyMessage || "No records yet."),
     }));
     countLabel.textContent = `${rows.length} of ${records.length}`;
+    paginationHost.innerHTML = "";
+    if (rows.length > pageSize) {
+      paginationHost.appendChild(renderPaginationControls(listState.page, totalPages, (p) => {
+        listState.page = p;
+        draw();
+      }));
+    }
   }
 
   body.innerHTML = "";
@@ -1989,6 +2442,7 @@ function renderStandardList(body, { title, records, columns, searchFields, filte
     options: [...new Set(records.map((r) => r[filter.key]).filter(Boolean))].sort(),
     onChange: (value) => {
       listState.filters[filter.key] = value;
+      listState.page = 1;
       draw();
     },
   }));
@@ -1997,23 +2451,28 @@ function renderStandardList(body, { title, records, columns, searchFields, filte
     query: listState.query,
     onQuery: (value) => {
       listState.query = value;
+      listState.page = 1;
       draw();
     },
     filters: filterDefs,
-    secondaryAction: secondaryAction || {
+    secondaryAction: secondaryAction === null ? null : (secondaryAction || {
       label: "My Records",
       onClick: (event) => {
         listState.mineOnly = !listState.mineOnly;
         event.target.classList.toggle("active", listState.mineOnly);
+        listState.page = 1;
         draw();
       },
-    },
+    }),
+    secondaryActions,
     primaryAction: canManage && onCreate ? { label: "New", onClick: onCreate } : null,
   });
   body.appendChild(toolbar);
 
   const resultsHost = el(`<div class="crm-results"></div>`);
   body.appendChild(resultsHost);
+  const paginationHost = el(`<div></div>`);
+  body.appendChild(paginationHost);
   draw();
 }
 
@@ -2036,6 +2495,25 @@ function backToList(type) {
   return () => navigate(`crm/${type}`);
 }
 
+// Progressive disclosure (CRM production closure pass) — the primary
+// schema has ~40 columns; the always-visible fact-grid stays to the
+// fields useful at a glance, everything else groups into a collapsible
+// <details> section per category, and a category simply doesn't render
+// if none of its fields are actually populated on this record (never a
+// grid of dashes).
+function factsIfPresent(pairs) {
+  return pairs.filter(([, value]) => value !== null && value !== undefined && String(value).trim() !== "");
+}
+function renderLeadDetailGroup(title, pairs) {
+  const present = factsIfPresent(pairs);
+  if (!present.length) return null;
+  const details = el(`<details class="detail-section detail-collapsible"><summary><h3>${escapeHtml(title)}</h3></summary></details>`);
+  const grid = el(`<div class="fact-grid"></div>`);
+  present.forEach(([label, value]) => grid.appendChild(el(factRow(label, value))));
+  details.appendChild(grid);
+  return details;
+}
+
 async function renderLeadDetail(body, id, token) {
   const [lead, timeline, proposals, conversations] = await Promise.all([
     apiGetLead(id),
@@ -2054,15 +2532,19 @@ async function renderLeadDetail(body, id, token) {
     return;
   }
 
-  const [activities, tasks, projects] = await Promise.all([
+  const [activities, tasks, projects, organizations, opportunities] = await Promise.all([
     fetchActivities().catch(() => []),
     hasPermission("tasks.read") ? fetchTasks().catch(() => []) : Promise.resolve([]),
     hasPermission("projects.read") ? fetchProjects().catch(() => []) : Promise.resolve([]),
+    fetchOrganizations().catch(() => []),
+    fetchOpportunities().catch(() => []),
   ]);
   if (token !== state.renderToken) return;
   const ownActivities = activities.filter((a) => a.lead_id === id);
   const ownTasks = tasks.filter((t) => t.lead_id === id);
   const linkedProject = projects.find((p) => p.lead_id === id);
+  const linkedOrganization = organizations.find((o) => o.id === record.organization_id);
+  const linkedOpportunity = opportunities.find((o) => o.id === record.opportunity_id) || opportunities.find((o) => o.lead_id === id);
   const combinedTimeline = [...timeline, ...ownActivities];
   const canManage = hasPermission("crm.manage");
 
@@ -2074,6 +2556,7 @@ async function renderLeadDetail(body, id, token) {
     ...combinedTimeline.map((t) => t.occurred_at || t.created_at),
   ].filter(Boolean).sort().pop();
   const channelLabel = leadChannelLabel(record);
+  const qualification = leadQualificationLabel(record);
 
   const mainSections = [];
   mainSections.push(el(`
@@ -2082,8 +2565,9 @@ async function renderLeadDetail(body, id, token) {
       <div class="fact-grid">
         ${factRow("Email", record.email)}
         ${factRow("Phone", record.phone)}
+        ${factRowHtml("Stage", leadStageBadge(record))}
         ${factRow("Business Unit", titleCase(record.business_unit))}
-        ${factRow("Source", `${titleCase(record.source)}${channelLabel ? ` · ${channelLabel}` : ""}`)}
+        ${factRow("Source", `${leadSourceLabel(record.source)}${channelLabel ? ` · ${channelLabel}` : ""}`)}
         ${factRow("Owner", record.owner || "Unassigned")}
         ${factRow("Last Communication", lastCommunicationAt ? fmtRelative(lastCommunicationAt) : "No recorded contact yet")}
         ${factRowHtml("Next Action", nextActionCell(record))}
@@ -2091,7 +2575,56 @@ async function renderLeadDetail(body, id, token) {
       </div>
     </div>
   `));
+  if (isTestLead(record)) {
+    mainSections.push(el(`<p class="home-panel-empty" style="padding:0;">This lead's source is "smoke_test" — treated as an internal/test record and hidden from Overview KPIs and Pipeline by default.</p>`));
+  }
   if (canManage) mainSections.push(renderLeadUpdateForm(record));
+
+  const identityGroup = renderLeadDetailGroup("Identity", [
+    ["WhatsApp", record.whatsapp_phone],
+    ["Role", record.role],
+    ["Location", [record.city, record.country].filter(Boolean).join(", ") || record.location],
+  ]);
+  if (identityGroup) mainSections.push(identityGroup);
+
+  const commercialGroup = renderLeadDetailGroup("Commercial", [
+    ["Status", record.status],
+    ["Score", Number.isFinite(Number(record.score ?? record.lead_score)) ? Number(record.score ?? record.lead_score) : null],
+    ["Qualification", qualification ? titleCase(qualification) : null],
+    ["Inquiry Type", record.inquiry_type],
+    ["Interest Package", record.interest_package],
+    ["Budget Range", record.budget_range],
+    ["Timeline", record.timeline],
+    ["Decision Maker", record.decision_maker_status],
+    ["Property Type", record.property_type],
+    ["Property Size", record.property_size],
+    ["Unit Count", record.unit_count ?? record.number_of_units],
+    ["Lost Reason", record.lost_reason],
+  ]);
+  if (commercialGroup) mainSections.push(commercialGroup);
+
+  const sourceGroup = renderLeadDetailGroup("Source Detail", [
+    ["Primary Channel", record.primary_channel],
+    ["Source Channel", record.source_channel],
+    ["Raw Source", record.source],
+    ["Source Site", record.source_site],
+    ["Source Page", record.source_page],
+    ["Source Form", record.source_form],
+  ]);
+  if (sourceGroup) mainSections.push(sourceGroup);
+
+  const intelligenceGroup = renderLeadDetailGroup("Intelligence / Context", [
+    ["Pain Points", record.pain_points],
+    ["Notes", record.notes],
+  ]);
+  if (intelligenceGroup) mainSections.push(intelligenceGroup);
+
+  const systemGroup = renderLeadDetailGroup("System", [
+    ["Created", record.created_at ? fmtDateTime(record.created_at) : null],
+    ["Updated", record.updated_at ? fmtDateTime(record.updated_at) : null],
+  ]);
+  if (systemGroup) mainSections.push(systemGroup);
+
   if (conversations.length) mainSections.push(renderChannelThreadSection(conversations));
   mainSections.push(renderTimeline(combinedTimeline, {
     canAddNote: canManage,
@@ -2099,6 +2632,8 @@ async function renderLeadDetail(body, id, token) {
   }));
 
   const railSections = [];
+  if (linkedOrganization) railSections.push(railCard("Organization", `<a href="#/crm/organizations/${linkedOrganization.id}">${escapeHtml(linkedOrganization.name)}</a>`));
+  if (linkedOpportunity) railSections.push(railCard("Opportunity", `<a href="#/crm/opportunities/${linkedOpportunity.id}">${escapeHtml(titleCase(linkedOpportunity.inquiry_type || "Opportunity"))}</a> <span class="rail-sub">${escapeHtml(titleCase(linkedOpportunity.stage))}</span>`));
   if (hasPermission("tasks.read")) {
     railSections.push(railCard("Tasks", railList(ownTasks, (t) => {
       const overdue = t.due_at && !["done", "completed", "cancelled"].includes(String(t.status || "").toLowerCase()) && new Date(t.due_at).getTime() < Date.now();
@@ -2118,9 +2653,9 @@ async function renderLeadDetail(body, id, token) {
   renderDetailShell(body, {
     type: "lead",
     id,
-    label: record.company || record.name || "Untitled lead",
+    label: leadDisplayName(record),
     typeLine: `Lead · ${titleCase(record.business_unit)}`,
-    badges: [badge(titleCase(record.status || record.stage || "new"), toneForStatus(record.status || record.stage)), badge(record.owner || "Unassigned")],
+    badges: [leadStageBadge(record), badge(record.owner || "Unassigned")],
     backLabel: "Leads",
     onBack: backToList("leads"),
     mainSections,
@@ -2163,10 +2698,25 @@ function factRowHtml(label, html) {
   return `<div class="fact"><span class="fact-label">${escapeHtml(label)}</span><span class="fact-value">${html}</span></div>`;
 }
 
+// Real production stage vocabulary (see LEAD_STAGE_CANON's mapping
+// comment) offered as select options — not the largely-unused
+// PIPELINE_STAGES enum from commercial-ops.js — plus the record's own
+// current raw value so an unrecognized historical value is never
+// silently dropped from the dropdown.
+const LEAD_STAGE_OPTIONS = ["new", "intake_received", "discovery", "sales", "proposal", "quote", "negotiation", "procurement", "won", "lost", "escalated"];
 function renderLeadUpdateForm(record) {
   const section = el(`<div class="detail-section"><h3>Update</h3></div>`);
+  const stageOptions = record.stage && !LEAD_STAGE_OPTIONS.includes(record.stage)
+    ? [record.stage, ...LEAD_STAGE_OPTIONS]
+    : LEAD_STAGE_OPTIONS;
   const form = el(`
     <form class="inline-form">
+      <label>Stage
+        <select name="stage">
+          <option value="">—</option>
+          ${stageOptions.map((s) => `<option value="${escapeHtml(s)}"${s === record.stage ? " selected" : ""}>${escapeHtml(titleCase(s))}</option>`).join("")}
+        </select>
+      </label>
       <label>Status
         <input name="status" value="${escapeHtml(record.status || "")}" />
       </label>
@@ -2190,6 +2740,7 @@ function renderLeadUpdateForm(record) {
     const nextActionAtRaw = formData.get("next_action_at");
     try {
       await apiUpdateLead(record.id, {
+        stage: formData.get("stage") || null,
         status: formData.get("status"),
         owner: formData.get("owner"),
         next_action: formData.get("next_action"),
@@ -2530,6 +3081,29 @@ function openCreateDialog(collectionKey) {
     await apiCreateCrm(collectionKey, data);
     invalidate(collectionKey);
     navigate(`crm/${collectionKey}`);
+  });
+}
+
+// Minimum useful fields for a manually-created lead — matches
+// POST /api/lead-agents/admin/crm/leads' real accepted fields
+// (normalizeLeadInput). Enrichment (score, qualification, additional
+// commercial fields) happens from the lead detail page afterward.
+function openCreateLeadDialog() {
+  openDialog("New Lead", [
+    { name: "name", label: "Name" },
+    { name: "company", label: "Company" },
+    { name: "email", label: "Email", type: "email" },
+    { name: "phone", label: "Phone" },
+    { name: "business_unit", label: "Business Unit" },
+    { name: "inquiry_type", label: "Inquiry Type" },
+    { name: "owner", label: "Owner" },
+    { name: "summary", label: "Summary / Need", type: "textarea" },
+    { name: "next_action", label: "Next Action" },
+  ], async (data) => {
+    if (!data.name && !data.company) throw new Error("Name or Company is required.");
+    const { lead } = await apiCreateLead(data);
+    invalidate("leads");
+    navigate(`crm/leads/${lead.id}`);
   });
 }
 

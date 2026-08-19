@@ -542,6 +542,8 @@
   .badge-green { color: #7fd9a0; border-color: rgba(63, 143, 95, 0.4); background: rgba(63, 143, 95, 0.08); }
   .badge-red { color: var(--red-bright); border-color: rgba(179, 36, 27, 0.4); background: rgba(179, 36, 27, 0.08); }
   .badge-amber { color: var(--amber); border-color: rgba(201, 134, 43, 0.4); background: rgba(201, 134, 43, 0.08); }
+  .badge-blue { color: var(--info-blue); border-color: rgba(79, 127, 209, 0.4); background: rgba(79, 127, 209, 0.08); }
+  .badge-violet { color: var(--violet); border-color: rgba(132, 103, 214, 0.4); background: rgba(132, 103, 214, 0.08); }
 
   /* Home */
   .home-section { margin-bottom: var(--space-4); }
@@ -734,6 +736,34 @@
     border-radius: 50%; background: rgba(179, 36, 27, 0.16); color: var(--white); font-size: 11px; font-weight: 600;
   }
 
+  /* Funnel / distribution bars — CRM Pipeline Overview and reusable
+     wherever Office needs an ordered stage/distribution visualization. */
+  .bar-distribution { display: flex; flex-direction: column; gap: 10px; }
+  .bar-row { display: grid; grid-template-columns: 108px 1fr 30px; align-items: center; gap: 10px; }
+  .bar-row-label { font-size: 12px; color: var(--text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .bar-row-track { height: 8px; border-radius: 4px; background: rgba(255,255,255,0.05); overflow: hidden; }
+  .bar-row-fill { height: 100%; border-radius: 4px; transition: width var(--duration-fast) var(--ease); }
+  .bar-row-count { font-size: 12px; font-weight: 600; color: var(--white); text-align: right; font-variant-numeric: tabular-nums; }
+
+  /* Donut chart — dependency-free conic-gradient + legend. */
+  .donut-chart { display: flex; align-items: center; gap: var(--space-4); flex-wrap: wrap; }
+  .donut-ring {
+    width: 108px; height: 108px; border-radius: 50%; flex-shrink: 0;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .donut-hole {
+    width: 68px; height: 68px; border-radius: 50%; background: var(--charcoal);
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+  }
+  .donut-total { font-size: 18px; font-weight: 700; color: var(--white); line-height: 1.1; }
+  .donut-total-label { font-size: 9.5px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-tertiary); }
+  .donut-legend { display: flex; flex-direction: column; gap: 7px; flex: 1; min-width: 140px; }
+  .donut-legend-row { display: flex; align-items: center; gap: 8px; font-size: 12px; }
+  .donut-swatch { width: 9px; height: 9px; border-radius: 2px; flex-shrink: 0; }
+  .donut-legend-label { color: var(--text-secondary); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .donut-legend-value { color: var(--white); font-weight: 600; font-variant-numeric: tabular-nums; }
+  .donut-legend-pct { color: var(--text-tertiary); font-weight: 400; }
+
   /* List toolbar */
   .list-toolbar { display: flex; align-items: center; gap: 8px; margin-bottom: 14px; flex-wrap: wrap; }
   .toolbar-search, .toolbar-filter {
@@ -745,6 +775,15 @@
   .toolbar-spacer { flex: 1; }
   .btn-sm { padding: 6px 13px; font-size: 12px; }
   .btn-ghost.active { color: var(--white); border-color: var(--red-muted); background: rgba(179,36,27,0.08); }
+  .pagination { display: flex; align-items: center; gap: 4px; margin-top: 14px; }
+  .pagination-page {
+    min-width: 26px; height: 26px; padding: 0 6px; border-radius: var(--radius-sm);
+    border: 1px solid var(--line); background: transparent; color: var(--text-secondary);
+    font-size: 12px; cursor: pointer; font-variant-numeric: tabular-nums;
+  }
+  .pagination-page:hover { color: var(--white); border-color: var(--line-strong); }
+  .pagination-page.active { color: var(--white); background: var(--red); border-color: var(--red); }
+  .pagination-ellipsis { color: var(--text-tertiary); font-size: 12px; padding: 0 2px; }
 
   /* Data table — grid-based, reflows to stacked cards on mobile */
   .crm-table { display: flex; flex-direction: column; border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; }
@@ -769,6 +808,16 @@
   .detail-rail { display: flex; flex-direction: column; gap: 14px; }
   .detail-section h3 { font-size: 12.5px; font-weight: 600; color: var(--white); margin: 0 0 12px; text-transform: uppercase; letter-spacing: 0.04em; }
   .detail-note { font-size: 11.5px; color: var(--text-tertiary); margin-top: 12px; line-height: 1.6; }
+  /* Progressive disclosure — secondary CRM detail groups (Commercial,
+     Source Detail, Intelligence, System) collapse by default so the
+     primary schema doesn't dump 40 columns onto the screen at once. */
+  .detail-collapsible summary { cursor: pointer; list-style: none; }
+  .detail-collapsible summary::-webkit-details-marker { display: none; }
+  .detail-collapsible summary h3 { display: flex; align-items: center; gap: 6px; margin-bottom: 0; }
+  .detail-collapsible summary h3::before { content: "›"; display: inline-block; transition: transform var(--duration-fast) var(--ease); font-size: 14px; color: var(--text-tertiary); }
+  .detail-collapsible[open] summary h3::before { transform: rotate(90deg); }
+  .detail-collapsible[open] summary h3 { margin-bottom: 12px; }
+  .detail-collapsible .fact-grid { margin-top: 12px; }
 
   .status-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
   .status-actions .btn { margin-top: 0; width: auto; }

@@ -3227,6 +3227,40 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
         return;
       }
 
+      // Manual lead creation (CRM production closure pass) — leads have
+      // always been creatable server-side (store.createLead, used by
+      // website intake / marketing-agent flows), but no admin-facing
+      // route existed for a staff member to add one directly. Reuses the
+      // exact same store method, just gated to crm.manage and defaulting
+      // owner/source to the real values a manual entry should carry
+      // (the authenticated staff member and LEAD_SOURCES' "manual"),
+      // instead of the automated-intake defaults.
+      if (pathname === "/api/lead-agents/admin/crm/leads") {
+        if (req.method !== "POST") {
+          methodNotAllowed(res, "POST");
+          return;
+        }
+        authorizePermission(authContext, "crm.manage");
+        const body = await readJsonBody(req);
+        requireObject(body, "body");
+        if (!String(body.name || body.company || "").trim()) {
+          json(res, 400, { error: "name_or_company_required" });
+          return;
+        }
+        const lead = await store.createLead({
+          ...body,
+          source: normalizeText(body.source) || "manual",
+          owner: normalizeText(body.owner) || authContext?.email || "",
+          status: normalizeText(body.status) || "new",
+        });
+        await appendAudit(store, authContext, "lead_created_manual", "lead", lead.id, {
+          source: lead.source,
+          business_unit: lead.business_unit,
+        }, req);
+        json(res, 201, { lead }, { "x-request-id": ctx.requestId });
+        return;
+      }
+
       const memoryMatch = pathname.match(/^\/api\/lead-agents\/leads\/([^/]+)\/memory$/);
       if (memoryMatch) {
         if (req.method !== "GET") {
