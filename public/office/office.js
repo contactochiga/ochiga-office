@@ -1795,9 +1795,13 @@ async function renderAiAgentsHomePanel(token) {
     const traces = data.traces || [];
     const toolExecutions = traces.filter((t) => t.type === "tool_executed");
     const failures = traces.filter((t) => t.type === "office_internal_chat_failed").length;
-    const surfaceCounts = OBSERVATORY_KNOWN_SURFACES.map((surface) => ({
+    // Home's own summary stays scoped to Office's local traces only
+    // (the same lightweight fetch as before) — the full cross-surface
+    // picture, including Consumer/Facility/Website events, lives on the
+    // AI Agents page itself, not duplicated here.
+    const surfaceCounts = OBSERVATORY_SURFACES.map((surface) => ({
       label: surface.label,
-      count: traces.filter((t) => surface.types.includes(t.type)).length,
+      count: traces.filter((t) => TRACE_SURFACE_KEY_BY_TYPE[t.type] === surface.key).length,
     }));
     // "Active Surfaces" is a genuinely derivable count (surfaces with at
     // least one recorded trace) — not a fabricated "Operational" status.
@@ -1806,13 +1810,10 @@ async function renderAiAgentsHomePanel(token) {
       { label: "Interactions", value: traces.length, icon: iconSvg("observatory", "kpi-icon"), tone: "blue" },
       { label: "Tool Executions", value: toolExecutions.length, icon: iconSvg("lightning", "kpi-icon"), tone: "violet" },
       { label: "Failures", value: failures, icon: iconSvg("attention", "kpi-icon"), tone: failures > 0 ? "red" : "green" },
-      { label: "Active Surfaces", value: `${activeSurfaces} / ${OBSERVATORY_KNOWN_SURFACES.length}`, icon: iconSvg("briefing", "kpi-icon"), tone: "blue" },
+      { label: "Active Surfaces", value: `${activeSurfaces} / ${OBSERVATORY_SURFACES.length}`, icon: iconSvg("briefing", "kpi-icon"), tone: "blue" },
     ]));
-    // Only the surfaces Office genuinely tracks — never claim Consumer/
-    // Facility/GetOyi are connected (they render as "Not connected to
-    // Office yet" on the full AI Agents page; Home simply doesn't list
-    // what it can't honestly report on). No status pill here since
-    // system health isn't genuinely known from trace counts alone.
+    // Only the surfaces Office's local traces genuinely cover — the AI
+    // Agents page itself shows the full cross-surface picture.
     panel.appendChild(FactGrid(surfaceCounts.map((surface) => ({
       label: surface.label,
       value: String(surface.count),
@@ -6262,22 +6263,89 @@ async function renderAuditView(outlet, token) {
 async function apiListTraces(limit) {
   return api(`/api/lead-agents/admin/traces${limit ? `?limit=${encodeURIComponent(limit)}` : ""}`);
 }
-const OBSERVATORY_KNOWN_SURFACES = [
-  { key: "office_internal", label: "Ochiga Office", types: ["office_internal_chat_completed", "office_internal_chat_failed"], tone: "red" },
-  { key: "public_website_widget", label: "Ochiga Website (lead-agent widget)", types: ["chat_started", "tool_executed", "chat_completed"], tone: "blue" },
+// Oyi Cross-Surface Observability Closure — Backend's new safe,
+// cross-surface read endpoint (Consumer/Facility/Website-Oyi-widget
+// conversation, voice, vision and device-execution activity). Office's
+// own `traces` table above stays the authoritative source for Office's
+// two legacy paths; this is the second, additive source.
+async function apiListObservabilityEvents(limit) {
+  return api(`/api/lead-agents/admin/observability-events${limit ? `?limit=${encodeURIComponent(limit)}` : ""}`);
+}
+
+// Canonical cross-surface list — the ONE place Office declares which
+// surfaces are real and observable. "Oyi Core / Direct" is deliberately
+// omitted: repeated audits found no trace/event type anywhere that
+// represents a direct-to-Core interaction bypassing every known
+// surface, so listing it would just be an always-zero placeholder.
+const OBSERVATORY_SURFACES = [
+  { key: "office_internal", label: "Ochiga Office", tone: "red" },
+  { key: "ochiga_website", label: "Ochiga Website", tone: "blue" },
+  { key: "consumer", label: "Oyi Consumer", tone: "green" },
+  { key: "facility", label: "Oyi Facility", tone: "amber" },
 ];
-const OBSERVATORY_UNCONNECTED_SURFACES = [
-  "Oyi Consumer",
-  "Oyi Facility",
-  "getoyi.com (Oyi Website)",
-  "Ochiga Backend / Oyi Core (direct)",
-];
+// Which trace `type` values belong to which canonical surface — only
+// Office's own two legacy trace-writing paths (runtime.js's lead-agent
+// widget, server.js's internal chat) need this; the new cross-surface
+// events already carry an explicit `surface` field, no lookup needed.
+const TRACE_SURFACE_KEY_BY_TYPE = {
+  office_internal_chat_completed: "office_internal",
+  office_internal_chat_failed: "office_internal",
+  chat_started: "ochiga_website",
+  tool_executed: "ochiga_website",
+  chat_completed: "ochiga_website",
+};
+function traceSurfaceOf(trace) {
+  const key = TRACE_SURFACE_KEY_BY_TYPE[trace.type];
+  return OBSERVATORY_SURFACES.find((s) => s.key === key) || null;
+}
+// public_corporate (Backend's real surface string for the website's Oyi
+// widget) folds into the same user-facing "Ochiga Website" row as the
+// legacy lead-agent widget traces — two technical pipes, one product.
+function eventSurfaceKey(event) {
+  if (event.surface === "public_corporate") return "ochiga_website";
+  if (event.surface === "consumer" || event.surface === "facility") return event.surface;
+  return null;
+}
+function eventSurfaceLabel(event) {
+  const surface = OBSERVATORY_SURFACES.find((s) => s.key === eventSurfaceKey(event));
+  return surface?.label || titleCase(event.surface || "unknown");
+}
+function surfaceCountsFrom(traces, events) {
+  return OBSERVATORY_SURFACES.map((surface) => {
+    const traceCount = traces.filter((t) => TRACE_SURFACE_KEY_BY_TYPE[t.type] === surface.key).length;
+    const eventCount = events.filter((e) => eventSurfaceKey(e) === surface.key).length;
+    return { ...surface, count: traceCount + eventCount };
+  });
+}
+
 // Canonical modality vocabulary — matches Ochiga Backend's Oyi
-// communications contract (engagement_mode on /office/conversation/*
-// and /communications/*/voice-turn|visual-observation) exactly, so
-// Office never introduces a competing taxonomy for the same concept.
-const MODE_LABELS = { text_conversation: "Chat / Text", voice_conversation: "Voice", video_conversation: "Vision / Camera" };
-const MODE_TONES = { text_conversation: "blue", voice_conversation: "violet", video_conversation: "amber" };
+// communications contract exactly (text_conversation/voice_conversation/
+// video_conversation on trace payloads; text/voice/vision on the newer
+// cross-surface events), normalized to one label set so Office never
+// shows two different names for the same real mode.
+const CANONICAL_MODE_LABELS = { text: "Chat / Text", voice: "Voice", vision: "Vision / Camera" };
+const CANONICAL_MODE_TONES = { text: "blue", voice: "violet", vision: "amber" };
+function normalizeModeKey(rawMode) {
+  if (rawMode === "text_conversation" || rawMode === "text") return "text";
+  if (rawMode === "voice_conversation" || rawMode === "voice") return "voice";
+  if (rawMode === "video_conversation" || rawMode === "vision") return "vision";
+  return null;
+}
+// Only conversational activity has a mode — device/tool executions
+// deliberately carry no mode (never forced into text/voice/vision).
+function modeCountsFrom(traces, events) {
+  const counts = {};
+  traces.forEach((t) => {
+    const key = normalizeModeKey(t.payload?.engagement_mode || "text_conversation");
+    if (key) counts[key] = (counts[key] || 0) + 1;
+  });
+  events.forEach((e) => {
+    const key = normalizeModeKey(e.mode);
+    if (key) counts[key] = (counts[key] || 0) + 1;
+  });
+  return counts;
+}
+
 const TRACE_TYPE_META = {
   chat_started: { label: "Chat Started", tone: "blue" },
   chat_completed: { label: "Chat Completed", tone: "green" },
@@ -6288,11 +6356,6 @@ const TRACE_TYPE_META = {
 function traceMeta(trace) {
   return TRACE_TYPE_META[trace.type] || { label: titleCase(trace.type), tone: "default" };
 }
-function traceSurfaceOf(trace) {
-  return OBSERVATORY_KNOWN_SURFACES.find((surface) => surface.types.includes(trace.type)) || null;
-}
-// A one-line, honest summary of what a trace record actually captured —
-// never invented, only ever what the payload really contains.
 // Readable expansions for the real failure_reason values written at the
 // office_internal_chat_failed trace site (server.js) — every value here
 // traces back to an actual outcome of the real HTTP call to Oyi Core:
@@ -6306,6 +6369,8 @@ const FAILURE_REASON_LABELS = {
   backend_rejected: "Oyi Core rejected the request",
   oyi_core_unavailable: "Oyi Core unavailable",
 };
+// A one-line, honest summary of what a trace record actually captured —
+// never invented, only ever what the payload really contains.
 function traceSummary(trace) {
   const payload = trace.payload || {};
   if (trace.type === "chat_started" && payload.user_message) return payload.user_message;
@@ -6318,49 +6383,60 @@ function traceSummary(trace) {
   }
   return titleCase(trace.type);
 }
+
+// Presentation for the new cross-surface events — event.summary is
+// already a safe, backend-generated line (no transcript/message/image
+// content was ever stored), so this only ever adds a status suffix and
+// picks a badge tone, never invents new copy.
+const EVENT_TYPE_META = {
+  "conversation.turn_completed": { label: "Conversation" },
+  "conversation.voice_turn": { label: "Voice" },
+  "conversation.vision_turn": { label: "Vision" },
+  "device.execution_completed": { label: "Device Action" },
+};
+const EVENT_STATUS_TONE = { failed: "red", denied: "red", timed_out: "red", unavailable: "default" };
+function eventMeta(event) {
+  const base = EVENT_TYPE_META[event.event_type] || { label: titleCase(String(event.event_type || "").split(".").pop() || "event") };
+  const tone = (event.status && EVENT_STATUS_TONE[event.status]) || "green";
+  return { label: base.label, tone };
+}
+function eventSummary(event) {
+  const suffix = event.status && event.status !== "success" ? ` — ${titleCase(event.status)}` : "";
+  return `${event.summary || titleCase(event.event_type || "Event")}${suffix}`;
+}
+function itemTimestamp(item) {
+  return item.created_at || item.occurred_at || "";
+}
+
 // Canonical health adapter, reused for every surface with a real probe
-// (Oyi Core /health, Facility + Consumer /office/export), regardless of
-// transport/auth. Reads the RAW probe result (checked/ok from
-// probeEndpoint()) rather than integrationStatus()'s combined "status"
-// field — that combined field also gates on full export-payload
-// completeness (all 16 Facility / 14 Consumer metric keys), which is a
-// data-SYNC-readiness bar for the Settings/Integrations panel, not a
-// basic connectivity/health bar. A Facility or Consumer deployment can
-// be genuinely up and answering real HTTP requests while still missing
-// a handful of non-critical export fields (e.g. no "documents" key
-// implemented yet) — that's a sync-completeness gap, not an outage, so
-// it must not read as "Degraded" here.
+// (Oyi Core /health, Facility + Consumer /office/export, Website
+// /api/health), regardless of transport/auth. Reads the RAW probe
+// result (checked/ok from probeEndpoint()) rather than
+// integrationStatus()'s combined "status" field — that combined field
+// also gates on full export-payload completeness (all 16 Facility / 14
+// Consumer metric keys), which is a data-SYNC-readiness bar for the
+// Settings/Integrations panel, not a basic connectivity/health bar. A
+// Facility or Consumer deployment can be genuinely up and answering
+// real HTTP requests while still missing a handful of non-critical
+// export fields (e.g. no "documents" key implemented yet) — that's a
+// sync-completeness gap, not an outage, so it must not read as
+// "Degraded" here.
 function healthPresentation(health) {
   if (!health || !health.checked) return { label: "Not configured", tone: "default" };
   if (health.ok) return { label: "Operational", tone: "green" };
   return { label: "Unavailable", tone: "red" };
 }
-// Ochiga Website has no direct health probe (no /health endpoint exists
-// on that site today). Rather than a flat, uninformative "Not
-// reporting", infer liveness honestly from the SAME real trace data
-// already loaded for this page: if the public lead-agent widget surface
-// has produced a real interaction recently, that is itself evidence the
-// site's intake pipeline is alive — labeled distinctly as "Active" (not
-// "Operational", which would imply a direct probe that doesn't exist).
-function websiteActivityPresentation(traces) {
-  const websiteTraces = traces.filter((t) => traceSurfaceOf(t)?.key === "public_website_widget");
-  const latest = websiteTraces[0];
-  if (!latest) return { label: "Not reporting", tone: "default", note: "No direct probe configured; no recorded interactions yet." };
-  const ageMs = Date.now() - new Date(latest.created_at).getTime();
-  if (Number.isFinite(ageMs) && ageMs < 48 * 60 * 60 * 1000) {
-    return { label: "Active", tone: "blue", note: `Inferred from interaction traces · last ${fmtRelative(latest.created_at)}` };
-  }
-  return { label: "Not reporting", tone: "default", note: `No direct probe configured; last interaction ${fmtRelative(latest.created_at)}` };
-}
-// Buckets traces into a real, time-ordered series for the selected range.
-// Straight day/hour buckets only — never a fitted curve, never a range the
-// data can't actually support.
-function bucketTracesForRange(traces, range) {
+// Buckets traces + cross-surface events together into a real, time-
+// ordered series for the selected range. Straight day/hour buckets
+// only — never a fitted curve, never a range the data can't honestly
+// support.
+function bucketInteractionsForRange(traces, events, range) {
   const now = new Date();
+  const items = [...traces, ...events];
   if (range === "today") {
     const buckets = new Map(Array.from({ length: 24 }, (_, h) => [h, 0]));
-    traces.forEach((t) => {
-      const d = new Date(t.created_at);
+    items.forEach((item) => {
+      const d = new Date(itemTimestamp(item));
       if (Number.isNaN(d.getTime()) || d.toDateString() !== now.toDateString()) return;
       buckets.set(d.getHours(), (buckets.get(d.getHours()) || 0) + 1);
     });
@@ -6376,43 +6452,65 @@ function bucketTracesForRange(traces, range) {
     dayKeys.push(key);
     buckets.set(key, 0);
   }
-  traces.forEach((t) => {
-    const d = new Date(t.created_at);
+  items.forEach((item) => {
+    const d = new Date(itemTimestamp(item));
     if (Number.isNaN(d.getTime())) return;
     const key = d.toDateString();
     if (buckets.has(key)) buckets.set(key, buckets.get(key) + 1);
   });
   return dayKeys.map((key) => ({ label: new Date(key).toLocaleDateString(undefined, { day: "numeric", month: "short" }), value: buckets.get(key) || 0 }));
 }
-// Groups traces sharing a trace_id (falling back to lead_id) into
-// conversations — the only grouping key the data actually supports.
-// Never marks a group LIVE; only "Active Recently" when the group has no
-// completion event yet and last moved within the last 10 minutes.
-function groupTracesIntoConversations(traces, limit = 8) {
+// Groups Office's own traces (by trace_id/lead_id) AND the new cross-
+// surface events (by conversation_id/request_id, category=conversation
+// only — device/tool executions never appear here) into conversations.
+// Never marks a group LIVE; Office's own traces can show "Active
+// Recently" (a real started-but-not-yet-concluded gap exists for that
+// path); cross-surface events are always recorded post-hoc, after the
+// orchestrator call already returned, so they only ever show "Recent".
+function groupInteractionsIntoConversations(traces, events, limit = 8) {
   const groups = new Map();
   traces.forEach((t) => {
     const key = t.trace_id || t.lead_id || t.id;
     if (!key) return;
-    if (!groups.has(key)) groups.set(key, []);
-    groups.get(key).push(t);
+    const id = `trace:${key}`;
+    if (!groups.has(id)) groups.set(id, { kind: "trace", rows: [] });
+    groups.get(id).rows.push(t);
+  });
+  events.filter((e) => e.category === "conversation").forEach((e) => {
+    const key = e.conversation_id || e.request_id || e.id;
+    if (!key) return;
+    const id = `event:${key}`;
+    if (!groups.has(id)) groups.set(id, { kind: "event", rows: [] });
+    groups.get(id).rows.push(e);
   });
   const COMPLETION_TYPES = new Set(["chat_completed", "office_internal_chat_completed", "office_internal_chat_failed"]);
-  const conversations = Array.from(groups.values()).map((rows) => {
-    const sorted = rows.slice().sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)));
-    const latest = sorted[0];
-    const started = sorted[sorted.length - 1];
-    const surface = traceSurfaceOf(latest) || traceSurfaceOf(started);
-    const concluded = rows.some((r) => COMPLETION_TYPES.has(r.type));
-    const lastActivityMs = new Date(latest.created_at).getTime();
-    const recentlyActive = !concluded && Number.isFinite(lastActivityMs) && Date.now() - lastActivityMs < 10 * 60 * 1000;
-    const summarySource = rows.find((r) => r.type === "chat_started") || started;
+  const conversations = Array.from(groups.values()).map((group) => {
+    if (group.kind === "trace") {
+      const rows = group.rows;
+      const sorted = rows.slice().sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)));
+      const latest = sorted[0];
+      const started = sorted[sorted.length - 1];
+      const surface = traceSurfaceOf(latest) || traceSurfaceOf(started);
+      const concluded = rows.some((r) => COMPLETION_TYPES.has(r.type));
+      const lastActivityMs = new Date(latest.created_at).getTime();
+      const recentlyActive = !concluded && Number.isFinite(lastActivityMs) && Date.now() - lastActivityMs < 10 * 60 * 1000;
+      const summarySource = rows.find((r) => r.type === "chat_started") || started;
+      return {
+        surfaceLabel: surface?.label || "Unknown surface",
+        summary: traceSummary(summarySource),
+        lastActivity: latest.created_at,
+        state: recentlyActive ? "Active Recently" : "Recent",
+        stateTone: recentlyActive ? "blue" : "default",
+      };
+    }
+    const rows = group.rows.slice().sort((a, b) => String(b.occurred_at).localeCompare(String(a.occurred_at)));
+    const latest = rows[0];
     return {
-      key: latest.trace_id || latest.lead_id || latest.id,
-      surfaceLabel: surface?.label || "Unknown surface",
-      summary: traceSummary(summarySource),
-      lastActivity: latest.created_at,
-      state: recentlyActive ? "Active Recently" : "Recent",
-      stateTone: recentlyActive ? "blue" : "default",
+      surfaceLabel: eventSurfaceLabel(latest),
+      summary: eventSummary(latest),
+      lastActivity: latest.occurred_at,
+      state: "Recent",
+      stateTone: "default",
     };
   });
   return conversations.sort((a, b) => String(b.lastActivity).localeCompare(String(a.lastActivity))).slice(0, limit);
@@ -6428,19 +6526,24 @@ async function renderObservatoryView(outlet, token) {
   const canViewSchedules = hasPermission("office.read") || hasPermission("content.write");
 
   let traces;
+  let events = [];
+  let eventsAvailable = true;
   let integrations = null;
   let demos = [];
   let scheduledContent = [];
   let demosFailed = false;
   let contentFailed = false;
   try {
-    const [tracesData, integrationsData, demosData, contentData] = await Promise.all([
+    const [tracesData, eventsData, integrationsData, demosData, contentData] = await Promise.all([
       apiListTraces(500),
+      apiListObservabilityEvents(500).catch(() => { eventsAvailable = false; return { events: [] }; }),
       canViewHealth ? apiGetIntegrations().catch(() => null) : Promise.resolve(null),
       hasPermission("office.read") ? apiListDemos().catch(() => { demosFailed = true; return { demos: [] }; }) : Promise.resolve({ demos: [] }),
       hasPermission("content.write") ? apiListContent("scheduled").catch(() => { contentFailed = true; return { items: [] }; }) : Promise.resolve({ items: [] }),
     ]);
     traces = tracesData.traces || [];
+    events = eventsData.events || [];
+    if (eventsData.available === false) eventsAvailable = false;
     integrations = integrationsData?.integrations || null;
     demos = demosData.demos || [];
     scheduledContent = contentData.items || [];
@@ -6455,25 +6558,39 @@ async function renderObservatoryView(outlet, token) {
 
   outlet.innerHTML = "";
   outlet.appendChild(el(`<div class="view-heading"><h1>AI Agents</h1></div>`));
+  if (!eventsAvailable) {
+    outlet.appendChild(el(`<p class="home-panel-empty" style="margin:0 0 var(--space-3);">Cross-surface activity (Consumer/Facility/Website Oyi widget) is temporarily unavailable — showing Office's own recorded activity only.</p>`));
+  }
 
   // ---- KPI row ----
   const toolExecutions = traces.filter((t) => t.type === "tool_executed");
+  const deviceEvents = events.filter((e) => e.category === "device");
   const toolCounts = {};
   toolExecutions.forEach((t) => { const name = t.tool_name || "unknown"; toolCounts[name] = (toolCounts[name] || 0) + 1; });
+  deviceEvents.forEach((e) => { const name = e.tool || "unknown"; toolCounts[name] = (toolCounts[name] || 0) + 1; });
   const failures = traces.filter((t) => t.type === "office_internal_chat_failed").length;
-  const surfaceCounts = OBSERVATORY_KNOWN_SURFACES.map((surface) => ({ ...surface, count: traces.filter((t) => surface.types.includes(t.type)).length }));
+  const surfaceCounts = surfaceCountsFrom(traces, events);
+  // Active Surfaces = surfaces with at least one recorded interaction in
+  // this page's fetched window (up to 500 most recent traces + 500 most
+  // recent cross-surface events) — an ACTIVITY signal, distinct from
+  // System Health's REACHABILITY signal below. A surface can be
+  // Operational with zero recent activity, or Active with a health
+  // probe that's never run (Ochiga Website before this closure). "Oyi
+  // Core / Direct" is not in the denominator — no observable direct-
+  // to-Core interaction type exists anywhere in the data.
   const activeSurfaces = surfaceCounts.filter((s) => s.count > 0).length;
   const now = Date.now();
   const upcomingDemos = demos.filter((d) => d.scheduled_for && new Date(d.scheduled_for).getTime() > now && d.status !== "cancelled");
   const upcomingContent = scheduledContent.filter((c) => c.scheduled_publish_at && new Date(c.scheduled_publish_at).getTime() > now);
   const schedulesRunning = upcomingDemos.length + upcomingContent.length;
-  const lastInteraction = traces[0];
+  const allInteractions = [...traces, ...events];
+  const lastInteraction = allInteractions.slice().sort((a, b) => String(itemTimestamp(b)).localeCompare(String(itemTimestamp(a))))[0];
 
   const kpiGroup = KPIGroup([
-    { label: "Recorded Interactions", value: traces.length, icon: iconSvg("observatory", "kpi-icon"), tone: "blue", sub: lastInteraction ? `Last interaction ${fmtRelative(lastInteraction.created_at)}` : "No interactions yet" },
-    { label: "Tool Executions", value: toolExecutions.length, icon: iconSvg("lightning", "kpi-icon"), tone: "violet", sub: Object.keys(toolCounts).length ? `${Object.keys(toolCounts).length} distinct tools` : "No tool calls yet" },
+    { label: "Recorded Interactions", value: allInteractions.length, icon: iconSvg("observatory", "kpi-icon"), tone: "blue", sub: lastInteraction ? `Last interaction ${fmtRelative(itemTimestamp(lastInteraction))}` : "No interactions yet" },
+    { label: "Tool Executions", value: toolExecutions.length + deviceEvents.length, icon: iconSvg("lightning", "kpi-icon"), tone: "violet", sub: Object.keys(toolCounts).length ? `${Object.keys(toolCounts).length} distinct tools` : "No tool calls yet" },
     { label: "Office Chat Failures", value: failures, icon: iconSvg("attention", "kpi-icon"), tone: failures > 0 ? "red" : "green", alert: failures > 0, sub: failures > 0 ? "Needs attention" : "None recorded" },
-    { label: "Active Surfaces", value: `${activeSurfaces} / ${OBSERVATORY_KNOWN_SURFACES.length}`, icon: iconSvg("briefing", "kpi-icon"), tone: "green", sub: "Surfaces with recorded interactions" },
+    { label: "Active Surfaces", value: `${activeSurfaces} / ${OBSERVATORY_SURFACES.length}`, icon: iconSvg("briefing", "kpi-icon"), tone: "green", sub: "Surfaces with recorded interaction" },
     { label: "Schedules Running", value: schedulesRunning, icon: iconSvg("meetings", "kpi-icon"), tone: "amber", sub: canViewSchedules ? "Upcoming demos + scheduled content" : "Requires reports/content access" },
   ]);
   kpiGroup.style.marginBottom = "var(--space-5)";
@@ -6496,7 +6613,7 @@ async function renderObservatoryView(outlet, token) {
       rangeTabs.appendChild(btn);
     });
     chartBody.innerHTML = "";
-    chartBody.appendChild(areaChart(bucketTracesForRange(traces, activeRange), { emptyText: "No interactions recorded in this range." }));
+    chartBody.appendChild(areaChart(bucketInteractionsForRange(traces, events, activeRange), { emptyText: "No interactions recorded in this range." }));
   }
   paintChart();
   chartPanel.appendChild(rangeTabs);
@@ -6509,23 +6626,17 @@ async function renderObservatoryView(outlet, token) {
     "No interactions recorded yet."
   ));
 
-  // Interactions by Mode — reuses the exact engagement_mode vocabulary
-  // Ochiga Backend's Oyi communications contract already defines
-  // (text_conversation/voice_conversation/video_conversation), not a
-  // new taxonomy. Every trace Office can currently see comes from a
-  // text-only path (Office's own internal chat box, and the lead-agent
-  // widget's plain-text runtime), so this honestly renders 100% Chat /
-  // Text today. It's wired to a real field so a future voice/vision
-  // path can populate real values without another schema change.
-  const modeCounts = {};
-  traces.forEach((t) => {
-    const mode = t.payload?.engagement_mode || "text_conversation";
-    modeCounts[mode] = (modeCounts[mode] || 0) + 1;
-  });
+  // Interactions by Mode — genuinely cross-surface now: Office's own
+  // traces are still always text (neither of Office's two conversation
+  // paths captures voice/vision), but the cross-surface events can
+  // carry real voice/vision modes once Consumer/Facility/the website's
+  // Oyi widget actually produce one. Zero voice/vision activity still
+  // renders as 100% Chat / Text — never seeded, never assumed.
+  const modeCounts = modeCountsFrom(traces, events);
   const modeSegments = Object.entries(modeCounts).map(([mode, count]) => ({
-    label: MODE_LABELS[mode] || titleCase(mode.replace(/_conversation$/, "")),
+    label: CANONICAL_MODE_LABELS[mode] || titleCase(mode),
     count,
-    tone: MODE_TONES[mode] || "default",
+    tone: CANONICAL_MODE_TONES[mode] || "default",
   }));
   const modeDonutPanel = homePanel("Interactions by Mode");
   modeDonutPanel.style.marginTop = "var(--space-4)";
@@ -6543,9 +6654,11 @@ async function renderObservatoryView(outlet, token) {
   const toolPanel = homePanel("Tool Usage");
   if (Object.keys(toolCounts).length) {
     // titleCase() only reformats spacing/casing (create_lead -> "Create
-    // Lead") — it never collapses two distinct raw tool_name values onto
+    // Lead") — it never collapses two distinct raw tool identifiers onto
     // the same label, so observability by real tool identity is
-    // preserved even though the row now reads cleanly.
+    // preserved even though the row now reads cleanly. Combines Office's
+    // own tool_executed traces with real device/tool executions from
+    // Consumer/Facility (ai_execution_ledger, via the events source).
     toolPanel.appendChild(barDistribution(
       Object.entries(toolCounts).sort((a, b) => b[1] - a[1]).map(([name, count]) => ({ label: titleCase(name), count, tone: "violet" })),
       "No tool executions recorded yet."
@@ -6555,20 +6668,26 @@ async function renderObservatoryView(outlet, token) {
   }
   rowB.appendChild(homePanelWrap("span-6", toolPanel));
 
+  // Recent Activity is the unified cross-surface operational event
+  // stream — Office's own traces AND Consumer/Facility/Website events
+  // merged and sorted by real timestamp. Failures render with their
+  // real status suffix (see eventSummary/traceSummary) — never hidden.
   const activityPanel = homePanel("Recent Activity");
-  if (!traces.length) {
-    activityPanel.appendChild(el(`<p class="home-panel-empty">No interactions recorded yet. Real activity will appear here as staff use Office's Oyi chat or the public website's lead-agent widget.</p>`));
+  const recentActivityItems = [
+    ...traces.slice(0, 20).map((t) => ({ ts: t.created_at, badgeMeta: traceMeta(t), title: traceSummary(t), surfaceLabel: traceSurfaceOf(t)?.label || "" })),
+    ...events.slice(0, 20).map((e) => ({ ts: e.occurred_at, badgeMeta: eventMeta(e), title: eventSummary(e), surfaceLabel: eventSurfaceLabel(e) })),
+  ].sort((a, b) => String(b.ts).localeCompare(String(a.ts))).slice(0, 10);
+  if (!recentActivityItems.length) {
+    activityPanel.appendChild(el(`<p class="home-panel-empty">No interactions recorded yet. Real activity will appear here as staff, residents, and facility operators use Oyi across Ochiga.</p>`));
   } else {
     const list = el(`<div class="attention-list"></div>`);
-    traces.slice(0, 10).forEach((t) => {
-      const meta = traceMeta(t);
-      const surface = traceSurfaceOf(t);
+    recentActivityItems.forEach((item) => {
       list.appendChild(el(`
         <div class="attention-row">
-          <span class="attention-type">${badge(meta.label, meta.tone)}</span>
-          <span class="attention-title">${escapeHtml(traceSummary(t))}</span>
-          <span class="attention-owner">${escapeHtml(surface?.label || "")}</span>
-          <span class="attention-owner">${escapeHtml(fmtRelative(t.created_at))}</span>
+          <span class="attention-type">${badge(item.badgeMeta.label, item.badgeMeta.tone)}</span>
+          <span class="attention-title">${escapeHtml(item.title)}</span>
+          <span class="attention-owner">${escapeHtml(item.surfaceLabel)}</span>
+          <span class="attention-owner">${escapeHtml(fmtRelative(item.ts))}</span>
         </div>
       `));
     });
@@ -6579,10 +6698,11 @@ async function renderObservatoryView(outlet, token) {
   // ---- Recent Conversations ----
   // Named for what these records actually are: almost all of them are
   // concluded historical conversations, not live sessions. A per-row
-  // "Active Recently" badge (see groupTracesIntoConversations) is the
-  // only place liveness is ever implied, and only when the group is
-  // genuinely unconcluded and moved within the last 10 minutes.
-  const conversations = groupTracesIntoConversations(traces);
+  // "Active Recently" badge is the only place liveness is ever implied
+  // (only for Office's own traces, which have a genuine started-vs-
+  // concluded gap; see groupInteractionsIntoConversations). Strictly
+  // conversational — device/tool execution events never appear here.
+  const conversations = groupInteractionsIntoConversations(traces, events);
   const conversationsPanel = homePanel("Recent Conversations");
   conversationsPanel.style.marginTop = "var(--space-4)";
   if (!conversations.length) {
@@ -6620,7 +6740,10 @@ async function renderObservatoryView(outlet, token) {
       // Self-evident: if this page rendered, Office itself is up — not
       // an inferred or fabricated value.
       { label: "Ochiga Office", presentation: { label: "Operational", tone: "green" } },
-      { label: "Ochiga Website", presentation: websiteActivityPresentation(traces) },
+      // Real /api/health probe now, replacing the previous trace-
+      // inference fallback — "Not Reporting" means exactly that: no
+      // trustworthy health signal, never "no recent traffic."
+      { label: "Ochiga Website", presentation: healthPresentation(integrations?.website?.endpoint_health) },
       { label: "Oyi Facility", presentation: healthPresentation(integrations?.facility?.endpoint_health), note: facilityIncomplete ? "Reachable; some export fields not yet reported" : undefined },
       { label: "Oyi Consumer", presentation: healthPresentation(integrations?.consumer?.endpoint_health), note: consumerIncomplete ? "Reachable; some export fields not yet reported" : undefined },
     ];
@@ -6666,18 +6789,19 @@ async function renderObservatoryView(outlet, token) {
   rowC.appendChild(homePanelWrap("span-6", schedulePanel));
 
   // ---- Intelligence Insights ----
-  // Every metric here is computed over the same fetched trace window as
-  // the rest of the page (up to the 500 most recent traces — NOT scoped
-  // to the Interactions Over Time range selector, which only rebuckets
-  // the same fetch for display). Formulas, spelled out so they never
-  // become ambiguous later:
+  // Every metric here is computed over the same fetched window as the
+  // rest of the page (up to the 500 most recent traces + 500 most
+  // recent cross-surface events — NOT scoped to the Interactions Over
+  // Time range selector, which only rebuckets the same fetch for
+  // display). Formulas, spelled out so they never become ambiguous
+  // later:
   const insightCells = [];
 
   // Peak Activity = the hour-of-day (viewer's local time, 0-23) with the
-  // most trace rows, counted across ALL trace types in the fetch window.
+  // most recorded interactions (traces + events combined) in the window.
   const hourCounts = new Map();
-  traces.forEach((t) => {
-    const d = new Date(t.created_at);
+  allInteractions.forEach((item) => {
+    const d = new Date(itemTimestamp(item));
     if (Number.isNaN(d.getTime())) return;
     const h = d.getHours();
     hourCounts.set(h, (hourCounts.get(h) || 0) + 1);
@@ -6687,8 +6811,9 @@ async function renderObservatoryView(outlet, token) {
     insightCells.push({ label: "Peak Activity", value: `${String(peakHour).padStart(2, "0")}:00`, icon: iconSvg("trend", "kpi-icon"), tone: "blue" });
   }
 
-  // Most Active Surface = the OBSERVATORY_KNOWN_SURFACES entry with the
-  // highest trace count (same surfaceCounts used by the donut above).
+  // Most Active Surface = the OBSERVATORY_SURFACES entry with the
+  // highest combined trace+event count (same surfaceCounts used by the
+  // donut above).
   const activeSurfaceCounts = surfaceCounts.filter((s) => s.count > 0);
   if (activeSurfaceCounts.length) {
     const top = activeSurfaceCounts.slice().sort((a, b) => b.count - a.count)[0];
@@ -6723,14 +6848,27 @@ async function renderObservatoryView(outlet, token) {
     insightCells.push({ label: "Office Chat Success Rate", value: `${rate}%`, icon: iconSvg("audit", "kpi-icon"), tone: rate >= 90 ? "green" : "amber" });
   }
 
-  // Most Used Interaction Mode = the engagement_mode with the highest
-  // trace count (same modeCounts used by the Interactions by Mode
+  // Consumer + Facility Success Rate = (events where surface is
+  // consumer/facility, category=conversation, status=success) /
+  // (same scope, any status) — the second, now-real success/fail
+  // dichotomy this closure adds (every cross-surface event carries a
+  // real status). Kept separate from Office Chat Success Rate rather
+  // than merged into one blended number, same precision principle.
+  const consumerFacilityConversations = events.filter((e) => e.category === "conversation" && (e.surface === "consumer" || e.surface === "facility"));
+  if (consumerFacilityConversations.length) {
+    const succeeded = consumerFacilityConversations.filter((e) => e.status === "success").length;
+    const rate = Math.round((succeeded / consumerFacilityConversations.length) * 100);
+    insightCells.push({ label: "Consumer + Facility Success Rate", value: `${rate}%`, icon: iconSvg("audit", "kpi-icon"), tone: rate >= 90 ? "green" : "amber" });
+  }
+
+  // Most Used Interaction Mode = the mode with the highest combined
+  // trace+event count (same modeCounts used by the Interactions by Mode
   // donut above) — real today even though it will always read "Chat /
-  // Text" until a voice/vision path exists.
+  // Text" until a genuine voice/vision turn exists anywhere.
   const modeEntries = Object.entries(modeCounts);
   if (modeEntries.length) {
     const [topMode] = modeEntries.sort((a, b) => b[1] - a[1])[0];
-    insightCells.push({ label: "Most Used Interaction Mode", value: MODE_LABELS[topMode] || titleCase(topMode), icon: iconSvg("observatory", "kpi-icon"), tone: "blue" });
+    insightCells.push({ label: "Most Used Interaction Mode", value: CANONICAL_MODE_LABELS[topMode] || titleCase(topMode), icon: iconSvg("observatory", "kpi-icon"), tone: "blue" });
   }
   if (insightCells.length) {
     const insightsPanel = homePanel("Intelligence Insights");

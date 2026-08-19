@@ -329,10 +329,51 @@ async function callOyiCoreOfficeInternalConversation(config = {}, payload = {}, 
   );
 }
 
+// Oyi Cross-Surface Observability Closure — Backend's new safe,
+// cross-surface read endpoint (Consumer/Facility/Website-Oyi-widget
+// conversation, voice, vision and device-execution activity). Same
+// credential/timeout convention as the conversation calls above.
+async function callOyiCoreObservabilityEvents(config = {}, options = {}) {
+  const baseUrl = String(config.officeBackendBaseUrl || "").replace(/\/+$/, "");
+  const path = config.officeObservabilityEventsPath || "/office/observability/events";
+  if (!baseUrl) {
+    return { ok: false, unavailable: true, reason: "not_configured", events: [] };
+  }
+  const headers = {};
+  if (config.officeBackendApiKey) headers["x-office-api-key"] = config.officeBackendApiKey;
+  if (config.officeBackendBearerToken) headers.authorization = `Bearer ${config.officeBackendBearerToken}`;
+
+  const get = options.httpGet || ((targetUrl, requestConfig) => axios.get(targetUrl, requestConfig));
+  try {
+    const response = await get(`${baseUrl}${path}`, {
+      timeout: config.officeBackendEventTimeoutMs || 10_000,
+      headers,
+      params: options.limit ? { limit: options.limit } : undefined,
+      validateStatus: () => true,
+    });
+    const status = Number(response && response.status) || 0;
+    const body = response && response.data && typeof response.data === "object" ? response.data : {};
+    if (status >= 200 && status < 300 && body.ok !== false) {
+      return { ok: true, unavailable: false, status, events: Array.isArray(body.events) ? body.events : [] };
+    }
+    return { ok: false, unavailable: true, status, reason: text(body.error || "backend_rejected"), events: [] };
+  } catch (error) {
+    return {
+      ok: false,
+      unavailable: true,
+      status: 0,
+      reason: "network_error",
+      error: error && error.code ? String(error.code) : "request_failed",
+      events: [],
+    };
+  }
+}
+
 module.exports = {
   buildOyiCoreCorporateConversationRequest,
   buildOyiCoreOfficeInternalRequest,
   callOyiCoreCorporateConversation,
   callOyiCoreOfficeInternalConversation,
+  callOyiCoreObservabilityEvents,
   oyiCoreConversationUrl,
 };

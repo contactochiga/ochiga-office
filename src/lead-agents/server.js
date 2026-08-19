@@ -44,6 +44,7 @@ const {
   buildOyiCoreOfficeInternalRequest,
   callOyiCoreCorporateConversation,
   callOyiCoreOfficeInternalConversation,
+  callOyiCoreObservabilityEvents,
 } = require("./oyi-core-gateway");
 const { executeGovernedOfficeToolProposals } = require("./office-tool-governance");
 const { listDocumentTemplates, renderDocumentFromTemplate } = require("./office-document-templates");
@@ -377,6 +378,10 @@ async function integrationStatus(config, options = {}) {
   const backendHealthPromise = probeEndpoint(config.officeBackendBaseUrl, "/health", {
     headers: config.officeBackendApiKey ? { "x-api-key": config.officeBackendApiKey } : {},
   });
+  // Oyi Cross-Surface Observability Closure — Ochiga Website's own real
+  // /api/health probe, replacing the AI Agents page's previous trace-
+  // inference fallback. No auth required (a public liveness endpoint).
+  const websiteProbePromise = probeEndpoint(config.officeWebsiteBaseUrl, config.officeWebsiteHealthPath || "/api/health", {});
   const facilityProbePromise = config.officeFacilityBaseUrl && hasFacilityAuth
     ? probeEndpoint(config.officeFacilityBaseUrl, config.officeFacilityExportPath || "/office/export", {
         headers: authHeadersFromConfig(config, "officeFacility"),
@@ -405,12 +410,13 @@ async function integrationStatus(config, options = {}) {
         })
       : { checked: true, ok: true, status: "same_origin", same_origin: true }
     : { checked: false, ok: false, status: externalTwin ? "pending" : "same_origin_scene_only" };
-  const [backendHealth, facilityProbe, consumerProbe, twinSceneProbe, twinStateProbe] = await Promise.all([
+  const [backendHealth, facilityProbe, consumerProbe, twinSceneProbe, twinStateProbe, websiteProbe] = await Promise.all([
     backendHealthPromise,
     facilityProbePromise,
     consumerProbePromise,
     twinSceneProbePromise,
     twinStateProbePromise,
+    websiteProbePromise,
   ]);
   const facilityPayload = payloadSupport(facilityProbe.payload, facilityMetrics, "facility");
   const consumerPayload = payloadSupport(consumerProbe.payload, consumerMetrics, "consumer");
@@ -467,6 +473,21 @@ async function integrationStatus(config, options = {}) {
         ["OFFICE_CONSUMER_BASE_URL", config.officeConsumerBaseUrl],
         ["OFFICE_CONSUMER_API_KEY or OFFICE_CONSUMER_BEARER_TOKEN", hasConsumerAuth],
       ]),
+    },
+    // Oyi Cross-Surface Observability Closure — real probe, no auth
+    // required (a public liveness endpoint). "Not Reporting" now means
+    // exactly that: the probe itself couldn't get a signal, never
+    // "no recent traffic."
+    website: {
+      key: "website",
+      name: "Ochiga Website",
+      configured: true,
+      production_ready: Boolean(websiteProbe.ok),
+      status: statusLabel(true, Boolean(websiteProbe.ok), websiteProbe.checked && !websiteProbe.ok),
+      base_url: config.officeWebsiteBaseUrl || "",
+      health_path: config.officeWebsiteHealthPath || "/api/health",
+      endpoint_health: { checked: websiteProbe.checked, ok: websiteProbe.ok, status: websiteProbe.status, http_status: websiteProbe.http_status || null },
+      missing: [],
     },
     email: {
       key: "email",
@@ -3886,6 +3907,32 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
               lead_id: req.headers["x-lead-id"] || "",
             }),
           },
+          { "x-request-id": ctx.requestId }
+        );
+        return;
+      }
+
+      // Oyi Cross-Surface Observability Closure — Consumer/Facility/
+      // Website-Oyi-widget conversation, voice, vision and device-
+      // execution activity Office's own local traces table has no
+      // visibility into. Same permission as traces (this is the same
+      // observability surface, just a second real source feeding it).
+      if (pathname === "/api/lead-agents/admin/observability-events") {
+        if (req.method !== "GET") {
+          methodNotAllowed(res, "GET");
+          return;
+        }
+        authorizePermission(authContext, "view_traces");
+        const eventsUrl = new URL(req.url, "http://localhost");
+        const requestedLimit = Number(eventsUrl.searchParams.get("limit"));
+        const limit = Number.isFinite(requestedLimit) && requestedLimit > 0
+          ? Math.min(Math.floor(requestedLimit), 1000)
+          : 200;
+        const result = await callOyiCoreObservabilityEvents(config, { limit });
+        json(
+          res,
+          200,
+          { events: result.events || [], available: result.ok !== false },
           { "x-request-id": ctx.requestId }
         );
         return;
