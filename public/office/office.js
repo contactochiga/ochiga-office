@@ -2773,27 +2773,42 @@ function renderPortfolioOperationalSection(entry) {
       </div>
     `);
   }
-  return el(`
-    <div class="detail-section">
-      <h3>Oyi Operational Overview</h3>
-      <div class="fact-grid">
-        ${factRow("Homes (total)", projection.homes_total != null ? String(projection.homes_total) : "—")}
-        ${factRow("Homes (active)", projection.homes_active != null ? String(projection.homes_active) : "—")}
-        ${factRow("Devices (total)", projection.devices_total != null ? String(projection.devices_total) : "—")}
-        ${factRow("Devices Online", projection.devices_online != null ? String(projection.devices_online) : "Not reported")}
-        ${factRow("Major Open Escalations", projection.major_open_escalations != null ? String(projection.major_open_escalations) : "—")}
-        ${factRow("Last Activity", projection.last_activity_at ? `${escapeHtml(projection.last_activity_label || "Activity recorded")} · ${fmtRelative(projection.last_activity_at)}` : "No recent activity recorded")}
-      </div>
-      <p class="detail-note">Aggregate counts only, fetched live from Ochiga Backend's safe Portfolio projection contract — never resident, wallet, or camera-level detail.</p>
-    </div>
-  `);
+  const section = el(`<div class="detail-section"><h3>Oyi Operational Overview</h3></div>`);
+  section.appendChild(KPIGroup([
+    { label: "Homes (Total)", value: projection.homes_total ?? "—" },
+    { label: "Homes (Active)", value: projection.homes_active ?? "—" },
+    { label: "Devices (Total)", value: projection.devices_total ?? "—" },
+    { label: "Devices Online", value: projection.devices_online ?? "Not reported" },
+    { label: "Open Escalations", value: projection.major_open_escalations ?? "—", alert: (projection.major_open_escalations || 0) > 0 },
+  ]));
+  section.appendChild(el(`
+    <p class="detail-note">
+      ${projection.last_activity_at ? `${escapeHtml(projection.last_activity_label || "Activity recorded")} · ${escapeHtml(fmtRelative(projection.last_activity_at))} — ` : "No recent activity recorded — "}
+      aggregate counts only, fetched live from Ochiga Backend's safe Portfolio projection contract, never resident, wallet, or camera-level detail.
+    </p>
+  `));
+  return section;
 }
 
 async function renderPortfolioList(outlet, token) {
   setSelectedObject(null);
   const portfolioEntries = await fetchPortfolio();
   if (token !== state.renderToken) return;
-  renderStandardList(outlet, {
+  outlet.innerHTML = "";
+
+  const linked = portfolioEntries.filter((p) => p.operational_projection?.linked);
+  const openEscalations = portfolioEntries.reduce((sum, p) => sum + (p.operational_projection?.major_open_escalations || 0), 0);
+  const kpiGroup = KPIGroup([
+    { label: "Portfolio Entries", value: portfolioEntries.length, icon: iconSvg("portfolio", "kpi-icon") },
+    { label: "Linked to Oyi", value: linked.length, icon: iconSvg("portfolio", "kpi-icon") },
+    { label: "Open Escalations", value: openEscalations, icon: iconSvg("attention", "kpi-icon"), alert: openEscalations > 0 },
+  ]);
+  kpiGroup.style.marginBottom = "var(--space-5)";
+  outlet.appendChild(kpiGroup);
+
+  const listBody = el(`<div></div>`);
+  outlet.appendChild(listBody);
+  renderStandardList(listBody, {
     title: "Portfolio",
     records: portfolioEntries,
     columns: [
@@ -3947,13 +3962,14 @@ async function renderReportsList(outlet, token) {
     </div>
   `));
 
-  outlet.appendChild(el(`
-    <div class="kpi-grid" style="margin-bottom:18px;">
-      <div class="kpi-card"><span class="kpi-label">Awaiting Decision</span><span class="kpi-value">${reports.filter((r) => r.status === "submitted").length}</span></div>
-      <div class="kpi-card"><span class="kpi-label">Approved</span><span class="kpi-value">${reports.filter((r) => r.status === "approved").length}</span></div>
-      <div class="kpi-card"><span class="kpi-label">Rejected</span><span class="kpi-value">${reports.filter((r) => r.status === "rejected").length}</span></div>
-    </div>
-  `));
+  const awaitingCount = reports.filter((r) => r.status === "submitted").length;
+  const kpiGroup = KPIGroup([
+    { label: "Awaiting Decision", value: awaitingCount, icon: iconSvg("attention", "kpi-icon"), alert: awaitingCount > 0 },
+    { label: "Approved", value: reports.filter((r) => r.status === "approved").length, icon: iconSvg("reports", "kpi-icon") },
+    { label: "Rejected", value: reports.filter((r) => r.status === "rejected").length, icon: iconSvg("reports", "kpi-icon") },
+  ]);
+  kpiGroup.style.marginBottom = "var(--space-5)";
+  outlet.appendChild(kpiGroup);
 
   const newBtn = el(`<button type="button" class="btn btn-primary btn-sm" style="margin-bottom:14px;">Submit Report</button>`);
   newBtn.addEventListener("click", () => openNewReportDialog());
@@ -4114,6 +4130,15 @@ async function renderDevelopmentProjectsList(outlet, token) {
       <p>Status and milestone progress for public Development-section projects. The project narrative itself is managed on the website.</p>
     </div>
   `));
+
+  const publishedCount = projects.filter((p) => p.published).length;
+  const kpiGroup = KPIGroup([
+    { label: "Total Projects", value: projects.length, icon: iconSvg("development-projects", "kpi-icon") },
+    { label: "Synced to Website", value: publishedCount, icon: iconSvg("development-projects", "kpi-icon") },
+    { label: "Not Synced", value: projects.length - publishedCount, icon: iconSvg("development-projects", "kpi-icon") },
+  ]);
+  kpiGroup.style.marginBottom = "var(--space-5)";
+  outlet.appendChild(kpiGroup);
 
   const newBtn = el(`<button type="button" class="btn btn-primary btn-sm" style="margin-bottom:14px;">New Project</button>`);
   newBtn.addEventListener("click", () => openNewDevelopmentProjectDialog());
