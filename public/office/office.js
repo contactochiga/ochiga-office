@@ -163,6 +163,12 @@ async function apiUpdateContent(id, patch) {
 async function apiContentAction(id, action, body) {
   return api(`/api/lead-agents/admin/content/${encodeURIComponent(id)}/${action}`, { method: "POST", body: body || {} });
 }
+async function apiListDemos() {
+  return api("/api/lead-agents/admin/demos");
+}
+async function apiGetIntegrations() {
+  return api("/api/lead-agents/admin/integrations");
+}
 async function apiListReports(status) {
   return api(`/api/lead-agents/admin/reports${status ? `?status=${encodeURIComponent(status)}` : ""}`);
 }
@@ -881,6 +887,63 @@ function donutChart(segments, emptyText) {
     `));
   });
   wrap.appendChild(legend);
+  return wrap;
+}
+// Dependency-free SVG area+line chart — straight segments (not fitted
+// curves) so it never implies more precision/smoothness than the real,
+// discrete bucketed counts behind it actually have. points: Array<{
+// label, value}> already time-ordered. Reusable anywhere Office needs a
+// real time-series (Home/Portfolio/Development/Reports later).
+function areaChart(points, options = {}) {
+  const { height = 200, emptyText = "No data yet.", formatValue = (v) => String(v) } = options;
+  const wrap = el(`<div class="area-chart"></div>`);
+  if (!points.length || points.every((p) => !p.value)) {
+    wrap.appendChild(el(`<p class="rail-empty">${escapeHtml(emptyText)}</p>`));
+    return wrap;
+  }
+  const width = 600;
+  const padTop = 12;
+  const padBottom = 24;
+  const padLeft = 4;
+  const padRight = 4;
+  const plotHeight = height - padTop - padBottom;
+  const max = Math.max(...points.map((p) => p.value), 1);
+  const stepX = points.length > 1 ? (width - padLeft - padRight) / (points.length - 1) : 0;
+  const coords = points.map((p, i) => {
+    const x = padLeft + i * stepX;
+    const y = padTop + plotHeight - (p.value / max) * plotHeight;
+    return { x, y, ...p };
+  });
+  const linePath = coords.map((c, i) => `${i === 0 ? "M" : "L"}${c.x.toFixed(1)},${c.y.toFixed(1)}`).join(" ");
+  const areaPath = `${linePath} L${coords[coords.length - 1].x.toFixed(1)},${(padTop + plotHeight).toFixed(1)} L${coords[0].x.toFixed(1)},${(padTop + plotHeight).toFixed(1)} Z`;
+  const gridLines = [0, 0.5, 1].map((f) => padTop + plotHeight * f);
+  const gridSvg = gridLines.map((y) => `<line x1="${padLeft}" y1="${y.toFixed(1)}" x2="${width - padRight}" y2="${y.toFixed(1)}" class="area-chart-grid" />`).join("");
+  const gradientId = `areaFill${Math.random().toString(36).slice(2, 9)}`;
+  const svg = `
+    <svg viewBox="0 0 ${width} ${height}" preserveAspectRatio="none" class="area-chart-svg">
+      <defs>
+        <linearGradient id="${gradientId}" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stop-color="var(--red-bright)" stop-opacity="0.35" />
+          <stop offset="100%" stop-color="var(--red-bright)" stop-opacity="0" />
+        </linearGradient>
+      </defs>
+      ${gridSvg}
+      <path d="${areaPath}" fill="url(#${gradientId})" stroke="none" />
+      <path d="${linePath}" fill="none" stroke="var(--red-bright)" stroke-width="2" vector-effect="non-scaling-stroke" />
+      ${coords.map((c) => `<circle cx="${c.x.toFixed(1)}" cy="${c.y.toFixed(1)}" r="2.5" fill="var(--red-bright)" />`).join("")}
+    </svg>
+  `;
+  wrap.appendChild(el(`<div class="area-chart-plot" style="height:${height}px;">${svg}</div>`));
+  const axisLabels = [coords[0], coords[Math.floor((coords.length - 1) / 2)], coords[coords.length - 1]];
+  const axis = el(`<div class="area-chart-axis"></div>`);
+  const seen = new Set();
+  axisLabels.forEach((c) => {
+    if (seen.has(c.label)) return;
+    seen.add(c.label);
+    axis.appendChild(el(`<span>${escapeHtml(c.label)}</span>`));
+  });
+  wrap.appendChild(axis);
+  wrap.appendChild(el(`<p class="area-chart-peak">Peak: ${escapeHtml(formatValue(max))}</p>`));
   return wrap;
 }
 // Returns null (never a fabricated 0%) when current/total aren't real,
@@ -6196,12 +6259,12 @@ async function renderAuditView(outlet, token) {
 // with their own data stores Office has no access to, so they're shown
 // honestly as not-yet-connected rather than inventing numbers for them.
 // ---------------------------------------------------------------
-async function apiListTraces() {
-  return api("/api/lead-agents/admin/traces");
+async function apiListTraces(limit) {
+  return api(`/api/lead-agents/admin/traces${limit ? `?limit=${encodeURIComponent(limit)}` : ""}`);
 }
 const OBSERVATORY_KNOWN_SURFACES = [
-  { key: "office_internal", label: "Ochiga Office", types: ["office_internal_chat_completed", "office_internal_chat_failed"] },
-  { key: "public_website_widget", label: "Ochiga Website (lead-agent widget)", types: ["chat_started", "tool_executed", "chat_completed"] },
+  { key: "office_internal", label: "Ochiga Office", types: ["office_internal_chat_completed", "office_internal_chat_failed"], tone: "red" },
+  { key: "public_website_widget", label: "Ochiga Website (lead-agent widget)", types: ["chat_started", "tool_executed", "chat_completed"], tone: "blue" },
 ];
 const OBSERVATORY_UNCONNECTED_SURFACES = [
   "Oyi Consumer",
@@ -6209,19 +6272,104 @@ const OBSERVATORY_UNCONNECTED_SURFACES = [
   "getoyi.com (Oyi Website)",
   "Ochiga Backend / Oyi Core (direct)",
 ];
-
-// Trace records ({type, agent, tool_name, created_at, ...}) don't match
-// renderTimeline's expected shape ({activity_type, title, body, actor,
-// created_at}) — small adapter so Recent Activity here uses the same
-// row pattern as Home's Recent Activity, instead of a bespoke layout.
-function traceToTimelineItem(trace) {
-  return {
-    activity_type: trace.type,
-    title: titleCase(trace.type),
-    body: trace.tool_name ? `Tool: ${trace.tool_name}` : null,
-    actor: trace.agent || trace.source || "",
-    created_at: trace.created_at,
-  };
+const TRACE_TYPE_META = {
+  chat_started: { label: "Chat Started", tone: "blue" },
+  chat_completed: { label: "Chat Completed", tone: "green" },
+  tool_executed: { label: "Tool Executed", tone: "violet" },
+  office_internal_chat_completed: { label: "Office Chat", tone: "green" },
+  office_internal_chat_failed: { label: "Office Chat Failed", tone: "red" },
+};
+function traceMeta(trace) {
+  return TRACE_TYPE_META[trace.type] || { label: titleCase(trace.type), tone: "default" };
+}
+function traceSurfaceOf(trace) {
+  return OBSERVATORY_KNOWN_SURFACES.find((surface) => surface.types.includes(trace.type)) || null;
+}
+// A one-line, honest summary of what a trace record actually captured —
+// never invented, only ever what the payload really contains.
+function traceSummary(trace) {
+  const payload = trace.payload || {};
+  if (trace.type === "chat_started" && payload.user_message) return payload.user_message;
+  if (trace.type === "tool_executed") return `Called ${trace.tool_name || "a tool"}`;
+  if (trace.type === "chat_completed") return payload.assistant_message ? payload.assistant_message : "Response sent";
+  if (trace.type === "office_internal_chat_completed") return payload.staff_email ? `Answered ${payload.staff_email}` : "Office chat completed";
+  if (trace.type === "office_internal_chat_failed") return payload.failure_reason || "Office chat failed";
+  return titleCase(trace.type);
+}
+function healthPresentation(status) {
+  switch (status) {
+    case "production_ready": return { label: "Operational", tone: "green" };
+    case "error": return { label: "Unavailable", tone: "red" };
+    case "configured_payload_incomplete": return { label: "Degraded", tone: "amber" };
+    case "configured_needs_validation": return { label: "Needs Validation", tone: "amber" };
+    case "missing_credentials": return { label: "Not configured", tone: "default" };
+    default: return { label: "Not reporting", tone: "default" };
+  }
+}
+// Buckets traces into a real, time-ordered series for the selected range.
+// Straight day/hour buckets only — never a fitted curve, never a range the
+// data can't actually support.
+function bucketTracesForRange(traces, range) {
+  const now = new Date();
+  if (range === "today") {
+    const buckets = new Map(Array.from({ length: 24 }, (_, h) => [h, 0]));
+    traces.forEach((t) => {
+      const d = new Date(t.created_at);
+      if (Number.isNaN(d.getTime()) || d.toDateString() !== now.toDateString()) return;
+      buckets.set(d.getHours(), (buckets.get(d.getHours()) || 0) + 1);
+    });
+    return Array.from(buckets.entries()).map(([h, value]) => ({ label: `${String(h).padStart(2, "0")}:00`, value }));
+  }
+  const days = range === "30d" ? 30 : 7;
+  const dayKeys = [];
+  const buckets = new Map();
+  for (let i = days - 1; i >= 0; i--) {
+    const d = new Date(now);
+    d.setDate(d.getDate() - i);
+    const key = d.toDateString();
+    dayKeys.push(key);
+    buckets.set(key, 0);
+  }
+  traces.forEach((t) => {
+    const d = new Date(t.created_at);
+    if (Number.isNaN(d.getTime())) return;
+    const key = d.toDateString();
+    if (buckets.has(key)) buckets.set(key, buckets.get(key) + 1);
+  });
+  return dayKeys.map((key) => ({ label: new Date(key).toLocaleDateString(undefined, { day: "numeric", month: "short" }), value: buckets.get(key) || 0 }));
+}
+// Groups traces sharing a trace_id (falling back to lead_id) into
+// conversations — the only grouping key the data actually supports.
+// Never marks a group LIVE; only "Active Recently" when the group has no
+// completion event yet and last moved within the last 10 minutes.
+function groupTracesIntoConversations(traces, limit = 8) {
+  const groups = new Map();
+  traces.forEach((t) => {
+    const key = t.trace_id || t.lead_id || t.id;
+    if (!key) return;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(t);
+  });
+  const COMPLETION_TYPES = new Set(["chat_completed", "office_internal_chat_completed", "office_internal_chat_failed"]);
+  const conversations = Array.from(groups.values()).map((rows) => {
+    const sorted = rows.slice().sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)));
+    const latest = sorted[0];
+    const started = sorted[sorted.length - 1];
+    const surface = traceSurfaceOf(latest) || traceSurfaceOf(started);
+    const concluded = rows.some((r) => COMPLETION_TYPES.has(r.type));
+    const lastActivityMs = new Date(latest.created_at).getTime();
+    const recentlyActive = !concluded && Number.isFinite(lastActivityMs) && Date.now() - lastActivityMs < 10 * 60 * 1000;
+    const summarySource = rows.find((r) => r.type === "chat_started") || started;
+    return {
+      key: latest.trace_id || latest.lead_id || latest.id,
+      surfaceLabel: surface?.label || "Unknown surface",
+      summary: traceSummary(summarySource),
+      lastActivity: latest.created_at,
+      state: recentlyActive ? "Active Recently" : "Recent",
+      stateTone: recentlyActive ? "blue" : "default",
+    };
+  });
+  return conversations.sort((a, b) => String(b.lastActivity).localeCompare(String(a.lastActivity))).slice(0, limit);
 }
 
 async function renderObservatoryView(outlet, token) {
@@ -6230,10 +6378,24 @@ async function renderObservatoryView(outlet, token) {
   outlet.innerHTML = "";
   outlet.appendChild(skeletonPanel(4));
 
+  const canViewHealth = hasPermission("integrations.read");
+  const canViewSchedules = hasPermission("office.read") || hasPermission("content.write");
+
   let traces;
+  let integrations = null;
+  let demos = [];
+  let scheduledContent = [];
   try {
-    const data = await apiListTraces();
-    traces = data.traces || [];
+    const [tracesData, integrationsData, demosData, contentData] = await Promise.all([
+      apiListTraces(500),
+      canViewHealth ? apiGetIntegrations().catch(() => null) : Promise.resolve(null),
+      hasPermission("office.read") ? apiListDemos().catch(() => ({ demos: [] })) : Promise.resolve({ demos: [] }),
+      hasPermission("content.write") ? apiListContent("scheduled").catch(() => ({ items: [] })) : Promise.resolve({ items: [] }),
+    ]);
+    traces = tracesData.traces || [];
+    integrations = integrationsData?.integrations || null;
+    demos = demosData.demos || [];
+    scheduledContent = contentData.items || [];
   } catch (err) {
     if (token !== state.renderToken) return;
     outlet.innerHTML = "";
@@ -6247,60 +6409,206 @@ async function renderObservatoryView(outlet, token) {
   outlet.appendChild(el(`
     <div class="view-heading">
       <h1>AI Agents</h1>
-      <p>Real interaction data from surfaces that report into Office. This is observability, not a second intelligence runtime — numbers below are computed only from what was actually recorded.</p>
+      <p>Real-time intelligence and agent activity across Ochiga systems. This is observability, not a second intelligence runtime — every number below is computed only from what was actually recorded; the Oyi orb remains the sole conversational interface.</p>
     </div>
   `));
 
+  // ---- KPI row ----
   const toolExecutions = traces.filter((t) => t.type === "tool_executed");
   const toolCounts = {};
   toolExecutions.forEach((t) => { const name = t.tool_name || "unknown"; toolCounts[name] = (toolCounts[name] || 0) + 1; });
   const failures = traces.filter((t) => t.type === "office_internal_chat_failed").length;
+  const surfaceCounts = OBSERVATORY_KNOWN_SURFACES.map((surface) => ({ ...surface, count: traces.filter((t) => surface.types.includes(t.type)).length }));
+  const activeSurfaces = surfaceCounts.filter((s) => s.count > 0).length;
+  const now = Date.now();
+  const upcomingDemos = demos.filter((d) => d.scheduled_for && new Date(d.scheduled_for).getTime() > now && d.status !== "cancelled");
+  const upcomingContent = scheduledContent.filter((c) => c.scheduled_publish_at && new Date(c.scheduled_publish_at).getTime() > now);
+  const schedulesRunning = upcomingDemos.length + upcomingContent.length;
+  const lastInteraction = traces[0];
 
   const kpiGroup = KPIGroup([
-    { label: "Recorded Interactions", value: traces.length, icon: iconSvg("observatory", "kpi-icon") },
-    { label: "Tool Executions", value: toolExecutions.length, icon: iconSvg("observatory", "kpi-icon") },
-    { label: "Office Chat Failures", value: failures, icon: iconSvg("attention", "kpi-icon"), alert: failures > 0 },
+    { label: "Recorded Interactions", value: traces.length, icon: iconSvg("observatory", "kpi-icon"), sub: lastInteraction ? `Last interaction ${fmtRelative(lastInteraction.created_at)}` : "No interactions yet" },
+    { label: "Tool Executions", value: toolExecutions.length, icon: iconSvg("lightning", "kpi-icon"), sub: Object.keys(toolCounts).length ? `${Object.keys(toolCounts).length} distinct tools` : "No tool calls yet" },
+    { label: "Office Chat Failures", value: failures, icon: iconSvg("attention", "kpi-icon"), alert: failures > 0, sub: failures > 0 ? "Needs attention" : "None recorded" },
+    { label: "Active Surfaces", value: `${activeSurfaces} / ${OBSERVATORY_KNOWN_SURFACES.length}`, icon: iconSvg("briefing", "kpi-icon"), sub: "Surfaces with recorded interactions" },
+    { label: "Schedules Running", value: schedulesRunning, icon: iconSvg("meetings", "kpi-icon"), sub: canViewSchedules ? "Upcoming demos + scheduled content" : "Requires reports/content access" },
   ]);
   kpiGroup.style.marginBottom = "var(--space-5)";
   outlet.appendChild(kpiGroup);
 
+  // ---- Interactions Over Time + Interactions by Surface ----
   const rowA = el(`<div class="home-grid"></div>`);
   outlet.appendChild(rowA);
 
-  const surfacesPanel = homePanel("Surfaces");
-  const surfaceRows = OBSERVATORY_KNOWN_SURFACES.map((surface) => {
-    const rows = traces.filter((t) => surface.types.includes(t.type));
-    const lastAt = rows[0]?.created_at;
-    return { label: surface.label, value: `${rows.length} interactions${lastAt ? ` · last ${fmtRelative(lastAt)}` : " · no data yet"}` };
-  });
-  // Never implied as operational — a plain unstyled note, distinct from
-  // the real (StageStrip/FactGrid) values above it.
-  const unconnectedRows = OBSERVATORY_UNCONNECTED_SURFACES.map((label) => ({ label, html: `<span style="color:var(--text-tertiary);">Not connected to Office yet</span>` }));
-  surfacesPanel.appendChild(FactGrid([...surfaceRows, ...unconnectedRows]));
-  rowA.appendChild(homePanelWrap("span-6", surfacesPanel));
+  const chartPanel = homePanel("Interactions Over Time");
+  const rangeTabs = el(`<div class="list-toolbar" style="padding:0 0 var(--space-2);border:none;"></div>`);
+  const chartBody = el(`<div></div>`);
+  let activeRange = "7d";
+  const RANGE_OPTIONS = [{ key: "today", label: "Today" }, { key: "7d", label: "7 Days" }, { key: "30d", label: "30 Days" }];
+  function paintChart() {
+    rangeTabs.innerHTML = "";
+    RANGE_OPTIONS.forEach((opt) => {
+      const btn = el(`<button type="button" class="btn btn-ghost btn-sm${opt.key === activeRange ? " active" : ""}">${escapeHtml(opt.label)}</button>`);
+      btn.addEventListener("click", () => { activeRange = opt.key; paintChart(); });
+      rangeTabs.appendChild(btn);
+    });
+    chartBody.innerHTML = "";
+    chartBody.appendChild(areaChart(bucketTracesForRange(traces, activeRange), { emptyText: "No interactions recorded in this range." }));
+  }
+  paintChart();
+  chartPanel.appendChild(rangeTabs);
+  chartPanel.appendChild(chartBody);
+  rowA.appendChild(homePanelWrap("span-8", chartPanel));
 
-  // Tool Usage as a proportional strip, not a plain count list — answers
-  // "which tools does Oyi invoke most, relative to each other?" using
-  // the real tool_name field already computed into toolCounts above.
+  const surfaceDonutPanel = homePanel("Interactions by Surface");
+  surfaceDonutPanel.appendChild(donutChart(
+    surfaceCounts.map((s) => ({ label: s.label, count: s.count, tone: s.tone })),
+    "No interactions recorded yet."
+  ));
+  rowA.appendChild(homePanelWrap("span-4", surfaceDonutPanel));
+
+  // ---- Tool Usage + Recent Activity ----
+  const rowB = el(`<div class="home-grid" style="margin-top:var(--space-4);"></div>`);
+  outlet.appendChild(rowB);
+
   const toolPanel = homePanel("Tool Usage");
   if (Object.keys(toolCounts).length) {
-    toolPanel.appendChild(StageStrip(
-      Object.entries(toolCounts).sort((a, b) => b[1] - a[1]).map(([name, count]) => ({ label: name, count })),
+    toolPanel.appendChild(barDistribution(
+      Object.entries(toolCounts).sort((a, b) => b[1] - a[1]).map(([name, count]) => ({ label: name, count, tone: "violet" })),
       "No tool executions recorded yet."
     ));
   } else {
     toolPanel.appendChild(el(`<p class="home-panel-empty">No tool executions recorded yet.</p>`));
   }
-  rowA.appendChild(homePanelWrap("span-6", toolPanel));
+  rowB.appendChild(homePanelWrap("span-6", toolPanel));
 
   const activityPanel = homePanel("Recent Activity");
-  activityPanel.style.marginTop = "var(--space-4)";
   if (!traces.length) {
     activityPanel.appendChild(el(`<p class="home-panel-empty">No interactions recorded yet. Real activity will appear here as staff use Office's Oyi chat or the public website's lead-agent widget.</p>`));
   } else {
-    activityPanel.appendChild(renderTimeline(traces.slice(0, 12).map(traceToTimelineItem)));
+    const list = el(`<div class="attention-list"></div>`);
+    traces.slice(0, 10).forEach((t) => {
+      const meta = traceMeta(t);
+      const surface = traceSurfaceOf(t);
+      list.appendChild(el(`
+        <div class="attention-row">
+          <span class="attention-type">${badge(meta.label, meta.tone)}</span>
+          <span class="attention-title">${escapeHtml(traceSummary(t))}</span>
+          <span class="attention-owner">${escapeHtml(surface?.label || "")}</span>
+          <span class="attention-owner">${escapeHtml(fmtRelative(t.created_at))}</span>
+        </div>
+      `));
+    });
+    activityPanel.appendChild(list);
   }
-  outlet.appendChild(activityPanel);
+  rowB.appendChild(homePanelWrap("span-6", activityPanel));
+
+  // ---- Active Conversations ----
+  const conversations = groupTracesIntoConversations(traces);
+  const conversationsPanel = homePanel("Active Conversations");
+  conversationsPanel.style.marginTop = "var(--space-4)";
+  if (!conversations.length) {
+    conversationsPanel.appendChild(el(`<p class="home-panel-empty">No conversations recorded yet.</p>`));
+  } else {
+    const list = el(`<div class="attention-list"></div>`);
+    conversations.forEach((c) => {
+      list.appendChild(el(`
+        <div class="attention-row">
+          <span class="attention-type">${escapeHtml(c.surfaceLabel)}</span>
+          <span class="attention-title">${escapeHtml(c.summary)}</span>
+          <span class="attention-owner">${badge(c.state, c.stateTone)}</span>
+          <span class="attention-owner">${escapeHtml(fmtRelative(c.lastActivity))}</span>
+        </div>
+      `));
+    });
+    conversationsPanel.appendChild(list);
+  }
+  outlet.appendChild(conversationsPanel);
+
+  // ---- System Health + Scheduled Tasks ----
+  const rowC = el(`<div class="home-grid" style="margin-top:var(--space-4);"></div>`);
+  outlet.appendChild(rowC);
+
+  if (canViewHealth) {
+    const healthPanel = homePanel("System Health");
+    const healthRows = [
+      { label: "Oyi Core", status: integrations?.edge?.status },
+      { label: "Ochiga Office", status: "production_ready" },
+      { label: "Ochiga Website", status: null },
+      { label: "Oyi Facility", status: integrations?.facility?.status },
+      { label: "Oyi Consumer", status: integrations?.consumer?.status },
+    ];
+    const withSignal = healthRows.filter((r) => r.status);
+    const healthyCount = withSignal.filter((r) => r.status === "production_ready").length;
+    if (withSignal.length) {
+      const allHealthy = healthyCount === withSignal.length;
+      healthPanel.appendChild(el(`
+        <div class="status-callout status-callout-${allHealthy ? "green" : "amber"}" style="margin-bottom:var(--space-3);">
+          ${allHealthy ? "All reporting systems operational" : `${healthyCount} of ${withSignal.length} reporting systems healthy`}
+        </div>
+      `));
+    }
+    healthPanel.appendChild(FactGrid(healthRows.map((r) => {
+      const p = healthPresentation(r.status);
+      return { label: r.label, html: badge(p.label, p.tone) };
+    })));
+    rowC.appendChild(homePanelWrap("span-6", healthPanel));
+  }
+
+  const schedulePanel = homePanel("Scheduled Tasks");
+  if (!canViewSchedules) {
+    schedulePanel.appendChild(el(`<p class="home-panel-empty">Requires reports or content access.</p>`));
+  } else {
+    const scheduleItems = [
+      ...upcomingDemos.map((d) => ({ name: d.lead?.name ? `Demo — ${d.lead.name}` : "Demo call", when: d.scheduled_for })),
+      ...upcomingContent.map((c) => ({ name: `Publish — ${c.title}`, when: c.scheduled_publish_at })),
+    ].sort((a, b) => new Date(a.when) - new Date(b.when));
+    if (!scheduleItems.length) {
+      schedulePanel.appendChild(el(`<p class="home-panel-empty">No scheduled tasks. Real demo bookings and scheduled content will appear here.</p>`));
+    } else {
+      schedulePanel.appendChild(FactGrid(scheduleItems.slice(0, 8).map((item) => ({
+        label: item.name,
+        html: `${escapeHtml(fmtDateTime(item.when))} <span style="color:var(--text-tertiary);">(${escapeHtml(fmtRelative(item.when))})</span>`,
+      }))));
+    }
+  }
+  rowC.appendChild(homePanelWrap("span-6", schedulePanel));
+
+  // ---- Intelligence Insights ----
+  const insightCells = [];
+  const hourCounts = new Map();
+  traces.forEach((t) => {
+    const d = new Date(t.created_at);
+    if (Number.isNaN(d.getTime())) return;
+    const h = d.getHours();
+    hourCounts.set(h, (hourCounts.get(h) || 0) + 1);
+  });
+  if (hourCounts.size) {
+    const [peakHour] = Array.from(hourCounts.entries()).sort((a, b) => b[1] - a[1])[0];
+    insightCells.push({ label: "Peak Activity", value: `${String(peakHour).padStart(2, "0")}:00`, icon: iconSvg("trend", "kpi-icon"), tone: "blue" });
+  }
+  const activeSurfaceCounts = surfaceCounts.filter((s) => s.count > 0);
+  if (activeSurfaceCounts.length) {
+    const top = activeSurfaceCounts.slice().sort((a, b) => b.count - a.count)[0];
+    insightCells.push({ label: "Most Active Surface", value: top.label, icon: iconSvg("briefing", "kpi-icon"), tone: "violet" });
+  }
+  const officeLatencies = traces.filter((t) => (t.type === "office_internal_chat_completed" || t.type === "office_internal_chat_failed") && Number.isFinite(t.payload?.latency_ms)).map((t) => t.payload.latency_ms);
+  if (officeLatencies.length) {
+    const avgMs = officeLatencies.reduce((sum, v) => sum + v, 0) / officeLatencies.length;
+    insightCells.push({ label: "Avg Response Time (Office Chat)", value: `${(avgMs / 1000).toFixed(1)}s`, icon: iconSvg("lightning", "kpi-icon"), tone: "amber" });
+  }
+  const officeCompleted = traces.filter((t) => t.type === "office_internal_chat_completed").length;
+  const officeFailed = traces.filter((t) => t.type === "office_internal_chat_failed").length;
+  if (officeCompleted + officeFailed > 0) {
+    const rate = Math.round((officeCompleted / (officeCompleted + officeFailed)) * 100);
+    insightCells.push({ label: "Office Chat Success Rate", value: `${rate}%`, icon: iconSvg("audit", "kpi-icon"), tone: rate >= 90 ? "green" : "amber" });
+  }
+  if (insightCells.length) {
+    const insightsPanel = homePanel("Intelligence Insights");
+    insightsPanel.style.marginTop = "var(--space-4)";
+    insightsPanel.appendChild(metricCellGrid(insightCells));
+    outlet.appendChild(insightsPanel);
+  }
 }
 
 // ---------------------------------------------------------------
