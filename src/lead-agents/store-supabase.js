@@ -253,6 +253,29 @@ class SupabaseLeadAgentsStore {
     return response.data[0];
   }
 
+  // Oyi Runtime Contract, Domain 3 (Task) — durable link between an
+  // Office-owned record and the ochiga_workflows row it was projected
+  // into on Backend. See db/lead-agents-schema.sql for the table and
+  // src/lead-agents/workflow-bridge.js for the caller.
+  async getWorkflowLink(recordType, recordId) {
+    const response = await this.client.get(
+      `/ochiga_workflow_links?record_type=eq.${encodeURIComponent(recordType)}&record_id=eq.${encodeURIComponent(recordId)}&limit=1`,
+      { headers: this.selectHeaders() }
+    );
+    return response.data?.[0] || null;
+  }
+
+  async saveWorkflowLink(recordType, recordId, workflowId) {
+    const existing = await this.getWorkflowLink(recordType, recordId);
+    if (existing) return existing;
+    const response = await this.client.post(
+      "/ochiga_workflow_links",
+      { record_type: recordType, record_id: recordId, workflow_id: workflowId },
+      { headers: this.selectHeaders() }
+    );
+    return response.data[0];
+  }
+
   async listDemosForLead(leadId) {
     const response = await this.client.get(
       `/demos?lead_id=eq.${leadId}&order=created_at.desc`

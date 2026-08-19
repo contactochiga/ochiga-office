@@ -57,6 +57,15 @@ class FileLeadAgentsStore {
       office_content_items: [],
       office_reports: [],
       office_development_projects: [],
+      // Oyi Runtime Contract, Domain 3 (Task) — durable link between an
+      // Office-owned record (lead/proposal/demo/deployment) and the
+      // ochiga_workflows row it was projected into on Backend. Office
+      // remains the source of truth for the record itself; this is
+      // purely a reference so the bridge is idempotent (don't create a
+      // second workflow for the same record) and reversible (stop
+      // writing here and the bridge is fully disabled, nothing else
+      // changes). See src/lead-agents/workflow-bridge.js.
+      ochiga_workflow_links: [],
     };
     this.pendingWrite = Promise.resolve();
   }
@@ -121,6 +130,7 @@ class FileLeadAgentsStore {
         office_content_items: Array.isArray(parsed.office_content_items) ? parsed.office_content_items : [],
         office_reports: Array.isArray(parsed.office_reports) ? parsed.office_reports : [],
         office_development_projects: Array.isArray(parsed.office_development_projects) ? parsed.office_development_projects : [],
+        ochiga_workflow_links: Array.isArray(parsed.ochiga_workflow_links) ? parsed.ochiga_workflow_links : [],
       };
       if (await this.ensureOfficeSeedData()) {
         await this.persist();
@@ -375,6 +385,31 @@ class FileLeadAgentsStore {
     });
     await this.persist();
     return demo;
+  }
+
+  // Oyi Runtime Contract, Domain 3 (Task) — see the ochiga_workflow_links
+  // comment in the constructor above.
+  async getWorkflowLink(recordType, recordId) {
+    return (
+      this.state.ochiga_workflow_links.find(
+        (link) => link.record_type === recordType && link.record_id === recordId
+      ) || null
+    );
+  }
+
+  async saveWorkflowLink(recordType, recordId, workflowId) {
+    const existing = await this.getWorkflowLink(recordType, recordId);
+    if (existing) return existing;
+    const link = {
+      id: crypto.randomUUID(),
+      record_type: recordType,
+      record_id: recordId,
+      workflow_id: workflowId,
+      created_at: this.nowIso(),
+    };
+    this.state.ochiga_workflow_links.push(link);
+    await this.persist();
+    return link;
   }
 
   async listDemosForLead(leadId) {
