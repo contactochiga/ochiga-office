@@ -4371,6 +4371,12 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
               attention_signal: oyiCoreResult.ok ? oyiCoreResult.response.attention_signal || null : null,
               tool_proposal_count: oyiCoreResult.ok ? (oyiCoreResult.response.tool_proposals || []).length : 0,
               failure_reason: oyiCoreResult.ok ? null : oyiCoreResult.reason || "oyi_core_unavailable",
+              // Same engagement_mode vocabulary as Ochiga Backend's Oyi
+              // communications contract — Office's own internal chat box
+              // is text-only today, so this is a real, not fabricated,
+              // constant until the Office UI gains its own voice/vision
+              // capture and starts sending a real value.
+              engagement_mode: body.engagement_mode || "text_conversation",
             },
           }).catch(() => null);
         }
