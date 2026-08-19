@@ -419,6 +419,12 @@ class LeadAgentRuntime {
         request_id: request.request_id || "",
         payload: {
           user_message: request.message,
+          // Modality dimension shared with Ochiga Backend's Oyi
+          // communications contract (text_conversation/voice_conversation/
+          // video_conversation) — this runtime only ever receives typed
+          // text today, so it's a real, not fabricated, constant until a
+          // future voice/vision-capable request actually sends one.
+          engagement_mode: request.engagement_mode || "text_conversation",
         },
       });
 
@@ -543,6 +549,7 @@ class LeadAgentRuntime {
             payload: {
               arguments: args,
               result,
+              engagement_mode: request.engagement_mode || "text_conversation",
             },
           });
 
@@ -608,6 +615,7 @@ class LeadAgentRuntime {
           knowledge_hits: knowledgeResults.map((item) => item.id),
           memory_updated: Boolean(memory),
           assistant_message: assistantMessage,
+          engagement_mode: request.engagement_mode || "text_conversation",
         },
       });
 

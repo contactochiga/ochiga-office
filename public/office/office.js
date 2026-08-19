@@ -6272,6 +6272,12 @@ const OBSERVATORY_UNCONNECTED_SURFACES = [
   "getoyi.com (Oyi Website)",
   "Ochiga Backend / Oyi Core (direct)",
 ];
+// Canonical modality vocabulary — matches Ochiga Backend's Oyi
+// communications contract (engagement_mode on /office/conversation/*
+// and /communications/*/voice-turn|visual-observation) exactly, so
+// Office never introduces a competing taxonomy for the same concept.
+const MODE_LABELS = { text_conversation: "Chat / Text", voice_conversation: "Voice", video_conversation: "Vision / Camera" };
+const MODE_TONES = { text_conversation: "blue", voice_conversation: "violet", video_conversation: "amber" };
 const TRACE_TYPE_META = {
   chat_started: { label: "Chat Started", tone: "blue" },
   chat_completed: { label: "Chat Completed", tone: "green" },
@@ -6287,24 +6293,64 @@ function traceSurfaceOf(trace) {
 }
 // A one-line, honest summary of what a trace record actually captured —
 // never invented, only ever what the payload really contains.
+// Readable expansions for the real failure_reason values written at the
+// office_internal_chat_failed trace site (server.js) — every value here
+// traces back to an actual outcome of the real HTTP call to Oyi Core:
+// "network_error" is the literal catch-block reason when that request
+// throws (timeout/DNS/connection refused — a genuine failed call at
+// that moment, not an instrumentation artifact); "backend_rejected"
+// means Oyi Core responded but with a non-2xx/ok:false; anything else
+// falls through to the raw reason so nothing is ever hidden.
+const FAILURE_REASON_LABELS = {
+  network_error: "Network error reaching Oyi Core",
+  backend_rejected: "Oyi Core rejected the request",
+  oyi_core_unavailable: "Oyi Core unavailable",
+};
 function traceSummary(trace) {
   const payload = trace.payload || {};
   if (trace.type === "chat_started" && payload.user_message) return payload.user_message;
-  if (trace.type === "tool_executed") return `Called ${trace.tool_name || "a tool"}`;
+  if (trace.type === "tool_executed") return `Called ${trace.tool_name ? titleCase(trace.tool_name) : "a tool"}`;
   if (trace.type === "chat_completed") return payload.assistant_message ? payload.assistant_message : "Response sent";
   if (trace.type === "office_internal_chat_completed") return payload.staff_email ? `Answered ${payload.staff_email}` : "Office chat completed";
-  if (trace.type === "office_internal_chat_failed") return payload.failure_reason || "Office chat failed";
+  if (trace.type === "office_internal_chat_failed") {
+    const reason = payload.failure_reason || "";
+    return FAILURE_REASON_LABELS[reason] || reason || "Office chat failed";
+  }
   return titleCase(trace.type);
 }
-function healthPresentation(status) {
-  switch (status) {
-    case "production_ready": return { label: "Operational", tone: "green" };
-    case "error": return { label: "Unavailable", tone: "red" };
-    case "configured_payload_incomplete": return { label: "Degraded", tone: "amber" };
-    case "configured_needs_validation": return { label: "Needs Validation", tone: "amber" };
-    case "missing_credentials": return { label: "Not configured", tone: "default" };
-    default: return { label: "Not reporting", tone: "default" };
+// Canonical health adapter, reused for every surface with a real probe
+// (Oyi Core /health, Facility + Consumer /office/export), regardless of
+// transport/auth. Reads the RAW probe result (checked/ok from
+// probeEndpoint()) rather than integrationStatus()'s combined "status"
+// field — that combined field also gates on full export-payload
+// completeness (all 16 Facility / 14 Consumer metric keys), which is a
+// data-SYNC-readiness bar for the Settings/Integrations panel, not a
+// basic connectivity/health bar. A Facility or Consumer deployment can
+// be genuinely up and answering real HTTP requests while still missing
+// a handful of non-critical export fields (e.g. no "documents" key
+// implemented yet) — that's a sync-completeness gap, not an outage, so
+// it must not read as "Degraded" here.
+function healthPresentation(health) {
+  if (!health || !health.checked) return { label: "Not configured", tone: "default" };
+  if (health.ok) return { label: "Operational", tone: "green" };
+  return { label: "Unavailable", tone: "red" };
+}
+// Ochiga Website has no direct health probe (no /health endpoint exists
+// on that site today). Rather than a flat, uninformative "Not
+// reporting", infer liveness honestly from the SAME real trace data
+// already loaded for this page: if the public lead-agent widget surface
+// has produced a real interaction recently, that is itself evidence the
+// site's intake pipeline is alive — labeled distinctly as "Active" (not
+// "Operational", which would imply a direct probe that doesn't exist).
+function websiteActivityPresentation(traces) {
+  const websiteTraces = traces.filter((t) => traceSurfaceOf(t)?.key === "public_website_widget");
+  const latest = websiteTraces[0];
+  if (!latest) return { label: "Not reporting", tone: "default", note: "No direct probe configured; no recorded interactions yet." };
+  const ageMs = Date.now() - new Date(latest.created_at).getTime();
+  if (Number.isFinite(ageMs) && ageMs < 48 * 60 * 60 * 1000) {
+    return { label: "Active", tone: "blue", note: `Inferred from interaction traces · last ${fmtRelative(latest.created_at)}` };
   }
+  return { label: "Not reporting", tone: "default", note: `No direct probe configured; last interaction ${fmtRelative(latest.created_at)}` };
 }
 // Buckets traces into a real, time-ordered series for the selected range.
 // Straight day/hour buckets only — never a fitted curve, never a range the
@@ -6385,12 +6431,14 @@ async function renderObservatoryView(outlet, token) {
   let integrations = null;
   let demos = [];
   let scheduledContent = [];
+  let demosFailed = false;
+  let contentFailed = false;
   try {
     const [tracesData, integrationsData, demosData, contentData] = await Promise.all([
       apiListTraces(500),
       canViewHealth ? apiGetIntegrations().catch(() => null) : Promise.resolve(null),
-      hasPermission("office.read") ? apiListDemos().catch(() => ({ demos: [] })) : Promise.resolve({ demos: [] }),
-      hasPermission("content.write") ? apiListContent("scheduled").catch(() => ({ items: [] })) : Promise.resolve({ items: [] }),
+      hasPermission("office.read") ? apiListDemos().catch(() => { demosFailed = true; return { demos: [] }; }) : Promise.resolve({ demos: [] }),
+      hasPermission("content.write") ? apiListContent("scheduled").catch(() => { contentFailed = true; return { items: [] }; }) : Promise.resolve({ items: [] }),
     ]);
     traces = tracesData.traces || [];
     integrations = integrationsData?.integrations || null;
@@ -6406,12 +6454,7 @@ async function renderObservatoryView(outlet, token) {
   if (token !== state.renderToken) return;
 
   outlet.innerHTML = "";
-  outlet.appendChild(el(`
-    <div class="view-heading">
-      <h1>AI Agents</h1>
-      <p>Real-time intelligence and agent activity across Ochiga systems. This is observability, not a second intelligence runtime — every number below is computed only from what was actually recorded; the Oyi orb remains the sole conversational interface.</p>
-    </div>
-  `));
+  outlet.appendChild(el(`<div class="view-heading"><h1>AI Agents</h1></div>`));
 
   // ---- KPI row ----
   const toolExecutions = traces.filter((t) => t.type === "tool_executed");
@@ -6427,11 +6470,11 @@ async function renderObservatoryView(outlet, token) {
   const lastInteraction = traces[0];
 
   const kpiGroup = KPIGroup([
-    { label: "Recorded Interactions", value: traces.length, icon: iconSvg("observatory", "kpi-icon"), sub: lastInteraction ? `Last interaction ${fmtRelative(lastInteraction.created_at)}` : "No interactions yet" },
-    { label: "Tool Executions", value: toolExecutions.length, icon: iconSvg("lightning", "kpi-icon"), sub: Object.keys(toolCounts).length ? `${Object.keys(toolCounts).length} distinct tools` : "No tool calls yet" },
-    { label: "Office Chat Failures", value: failures, icon: iconSvg("attention", "kpi-icon"), alert: failures > 0, sub: failures > 0 ? "Needs attention" : "None recorded" },
-    { label: "Active Surfaces", value: `${activeSurfaces} / ${OBSERVATORY_KNOWN_SURFACES.length}`, icon: iconSvg("briefing", "kpi-icon"), sub: "Surfaces with recorded interactions" },
-    { label: "Schedules Running", value: schedulesRunning, icon: iconSvg("meetings", "kpi-icon"), sub: canViewSchedules ? "Upcoming demos + scheduled content" : "Requires reports/content access" },
+    { label: "Recorded Interactions", value: traces.length, icon: iconSvg("observatory", "kpi-icon"), tone: "blue", sub: lastInteraction ? `Last interaction ${fmtRelative(lastInteraction.created_at)}` : "No interactions yet" },
+    { label: "Tool Executions", value: toolExecutions.length, icon: iconSvg("lightning", "kpi-icon"), tone: "violet", sub: Object.keys(toolCounts).length ? `${Object.keys(toolCounts).length} distinct tools` : "No tool calls yet" },
+    { label: "Office Chat Failures", value: failures, icon: iconSvg("attention", "kpi-icon"), tone: failures > 0 ? "red" : "green", alert: failures > 0, sub: failures > 0 ? "Needs attention" : "None recorded" },
+    { label: "Active Surfaces", value: `${activeSurfaces} / ${OBSERVATORY_KNOWN_SURFACES.length}`, icon: iconSvg("briefing", "kpi-icon"), tone: "green", sub: "Surfaces with recorded interactions" },
+    { label: "Schedules Running", value: schedulesRunning, icon: iconSvg("meetings", "kpi-icon"), tone: "amber", sub: canViewSchedules ? "Upcoming demos + scheduled content" : "Requires reports/content access" },
   ]);
   kpiGroup.style.marginBottom = "var(--space-5)";
   outlet.appendChild(kpiGroup);
@@ -6465,7 +6508,33 @@ async function renderObservatoryView(outlet, token) {
     surfaceCounts.map((s) => ({ label: s.label, count: s.count, tone: s.tone })),
     "No interactions recorded yet."
   ));
-  rowA.appendChild(homePanelWrap("span-4", surfaceDonutPanel));
+
+  // Interactions by Mode — reuses the exact engagement_mode vocabulary
+  // Ochiga Backend's Oyi communications contract already defines
+  // (text_conversation/voice_conversation/video_conversation), not a
+  // new taxonomy. Every trace Office can currently see comes from a
+  // text-only path (Office's own internal chat box, and the lead-agent
+  // widget's plain-text runtime), so this honestly renders 100% Chat /
+  // Text today. It's wired to a real field so a future voice/vision
+  // path can populate real values without another schema change.
+  const modeCounts = {};
+  traces.forEach((t) => {
+    const mode = t.payload?.engagement_mode || "text_conversation";
+    modeCounts[mode] = (modeCounts[mode] || 0) + 1;
+  });
+  const modeSegments = Object.entries(modeCounts).map(([mode, count]) => ({
+    label: MODE_LABELS[mode] || titleCase(mode.replace(/_conversation$/, "")),
+    count,
+    tone: MODE_TONES[mode] || "default",
+  }));
+  const modeDonutPanel = homePanel("Interactions by Mode");
+  modeDonutPanel.style.marginTop = "var(--space-4)";
+  modeDonutPanel.appendChild(donutChart(modeSegments, "No interactions recorded yet."));
+
+  const rightCol = el(`<div class="span-4"></div>`);
+  rightCol.appendChild(surfaceDonutPanel);
+  rightCol.appendChild(modeDonutPanel);
+  rowA.appendChild(rightCol);
 
   // ---- Tool Usage + Recent Activity ----
   const rowB = el(`<div class="home-grid" style="margin-top:var(--space-4);"></div>`);
@@ -6473,8 +6542,12 @@ async function renderObservatoryView(outlet, token) {
 
   const toolPanel = homePanel("Tool Usage");
   if (Object.keys(toolCounts).length) {
+    // titleCase() only reformats spacing/casing (create_lead -> "Create
+    // Lead") — it never collapses two distinct raw tool_name values onto
+    // the same label, so observability by real tool identity is
+    // preserved even though the row now reads cleanly.
     toolPanel.appendChild(barDistribution(
-      Object.entries(toolCounts).sort((a, b) => b[1] - a[1]).map(([name, count]) => ({ label: name, count, tone: "violet" })),
+      Object.entries(toolCounts).sort((a, b) => b[1] - a[1]).map(([name, count]) => ({ label: titleCase(name), count, tone: "violet" })),
       "No tool executions recorded yet."
     ));
   } else {
@@ -6503,9 +6576,14 @@ async function renderObservatoryView(outlet, token) {
   }
   rowB.appendChild(homePanelWrap("span-6", activityPanel));
 
-  // ---- Active Conversations ----
+  // ---- Recent Conversations ----
+  // Named for what these records actually are: almost all of them are
+  // concluded historical conversations, not live sessions. A per-row
+  // "Active Recently" badge (see groupTracesIntoConversations) is the
+  // only place liveness is ever implied, and only when the group is
+  // genuinely unconcluded and moved within the last 10 minutes.
   const conversations = groupTracesIntoConversations(traces);
-  const conversationsPanel = homePanel("Active Conversations");
+  const conversationsPanel = homePanel("Recent Conversations");
   conversationsPanel.style.marginTop = "var(--space-4)";
   if (!conversations.length) {
     conversationsPanel.appendChild(el(`<p class="home-panel-empty">No conversations recorded yet.</p>`));
@@ -6531,15 +6609,23 @@ async function renderObservatoryView(outlet, token) {
 
   if (canViewHealth) {
     const healthPanel = homePanel("System Health");
+    // Facility/Consumer sometimes probe successfully (ok:true) while
+    // still missing a few non-critical export fields — real evidence
+    // worth surfacing, but as a note under "Operational", not a
+    // downgrade to "Degraded" (see healthPresentation's comment).
+    const facilityIncomplete = integrations?.facility?.endpoint_health?.ok && !integrations?.facility?.payload?.complete;
+    const consumerIncomplete = integrations?.consumer?.endpoint_health?.ok && !integrations?.consumer?.payload?.complete;
     const healthRows = [
-      { label: "Oyi Core", status: integrations?.edge?.status },
-      { label: "Ochiga Office", status: "production_ready" },
-      { label: "Ochiga Website", status: null },
-      { label: "Oyi Facility", status: integrations?.facility?.status },
-      { label: "Oyi Consumer", status: integrations?.consumer?.status },
+      { label: "Oyi Core", presentation: healthPresentation(integrations?.edge?.backend_health) },
+      // Self-evident: if this page rendered, Office itself is up — not
+      // an inferred or fabricated value.
+      { label: "Ochiga Office", presentation: { label: "Operational", tone: "green" } },
+      { label: "Ochiga Website", presentation: websiteActivityPresentation(traces) },
+      { label: "Oyi Facility", presentation: healthPresentation(integrations?.facility?.endpoint_health), note: facilityIncomplete ? "Reachable; some export fields not yet reported" : undefined },
+      { label: "Oyi Consumer", presentation: healthPresentation(integrations?.consumer?.endpoint_health), note: consumerIncomplete ? "Reachable; some export fields not yet reported" : undefined },
     ];
-    const withSignal = healthRows.filter((r) => r.status);
-    const healthyCount = withSignal.filter((r) => r.status === "production_ready").length;
+    const withSignal = healthRows.filter((r) => r.presentation.label !== "Not configured" && r.presentation.label !== "Not reporting");
+    const healthyCount = withSignal.filter((r) => r.presentation.tone === "green").length;
     if (withSignal.length) {
       const allHealthy = healthyCount === withSignal.length;
       healthPanel.appendChild(el(`
@@ -6548,23 +6634,28 @@ async function renderObservatoryView(outlet, token) {
         </div>
       `));
     }
-    healthPanel.appendChild(FactGrid(healthRows.map((r) => {
-      const p = healthPresentation(r.status);
-      return { label: r.label, html: badge(p.label, p.tone) };
-    })));
+    healthPanel.appendChild(FactGrid(healthRows.map((r) => ({
+      label: r.label,
+      html: `${badge(r.presentation.label, r.presentation.tone)}${(r.note || r.presentation.note) ? `<div style="font-size:10.5px;color:var(--text-tertiary);margin-top:3px;">${escapeHtml(r.note || r.presentation.note)}</div>` : ""}`,
+    }))));
     rowC.appendChild(homePanelWrap("span-6", healthPanel));
   }
 
   const schedulePanel = homePanel("Scheduled Tasks");
   if (!canViewSchedules) {
     schedulePanel.appendChild(el(`<p class="home-panel-empty">Requires reports or content access.</p>`));
+  } else if (demosFailed || contentFailed) {
+    // Distinct from "no scheduled tasks" — the underlying source(s)
+    // genuinely failed to load, not just came back empty.
+    const failedSources = [demosFailed ? "demos" : null, contentFailed ? "scheduled content" : null].filter(Boolean).join(" and ");
+    schedulePanel.appendChild(el(`<p class="home-panel-empty">Could not load ${escapeHtml(failedSources)} — scheduler view unavailable right now.</p>`));
   } else {
     const scheduleItems = [
       ...upcomingDemos.map((d) => ({ name: d.lead?.name ? `Demo — ${d.lead.name}` : "Demo call", when: d.scheduled_for })),
       ...upcomingContent.map((c) => ({ name: `Publish — ${c.title}`, when: c.scheduled_publish_at })),
     ].sort((a, b) => new Date(a.when) - new Date(b.when));
     if (!scheduleItems.length) {
-      schedulePanel.appendChild(el(`<p class="home-panel-empty">No scheduled tasks. Real demo bookings and scheduled content will appear here.</p>`));
+      schedulePanel.appendChild(el(`<p class="home-panel-empty">No scheduled tasks recorded. Real demo bookings and scheduled content will appear here.</p>`));
     } else {
       schedulePanel.appendChild(FactGrid(scheduleItems.slice(0, 8).map((item) => ({
         label: item.name,
@@ -6575,7 +6666,15 @@ async function renderObservatoryView(outlet, token) {
   rowC.appendChild(homePanelWrap("span-6", schedulePanel));
 
   // ---- Intelligence Insights ----
+  // Every metric here is computed over the same fetched trace window as
+  // the rest of the page (up to the 500 most recent traces — NOT scoped
+  // to the Interactions Over Time range selector, which only rebuckets
+  // the same fetch for display). Formulas, spelled out so they never
+  // become ambiguous later:
   const insightCells = [];
+
+  // Peak Activity = the hour-of-day (viewer's local time, 0-23) with the
+  // most trace rows, counted across ALL trace types in the fetch window.
   const hourCounts = new Map();
   traces.forEach((t) => {
     const d = new Date(t.created_at);
@@ -6587,21 +6686,51 @@ async function renderObservatoryView(outlet, token) {
     const [peakHour] = Array.from(hourCounts.entries()).sort((a, b) => b[1] - a[1])[0];
     insightCells.push({ label: "Peak Activity", value: `${String(peakHour).padStart(2, "0")}:00`, icon: iconSvg("trend", "kpi-icon"), tone: "blue" });
   }
+
+  // Most Active Surface = the OBSERVATORY_KNOWN_SURFACES entry with the
+  // highest trace count (same surfaceCounts used by the donut above).
   const activeSurfaceCounts = surfaceCounts.filter((s) => s.count > 0);
   if (activeSurfaceCounts.length) {
     const top = activeSurfaceCounts.slice().sort((a, b) => b.count - a.count)[0];
     insightCells.push({ label: "Most Active Surface", value: top.label, icon: iconSvg("briefing", "kpi-icon"), tone: "violet" });
   }
-  const officeLatencies = traces.filter((t) => (t.type === "office_internal_chat_completed" || t.type === "office_internal_chat_failed") && Number.isFinite(t.payload?.latency_ms)).map((t) => t.payload.latency_ms);
+
+  // Avg Response Time (Office Chat) = mean of payload.latency_ms across
+  // office_internal_chat_completed traces ONLY. office_internal_chat_
+  // failed traces also carry a latency_ms (real elapsed time until the
+  // call errored/timed out), but that measures time-to-failure, not
+  // response latency — mixing it in would inflate/distort a metric
+  // labeled "response time", so failures are deliberately excluded here
+  // (they're already counted separately, in Success Rate below and the
+  // Office Chat Failures KPI).
+  const officeLatencies = traces.filter((t) => t.type === "office_internal_chat_completed" && Number.isFinite(t.payload?.latency_ms)).map((t) => t.payload.latency_ms);
   if (officeLatencies.length) {
     const avgMs = officeLatencies.reduce((sum, v) => sum + v, 0) / officeLatencies.length;
     insightCells.push({ label: "Avg Response Time (Office Chat)", value: `${(avgMs / 1000).toFixed(1)}s`, icon: iconSvg("lightning", "kpi-icon"), tone: "amber" });
   }
+
+  // Office Chat Success Rate = office_internal_chat_completed count /
+  // (office_internal_chat_completed + office_internal_chat_failed)
+  // count. Scoped ONLY to the office_internal surface (Office's own
+  // staff-facing Oyi chat) — the only trace type with an explicit,
+  // unambiguous success/fail dichotomy, including network_error
+  // failures (they ARE counted as failures in this denominator, not
+  // dropped). Never presented as a system-wide success rate.
   const officeCompleted = traces.filter((t) => t.type === "office_internal_chat_completed").length;
   const officeFailed = traces.filter((t) => t.type === "office_internal_chat_failed").length;
   if (officeCompleted + officeFailed > 0) {
     const rate = Math.round((officeCompleted / (officeCompleted + officeFailed)) * 100);
     insightCells.push({ label: "Office Chat Success Rate", value: `${rate}%`, icon: iconSvg("audit", "kpi-icon"), tone: rate >= 90 ? "green" : "amber" });
+  }
+
+  // Most Used Interaction Mode = the engagement_mode with the highest
+  // trace count (same modeCounts used by the Interactions by Mode
+  // donut above) — real today even though it will always read "Chat /
+  // Text" until a voice/vision path exists.
+  const modeEntries = Object.entries(modeCounts);
+  if (modeEntries.length) {
+    const [topMode] = modeEntries.sort((a, b) => b[1] - a[1])[0];
+    insightCells.push({ label: "Most Used Interaction Mode", value: MODE_LABELS[topMode] || titleCase(topMode), icon: iconSvg("observatory", "kpi-icon"), tone: "blue" });
   }
   if (insightCells.length) {
     const insightsPanel = homePanel("Intelligence Insights");
