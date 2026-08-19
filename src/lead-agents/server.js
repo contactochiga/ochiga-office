@@ -3868,11 +3868,21 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           return;
         }
         authorizePermission(authContext, "view_traces");
+        // AI Agents (observability closure pass) — a real 7/30-day
+        // Interactions Over Time range needs more depth than the
+        // previous hardcoded 200-row cap could honestly support; capped
+        // at 1000 so this stays a bounded, deliberate query, not an
+        // unbounded one.
+        const tracesUrl = new URL(req.url, "http://localhost");
+        const requestedLimit = Number(tracesUrl.searchParams.get("limit"));
+        const limit = Number.isFinite(requestedLimit) && requestedLimit > 0
+          ? Math.min(Math.floor(requestedLimit), 1000)
+          : 200;
         json(
           res,
           200,
           {
-            traces: await store.listTraces(200, {
+            traces: await store.listTraces(limit, {
               lead_id: req.headers["x-lead-id"] || "",
             }),
           },
