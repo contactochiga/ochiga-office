@@ -317,6 +317,39 @@ async function fetchTasks(force) {
   const data = await cached("tasks", () => apiListCrm("tasks"), force);
   return data.collection || [];
 }
+// Tasks Domain UI — Automations. Office holds no automation state;
+// every call round-trips through Office's own server to Ochiga-
+// backend's Shared Automation Runtime (see /api/lead-agents/admin/
+// automations* in server.js, and officeExport.ts's /office/automations*
+// on the Backend side).
+async function apiListAutomations() {
+  return api("/api/lead-agents/admin/automations");
+}
+async function apiGetAutomation(id) {
+  return api(`/api/lead-agents/admin/automations/${encodeURIComponent(id)}`);
+}
+async function apiCreateAutomation(body) {
+  return api("/api/lead-agents/admin/automations", { method: "POST", body });
+}
+async function apiUpdateAutomation(id, patch) {
+  return api(`/api/lead-agents/admin/automations/${encodeURIComponent(id)}`, { method: "PATCH", body: patch });
+}
+async function apiDeleteAutomation(id) {
+  return api(`/api/lead-agents/admin/automations/${encodeURIComponent(id)}`, { method: "DELETE" });
+}
+async function apiListAutomationRuns(id) {
+  return api(`/api/lead-agents/admin/automations/${encodeURIComponent(id)}/runs`);
+}
+async function apiTestAutomation(id) {
+  return api(`/api/lead-agents/admin/automations/${encodeURIComponent(id)}/test`, { method: "POST" });
+}
+async function apiGetWorkflow(id) {
+  return api(`/api/lead-agents/admin/workflows/${encodeURIComponent(id)}`);
+}
+async function fetchAutomations(force) {
+  const data = await cached("automations", () => apiListAutomations(), force);
+  return data.automations || [];
+}
 async function fetchMeetings(force) {
   const data = await cached("meetings", () => apiListOffice("meetings"), force);
   return data.collection || [];
@@ -4239,19 +4272,467 @@ async function renderTaskRedirect(outlet, id, token) {
   `));
 }
 
+// Tasks Domain UI — Overview | Tasks | Schedule | Automations. Same
+// line-nav pattern as CRM/Documents (crm-tabs/crm-tab, reused
+// verbatim, not reinvented — see renderCrmRoute).
+const TASKS_TABS = [
+  { key: "overview", label: "Overview" },
+  { key: "tasks", label: "Tasks" },
+  { key: "schedule", label: "Schedule" },
+  { key: "automations", label: "Automations" },
+];
+
 async function renderTasksRoute(outlet, rest, token) {
-  const [objectId] = rest;
-  setTopbar("Tasks", "");
+  const [first] = rest;
+  const isTabKey = TASKS_TABS.some((tab) => tab.key === first);
+
+  // Backward compatibility: existing deep links (rail cards on Lead/
+  // Project/etc. detail pages, notification links — e.g. the `task:`
+  // route builder) use `tasks/<task-id>`. A task id is never one of
+  // the tab keys above, so this distinguishes cleanly without
+  // changing any existing link anywhere else in the app.
+  if (first && !isTabKey) {
+    setTopbar("Tasks", "");
+    outlet.innerHTML = "";
+    outlet.appendChild(skeletonPanel(4));
+    try {
+      await renderTaskRedirect(outlet, first, token);
+    } catch (err) {
+      if (token !== state.renderToken) return;
+      outlet.innerHTML = "";
+      outlet.appendChild(errorPanel(err.message || "Could not load task."));
+    }
+    return;
+  }
+
+  const subKey = first || "overview";
+  setTopbar("Tasks", titleCase(subKey));
   outlet.innerHTML = "";
-  outlet.appendChild(skeletonPanel(4));
+
+  const tabs = el(`<div class="crm-tabs"></div>`);
+  TASKS_TABS.forEach((tab) => {
+    const tabBtn = el(`<button type="button" class="crm-tab ${tab.key === subKey ? "active" : ""}" data-tasks-tab="${tab.key}">${escapeHtml(tab.label)}</button>`);
+    tabBtn.addEventListener("click", () => navigate(`tasks/${tab.key}`));
+    tabs.appendChild(tabBtn);
+  });
+  outlet.appendChild(tabs);
+
+  const body = el(`<div class="crm-body"></div>`);
+  body.appendChild(skeletonPanel(4));
+  outlet.appendChild(body);
+
   try {
-    if (objectId) await renderTaskRedirect(outlet, objectId, token);
-    else await renderTasksList(outlet, token);
+    if (subKey === "tasks") await renderTasksList(body, token);
+    else if (subKey === "automations") await renderAutomationsView(body, token);
+    else if (subKey === "schedule") await renderScheduleView(body, token);
+    else await renderTasksOverview(body, token);
   } catch (err) {
     if (token !== state.renderToken) return;
-    outlet.innerHTML = "";
-    outlet.appendChild(errorPanel(err.message || "Could not load tasks."));
+    body.innerHTML = "";
+    body.appendChild(errorPanel(err.message || "Could not load this view."));
   }
+}
+
+async function renderTasksOverview(outlet, token) {
+  if (token !== state.renderToken) return;
+  outlet.innerHTML = "";
+  outlet.appendChild(emptyPanel({
+    kicker: "Overview",
+    title: "Overview is coming next",
+    body: "The Tasks command view (open work, schedule, automation pulse, performance) is being built in the next pass — see Automations for what's live today.",
+  }));
+}
+
+async function renderScheduleView(outlet, token) {
+  if (token !== state.renderToken) return;
+  outlet.innerHTML = "";
+  outlet.appendChild(emptyPanel({
+    kicker: "Schedule",
+    title: "Schedule is coming next",
+    body: "A combined view of task deadlines and automation runs is being built in the next pass.",
+  }));
+}
+
+// ---------------------------------------------------------------
+// Tasks Domain UI — Automations. Every automation is a real
+// consumer_automations row (surface="office") in Ochiga-backend's
+// Shared Automation Runtime — same scheduler, same executor, same
+// ai_execution_ledger/ochiga_intelligence_events observability as
+// Consumer and Facility automations. This page only reads/writes
+// through the bridge added in server.js; it holds no automation
+// state of its own.
+// ---------------------------------------------------------------
+
+// Curated for the Office UI — the backend (WORKFLOW_CONTRACTS) accepts
+// all 13 declared workflow types, but only these are semantically
+// Office/commercial-relevant; camera/edge/security types belong to
+// Facility's own operational context, not exposed here.
+const OFFICE_AUTOMATION_WORKFLOW_TYPES = [
+  { value: "customer_converted", label: "Customer converted" },
+  { value: "proposal_accepted", label: "Proposal accepted" },
+  { value: "meeting_requested", label: "Meeting requested" },
+  { value: "deployment_required", label: "Deployment required" },
+  { value: "customer_onboarding", label: "Customer onboarding" },
+  { value: "prediction_requires_attention", label: "Needs management attention" },
+];
+
+function humanizeAutomationTrigger(trigger) {
+  if (!trigger || trigger.type !== "schedule") return "—";
+  if (trigger.schedule_type === "daily") return `Daily · ${trigger.local_time}`;
+  if (trigger.schedule_type === "weekdays") return `Weekly · ${trigger.local_time}`;
+  if (trigger.schedule_type === "once") return `Once · ${fmtDate(trigger.local_datetime)}`;
+  return "—";
+}
+
+function automationStatusInfo(automation) {
+  if (!automation.enabled) return { label: "Paused", tone: "default" };
+  if (automation.last_run_status === "failed") return { label: "Needs Attention", tone: "red" };
+  if (automation.last_run_status) return { label: "Active", tone: "green" };
+  return { label: "Active", tone: "green" };
+}
+
+function automationActionSummary(automation) {
+  const actions = Array.isArray(automation.actions) ? automation.actions : [];
+  if (!actions.length) return "No action configured";
+  const first = actions[0];
+  if (first.action_type !== "workflow_action") return "Unsupported action";
+  if (first.operation === "create") {
+    const match = OFFICE_AUTOMATION_WORKFLOW_TYPES.find((t) => t.value === first.workflow_type);
+    return `Create workflow: ${match ? match.label : first.workflow_type}`;
+  }
+  return `Transition workflow → ${titleCase(first.status || "")}`;
+}
+
+async function renderAutomationsView(outlet, token) {
+  const listState = { query: "", status: "", owner: "", selectedId: null };
+  const automations = await fetchAutomations();
+  if (token !== state.renderToken) return;
+
+  outlet.innerHTML = "";
+  const layout = el(`<div class="split-layout"></div>`);
+  const mainCol = el(`<div class="split-main"></div>`);
+  layout.appendChild(mainCol);
+  outlet.appendChild(layout);
+
+  function computeKpis(rows) {
+    const active = rows.filter((a) => a.enabled).length;
+    const upcoming = rows.filter((a) => a.enabled && a.next_run_at).length;
+    const attention = rows.filter((a) => a.last_run_status === "failed").length;
+    return [
+      { label: "Active Automations", value: String(active) },
+      { label: "Upcoming Runs", value: String(upcoming), sub: "Scheduled" },
+      { label: "Needs Attention", value: String(attention), alert: attention > 0 },
+    ];
+  }
+  mainCol.appendChild(KPIGroup(computeKpis(automations)));
+
+  const toolbarHost = el(`<div></div>`);
+  mainCol.appendChild(toolbarHost);
+  const resultsHost = el(`<div class="crm-results"></div>`);
+  mainCol.appendChild(resultsHost);
+
+  const ownerOptions = [...new Set(automations.map((a) => a.owner).filter(Boolean))].sort();
+
+  function drawToolbar() {
+    toolbarHost.innerHTML = "";
+    toolbarHost.appendChild(renderToolbar({
+      query: listState.query,
+      onQuery: (value) => { listState.query = value; drawTable(); },
+      filters: [
+        { label: "Status", value: listState.status, options: ["enabled", "disabled"], onChange: (value) => { listState.status = value; drawTable(); } },
+        ...(ownerOptions.length ? [{ label: "Owner", value: listState.owner, options: ownerOptions, onChange: (value) => { listState.owner = value; drawTable(); } }] : []),
+      ],
+      primaryAction: hasPermission("tasks.manage") ? { label: "New Automation", onClick: () => openNewAutomationDialog(() => refresh(true)) } : null,
+    }));
+  }
+
+  function filteredRows() {
+    let rows = automations;
+    if (listState.status === "enabled") rows = rows.filter((a) => a.enabled);
+    else if (listState.status === "disabled") rows = rows.filter((a) => !a.enabled);
+    if (listState.owner) rows = rows.filter((a) => a.owner === listState.owner);
+    if (listState.query) {
+      const q = listState.query.toLowerCase();
+      rows = rows.filter((a) => String(a.name || "").toLowerCase().includes(q));
+    }
+    return rows;
+  }
+
+  function drawTable() {
+    resultsHost.innerHTML = "";
+    const rows = filteredRows();
+    resultsHost.appendChild(renderDataTable({
+      columns: [
+        { label: "Automation", width: "1.8fr", render: (a) => {
+          const cell = el(`<div style="display:flex;flex-direction:column;gap:2px;"></div>`);
+          cell.appendChild(el(`<span style="color:var(--white);font-weight:500;">${escapeHtml(a.name)}</span>`));
+          cell.appendChild(el(`<span style="color:var(--text-tertiary);font-size:11px;">${escapeHtml(automationActionSummary(a))}</span>`));
+          return cell;
+        } },
+        { label: "Trigger", render: (a) => escapeHtml(humanizeAutomationTrigger(a.trigger)) },
+        { label: "Next Run", render: (a) => a.enabled && a.next_run_at ? escapeHtml(fmtDate(a.next_run_at)) : "—" },
+        { label: "Last Run", render: (a) => a.last_run_at ? escapeHtml(fmtDate(a.last_run_at)) : "—" },
+        { label: "Status", render: (a) => { const info = automationStatusInfo(a); return badge(info.label, info.tone); } },
+        { label: "Owner", render: (a) => escapeHtml(a.owner || "Unassigned") },
+      ],
+      rows,
+      onRowClick: (a) => selectAutomation(a.id),
+      emptyMessage: automations.length ? "No automations match your filters." : "No automations yet — create one to get started.",
+    }));
+  }
+
+  function selectAutomation(id) {
+    listState.selectedId = id;
+    let panel = layout.querySelector(".split-panel");
+    if (!panel) {
+      panel = el(`<div class="split-panel"></div>`);
+      layout.appendChild(panel);
+    }
+    panel.innerHTML = "";
+    panel.appendChild(skeletonPanel(3));
+    const automation = automations.find((a) => a.id === id);
+    if (!automation) return;
+    renderAutomationDetailPanel(panel, automation, {
+      onClose: () => panel.remove(),
+      onChanged: () => refresh(true),
+    });
+  }
+
+  async function refresh(force) {
+    const fresh = await fetchAutomations(force);
+    if (token !== state.renderToken) return;
+    automations.length = 0;
+    automations.push(...fresh);
+    mainCol.replaceChildren();
+    mainCol.appendChild(KPIGroup(computeKpis(automations)));
+    mainCol.appendChild(toolbarHost);
+    mainCol.appendChild(resultsHost);
+    drawToolbar();
+    drawTable();
+    if (listState.selectedId && automations.some((a) => a.id === listState.selectedId)) selectAutomation(listState.selectedId);
+    else {
+      const panel = layout.querySelector(".split-panel");
+      if (panel) panel.remove();
+    }
+  }
+
+  drawToolbar();
+  drawTable();
+}
+
+async function renderAutomationDetailPanel(panel, automation, { onClose, onChanged }) {
+  const panelState = { tab: "overview" };
+  const [runsResult, workflowLink] = await Promise.all([
+    apiListAutomationRuns(automation.id).catch(() => ({ runs: [] })),
+    Promise.resolve(null),
+  ]);
+  const runs = runsResult.runs || [];
+
+  function draw() {
+    panel.innerHTML = "";
+    const info = automationStatusInfo(automation);
+    const head = el(`<div class="split-panel-head"></div>`);
+    const headTitle = el(`<div></div>`);
+    headTitle.appendChild(el(`<h2>${escapeHtml(automation.name)}</h2>`));
+    headTitle.appendChild(el(`<div style="margin-top:6px;">${badge(info.label, info.tone)}</div>`));
+    head.appendChild(headTitle);
+    const closeBtn = el(`<button type="button" class="split-panel-close" aria-label="Close">✕</button>`);
+    closeBtn.addEventListener("click", onClose);
+    head.appendChild(closeBtn);
+    panel.appendChild(head);
+
+    const tabs = el(`<div class="split-tabs"></div>`);
+    [["overview", "Overview"], ["runs", "Runs"], ["audit", "Audit Log"]].forEach(([key, label]) => {
+      const btn = el(`<button type="button" class="split-tab ${panelState.tab === key ? "active" : ""}">${label}</button>`);
+      btn.addEventListener("click", () => { panelState.tab = key; draw(); });
+      tabs.appendChild(btn);
+    });
+    panel.appendChild(tabs);
+
+    if (panelState.tab === "overview") panel.appendChild(renderAutomationOverviewTab());
+    else if (panelState.tab === "runs") panel.appendChild(renderAutomationRunsTab());
+    else panel.appendChild(renderAutomationAuditTab());
+
+    const actions = el(`<div class="split-panel-actions"></div>`);
+    if (hasPermission("tasks.manage")) {
+      const runNowBtn = el(`<button type="button" class="btn btn-ghost btn-sm">Run Now</button>`);
+      runNowBtn.addEventListener("click", async () => {
+        runNowBtn.disabled = true;
+        runNowBtn.textContent = "Running…";
+        try {
+          await apiTestAutomation(automation.id);
+          onChanged();
+        } catch (err) {
+          runNowBtn.disabled = false;
+          runNowBtn.textContent = "Run Now";
+          panel.appendChild(errorPanel(err.message || "Could not run this automation."));
+        }
+      });
+      actions.appendChild(runNowBtn);
+
+      const toggleBtn = el(`<button type="button" class="btn btn-ghost btn-sm">${automation.enabled ? "Pause" : "Resume"}</button>`);
+      toggleBtn.addEventListener("click", async () => {
+        await apiUpdateAutomation(automation.id, { enabled: !automation.enabled });
+        onChanged();
+      });
+      actions.appendChild(toggleBtn);
+
+      const deleteBtn = el(`<button type="button" class="btn btn-danger btn-sm">Delete</button>`);
+      deleteBtn.addEventListener("click", async () => {
+        if (!confirm(`Delete "${automation.name}"? This cannot be undone.`)) return;
+        await apiDeleteAutomation(automation.id);
+        onClose();
+        onChanged();
+      });
+      actions.appendChild(deleteBtn);
+    }
+    panel.appendChild(actions);
+  }
+
+  function factRowEl(label, value) {
+    return el(`<div class="split-fact-row"><span class="label">${escapeHtml(label)}</span><span class="value">${escapeHtml(value || "—")}</span></div>`);
+  }
+
+  function renderAutomationOverviewTab() {
+    const wrap = el(`<div></div>`);
+    const section = el(`<div class="split-panel-section"><h4>Details</h4></div>`);
+    section.appendChild(factRowEl("Action", automationActionSummary(automation)));
+    section.appendChild(factRowEl("Trigger", humanizeAutomationTrigger(automation.trigger)));
+    section.appendChild(factRowEl("Owner", automation.owner || "Unassigned"));
+    section.appendChild(factRowEl("Next Run", automation.enabled && automation.next_run_at ? fmtDate(automation.next_run_at) : "—"));
+    section.appendChild(factRowEl("Last Run", automation.last_run_at ? fmtDate(automation.last_run_at) : "—"));
+    wrap.appendChild(section);
+
+    const perfSection = el(`<div class="split-panel-section"><h4>Performance (recent runs)</h4></div>`);
+    const succeeded = runs.filter((r) => ["succeeded", "completed"].includes(r.status)).length;
+    const failed = runs.filter((r) => ["failed", "partially_succeeded", "partially_completed"].includes(r.status)).length;
+    const rate = runs.length ? Math.round((succeeded / runs.length) * 100) : null;
+    const perfRow = el(`<div class="split-panel-perf"></div>`);
+    perfRow.appendChild(donutChart(
+      runs.length ? [{ label: "Succeeded", count: succeeded, tone: "green" }, { label: "Failed", count: failed, tone: "red" }] : [],
+      "No runs yet"
+    ));
+    const stats = el(`<div class="split-panel-perf-stats"></div>`);
+    stats.appendChild(el(`<div class="stat-row"><span class="stat-label">Runs</span><span class="stat-value">${runs.length}</span></div>`));
+    stats.appendChild(el(`<div class="stat-row"><span class="stat-label">Succeeded</span><span class="stat-value">${succeeded}</span></div>`));
+    stats.appendChild(el(`<div class="stat-row"><span class="stat-label">Failed</span><span class="stat-value ${failed ? "red" : ""}">${failed}</span></div>`));
+    if (rate !== null) stats.appendChild(el(`<div class="stat-row"><span class="stat-label">Success rate</span><span class="stat-value">${rate}%</span></div>`));
+    perfRow.appendChild(stats);
+    perfSection.appendChild(perfRow);
+    wrap.appendChild(perfSection);
+    return wrap;
+  }
+
+  function renderAutomationRunsTab() {
+    if (!runs.length) return emptyPanel({ kicker: "Runs", title: "No runs yet", body: "This automation hasn't run yet." });
+    return renderDataTable({
+      columns: [
+        { label: "Started", render: (r) => escapeHtml(fmtDate(r.started_at || r.created_at)) },
+        { label: "Status", render: (r) => badge(titleCase(r.status), toneForStatus(r.status)) },
+        { label: "Source", render: (r) => escapeHtml(titleCase(r.source || "")) },
+      ],
+      rows: runs,
+      emptyMessage: "No runs yet.",
+    });
+  }
+
+  function renderAutomationAuditTab() {
+    if (!hasPermission("view_audit")) {
+      return emptyPanel({ kicker: "Audit Log", title: "Restricted", body: "You don't have permission to view the audit log." });
+    }
+    const host = el(`<div></div>`);
+    host.appendChild(skeletonPanel(3));
+    api("/api/lead-agents/admin/audit").then((data) => {
+      const entries = (data.audit || []).filter((e) => e.target_type === "automation" && e.target_id === automation.id);
+      host.innerHTML = "";
+      if (!entries.length) {
+        host.appendChild(emptyPanel({ kicker: "Audit Log", title: "No audit entries yet", body: "Changes to this automation will be recorded here." }));
+        return;
+      }
+      entries.forEach((entry) => {
+        host.appendChild(el(`
+          <div class="split-fact-row">
+            <span class="label">${escapeHtml(fmtRelative(entry.created_at))}</span>
+            <span class="value">${escapeHtml(titleCase(String(entry.action || "").replace(/_/g, " ")))} · ${escapeHtml(entry.actor_email || "")}</span>
+          </div>
+        `));
+      });
+    }).catch(() => {
+      host.innerHTML = "";
+      host.appendChild(errorPanel("Could not load the audit log."));
+    });
+    return host;
+  }
+
+  draw();
+}
+
+function openNewAutomationDialog(onCreated) {
+  const overlay = el(`<div class="dialog-overlay"></div>`);
+  const card = el(`
+    <form class="dialog-card">
+      <h3>New Automation</h3>
+      <div class="dialog-fields">
+        <label>Name<input name="name" type="text" required /></label>
+        <label>Schedule
+          <select name="schedule_type">
+            <option value="daily">Every day, at a time</option>
+            <option value="once">Once, at a specific date and time</option>
+          </select>
+        </label>
+        <label data-field="daily">Time (24h)<input name="local_time" type="time" value="08:00" /></label>
+        <label data-field="once" style="display:none;">Date &amp; time<input name="local_datetime" type="datetime-local" /></label>
+        <label>Then, create a workflow of type
+          <select name="workflow_type">${OFFICE_AUTOMATION_WORKFLOW_TYPES.map((t) => `<option value="${escapeHtml(t.value)}">${escapeHtml(t.label)}</option>`).join("")}</select>
+        </label>
+        <label>Workflow title<input name="title" type="text" required /></label>
+        <label>Workflow summary<textarea name="summary" rows="2" required></textarea></label>
+        <label>Owner<input name="owner" type="text" placeholder="Name or email" /></label>
+      </div>
+      <div class="dialog-actions">
+        <button type="button" class="btn btn-ghost btn-sm" data-cancel>Cancel</button>
+        <button type="submit" class="btn btn-primary btn-sm">Create</button>
+      </div>
+      <p class="dialog-error"></p>
+    </form>
+  `);
+  overlay.appendChild(card);
+  document.body.appendChild(overlay);
+
+  const scheduleSelect = card.querySelector('select[name="schedule_type"]');
+  scheduleSelect.addEventListener("change", () => {
+    card.querySelector('[data-field="daily"]').style.display = scheduleSelect.value === "daily" ? "" : "none";
+    card.querySelector('[data-field="once"]').style.display = scheduleSelect.value === "once" ? "" : "none";
+  });
+
+  function close() { overlay.remove(); }
+  card.querySelector("[data-cancel]").addEventListener("click", close);
+  overlay.addEventListener("click", (event) => { if (event.target === overlay) close(); });
+
+  card.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const errorLabel = card.querySelector(".dialog-error");
+    const data = Object.fromEntries(new FormData(card).entries());
+    try {
+      if (!data.name) throw new Error("Name is required.");
+      if (!data.title || !data.summary) throw new Error("Workflow title and summary are required.");
+      const trigger = data.schedule_type === "once"
+        ? { type: "schedule", schedule_type: "once", local_datetime: data.local_datetime, timezone: "Africa/Lagos" }
+        : { type: "schedule", schedule_type: "daily", local_time: data.local_time, timezone: "Africa/Lagos" };
+      await apiCreateAutomation({
+        name: data.name,
+        owner: data.owner || null,
+        trigger,
+        actions: [{ action_type: "workflow_action", operation: "create", workflow_type: data.workflow_type, title: data.title, summary: data.summary }],
+      });
+      invalidate("automations");
+      close();
+      onCreated();
+    } catch (err) {
+      errorLabel.textContent = err.message || "Could not create automation.";
+    }
+  });
+  card.querySelector('input[name="name"]').focus();
 }
 
 // ---------------------------------------------------------------

@@ -426,6 +426,74 @@ async function callOyiCoreTransitionWorkflow(config = {}, workflowId, payload = 
   }
 }
 
+// Tasks Domain UI — Office's own bridge into the Shared Automation
+// Runtime's additive Office-facing routes (Ochiga-backend
+// src/routes/officeExport.ts: /office/automations*, /office/workflows/:id).
+// These are synchronous, admin-initiated calls (list/create/update/
+// delete/run automations, fetch a workflow's detail) — unlike the
+// fire-and-forget workflow bridge above, a failure here must be
+// surfaced to the admin, not swallowed. Shape is uniform:
+// { ok, status, data, error } — data is the parsed backend body on
+// success, error is a human-readable message on failure.
+function automationHeaders(config) {
+  return officeWorkflowHeaders(config);
+}
+
+async function callBackendJson(config, method, path, payload, options = {}) {
+  const baseUrl = String(config.officeBackendBaseUrl || "").replace(/\/+$/, "");
+  if (!baseUrl) return { ok: false, status: 0, error: "Office backend base URL is not configured." };
+  const request = options.httpRequest || ((requestConfig) => axios(requestConfig));
+  try {
+    const response = await request({
+      method,
+      url: `${baseUrl}${path}`,
+      data: payload,
+      timeout: config.officeBackendEventTimeoutMs || 10_000,
+      headers: automationHeaders(config),
+      validateStatus: () => true,
+    });
+    const status = Number(response && response.status) || 0;
+    const body = response && response.data && typeof response.data === "object" ? response.data : {};
+    if (status >= 200 && status < 300 && body.ok !== false) {
+      return { ok: true, status, data: body };
+    }
+    return { ok: false, status, error: text(body.error || `Backend request failed (${status || "network error"}).`) };
+  } catch (error) {
+    return { ok: false, status: 0, error: text(error && error.message) || "Unable to reach the Backend service." };
+  }
+}
+
+function automationsBase(config) {
+  return config.officeAutomationsPath || "/office/automations";
+}
+
+async function callOyiCoreListAutomations(config = {}, params = {}) {
+  const query = params.status ? `?status=${encodeURIComponent(params.status)}` : "";
+  return callBackendJson(config, "get", `${automationsBase(config)}${query}`, undefined);
+}
+async function callOyiCoreGetAutomation(config = {}, id) {
+  return callBackendJson(config, "get", `${automationsBase(config)}/${encodeURIComponent(id)}`, undefined);
+}
+async function callOyiCoreCreateAutomation(config = {}, payload = {}) {
+  return callBackendJson(config, "post", automationsBase(config), payload);
+}
+async function callOyiCoreUpdateAutomation(config = {}, id, payload = {}) {
+  return callBackendJson(config, "patch", `${automationsBase(config)}/${encodeURIComponent(id)}`, payload);
+}
+async function callOyiCoreDeleteAutomation(config = {}, id) {
+  return callBackendJson(config, "delete", `${automationsBase(config)}/${encodeURIComponent(id)}`, undefined);
+}
+async function callOyiCoreListAutomationRuns(config = {}, id) {
+  return callBackendJson(config, "get", `${automationsBase(config)}/${encodeURIComponent(id)}/runs`, undefined);
+}
+async function callOyiCoreTestAutomation(config = {}, id) {
+  return callBackendJson(config, "post", `${automationsBase(config)}/${encodeURIComponent(id)}/test`, undefined);
+}
+async function callOyiCoreGetWorkflow(config = {}, workflowId) {
+  const path = `${config.officeWorkflowsPath || "/office/workflows"}/${encodeURIComponent(workflowId)}`;
+  return callBackendJson(config, "get", path, undefined);
+}
+
 module.exports = {
   buildOyiCoreCorporateConversationRequest,
   buildOyiCoreOfficeInternalRequest,
@@ -434,5 +502,13 @@ module.exports = {
   callOyiCoreObservabilityEvents,
   callOyiCoreCreateWorkflow,
   callOyiCoreTransitionWorkflow,
+  callOyiCoreListAutomations,
+  callOyiCoreGetAutomation,
+  callOyiCoreCreateAutomation,
+  callOyiCoreUpdateAutomation,
+  callOyiCoreDeleteAutomation,
+  callOyiCoreListAutomationRuns,
+  callOyiCoreTestAutomation,
+  callOyiCoreGetWorkflow,
   oyiCoreConversationUrl,
 };
