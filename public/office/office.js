@@ -6489,6 +6489,24 @@ function contentOyiSafeSummary(item) {
   return parts.join(" ");
 }
 
+// Structured sibling of contentOyiSafeSummary — same metadata-only
+// fields (excerpt included, never the full article body), exposed as
+// flat strings so Oyi's strictly-read-only office_content.read
+// capability can answer a specific sub-question.
+function contentOyiContext(item) {
+  return {
+    content_ref: item.id,
+    safe_summary: contentOyiSafeSummary(item),
+    title: item.title || null,
+    workflow_status: item.workflow_status || null,
+    category: item.category || null,
+    author: item.author || null,
+    excerpt: item.excerpt || null,
+    scheduled_publish_at: item.scheduled_publish_at || null,
+    sanity_live_url: item.sanity_live_url || null,
+  };
+}
+
 async function renderContentEditor(outlet, contentId, token) {
   setTopbar("Content", "");
   setSelectedObject(null);
@@ -6504,7 +6522,7 @@ async function renderContentEditor(outlet, contentId, token) {
   }
   if (token !== state.renderToken) return;
 
-  setSelectedObject("content", item.id, item.title, { content_ref: item.id, safe_summary: contentOyiSafeSummary(item) });
+  setSelectedObject("content", item.id, item.title, contentOyiContext(item));
   outlet.innerHTML = "";
   const back = el(`<button type="button" class="detail-back">← Content</button>`);
   back.addEventListener("click", () => navigate("content"));
@@ -6901,10 +6919,7 @@ async function renderDocumentDetail(body, id, token) {
     badges: [badge(titleCase(record.status), toneForStatus(record.status))],
     backLabel: "Documents",
     onBack: () => navigate("documents/library"),
-    oyiContext: {
-      document_ref: id,
-      safe_summary: documentOyiSafeSummary(record, { related }),
-    },
+    oyiContext: documentOyiContext(record, { related }),
     mainSections,
     railSections,
   });
@@ -6921,6 +6936,23 @@ function documentOyiSafeSummary(record, { related } = {}) {
   if (record.owner) parts.push(`Owner: ${record.owner}.`);
   if (related) parts.push(`Related ${titleCase(record.related_type || "record")}: ${related.name}.`);
   return parts.join(" ");
+}
+
+// Structured sibling of documentOyiSafeSummary — same metadata-only
+// fields, exposed as flat strings so Oyi's strictly-read-only
+// office_documents.read capability can answer a specific sub-question
+// (status/owner/type/related record) without ever seeing the file body.
+function documentOyiContext(record, { related } = {}) {
+  return {
+    document_ref: record.id,
+    safe_summary: documentOyiSafeSummary(record, { related }),
+    title: record.title || null,
+    document_type: record.document_type || null,
+    status: record.status || null,
+    owner: record.owner || null,
+    related_type: related ? record.related_type || null : null,
+    related_name: related ? related.name || null : null,
+  };
 }
 
 function renderProposalBody(markdown) {
