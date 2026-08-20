@@ -4132,18 +4132,26 @@ async function renderTasksList(outlet, token) {
   const [tasks, index] = await Promise.all([fetchTasks(), fetchTaskRelationIndex()]);
   if (token !== state.renderToken) return;
 
-  const now = Date.now();
-  const enriched = tasks.map((t) => {
-    const relation = resolveTaskRelation(t, index);
-    const overdue = Boolean(t.due_at) && !t.completed_at && new Date(t.due_at).getTime() < now && !["done", "completed", "cancelled"].includes(String(t.status || "").toLowerCase());
-    return { ...t, __relation: relation, __related_type: relation ? relation.type : "", __overdue: overdue };
-  });
+  function enrich(list) {
+    const now = Date.now();
+    return list.map((t) => {
+      const relation = resolveTaskRelation(t, index);
+      const overdue = Boolean(t.due_at) && !t.completed_at && new Date(t.due_at).getTime() < now && !["done", "completed", "cancelled"].includes(String(t.status || "").toLowerCase());
+      return { ...t, __relation: relation, __related_type: relation ? relation.type : "", __overdue: overdue };
+    });
+  }
+  let enriched = enrich(tasks);
 
-  const listState = { query: "", quick: "open", businessUnit: "", relatedType: "" };
+  const listState = { query: "", quick: "open", businessUnit: "", relatedType: "", selectedId: null };
 
   outlet.innerHTML = "";
+  const layout = el(`<div class="split-layout"></div>`);
+  const mainCol = el(`<div class="split-main"></div>`);
+  layout.appendChild(mainCol);
+  outlet.appendChild(layout);
+
   const heading = el(`<div class="view-heading"><h1>Tasks</h1><span class="count-pill"></span></div>`);
-  outlet.appendChild(heading);
+  mainCol.appendChild(heading);
   const countLabel = heading.querySelector(".count-pill");
 
   const toolbar = el(`<div class="list-toolbar"></div>`);
@@ -4160,7 +4168,7 @@ async function renderTasksList(outlet, token) {
   relSelect.addEventListener("change", () => { listState.relatedType = relSelect.value; draw(); });
   toolbar.appendChild(relSelect);
   toolbar.appendChild(el(`<div class="toolbar-spacer"></div>`));
-  outlet.appendChild(toolbar);
+  mainCol.appendChild(toolbar);
 
   const quickBar = el(`<div class="list-toolbar quick-filters"></div>`);
   const quickButtons = {};
@@ -4170,14 +4178,43 @@ async function renderTasksList(outlet, token) {
     quickButtons[key] = btn;
     quickBar.appendChild(btn);
   });
-  outlet.appendChild(quickBar);
+  mainCol.appendChild(quickBar);
   function syncQuickButtons() {
     Object.entries(quickButtons).forEach(([key, btn]) => btn.classList.toggle("active", key === listState.quick));
   }
   syncQuickButtons();
 
   const resultsHost = el(`<div class="crm-results"></div>`);
-  outlet.appendChild(resultsHost);
+  mainCol.appendChild(resultsHost);
+
+  function selectTask(id) {
+    listState.selectedId = id;
+    let panel = layout.querySelector(".split-panel");
+    if (!panel) {
+      panel = el(`<div class="split-panel"></div>`);
+      layout.appendChild(panel);
+    }
+    panel.innerHTML = "";
+    panel.appendChild(skeletonPanel(3));
+    const task = enriched.find((t) => t.id === id);
+    if (!task) return;
+    renderTaskDetailPanel(panel, task, {
+      onClose: () => { listState.selectedId = null; panel.remove(); },
+      onChanged: () => refresh(),
+    });
+  }
+
+  async function refresh() {
+    const fresh = await fetchTasks(true);
+    if (token !== state.renderToken) return;
+    enriched = enrich(fresh);
+    draw();
+    if (listState.selectedId && enriched.some((t) => t.id === listState.selectedId)) selectTask(listState.selectedId);
+    else {
+      const panel = layout.querySelector(".split-panel");
+      if (panel) panel.remove();
+    }
+  }
 
   function draw() {
     let rows = enriched;
@@ -4201,24 +4238,115 @@ async function renderTasksList(outlet, token) {
         { label: "Due", render: (t) => t.due_at ? (t.__overdue ? badge(fmtDate(t.due_at), "red") : escapeHtml(fmtDate(t.due_at))) : "—" },
         { label: "Related", render: (t) => t.__relation ? `${escapeHtml(t.__relation.type)}: ${escapeHtml(t.__relation.name || "—")}` : "—" },
         { label: "Business Unit", render: (t) => escapeHtml(titleCase(t.business_unit)) },
-        ...(hasPermission("tasks.manage") ? [{
-          label: "Actions",
-          render: (t) => {
-            const cell = el(`<div></div>`);
-            cell.addEventListener("click", (event) => event.stopPropagation());
-            const actions = renderStatusActions("crm", "tasks", t, () => navigate("tasks"));
-            if (actions) cell.appendChild(actions);
-            else cell.innerHTML = `<span class="rail-sub">—</span>`;
-            return cell;
-          },
-        }] : []),
       ],
       rows,
-      onRowClick: (t) => { if (t.__relation) navigate(t.__relation.path); },
+      onRowClick: (t) => selectTask(t.id),
       emptyMessage: enriched.length ? "No tasks match your filters." : "No tasks yet.",
     }));
     countLabel.textContent = `${rows.length} of ${enriched.length}`;
   }
+  draw();
+}
+
+// Read-only-plus-status-actions detail panel for a task, opened from
+// the Tasks tab's list. Related-object link is a link-out (navigates
+// away), never a duplicate editing surface for the parent record.
+// Audit tab reuses the same real /admin/audit endpoint and target_type
+// convention the backend already writes on every crm_tasks
+// create/update (see appendAudit(..., "tasks", record.id, ...) in
+// server.js) — the same pattern as the Automations detail panel's
+// Audit Log tab, just a different target_type.
+async function renderTaskDetailPanel(panel, task, { onClose, onChanged }) {
+  const panelState = { tab: "overview" };
+
+  function factRowEl(label, value) {
+    return el(`<div class="split-fact-row"><span class="label">${escapeHtml(label)}</span><span class="value">${escapeHtml(value || "—")}</span></div>`);
+  }
+
+  function renderOverviewTab() {
+    const wrap = el(`<div></div>`);
+    const section = el(`<div class="split-panel-section"><h4>Details</h4></div>`);
+    section.appendChild(factRowEl("Priority", titleCase(task.priority)));
+    section.appendChild(factRowEl("Assignee", task.assignee || "Unassigned"));
+    section.appendChild(factRowEl("Due", task.due_at ? fmtDate(task.due_at) : "—"));
+    section.appendChild(factRowEl("Business Unit", titleCase(task.business_unit)));
+    if (task.description) section.appendChild(factRowEl("Description", task.description));
+    wrap.appendChild(section);
+
+    const relSection = el(`<div class="split-panel-section"><h4>Related Record</h4></div>`);
+    if (task.__relation) {
+      relSection.appendChild(factRowEl("Type", task.__relation.type));
+      relSection.appendChild(factRowEl("Record", task.__relation.name || "—"));
+    } else {
+      relSection.appendChild(el(`<p class="rail-empty">Not linked to a Lead, Opportunity, Project, Portfolio, Support case, Private relationship or Partnership.</p>`));
+    }
+    wrap.appendChild(relSection);
+    return wrap;
+  }
+
+  function renderAuditTab() {
+    if (!hasPermission("view_audit")) {
+      return emptyPanel({ kicker: "Audit Log", title: "Restricted", body: "You don't have permission to view the audit log." });
+    }
+    const host = el(`<div></div>`);
+    host.appendChild(skeletonPanel(3));
+    api("/api/lead-agents/admin/audit").then((data) => {
+      const entries = (data.audit || []).filter((e) => e.target_type === "tasks" && e.target_id === task.id);
+      host.innerHTML = "";
+      if (!entries.length) {
+        host.appendChild(emptyPanel({ kicker: "Audit Log", title: "No audit entries yet", body: "Changes to this task will be recorded here." }));
+        return;
+      }
+      entries.forEach((entry) => {
+        host.appendChild(el(`
+          <div class="split-fact-row">
+            <span class="label">${escapeHtml(fmtRelative(entry.created_at))}</span>
+            <span class="value">${escapeHtml(titleCase(String(entry.action || "").replace(/_/g, " ")))} · ${escapeHtml(entry.actor_email || "")}</span>
+          </div>
+        `));
+      });
+    }).catch(() => {
+      host.innerHTML = "";
+      host.appendChild(errorPanel("Could not load the audit log."));
+    });
+    return host;
+  }
+
+  function draw() {
+    panel.innerHTML = "";
+    const head = el(`<div class="split-panel-head"></div>`);
+    const headTitle = el(`<div></div>`);
+    headTitle.appendChild(el(`<h2>${escapeHtml(task.title)}</h2>`));
+    headTitle.appendChild(el(`<div style="margin-top:6px;">${badge(titleCase(task.status), toneForStatus(task.status))}</div>`));
+    head.appendChild(headTitle);
+    const closeBtn = el(`<button type="button" class="split-panel-close" aria-label="Close">✕</button>`);
+    closeBtn.addEventListener("click", onClose);
+    head.appendChild(closeBtn);
+    panel.appendChild(head);
+
+    const tabs = el(`<div class="split-tabs"></div>`);
+    [["overview", "Overview"], ["audit", "Audit Log"]].forEach(([key, label]) => {
+      const btn = el(`<button type="button" class="split-tab ${panelState.tab === key ? "active" : ""}">${label}</button>`);
+      btn.addEventListener("click", () => { panelState.tab = key; draw(); });
+      tabs.appendChild(btn);
+    });
+    panel.appendChild(tabs);
+
+    panel.appendChild(panelState.tab === "overview" ? renderOverviewTab() : renderAuditTab());
+
+    const actions = el(`<div class="split-panel-actions"></div>`);
+    if (hasPermission("tasks.manage")) {
+      const statusActions = renderStatusActions("crm", "tasks", task, onChanged);
+      if (statusActions) actions.appendChild(statusActions);
+    }
+    if (task.__relation) {
+      const linkBtn = el(`<button type="button" class="btn btn-ghost btn-sm">Open ${escapeHtml(task.__relation.type)}</button>`);
+      linkBtn.addEventListener("click", () => navigate(task.__relation.path));
+      actions.appendChild(linkBtn);
+    }
+    panel.appendChild(actions);
+  }
+
   draw();
 }
 
