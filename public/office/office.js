@@ -3875,11 +3875,7 @@ async function renderPortfolioDetail(outlet, id, token) {
     onBack: () => navigate("portfolio"),
     mainSections,
     railSections,
-    oyiContext: {
-      portfolio_ref: id,
-      backend_building_ref: record.backend_building_id || record.backend_estate_id || null,
-      safe_summary: portfolioOyiSafeSummary(record),
-    },
+    oyiContext: portfolioOyiContext(record),
   });
 }
 
@@ -3902,6 +3898,39 @@ function portfolioOyiSafeSummary(record) {
     parts.push("Not yet linked to a live Oyi deployment reference.");
   }
   return parts.join(" ");
+}
+
+// Structured sibling of portfolioOyiSafeSummary — same fields, plus
+// projection_state derived with the EXACT same 3-branch logic as the
+// safe_summary above (linked/unavailable/not_linked), so Oyi's Portfolio
+// capability module can answer honestly about which of those three real
+// states applies instead of treating "no operational numbers" as one
+// undifferentiated blank. homes/devices/escalation counts are only ever
+// sent when genuinely linked — never guessed for the other two states.
+function portfolioOyiContext(record) {
+  const projection = record.operational_projection;
+  const projectionState = projection && projection.linked ? "linked" : projection && projection.available === false ? "unavailable" : "not_linked";
+  return {
+    portfolio_ref: record.id,
+    backend_building_ref: record.backend_building_id || record.backend_estate_id || null,
+    safe_summary: portfolioOyiSafeSummary(record),
+    name: record.name || null,
+    relationship_type: record.relationship_type || null,
+    business_unit: record.business_unit || null,
+    status: record.status || null,
+    oyi_deployment_status: record.oyi_deployment_status || null,
+    facility_os_status: record.facility_os_status || null,
+    consumer_os_status: record.consumer_os_status || null,
+    support_status: record.support_status || null,
+    health_summary: record.health_summary || null,
+    major_escalations: Number.isFinite(Number(record.major_escalations)) ? Number(record.major_escalations) : null,
+    projection_state: projectionState,
+    homes_total: projectionState === "linked" ? projection.homes_total ?? null : null,
+    homes_active: projectionState === "linked" ? projection.homes_active ?? null : null,
+    devices_total: projectionState === "linked" ? projection.devices_total ?? null : null,
+    devices_online: projectionState === "linked" ? projection.devices_online ?? null : null,
+    major_open_escalations: projectionState === "linked" ? projection.major_open_escalations ?? null : null,
+  };
 }
 
 // Built ONLY from fields already rendered on the Project detail page,
