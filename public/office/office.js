@@ -5550,10 +5550,7 @@ async function renderMeetingDetail(outlet, id, token) {
     badges: [badge(meetingStatusLabel(meetingDisplayStatus(record)), toneForStatus(meetingDisplayStatus(record))), badge(record.scheduled_at ? fmtDateTime(record.scheduled_at) : "Unscheduled")],
     backLabel: "Meetings",
     onBack: () => navigate("meetings"),
-    oyiContext: {
-      meeting_ref: id,
-      safe_summary: meetingOyiSafeSummary(record, { related, followUpTask }),
-    },
+    oyiContext: meetingOyiContext(record, { related, followUpTask }),
     mainSections,
     railSections,
   });
@@ -5570,6 +5567,28 @@ function meetingOyiSafeSummary(record, { related, followUpTask } = {}) {
   if (record.outcome) parts.push(`Outcome: ${record.outcome}`);
   if (followUpTask) parts.push(`Follow-up task: ${followUpTask.title} (${titleCase(followUpTask.status)}).`);
   return parts.join(" ");
+}
+
+// Structured sibling of meetingOyiSafeSummary — same underlying fields,
+// machine-readable shape, so Oyi's Meetings capability module can answer
+// a specific sub-question instead of only ever echoing the whole
+// safe_summary string. follow_up_task_title/status are a REAL existing
+// cross-reference (followUpTask is already resolved by the caller before
+// this runs) — sent as-is, present or absent, never fabricated.
+function meetingOyiContext(record, { related, followUpTask } = {}) {
+  return {
+    meeting_ref: record.id,
+    safe_summary: meetingOyiSafeSummary(record, { related, followUpTask }),
+    title: record.title || null,
+    status: meetingStatusLabel(meetingDisplayStatus(record)),
+    scheduled_at: record.scheduled_at || null,
+    owner: record.owner || null,
+    outcome: record.outcome || null,
+    related_type: related ? titleCase(record.related_type || "record") : null,
+    related_name: related ? related.name : null,
+    follow_up_task_title: followUpTask ? followUpTask.title : null,
+    follow_up_task_status: followUpTask ? titleCase(followUpTask.status) : null,
+  };
 }
 
 function resolveRelationshipOrgName(record, contactById, orgById) {
