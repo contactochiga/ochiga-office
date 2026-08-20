@@ -4705,7 +4705,7 @@ async function renderScheduleView(outlet, token) {
     let panel = layout.querySelector(".split-panel");
     if (!panel) { panel = el(`<div class="split-panel"></div>`); layout.appendChild(panel); }
     if (item.kind === "task") setSelectedObject("task", item.raw.id, item.label, taskOyiContext(item.raw));
-    else setSelectedObject("automation", item.raw.id, item.label, { automation_ref: item.raw.id, safe_summary: automationOyiSafeSummary(item.raw) });
+    else setSelectedObject("automation", item.raw.id, item.label, automationOyiContext(item.raw));
     renderScheduleDetailPanel(panel, item, () => { setSelectedObject(null); panel.remove(); });
   }
 
@@ -4834,6 +4834,30 @@ function automationOyiSafeSummary(automation) {
   return parts.join(" ");
 }
 
+// Structured sibling of automationOyiSafeSummary — same underlying
+// fields, machine-readable shape, so Oyi's Automations capability
+// module (Ochiga-backend) can answer a specific sub-question (trigger/
+// last run/next run/owner/action) instead of only ever echoing the
+// whole safe_summary string. trigger/action are sent as the same
+// already-formatted display strings this page renders, not raw
+// records — the backend has no independent way to render a workflow_
+// action shape, and duplicating that logic there would be a second
+// implementation of the same formatting this file already owns.
+function automationOyiContext(automation) {
+  return {
+    automation_ref: automation.id,
+    safe_summary: automationOyiSafeSummary(automation),
+    name: automation.name || null,
+    enabled: Boolean(automation.enabled),
+    trigger: humanizeAutomationTrigger(automation.trigger),
+    action: automationActionSummary(automation),
+    owner: automation.owner || null,
+    last_run_status: automation.last_run_status || null,
+    last_run_at: automation.last_run_at || null,
+    next_run_at: automation.next_run_at || null,
+  };
+}
+
 async function renderAutomationsView(outlet, token) {
   setSelectedObject(null);
   const listState = { query: "", status: "", owner: "", selectedId: null };
@@ -4924,7 +4948,7 @@ async function renderAutomationsView(outlet, token) {
     panel.appendChild(skeletonPanel(3));
     const automation = automations.find((a) => a.id === id);
     if (!automation) return;
-    setSelectedObject("automation", id, automation.name, { automation_ref: id, safe_summary: automationOyiSafeSummary(automation) });
+    setSelectedObject("automation", id, automation.name, automationOyiContext(automation));
     renderAutomationDetailPanel(panel, automation, {
       onClose: () => { setSelectedObject(null); panel.remove(); },
       onChanged: () => refresh(true),
