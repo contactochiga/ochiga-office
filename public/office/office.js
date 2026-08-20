@@ -4198,7 +4198,7 @@ async function renderTasksList(outlet, token) {
     panel.appendChild(skeletonPanel(3));
     const task = enriched.find((t) => t.id === id);
     if (!task) return;
-    setSelectedObject("task", id, task.title, { task_ref: id, safe_summary: taskOyiSafeSummary(task) });
+    setSelectedObject("task", id, task.title, taskOyiContext(task));
     renderTaskDetailPanel(panel, task, {
       onClose: () => { listState.selectedId = null; setSelectedObject(null); panel.remove(); },
       onChanged: () => refresh(),
@@ -4362,6 +4362,27 @@ function taskOyiSafeSummary(record) {
   return parts.join(" ");
 }
 
+// Structured sibling of taskOyiSafeSummary — same fields, machine-readable
+// shape, so Oyi's Tasks capability module (Ochiga-backend) can answer a
+// specific sub-question (owner/due date/overdue/priority) instead of only
+// ever echoing the whole safe_summary string. Overdue logic matches
+// renderTasksList's __overdue computation exactly.
+function taskOyiContext(record) {
+  const overdue = Boolean(record.due_at) && !record.completed_at
+    && new Date(record.due_at).getTime() < Date.now()
+    && !["done", "completed", "cancelled"].includes(String(record.status || "").toLowerCase());
+  return {
+    task_ref: record.id,
+    safe_summary: taskOyiSafeSummary(record),
+    title: record.title || null,
+    status: record.status || null,
+    priority: record.priority || null,
+    owner: record.assignee || null,
+    due_at: record.due_at || null,
+    overdue,
+  };
+}
+
 async function renderTaskRedirect(outlet, id, token) {
   const [tasks, index] = await Promise.all([fetchTasks(), fetchTaskRelationIndex()]);
   if (token !== state.renderToken) return;
@@ -4379,7 +4400,7 @@ async function renderTaskRedirect(outlet, id, token) {
 
   // No resolvable related object — render a minimal read-only panel
   // rather than a broken redirect or a fabricated relation.
-  setSelectedObject("task", id, record.title, { task_ref: id, safe_summary: taskOyiSafeSummary(record) });
+  setSelectedObject("task", id, record.title, taskOyiContext(record));
   outlet.innerHTML = "";
   const back = el(`<button type="button" class="detail-back">← Tasks</button>`);
   back.addEventListener("click", () => navigate("tasks"));
@@ -4683,7 +4704,7 @@ async function renderScheduleView(outlet, token) {
   function selectItem(item) {
     let panel = layout.querySelector(".split-panel");
     if (!panel) { panel = el(`<div class="split-panel"></div>`); layout.appendChild(panel); }
-    if (item.kind === "task") setSelectedObject("task", item.raw.id, item.label, { task_ref: item.raw.id, safe_summary: taskOyiSafeSummary(item.raw) });
+    if (item.kind === "task") setSelectedObject("task", item.raw.id, item.label, taskOyiContext(item.raw));
     else setSelectedObject("automation", item.raw.id, item.label, { automation_ref: item.raw.id, safe_summary: automationOyiSafeSummary(item.raw) });
     renderScheduleDetailPanel(panel, item, () => { setSelectedObject(null); panel.remove(); });
   }
