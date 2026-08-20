@@ -4198,8 +4198,9 @@ async function renderTasksList(outlet, token) {
     panel.appendChild(skeletonPanel(3));
     const task = enriched.find((t) => t.id === id);
     if (!task) return;
+    setSelectedObject("task", id, task.title, { task_ref: id, safe_summary: taskOyiSafeSummary(task) });
     renderTaskDetailPanel(panel, task, {
-      onClose: () => { listState.selectedId = null; panel.remove(); },
+      onClose: () => { listState.selectedId = null; setSelectedObject(null); panel.remove(); },
       onChanged: () => refresh(),
     });
   }
@@ -4476,6 +4477,7 @@ async function renderTasksRoute(outlet, rest, token) {
 // (e.g. a global "all runs" aggregate) is left out rather than
 // approximated.
 async function renderTasksOverview(outlet, token) {
+  setSelectedObject(null);
   const [tasks, taskIndex, automations, workflows] = await Promise.all([
     fetchTasks(),
     fetchTaskRelationIndex(),
@@ -4614,6 +4616,7 @@ function scheduleBucketFor(whenIso, now) {
 }
 
 async function renderScheduleView(outlet, token) {
+  setSelectedObject(null);
   const [tasks, taskIndex, automations] = await Promise.all([
     fetchTasks(),
     fetchTaskRelationIndex(),
@@ -4680,7 +4683,9 @@ async function renderScheduleView(outlet, token) {
   function selectItem(item) {
     let panel = layout.querySelector(".split-panel");
     if (!panel) { panel = el(`<div class="split-panel"></div>`); layout.appendChild(panel); }
-    renderScheduleDetailPanel(panel, item, () => panel.remove());
+    if (item.kind === "task") setSelectedObject("task", item.raw.id, item.label, { task_ref: item.raw.id, safe_summary: taskOyiSafeSummary(item.raw) });
+    else setSelectedObject("automation", item.raw.id, item.label, { automation_ref: item.raw.id, safe_summary: automationOyiSafeSummary(item.raw) });
+    renderScheduleDetailPanel(panel, item, () => { setSelectedObject(null); panel.remove(); });
   }
 
   if (!scheduleItems.length) {
@@ -4797,7 +4802,19 @@ function automationActionSummary(automation) {
   return `Transition workflow → ${titleCase(first.status || "")}`;
 }
 
+// Built ONLY from fields already rendered on the Automations detail
+// panel — see taskOyiSafeSummary for the same discipline applied to Tasks.
+function automationOyiSafeSummary(automation) {
+  const info = automationStatusInfo(automation);
+  const parts = [`${automation.name || "Automation"} · ${info.label} · ${humanizeAutomationTrigger(automation.trigger)}`.trim()];
+  parts.push(`Then: ${automationActionSummary(automation)}.`);
+  if (automation.owner) parts.push(`Owner: ${automation.owner}.`);
+  if (automation.last_run_status) parts.push(`Last run: ${titleCase(automation.last_run_status)}${automation.last_run_at ? ` (${fmtRelative(automation.last_run_at)})` : ""}.`);
+  return parts.join(" ");
+}
+
 async function renderAutomationsView(outlet, token) {
+  setSelectedObject(null);
   const listState = { query: "", status: "", owner: "", selectedId: null };
   const automations = await fetchAutomations();
   if (token !== state.renderToken) return;
@@ -4886,8 +4903,9 @@ async function renderAutomationsView(outlet, token) {
     panel.appendChild(skeletonPanel(3));
     const automation = automations.find((a) => a.id === id);
     if (!automation) return;
+    setSelectedObject("automation", id, automation.name, { automation_ref: id, safe_summary: automationOyiSafeSummary(automation) });
     renderAutomationDetailPanel(panel, automation, {
-      onClose: () => panel.remove(),
+      onClose: () => { setSelectedObject(null); panel.remove(); },
       onChanged: () => refresh(true),
     });
   }
@@ -5085,7 +5103,12 @@ const WORKFLOW_TRANSITION_STATUSES = ["created", "reviewed", "assigned", "accept
 // transition an existing one (workflow_id/status) — since both are
 // genuinely validated and executed by the shared runtime; only "create"
 // existed in the previous flat-form dialog.
-function openNewAutomationWizard(onCreated) {
+// initial optionally pre-fills fields (e.g. from an Oyi Core automation
+// suggestion — see the "office.create_automation" case in
+// renderApprovalSurface). Never skips a step and never submits on the
+// user's behalf: it only saves retyping fields Oyi already surfaced in
+// conversation, staff still walk every step and confirm on Review.
+function openNewAutomationWizard(onCreated, initial = {}) {
   const STEPS = ["when", "if", "then", "scope", "owner", "review"];
   const STEP_LABELS = { when: "When", if: "If", then: "Then", scope: "Scope", owner: "Owner", review: "Review" };
   const wiz = {
@@ -5101,6 +5124,7 @@ function openNewAutomationWizard(onCreated) {
     workflow_id: "",
     status: "in_progress",
     owner: "",
+    ...initial,
   };
   let workflows = [];
 
@@ -8084,6 +8108,8 @@ const QUICK_PROMPTS = {
   partnership_relationship: ["Summarize our relationship with this partner.", "What is outstanding?", "Prepare me for the next meeting.", "Which projects are connected to this relationship?"],
   document: ["Summarize this document.", "What should happen with this next?"],
   proposal: ["Summarize this proposal.", "What should I follow up on before sending this?"],
+  task: ["What should I do about this task?", "Should this be automated?"],
+  automation: ["Summarize what this automation does.", "Has this been running reliably?"],
 };
 
 function updateOyiContext() {
@@ -8135,6 +8161,7 @@ const SELECTED_TYPE_CONTEXT_KEY = {
   support_case: "support_context",
   project: "project_context",
   task: "task_context",
+  automation: "automation_context",
   meeting: "meeting_context",
   partnership_relationship: "partnership_context",
   document: "document_context",
@@ -8249,6 +8276,17 @@ function renderApprovalSurface(proposedActions) {
     } else if (action.tool === "office.review_meeting_context" && action.parameters?.selected_id) {
       const btn = el(`<button type="button" class="btn btn-ghost btn-sm">View Meeting</button>`);
       btn.addEventListener("click", () => navigate(`meetings/${action.parameters.selected_id}`));
+      actionsRow.appendChild(btn);
+    } else if (action.tool === "office.create_automation") {
+      // Opens the same New Automation wizard the Automations page uses —
+      // no separate "AI automation" creation path. suggested_name only
+      // pre-fills the Name field; staff still walk every wizard step
+      // (When/If/Then/Scope/Owner/Review) and nothing is created until
+      // they submit Review themselves.
+      const btn = el(`<button type="button" class="btn btn-ghost btn-sm">Review &amp; Create Automation</button>`);
+      btn.addEventListener("click", () => openNewAutomationWizard(() => invalidate("automations"), {
+        name: action.parameters?.suggested_name ? String(action.parameters.suggested_name).slice(0, 120) : "",
+      }));
       actionsRow.appendChild(btn);
     } else {
       actionsRow.appendChild(el(`<span class="hint">No in-app review action for "${escapeHtml(action.tool || action.name || "this")}" yet — nothing was created.</span>`));

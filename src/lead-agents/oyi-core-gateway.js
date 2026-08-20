@@ -260,6 +260,7 @@ async function buildOyiCoreOfficeInternalRequest({ authContext, message, body, r
     support_context: recordOf(safeBody.support_context),
     project_context: recordOf(safeBody.project_context),
     task_context: recordOf(safeBody.task_context),
+    automation_context: recordOf(safeBody.automation_context),
     meeting_context: recordOf(safeBody.meeting_context),
     partnership_context: recordOf(safeBody.partnership_context),
     document_context: recordOf(safeBody.document_context),
