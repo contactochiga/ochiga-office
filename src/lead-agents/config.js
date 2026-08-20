@@ -168,6 +168,12 @@ function createConfig() {
     // rollback mechanism.
     officeWorkflowBridgeEnabled: booleanFromEnv(process.env.OFFICE_WORKFLOW_BRIDGE_ENABLED, true),
     officeWorkflowsPath: process.env.OFFICE_WORKFLOWS_PATH || "/office/workflows",
+    // Tasks Domain UI — Office's own additive bridge into the Shared
+    // Automation Runtime (Ochiga-backend src/routes/scenes.ts). Unlike
+    // the fire-and-forget workflow bridge above, these calls are
+    // synchronous, user-initiated CRUD from the Automations page and
+    // must surface real errors to the admin, not silently degrade.
+    officeAutomationsPath: process.env.OFFICE_AUTOMATIONS_PATH || "/office/automations",
     officeBackendBaseUrl:
       process.env.OFFICE_BACKEND_BASE_URL ||
       process.env.OYI_BACKEND_BASE_URL ||

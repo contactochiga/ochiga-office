@@ -45,6 +45,14 @@ const {
   callOyiCoreCorporateConversation,
   callOyiCoreOfficeInternalConversation,
   callOyiCoreObservabilityEvents,
+  callOyiCoreListAutomations,
+  callOyiCoreGetAutomation,
+  callOyiCoreCreateAutomation,
+  callOyiCoreUpdateAutomation,
+  callOyiCoreDeleteAutomation,
+  callOyiCoreListAutomationRuns,
+  callOyiCoreTestAutomation,
+  callOyiCoreGetWorkflow,
 } = require("./oyi-core-gateway");
 const { bridgeWorkflow, transitionLinkedWorkflow } = require("./workflow-bridge");
 const { executeGovernedOfficeToolProposals } = require("./office-tool-governance");
@@ -4215,6 +4223,99 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           return;
         }
         methodNotAllowed(res, "PATCH");
+        return;
+      }
+
+      // Tasks Domain UI — Automations. Thin proxy to Ochiga-backend's
+      // /office/automations* (officeExport.ts), which is itself a thin
+      // wrapper around the existing Shared Automation Runtime
+      // (scenes.ts). No automation state lives in Office — every read
+      // and write here round-trips to Backend. Reuses the Tasks
+      // permission pair (tasks.read/tasks.manage) rather than
+      // inventing a new one, since Automations is part of the Tasks
+      // domain, not a separate feature area.
+      const automationsCollectionMatch = pathname.match(/^\/api\/lead-agents\/admin\/automations$/);
+      if (automationsCollectionMatch) {
+        if (req.method === "GET") {
+          authorizePermission(authContext, "tasks.read");
+          const requestUrl = new URL(req.url, "http://localhost");
+          const result = await callOyiCoreListAutomations(config, { status: requestUrl.searchParams.get("status") || undefined });
+          json(res, result.ok ? 200 : (result.status || 502), result.ok ? { automations: result.data.automations || [] } : { error: result.error }, { "x-request-id": ctx.requestId });
+          return;
+        }
+        if (req.method === "POST") {
+          authorizePermission(authContext, "tasks.manage");
+          const body = await readJsonBody(req);
+          requireObject(body, "body");
+          const result = await callOyiCoreCreateAutomation(config, body);
+          if (result.ok) {
+            await appendAudit(store, authContext, "automation_created", "automation", result.data.automation?.id, { name: body.name });
+          }
+          json(res, result.ok ? 201 : (result.status || 502), result.ok ? { automation: result.data.automation } : { error: result.error }, { "x-request-id": ctx.requestId });
+          return;
+        }
+        methodNotAllowed(res, "GET,POST");
+        return;
+      }
+
+      const automationItemMatch = pathname.match(/^\/api\/lead-agents\/admin\/automations\/([^/]+)$/);
+      if (automationItemMatch) {
+        const id = decodeURIComponent(automationItemMatch[1]);
+        if (req.method === "GET") {
+          authorizePermission(authContext, "tasks.read");
+          const result = await callOyiCoreGetAutomation(config, id);
+          json(res, result.ok ? 200 : (result.status || 502), result.ok ? { automation: result.data.automation } : { error: result.error }, { "x-request-id": ctx.requestId });
+          return;
+        }
+        if (req.method === "PATCH") {
+          authorizePermission(authContext, "tasks.manage");
+          const body = await readJsonBody(req);
+          requireObject(body, "body");
+          const result = await callOyiCoreUpdateAutomation(config, id, body);
+          if (result.ok) {
+            await appendAudit(store, authContext, "automation_updated", "automation", id, { enabled: body.enabled });
+          }
+          json(res, result.ok ? 200 : (result.status || 502), result.ok ? { automation: result.data.automation } : { error: result.error }, { "x-request-id": ctx.requestId });
+          return;
+        }
+        if (req.method === "DELETE") {
+          authorizePermission(authContext, "tasks.manage");
+          const result = await callOyiCoreDeleteAutomation(config, id);
+          if (result.ok) {
+            await appendAudit(store, authContext, "automation_deleted", "automation", id, {});
+          }
+          json(res, result.ok ? 200 : (result.status || 502), result.ok ? { ok: true, id } : { error: result.error }, { "x-request-id": ctx.requestId });
+          return;
+        }
+        methodNotAllowed(res, "GET,PATCH,DELETE");
+        return;
+      }
+
+      const automationRunsMatch = pathname.match(/^\/api\/lead-agents\/admin\/automations\/([^/]+)\/runs$/);
+      if (automationRunsMatch) {
+        authorizePermission(authContext, "tasks.read");
+        const result = await callOyiCoreListAutomationRuns(config, decodeURIComponent(automationRunsMatch[1]));
+        json(res, result.ok ? 200 : (result.status || 502), result.ok ? { runs: result.data.runs || [] } : { error: result.error }, { "x-request-id": ctx.requestId });
+        return;
+      }
+
+      const automationTestMatch = pathname.match(/^\/api\/lead-agents\/admin\/automations\/([^/]+)\/test$/);
+      if (automationTestMatch && req.method === "POST") {
+        authorizePermission(authContext, "tasks.manage");
+        const id = decodeURIComponent(automationTestMatch[1]);
+        const result = await callOyiCoreTestAutomation(config, id);
+        if (result.ok) {
+          await appendAudit(store, authContext, "automation_run_now", "automation", id, {});
+        }
+        json(res, result.ok ? 200 : (result.status || 502), result.ok ? { run: result.data.run } : { error: result.error }, { "x-request-id": ctx.requestId });
+        return;
+      }
+
+      const workflowItemMatch = pathname.match(/^\/api\/lead-agents\/admin\/workflows\/([^/]+)$/);
+      if (workflowItemMatch && req.method === "GET") {
+        authorizePermission(authContext, "tasks.read");
+        const result = await callOyiCoreGetWorkflow(config, decodeURIComponent(workflowItemMatch[1]));
+        json(res, result.ok ? 200 : (result.status || 502), result.ok ? { workflow: result.data.workflow, events: result.data.events || [] } : { error: result.error }, { "x-request-id": ctx.requestId });
         return;
       }
 
