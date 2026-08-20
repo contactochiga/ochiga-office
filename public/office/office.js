@@ -4836,7 +4836,7 @@ async function renderAutomationsView(outlet, token) {
         { label: "Status", value: listState.status, options: ["enabled", "disabled"], onChange: (value) => { listState.status = value; drawTable(); } },
         ...(ownerOptions.length ? [{ label: "Owner", value: listState.owner, options: ownerOptions, onChange: (value) => { listState.owner = value; drawTable(); } }] : []),
       ],
-      primaryAction: hasPermission("tasks.manage") ? { label: "New Automation", onClick: () => openNewAutomationDialog(() => refresh(true)) } : null,
+      primaryAction: hasPermission("tasks.manage") ? { label: "New Automation", onClick: () => openNewAutomationWizard(() => refresh(true)) } : null,
     }));
   }
 
@@ -5061,31 +5061,58 @@ async function renderAutomationDetailPanel(panel, automation, { onClose, onChang
   draw();
 }
 
-function openNewAutomationDialog(onCreated) {
+// Mirrors the backend's WORKFLOW_STATUSES (intelligence-core/workflows.ts)
+// for the "transition an existing workflow" THEN branch — kept as a
+// literal list rather than fetched, since it's a fixed enum the runtime
+// already validates server-side (validateWorkflowActions), not data.
+const WORKFLOW_TRANSITION_STATUSES = ["created", "reviewed", "assigned", "accepted", "in_progress", "completed", "verified", "cancelled", "failed", "blocked", "escalated"];
+
+// Guided New Automation wizard — WHEN / IF / THEN / SCOPE / OWNER / REVIEW,
+// in plain language, no raw JSON exposed. Two steps are intentionally
+// non-interactive rather than fake controls:
+//   IF    — consumer_automations.condition is accepted and stored by the
+//           backend (scenes.ts) but never evaluated anywhere in the
+//           execution path (executeConsumerAutomation reads trigger and
+//           actions only). Building a condition editor here would silently
+//           promise enforcement the runtime doesn't provide, so this step
+//           is an honest static notice instead of a functional builder.
+//   SCOPE — Office automations are surface-locked server-side (surface is
+//           hardcoded to "office" in officeExport.ts) and consumer_automations
+//           carries no other real scoping dimension for Office (estate_id/
+//           home_id are Consumer/Facility-only). There's nothing real to
+//           pick, so this is a read-only statement of the actual constraint.
+// THEN supports both real backend operations — create a new workflow, or
+// transition an existing one (workflow_id/status) — since both are
+// genuinely validated and executed by the shared runtime; only "create"
+// existed in the previous flat-form dialog.
+function openNewAutomationWizard(onCreated) {
+  const STEPS = ["when", "if", "then", "scope", "owner", "review"];
+  const STEP_LABELS = { when: "When", if: "If", then: "Then", scope: "Scope", owner: "Owner", review: "Review" };
+  const wiz = {
+    stepIndex: 0,
+    name: "",
+    schedule_type: "daily",
+    local_time: "08:00",
+    local_datetime: "",
+    operation: "create",
+    workflow_type: OFFICE_AUTOMATION_WORKFLOW_TYPES[0].value,
+    title: "",
+    summary: "",
+    workflow_id: "",
+    status: "in_progress",
+    owner: "",
+  };
+  let workflows = [];
+
   const overlay = el(`<div class="dialog-overlay"></div>`);
   const card = el(`
     <form class="dialog-card">
       <h3>New Automation</h3>
-      <div class="dialog-fields">
-        <label>Name<input name="name" type="text" required /></label>
-        <label>Schedule
-          <select name="schedule_type">
-            <option value="daily">Every day, at a time</option>
-            <option value="once">Once, at a specific date and time</option>
-          </select>
-        </label>
-        <label data-field="daily">Time (24h)<input name="local_time" type="time" value="08:00" /></label>
-        <label data-field="once" style="display:none;">Date &amp; time<input name="local_datetime" type="datetime-local" /></label>
-        <label>Then, create a workflow of type
-          <select name="workflow_type">${OFFICE_AUTOMATION_WORKFLOW_TYPES.map((t) => `<option value="${escapeHtml(t.value)}">${escapeHtml(t.label)}</option>`).join("")}</select>
-        </label>
-        <label>Workflow title<input name="title" type="text" required /></label>
-        <label>Workflow summary<textarea name="summary" rows="2" required></textarea></label>
-        <label>Owner<input name="owner" type="text" placeholder="Name or email" /></label>
-      </div>
+      <p class="wizard-step-label"></p>
+      <div class="dialog-fields wizard-body"></div>
       <div class="dialog-actions">
-        <button type="button" class="btn btn-ghost btn-sm" data-cancel>Cancel</button>
-        <button type="submit" class="btn btn-primary btn-sm">Create</button>
+        <button type="button" class="btn btn-ghost btn-sm" data-back></button>
+        <button type="submit" class="btn btn-primary btn-sm" data-forward>Next</button>
       </div>
       <p class="dialog-error"></p>
     </form>
@@ -5093,31 +5120,216 @@ function openNewAutomationDialog(onCreated) {
   overlay.appendChild(card);
   document.body.appendChild(overlay);
 
-  const scheduleSelect = card.querySelector('select[name="schedule_type"]');
-  scheduleSelect.addEventListener("change", () => {
-    card.querySelector('[data-field="daily"]').style.display = scheduleSelect.value === "daily" ? "" : "none";
-    card.querySelector('[data-field="once"]').style.display = scheduleSelect.value === "once" ? "" : "none";
-  });
+  const stepLabelEl = card.querySelector(".wizard-step-label");
+  const bodyEl = card.querySelector(".wizard-body");
+  const backBtn = card.querySelector("[data-back]");
+  const forwardBtn = card.querySelector("[data-forward]");
+  const errorLabel = card.querySelector(".dialog-error");
 
   function close() { overlay.remove(); }
-  card.querySelector("[data-cancel]").addEventListener("click", close);
   overlay.addEventListener("click", (event) => { if (event.target === overlay) close(); });
+
+  function currentStep() { return STEPS[wiz.stepIndex]; }
+
+  function validateStep(step) {
+    if (step === "when") {
+      if (!wiz.name.trim()) return "A name is required.";
+      if (wiz.schedule_type === "once" && !wiz.local_datetime) return "Pick a date and time.";
+      return null;
+    }
+    if (step === "then") {
+      if (wiz.operation === "create") {
+        if (!wiz.title.trim() || !wiz.summary.trim()) return "Workflow title and summary are required.";
+      } else {
+        if (!wiz.workflow_id) return "Choose which workflow this should transition.";
+      }
+      return null;
+    }
+    return null;
+  }
+
+  function buildTrigger() {
+    return wiz.schedule_type === "once"
+      ? { type: "schedule", schedule_type: "once", local_datetime: wiz.local_datetime, timezone: "Africa/Lagos" }
+      : { type: "schedule", schedule_type: "daily", local_time: wiz.local_time, timezone: "Africa/Lagos" };
+  }
+
+  function buildAction() {
+    return wiz.operation === "create"
+      ? { action_type: "workflow_action", operation: "create", workflow_type: wiz.workflow_type, title: wiz.title, summary: wiz.summary }
+      : { action_type: "workflow_action", operation: "transition", workflow_id: wiz.workflow_id, status: wiz.status };
+  }
+
+  function renderWhenStep() {
+    const wrap = el(`<div></div>`);
+    wrap.appendChild(el(`<label>Automation Name<input name="name" type="text" value="${escapeHtml(wiz.name)}" /></label>`));
+    wrap.querySelector('input[name="name"]').addEventListener("input", (e) => { wiz.name = e.target.value; });
+
+    const scheduleLabel = el(`
+      <label>Runs
+        <select name="schedule_type">
+          <option value="daily">Every day, at a time</option>
+          <option value="once">Once, at a specific date and time</option>
+        </select>
+      </label>
+    `);
+    scheduleLabel.querySelector("select").value = wiz.schedule_type;
+    wrap.appendChild(scheduleLabel);
+
+    const timeLabel = el(`<label data-field="daily">Time (24h)<input name="local_time" type="time" value="${escapeHtml(wiz.local_time)}" /></label>`);
+    const dateTimeLabel = el(`<label data-field="once">Date &amp; time<input name="local_datetime" type="datetime-local" value="${escapeHtml(wiz.local_datetime)}" /></label>`);
+    timeLabel.style.display = wiz.schedule_type === "daily" ? "" : "none";
+    dateTimeLabel.style.display = wiz.schedule_type === "once" ? "" : "none";
+    wrap.appendChild(timeLabel);
+    wrap.appendChild(dateTimeLabel);
+
+    scheduleLabel.querySelector("select").addEventListener("change", (e) => {
+      wiz.schedule_type = e.target.value;
+      timeLabel.style.display = wiz.schedule_type === "daily" ? "" : "none";
+      dateTimeLabel.style.display = wiz.schedule_type === "once" ? "" : "none";
+    });
+    timeLabel.querySelector("input").addEventListener("input", (e) => { wiz.local_time = e.target.value; });
+    dateTimeLabel.querySelector("input").addEventListener("input", (e) => { wiz.local_datetime = e.target.value; });
+    return wrap;
+  }
+
+  function renderIfStep() {
+    return el(`
+      <div>
+        <p class="rail-empty">Conditions aren't enforced by the automation runtime yet — this automation will run every time its trigger above fires, with no extra check.</p>
+      </div>
+    `);
+  }
+
+  function renderThenStep() {
+    const wrap = el(`<div></div>`);
+    const opLabel = el(`
+      <label>Then
+        <select name="operation">
+          <option value="create">Create a new workflow</option>
+          <option value="transition">Transition an existing workflow</option>
+        </select>
+      </label>
+    `);
+    opLabel.querySelector("select").value = wiz.operation;
+    wrap.appendChild(opLabel);
+
+    const createFields = el(`<div data-field="create"></div>`);
+    createFields.appendChild(el(`
+      <label>Workflow type
+        <select name="workflow_type">${OFFICE_AUTOMATION_WORKFLOW_TYPES.map((t) => `<option value="${escapeHtml(t.value)}" ${t.value === wiz.workflow_type ? "selected" : ""}>${escapeHtml(t.label)}</option>`).join("")}</select>
+      </label>
+    `));
+    createFields.appendChild(el(`<label>Workflow title<input name="title" type="text" value="${escapeHtml(wiz.title)}" /></label>`));
+    createFields.appendChild(el(`<label>Workflow summary<textarea name="summary" rows="2">${escapeHtml(wiz.summary)}</textarea></label>`));
+    createFields.querySelector('select[name="workflow_type"]').addEventListener("change", (e) => { wiz.workflow_type = e.target.value; });
+    createFields.querySelector('input[name="title"]').addEventListener("input", (e) => { wiz.title = e.target.value; });
+    createFields.querySelector('textarea[name="summary"]').addEventListener("input", (e) => { wiz.summary = e.target.value; });
+    wrap.appendChild(createFields);
+
+    const transitionFields = el(`<div data-field="transition"></div>`);
+    if (!workflows.length) {
+      transitionFields.appendChild(el(`<p class="rail-empty">No existing workflows to transition. Create one first, or choose "Create a new workflow" above.</p>`));
+    } else {
+      const workflowSelect = el(`
+        <label>Workflow
+          <select name="workflow_id">
+            <option value="">Choose a workflow…</option>
+            ${workflows.map((w) => `<option value="${escapeHtml(w.id)}" ${w.id === wiz.workflow_id ? "selected" : ""}>${escapeHtml(w.title || w.workflow_id)} — ${escapeHtml(titleCase(w.workflow_status))}</option>`).join("")}
+          </select>
+        </label>
+      `);
+      workflowSelect.querySelector("select").addEventListener("change", (e) => { wiz.workflow_id = e.target.value; });
+      transitionFields.appendChild(workflowSelect);
+      const statusSelect = el(`
+        <label>New status
+          <select name="status">${WORKFLOW_TRANSITION_STATUSES.map((s) => `<option value="${escapeHtml(s)}" ${s === wiz.status ? "selected" : ""}>${escapeHtml(titleCase(s))}</option>`).join("")}</select>
+        </label>
+      `);
+      statusSelect.querySelector("select").addEventListener("change", (e) => { wiz.status = e.target.value; });
+      transitionFields.appendChild(statusSelect);
+    }
+    wrap.appendChild(transitionFields);
+
+    function syncOperationVisibility() {
+      createFields.style.display = wiz.operation === "create" ? "" : "none";
+      transitionFields.style.display = wiz.operation === "transition" ? "" : "none";
+    }
+    syncOperationVisibility();
+    opLabel.querySelector("select").addEventListener("change", (e) => { wiz.operation = e.target.value; syncOperationVisibility(); });
+    return wrap;
+  }
+
+  function renderScopeStep() {
+    return el(`
+      <div>
+        <p class="rail-empty">This automation runs within Ochiga Office only. Cross-surface scoping (Consumer/Facility) isn't available from this workspace.</p>
+      </div>
+    `);
+  }
+
+  function renderOwnerStep() {
+    const wrap = el(`<div></div>`);
+    wrap.appendChild(el(`<label>Owner<input name="owner" type="text" placeholder="Name or email" value="${escapeHtml(wiz.owner)}" /></label>`));
+    wrap.querySelector('input[name="owner"]').addEventListener("input", (e) => { wiz.owner = e.target.value; });
+    return wrap;
+  }
+
+  function renderReviewStep() {
+    const trigger = buildTrigger();
+    const action = buildAction();
+    const rows = [
+      { label: "Name", value: wiz.name },
+      { label: "When", value: humanizeAutomationTrigger(trigger) },
+      { label: "If", value: "No condition — always runs when triggered" },
+      { label: "Then", value: automationActionSummary({ actions: [action] }) },
+      ...(wiz.operation === "create" ? [{ label: "Workflow", value: `${wiz.title} — ${wiz.summary}` }] : []),
+      { label: "Scope", value: "Ochiga Office" },
+      { label: "Owner", value: wiz.owner || "Unassigned" },
+    ];
+    const wrap = el(`<div></div>`);
+    rows.forEach((r) => wrap.appendChild(el(`<div class="split-fact-row"><span class="label">${escapeHtml(r.label)}</span><span class="value">${escapeHtml(r.value)}</span></div>`)));
+    return wrap;
+  }
+
+  function renderStep() {
+    bodyEl.innerHTML = "";
+    const step = currentStep();
+    stepLabelEl.textContent = `Step ${wiz.stepIndex + 1} of ${STEPS.length} · ${STEP_LABELS[step]}`;
+    errorLabel.textContent = "";
+    if (step === "when") bodyEl.appendChild(renderWhenStep());
+    else if (step === "if") bodyEl.appendChild(renderIfStep());
+    else if (step === "then") bodyEl.appendChild(renderThenStep());
+    else if (step === "scope") bodyEl.appendChild(renderScopeStep());
+    else if (step === "owner") bodyEl.appendChild(renderOwnerStep());
+    else bodyEl.appendChild(renderReviewStep());
+
+    backBtn.textContent = wiz.stepIndex === 0 ? "Cancel" : "Back";
+    forwardBtn.textContent = step === "review" ? "Create" : "Next";
+  }
+
+  backBtn.addEventListener("click", () => {
+    if (wiz.stepIndex === 0) { close(); return; }
+    wiz.stepIndex -= 1;
+    renderStep();
+  });
 
   card.addEventListener("submit", async (event) => {
     event.preventDefault();
-    const errorLabel = card.querySelector(".dialog-error");
-    const data = Object.fromEntries(new FormData(card).entries());
+    const step = currentStep();
+    if (step !== "review") {
+      const error = validateStep(step);
+      if (error) { errorLabel.textContent = error; return; }
+      wiz.stepIndex += 1;
+      renderStep();
+      return;
+    }
     try {
-      if (!data.name) throw new Error("Name is required.");
-      if (!data.title || !data.summary) throw new Error("Workflow title and summary are required.");
-      const trigger = data.schedule_type === "once"
-        ? { type: "schedule", schedule_type: "once", local_datetime: data.local_datetime, timezone: "Africa/Lagos" }
-        : { type: "schedule", schedule_type: "daily", local_time: data.local_time, timezone: "Africa/Lagos" };
       await apiCreateAutomation({
-        name: data.name,
-        owner: data.owner || null,
-        trigger,
-        actions: [{ action_type: "workflow_action", operation: "create", workflow_type: data.workflow_type, title: data.title, summary: data.summary }],
+        name: wiz.name,
+        owner: wiz.owner || null,
+        trigger: buildTrigger(),
+        actions: [buildAction()],
       });
       invalidate("automations");
       close();
@@ -5126,7 +5338,9 @@ function openNewAutomationDialog(onCreated) {
       errorLabel.textContent = err.message || "Could not create automation.";
     }
   });
-  card.querySelector('input[name="name"]').focus();
+
+  renderStep();
+  fetchWorkflows().then((data) => { workflows = data; if (currentStep() === "then") renderStep(); }).catch(() => {});
 }
 
 // ---------------------------------------------------------------
