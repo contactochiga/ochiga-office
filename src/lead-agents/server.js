@@ -53,6 +53,7 @@ const {
   callOyiCoreListAutomationRuns,
   callOyiCoreTestAutomation,
   callOyiCoreGetWorkflow,
+  callOyiCoreListWorkflows,
 } = require("./oyi-core-gateway");
 const { bridgeWorkflow, transitionLinkedWorkflow } = require("./workflow-bridge");
 const { executeGovernedOfficeToolProposals } = require("./office-tool-governance");
@@ -4316,6 +4317,14 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
         authorizePermission(authContext, "tasks.read");
         const result = await callOyiCoreGetWorkflow(config, decodeURIComponent(workflowItemMatch[1]));
         json(res, result.ok ? 200 : (result.status || 502), result.ok ? { workflow: result.data.workflow, events: result.data.events || [] } : { error: result.error }, { "x-request-id": ctx.requestId });
+        return;
+      }
+
+      if (pathname === "/api/lead-agents/admin/workflows" && req.method === "GET") {
+        authorizePermission(authContext, "tasks.read");
+        const requestUrl = new URL(req.url, "http://localhost");
+        const result = await callOyiCoreListWorkflows(config, { limit: requestUrl.searchParams.get("limit") || undefined });
+        json(res, result.ok ? 200 : (result.status || 502), result.ok ? { workflows: result.data.workflows || [] } : { error: result.error }, { "x-request-id": ctx.requestId });
         return;
       }
 

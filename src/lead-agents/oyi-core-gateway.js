@@ -493,6 +493,15 @@ async function callOyiCoreGetWorkflow(config = {}, workflowId) {
   const path = `${config.officeWorkflowsPath || "/office/workflows"}/${encodeURIComponent(workflowId)}`;
   return callBackendJson(config, "get", path, undefined);
 }
+// Overview's honest "workflow completion rate" metric needs the list
+// route — GET /office/workflows already existed and is already live
+// (Oyi Runtime Contract Task-domain bridge), just never had an Office
+// server proxy in front of it before now.
+async function callOyiCoreListWorkflows(config = {}, params = {}) {
+  const query = params.limit ? `?limit=${encodeURIComponent(params.limit)}` : "";
+  const path = `${config.officeWorkflowsPath || "/office/workflows"}${query}`;
+  return callBackendJson(config, "get", path, undefined);
+}
 
 module.exports = {
   buildOyiCoreCorporateConversationRequest,
@@ -510,5 +519,6 @@ module.exports = {
   callOyiCoreListAutomationRuns,
   callOyiCoreTestAutomation,
   callOyiCoreGetWorkflow,
+  callOyiCoreListWorkflows,
   oyiCoreConversationUrl,
 };

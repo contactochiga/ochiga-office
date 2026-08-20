@@ -346,9 +346,16 @@ async function apiTestAutomation(id) {
 async function apiGetWorkflow(id) {
   return api(`/api/lead-agents/admin/workflows/${encodeURIComponent(id)}`);
 }
+async function apiListWorkflows() {
+  return api("/api/lead-agents/admin/workflows");
+}
 async function fetchAutomations(force) {
   const data = await cached("automations", () => apiListAutomations(), force);
   return data.automations || [];
+}
+async function fetchWorkflows(force) {
+  const data = await cached("workflows", () => apiListWorkflows(), force);
+  return data.workflows || [];
 }
 async function fetchMeetings(force) {
   const data = await cached("meetings", () => apiListOffice("meetings"), force);
@@ -4333,14 +4340,126 @@ async function renderTasksRoute(outlet, rest, token) {
   }
 }
 
+// Tasks Domain UI — Overview. Command view composed entirely from the
+// same real data Tasks/Automations already fetch (crm_tasks,
+// consumer_automations, ochiga_workflows) — no new data source, no
+// fabricated counts. Every KPI/list/metric below is computed from a
+// live fetch; anything not cheaply computable from list-level data
+// (e.g. a global "all runs" aggregate) is left out rather than
+// approximated.
 async function renderTasksOverview(outlet, token) {
+  const [tasks, taskIndex, automations, workflows] = await Promise.all([
+    fetchTasks(),
+    fetchTaskRelationIndex(),
+    fetchAutomations(),
+    fetchWorkflows().catch(() => []),
+  ]);
   if (token !== state.renderToken) return;
+
+  const now = Date.now();
+  const soonMs = now + 7 * 24 * 60 * 60 * 1000;
+  const openStatuses = (t) => !["done", "completed", "cancelled"].includes(String(t.status || "").toLowerCase());
+  const enrichedTasks = tasks.map((t) => {
+    const relation = resolveTaskRelation(t, taskIndex);
+    const overdue = Boolean(t.due_at) && !t.completed_at && new Date(t.due_at).getTime() < now && openStatuses(t);
+    const dueSoon = Boolean(t.due_at) && !t.completed_at && new Date(t.due_at).getTime() >= now && new Date(t.due_at).getTime() <= soonMs && openStatuses(t);
+    return { ...t, __relation: relation, __overdue: overdue, __dueSoon: dueSoon };
+  });
+  const openTasks = enrichedTasks.filter(openStatuses);
+  const overdueTasks = enrichedTasks.filter((t) => t.__overdue);
+  const dueSoonTasks = enrichedTasks.filter((t) => t.__dueSoon);
+  const failedAutomations = automations.filter((a) => a.last_run_status === "failed");
+  const activeAutomations = automations.filter((a) => a.enabled);
+  const upcomingAutomations = automations.filter((a) => a.enabled && a.next_run_at);
+
   outlet.innerHTML = "";
-  outlet.appendChild(emptyPanel({
-    kicker: "Overview",
-    title: "Overview is coming next",
-    body: "The Tasks command view (open work, schedule, automation pulse, performance) is being built in the next pass — see Automations for what's live today.",
-  }));
+  outlet.appendChild(KPIGroup([
+    { label: "Open Tasks", value: String(openTasks.length) },
+    { label: "Due Soon", value: String(dueSoonTasks.length), sub: "Next 7 days" },
+    { label: "Needs Attention", value: String(overdueTasks.length + failedAutomations.length), alert: overdueTasks.length + failedAutomations.length > 0 },
+    { label: "Active Automations", value: String(activeAutomations.length) },
+    { label: "Upcoming Runs", value: String(upcomingAutomations.length), sub: "Scheduled" },
+  ]));
+
+  const body = el(`<div class="detail-body"></div>`);
+  const main = el(`<div class="detail-main"></div>`);
+  const rail = el(`<div class="detail-rail"></div>`);
+  body.appendChild(main);
+  body.appendChild(rail);
+  outlet.appendChild(body);
+
+  // A. My Work — open tasks assigned to the current admin, or the
+  // whole team's open work if nothing is assigned to them specifically.
+  const mine = openTasks.filter((t) => isMine(t.assignee));
+  const myWorkRows = (mine.length ? mine : openTasks).slice(0, 8);
+  const myWorkCard = railCard(mine.length ? "My Work" : "Team Work", renderDataTable({
+    columns: [
+      { label: "Task", width: "1.6fr", render: (t) => escapeHtml(t.title) },
+      { label: "Source", render: (t) => escapeHtml(t.__relation ? t.__relation.type : "—") },
+      { label: "Owner", render: (t) => escapeHtml(t.assignee || "Unassigned") },
+      { label: "Due", render: (t) => t.due_at ? (t.__overdue ? badge(fmtDate(t.due_at), "red") : escapeHtml(fmtDate(t.due_at))) : "—" },
+      { label: "Status", render: (t) => badge(titleCase(t.status), toneForStatus(t.status)) },
+    ],
+    rows: myWorkRows,
+    onRowClick: (t) => { if (t.__relation) navigate(t.__relation.path); else navigate(`tasks/${t.id}`); },
+    emptyMessage: "No open tasks.",
+  }), { label: "View all", onClick: () => navigate("tasks/tasks") });
+  main.appendChild(myWorkCard);
+
+  // B. Upcoming Schedule — task deadlines and automation runs due
+  // soon, merged into one real, date-sorted view (not a separate data
+  // source — the Schedule page composes the same two fetches).
+  const upcomingItems = [
+    ...dueSoonTasks.map((t) => ({ kind: "Task", label: t.title, when: t.due_at, path: t.__relation ? t.__relation.path : `tasks/${t.id}` })),
+    ...upcomingAutomations
+      .filter((a) => new Date(a.next_run_at).getTime() <= soonMs)
+      .map((a) => ({ kind: "Automation", label: a.name, when: a.next_run_at, path: "tasks/automations" })),
+  ].sort((a, b) => new Date(a.when) - new Date(b.when)).slice(0, 8);
+  const upcomingCard = railCard("Upcoming Schedule", upcomingItems.length
+    ? railList(upcomingItems, (item) => `<a href="#" data-nav="${escapeHtml(item.path)}">${escapeHtml(item.label)}</a><span class="rail-sub">${escapeHtml(item.kind)} · ${escapeHtml(fmtDate(item.when))}</span>`)
+    : `<p class="rail-empty">Nothing due in the next 7 days.</p>`,
+  { label: "Schedule", onClick: () => navigate("tasks/schedule") });
+  upcomingCard.querySelectorAll("[data-nav]").forEach((a) => a.addEventListener("click", (e) => { e.preventDefault(); navigate(a.dataset.nav); }));
+  main.appendChild(upcomingCard);
+
+  // C. Automation & Workflow Pulse — recency-derived from list data
+  // (last_run_status/last_run_at), no per-automation run-history N+1.
+  const lastEvent = [...automations].filter((a) => a.last_run_at).sort((a, b) => new Date(b.last_run_at) - new Date(a.last_run_at))[0];
+  const recentSucceeded = automations.filter((a) => a.last_run_status === "succeeded").length;
+  const pulseRows = [
+    { label: "Active automations", value: String(activeAutomations.length) },
+    { label: "Recent successful runs", value: String(recentSucceeded) },
+    { label: "Recent failed runs", value: String(failedAutomations.length) },
+  ];
+  const pulseCard = railCard("Automation & Workflow Pulse", `
+    ${FactGrid(pulseRows).outerHTML}
+    <p class="rail-sub" style="margin-top:10px;display:block;">${lastEvent ? `Last event: ${escapeHtml(lastEvent.name)} — ${escapeHtml(fmtRelative(lastEvent.last_run_at))}` : "No automation runs recorded yet."}</p>
+  `, { label: "View", onClick: () => navigate("tasks/automations") });
+  rail.appendChild(pulseCard);
+
+  // D. Performance — only metrics honestly computable from data
+  // already on hand; "recent" is scoped to each automation's most
+  // recent run since a global run-history aggregate isn't fetched here.
+  const completedTasks = tasks.filter((t) => ["done", "completed"].includes(String(t.status || "").toLowerCase())).length;
+  const workflowsDone = workflows.filter((w) => ["completed", "verified"].includes(w.workflow_status)).length;
+  const perfRows = [
+    { label: "Tasks completed", value: String(completedTasks) },
+    { label: "Overdue tasks", value: String(overdueTasks.length) },
+  ];
+  if (automations.length) perfRows.push({ label: "Recent run success rate", value: `${Math.round((recentSucceeded / automations.length) * 100)}%` });
+  if (workflows.length) perfRows.push({ label: "Workflow completion rate", value: `${Math.round((workflowsDone / workflows.length) * 100)}%` });
+  rail.appendChild(railCard("Performance", FactGrid(perfRows)));
+
+  // E. Needs Attention — real overdue tasks + failed automations only.
+  const attentionItems = [
+    ...overdueTasks.slice(0, 5).map((t) => ({ label: t.title, sub: `Overdue · ${escapeHtml(fmtDate(t.due_at))}`, path: t.__relation ? t.__relation.path : `tasks/${t.id}` })),
+    ...failedAutomations.slice(0, 5).map((a) => ({ label: a.name, sub: "Automation failed", path: "tasks/automations" })),
+  ];
+  const attentionCard = railCard("Needs Attention", attentionItems.length
+    ? railList(attentionItems, (item) => `<a href="#" data-nav="${escapeHtml(item.path)}">${escapeHtml(item.label)}</a><span class="rail-sub">${item.sub}</span>`)
+    : `<p class="rail-empty">Nothing needs attention right now.</p>`);
+  attentionCard.querySelectorAll("[data-nav]").forEach((a) => a.addEventListener("click", (e) => { e.preventDefault(); navigate(a.dataset.nav); }));
+  rail.appendChild(attentionCard);
 }
 
 async function renderScheduleView(outlet, token) {
