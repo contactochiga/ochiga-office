@@ -5915,10 +5915,7 @@ async function renderPartnershipDetail(outlet, id, token) {
     badges: [badge(titleCase(record.relationship_type)), badge(titleCase(record.review_status), toneForStatus(record.review_status))],
     backLabel: "Partnerships",
     onBack: () => navigate("partnerships"),
-    oyiContext: {
-      partnership_ref: id,
-      safe_summary: partnershipOyiSafeSummary(record, { label, org, opportunity, handoff }),
-    },
+    oyiContext: partnershipOyiContext(record, { label, org, opportunity, handoff }),
     mainSections,
     railSections,
   });
@@ -5935,6 +5932,25 @@ function partnershipOyiSafeSummary(record, { label, org, opportunity, handoff } 
   if (opportunity) parts.push(`Linked Opportunity: ${titleCase(opportunity.inquiry_type)}.`);
   if (handoff) parts.push(`Last communication: ${titleCase(handoff.status)} via ${titleCase(handoff.media_mode)}.`);
   return parts.join(" ");
+}
+
+// Structured sibling of partnershipOyiSafeSummary — same fields (record's
+// own + the org/opportunity/handoff cross-references renderPartnershipDetail
+// already resolves), so Oyi's Partnerships capability module can answer a
+// specific sub-question instead of only ever echoing the whole summary.
+function partnershipOyiContext(record, { label, org, opportunity, handoff } = {}) {
+  return {
+    partnership_ref: record.id,
+    safe_summary: partnershipOyiSafeSummary(record, { label, org, opportunity, handoff }),
+    relationship_type: record.relationship_type || null,
+    review_status: record.review_status || null,
+    business_unit: record.business_unit || null,
+    relationship_manager: record.relationship_manager || null,
+    organization_name: org ? org.name : null,
+    opportunity_type: opportunity ? opportunity.inquiry_type : null,
+    last_contact_status: handoff ? handoff.status : null,
+    last_contact_mode: handoff ? handoff.media_mode : null,
+  };
 }
 
 // ---------------------------------------------------------------
