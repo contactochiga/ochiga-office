@@ -49,6 +49,7 @@ const state = {
   oyiOpen: false,
   oyiBusy: false,
   oyiThreadStarted: false,
+  oyiThreadId: null, // lazily generated on first message; resets on page reload or "New Conversation" — see sendOyiMessage()
   notifications: [],
   notifUnreadCount: 0,
   notifPanelOpen: false,
@@ -8471,6 +8472,19 @@ function setOyiPresence(nextState) {
   orb.classList.add(`presence-${nextState}`);
 }
 
+// Oyi Conversational Runtime Completion Programme, Phase 2 — a client-
+// generated thread id, kept only in memory (never localStorage/
+// sessionStorage), so a page reload naturally starts a genuinely new
+// conversation with nothing to inherit from the last one.
+function newOyiThreadId() {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") return crypto.randomUUID();
+  // Fallback v4 UUID for older browsers without crypto.randomUUID.
+  return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (c) => {
+    const r = (Math.random() * 16) | 0;
+    return (c === "x" ? r : (r & 0x3) | 0x8).toString(16);
+  });
+}
+
 async function sendOyiMessage(message) {
   if (!message.trim() || state.oyiBusy) return;
   appendOyiMessage("user", message);
@@ -8478,13 +8492,20 @@ async function sendOyiMessage(message) {
   document.getElementById("oyiSend").disabled = true;
   setOyiPresence("thinking");
 
+  if (!state.oyiThreadId) state.oyiThreadId = newOyiThreadId();
+
   try {
     const data = await api("/api/lead-agents/admin/office/intelligence/chat", {
       method: "POST",
-      body: { message, page_context: currentPageContext(), ...currentSelectedObjectContext() },
+      body: { message, conversation_thread_id: state.oyiThreadId, page_context: currentPageContext(), ...currentSelectedObjectContext() },
     });
     const { normalizeOfficeInternalResponse } = await import("/office/shared/oyi-core/responseNormalizer.mjs");
     const normalized = normalizeOfficeInternalResponse(data.oyi_core || {}, data.proposed_actions);
+    // Backend echoes back the thread id it actually persisted under —
+    // normally identical to what was just sent, but this keeps the
+    // client authoritative to whatever Backend decided rather than
+    // assuming they always match.
+    if (normalized.threadId) state.oyiThreadId = normalized.threadId;
     appendOyiMessage("assistant", renderOyiResponse(normalized));
     if (normalized.toolProposals.length) {
       appendOyiMessage("system", renderApprovalSurface(normalized.toolProposals));
@@ -8719,6 +8740,7 @@ async function wireOyiControl() {
   newConversationBtn.addEventListener("click", () => {
     document.getElementById("oyiThread").innerHTML = "";
     state.oyiThreadStarted = false;
+    state.oyiThreadId = null;
     oyiStartThreadIfNeeded();
   });
   composer.addEventListener("submit", (event) => {
