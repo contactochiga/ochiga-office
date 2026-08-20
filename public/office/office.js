@@ -8458,6 +8458,120 @@ function renderApprovalSurface(proposedActions) {
   return wrap;
 }
 
+// Oyi Conversational Runtime Completion Programme, Phase 3 — Governed
+// Action Proposals. A compact confirm/cancel card for a mutation Oyi
+// proposed (task status/owner/due-date, meeting cancel, support
+// resolve) — deliberately not a form: the exact operation and value
+// were already understood conversationally, this only asks the staff
+// member to approve or reject it.
+function renderActionProposalCard(pendingAction) {
+  const wrap = el(`<div class="oyi-structured oyi-action-proposal"></div>`);
+  wrap.appendChild(el(`<div class="oyi-block-label">Oyi Proposes a Change</div>`));
+  const row = el(`<div class="oyi-proposal"></div>`);
+  row.appendChild(el(`<div class="oyi-proposal-reason">${escapeHtml(pendingAction.description)}</div>`));
+  const prevEntry = pendingAction.previous_state ? Object.entries(pendingAction.previous_state)[0] : null;
+  const nextEntry = pendingAction.proposed_state ? Object.entries(pendingAction.proposed_state)[0] : null;
+  if (prevEntry && nextEntry) {
+    row.appendChild(el(`
+      <div class="oyi-proposal-diff">
+        <span class="oyi-proposal-from">${escapeHtml(titleCase(String(prevEntry[1] ?? "—")))}</span>
+        <span class="oyi-proposal-arrow">→</span>
+        <span class="oyi-proposal-to">${escapeHtml(titleCase(String(nextEntry[1] ?? "—")))}</span>
+      </div>
+    `));
+  }
+  const actionsRow = el(`<div class="oyi-proposal-actions"></div>`);
+  // btn-ghost/btn-sm, same as every existing renderApprovalSurface action
+  // button — no new button prominence pattern introduced for this card.
+  const confirmBtn = el(`<button type="button" class="btn btn-ghost btn-sm">Confirm</button>`);
+  const cancelBtn = el(`<button type="button" class="btn btn-ghost btn-sm">Cancel</button>`);
+  confirmBtn.addEventListener("click", () => {
+    confirmBtn.disabled = true;
+    cancelBtn.disabled = true;
+    confirmOyiActionProposal(pendingAction);
+  });
+  cancelBtn.addEventListener("click", () => {
+    confirmBtn.disabled = true;
+    cancelBtn.disabled = true;
+    cancelOyiActionProposal();
+  });
+  actionsRow.appendChild(confirmBtn);
+  actionsRow.appendChild(cancelBtn);
+  row.appendChild(actionsRow);
+  wrap.appendChild(row);
+  return wrap;
+}
+
+// Rebuilds the *_context slot from the record a successful PATCH just
+// returned, reusing the SAME structured-context helpers each detail page
+// already uses (taskOyiContext/meetingOyiContext/supportOyiContext) —
+// not a second formatter. Cross-reference fields those helpers can take
+// (related meeting, follow-up task, contact/org) are intentionally
+// omitted here: this only needs the mutated field to be fresh for Oyi's
+// next turn to verify against, not a full detail-page re-render.
+const OFFICE_ACTION_DOMAIN_CONTEXT_BUILDER = {
+  office_tasks: (record) => taskOyiContext(record),
+  office_meetings: (record) => meetingOyiContext(record),
+  office_support: (record) => supportOyiContext(record),
+};
+const OFFICE_ACTION_DOMAIN_SELECTED_TYPE = { office_tasks: "task", office_meetings: "meeting", office_support: "support_case" };
+
+// Confirm click performs the REAL mutation through Office's own existing,
+// already-permission-checked, already-audited apiPatchOperational route
+// (the same one every manual "Mark In Progress" button already uses) —
+// Backend never executes this itself, only proposes it and, once the
+// patch has actually succeeded, verifies the resulting state. See
+// officeActionProposal.ts in Ochiga-backend for the full design note.
+async function confirmOyiActionProposal(pendingAction) {
+  appendOyiMessage("user", "Yes, do it.");
+  state.oyiBusy = true;
+  setOyiPresence("thinking");
+  try {
+    const confirmedTurn = await callOyiChat("Yes, do it.");
+    const confirmed = confirmedTurn.data.oyi_core?.pending_action;
+    const directive = confirmed?.status === "confirmed" ? confirmed.execute_directive : null;
+    if (!directive) {
+      appendOyiMessage("system", confirmedTurn.normalized.answer || "Oyi couldn't confirm that action — please try again.");
+      return;
+    }
+    let patched;
+    try {
+      patched = await apiPatchOperational(directive.namespace, directive.collection, directive.record_id, directive.patch);
+    } catch (err) {
+      appendOyiMessage("system", `Could not make that change: ${err.message || "the request failed"}.`);
+      return;
+    }
+    const builder = OFFICE_ACTION_DOMAIN_CONTEXT_BUILDER[confirmed.domain];
+    const selectedType = OFFICE_ACTION_DOMAIN_SELECTED_TYPE[confirmed.domain];
+    if (builder && selectedType && patched?.record) {
+      setSelectedObject(selectedType, patched.record.id, patched.record.title || (state.selectedObject && state.selectedObject.label) || "", builder(patched.record));
+    }
+    invalidate(directive.collection);
+    const verifyTurn = await callOyiChat("Yes, do it.");
+    appendOyiMessage("assistant", renderOyiResponse(verifyTurn.normalized));
+  } catch (err) {
+    appendOyiMessage("system", "Could not confirm that action. Please try again.");
+  } finally {
+    state.oyiBusy = false;
+    setOyiPresence("idle");
+  }
+}
+
+async function cancelOyiActionProposal() {
+  appendOyiMessage("user", "No.");
+  state.oyiBusy = true;
+  setOyiPresence("thinking");
+  try {
+    const turn = await callOyiChat("No.");
+    appendOyiMessage("assistant", renderOyiResponse(turn.normalized));
+  } catch (err) {
+    appendOyiMessage("system", "Could not reach Oyi. Please try again.");
+  } finally {
+    state.oyiBusy = false;
+    setOyiPresence("idle");
+  }
+}
+
 // Presence (Universal Interaction Shell) — drives the orb's glow/pulse
 // from the shared vocabulary in shared/oyi-core/presence.mjs rather
 // than an ad-hoc busy flag, so Office and Website's orbs read the same
@@ -8485,6 +8599,26 @@ function newOyiThreadId() {
   });
 }
 
+// Core network call, extracted so the confirm/cancel round-trips (which
+// must NOT show every intermediate turn as a chat bubble) can drive it
+// directly instead of going through sendOyiMessage's always-visible
+// user/assistant bubble pair.
+async function callOyiChat(message) {
+  if (!state.oyiThreadId) state.oyiThreadId = newOyiThreadId();
+  const data = await api("/api/lead-agents/admin/office/intelligence/chat", {
+    method: "POST",
+    body: { message, conversation_thread_id: state.oyiThreadId, page_context: currentPageContext(), ...currentSelectedObjectContext() },
+  });
+  const { normalizeOfficeInternalResponse } = await import("/office/shared/oyi-core/responseNormalizer.mjs");
+  const normalized = normalizeOfficeInternalResponse(data.oyi_core || {}, data.proposed_actions);
+  // Backend echoes back the thread id it actually persisted under —
+  // normally identical to what was just sent, but this keeps the
+  // client authoritative to whatever Backend decided rather than
+  // assuming they always match.
+  if (normalized.threadId) state.oyiThreadId = normalized.threadId;
+  return { data, normalized };
+}
+
 async function sendOyiMessage(message) {
   if (!message.trim() || state.oyiBusy) return;
   appendOyiMessage("user", message);
@@ -8492,23 +8626,15 @@ async function sendOyiMessage(message) {
   document.getElementById("oyiSend").disabled = true;
   setOyiPresence("thinking");
 
-  if (!state.oyiThreadId) state.oyiThreadId = newOyiThreadId();
-
   try {
-    const data = await api("/api/lead-agents/admin/office/intelligence/chat", {
-      method: "POST",
-      body: { message, conversation_thread_id: state.oyiThreadId, page_context: currentPageContext(), ...currentSelectedObjectContext() },
-    });
-    const { normalizeOfficeInternalResponse } = await import("/office/shared/oyi-core/responseNormalizer.mjs");
-    const normalized = normalizeOfficeInternalResponse(data.oyi_core || {}, data.proposed_actions);
-    // Backend echoes back the thread id it actually persisted under —
-    // normally identical to what was just sent, but this keeps the
-    // client authoritative to whatever Backend decided rather than
-    // assuming they always match.
-    if (normalized.threadId) state.oyiThreadId = normalized.threadId;
+    const { data, normalized } = await callOyiChat(message);
     appendOyiMessage("assistant", renderOyiResponse(normalized));
     if (normalized.toolProposals.length) {
       appendOyiMessage("system", renderApprovalSurface(normalized.toolProposals));
+    }
+    const pendingAction = data.oyi_core?.pending_action;
+    if (pendingAction && pendingAction.status === "pending") {
+      appendOyiMessage("system", renderActionProposalCard(pendingAction));
     }
   } catch (err) {
     if (err.status === 503) appendOyiMessage("system", "Oyi Core is unavailable right now. Nothing was answered from a separate reasoning path — please try again shortly.");
