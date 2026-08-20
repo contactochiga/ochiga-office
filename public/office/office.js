@@ -4462,14 +4462,161 @@ async function renderTasksOverview(outlet, token) {
   rail.appendChild(attentionCard);
 }
 
+// Tasks Domain UI — Schedule. "What is expected to happen, and when?"
+// Composed from the same two real fetches Overview uses (crm_tasks
+// due dates, consumer_automations next_run_at) — not a calendar-grid
+// rebuild (no recurring/multi-day event model exists in the data;
+// "Day/Week/Month... if they can be supported cleanly" resolves here
+// to a grouped chronological list, the honest fit for this data
+// shape). Selecting an automation links out to Automations for
+// actions rather than duplicating Run Now/Pause/Delete here.
+const SCHEDULE_BUCKETS = ["Overdue", "Today", "Tomorrow", "This Week", "Later"];
+function scheduleBucketFor(whenIso, now) {
+  const when = new Date(whenIso).getTime();
+  const startToday = new Date(now);
+  startToday.setHours(0, 0, 0, 0);
+  const startTomorrow = startToday.getTime() + 86400000;
+  const startDayAfter = startTomorrow + 86400000;
+  const startNextWeek = startToday.getTime() + 7 * 86400000;
+  if (when < startToday.getTime()) return "Overdue";
+  if (when < startTomorrow) return "Today";
+  if (when < startDayAfter) return "Tomorrow";
+  if (when < startNextWeek) return "This Week";
+  return "Later";
+}
+
 async function renderScheduleView(outlet, token) {
+  const [tasks, taskIndex, automations] = await Promise.all([
+    fetchTasks(),
+    fetchTaskRelationIndex(),
+    fetchAutomations(),
+  ]);
   if (token !== state.renderToken) return;
+
+  const now = Date.now();
+  const openStatuses = (t) => !["done", "completed", "cancelled"].includes(String(t.status || "").toLowerCase());
+  const scheduleItems = [];
+  tasks.forEach((t) => {
+    if (!t.due_at || t.completed_at || !openStatuses(t)) return;
+    const relation = resolveTaskRelation(t, taskIndex);
+    scheduleItems.push({
+      kind: "task", label: t.title, when: t.due_at,
+      overdue: new Date(t.due_at).getTime() < now,
+      sourceLabel: relation ? relation.type : "Task",
+      owner: t.assignee, status: t.status,
+      path: relation ? relation.path : `tasks/${t.id}`,
+      raw: t,
+    });
+  });
+  automations.forEach((a) => {
+    if (!a.enabled || !a.next_run_at) return;
+    scheduleItems.push({
+      kind: "automation", label: a.name, when: a.next_run_at,
+      overdue: false,
+      sourceLabel: "Automation",
+      owner: a.owner, status: a.last_run_status === "failed" ? "Needs Attention" : "Scheduled",
+      path: "tasks/automations",
+      raw: a,
+    });
+  });
+  scheduleItems.sort((a, b) => new Date(a.when) - new Date(b.when));
+
+  const startToday = new Date(now);
+  startToday.setHours(0, 0, 0, 0);
+  const endToday = startToday.getTime() + 86400000;
+  const endWeek = startToday.getTime() + 7 * 86400000;
+  const inRange = (item, start, end) => { const w = new Date(item.when).getTime(); return w >= start && w < end; };
+  const todayCount = scheduleItems.filter((i) => inRange(i, startToday.getTime(), endToday)).length;
+  const weekCount = scheduleItems.filter((i) => inRange(i, startToday.getTime(), endWeek)).length;
+  const upcomingRuns = scheduleItems.filter((i) => i.kind === "automation").length;
+  const deadlines = scheduleItems.filter((i) => i.kind === "task").length;
+  const attention = scheduleItems.filter((i) => i.overdue || i.status === "Needs Attention").length;
+
   outlet.innerHTML = "";
-  outlet.appendChild(emptyPanel({
-    kicker: "Schedule",
-    title: "Schedule is coming next",
-    body: "A combined view of task deadlines and automation runs is being built in the next pass.",
-  }));
+  const layout = el(`<div class="split-layout"></div>`);
+  const mainCol = el(`<div class="split-main"></div>`);
+  layout.appendChild(mainCol);
+  outlet.appendChild(layout);
+
+  mainCol.appendChild(KPIGroup([
+    { label: "Today", value: String(todayCount) },
+    { label: "This Week", value: String(weekCount) },
+    { label: "Upcoming Runs", value: String(upcomingRuns) },
+    { label: "Deadlines", value: String(deadlines) },
+    { label: "Needs Attention", value: String(attention), alert: attention > 0 },
+  ]));
+
+  const listHost = el(`<div></div>`);
+  mainCol.appendChild(listHost);
+
+  function selectItem(item) {
+    let panel = layout.querySelector(".split-panel");
+    if (!panel) { panel = el(`<div class="split-panel"></div>`); layout.appendChild(panel); }
+    renderScheduleDetailPanel(panel, item, () => panel.remove());
+  }
+
+  if (!scheduleItems.length) {
+    listHost.appendChild(emptyPanel({ kicker: "Schedule", title: "Nothing scheduled", body: "No open task deadlines or enabled automation runs right now." }));
+    return;
+  }
+  SCHEDULE_BUCKETS.forEach((bucket) => {
+    const items = scheduleItems.filter((i) => scheduleBucketFor(i.when, now) === bucket);
+    if (!items.length) return;
+    const section = el(`<div class="split-panel-section" style="margin-bottom:22px;"></div>`);
+    section.appendChild(el(`<h4 style="font-size:11px;text-transform:uppercase;letter-spacing:0.04em;color:var(--text-tertiary);margin:0 0 10px;">${escapeHtml(bucket)}</h4>`));
+    section.appendChild(renderDataTable({
+      columns: [
+        { label: "Item", width: "1.6fr", render: (i) => {
+          const cell = el(`<div style="display:flex;flex-direction:column;gap:2px;"></div>`);
+          cell.appendChild(el(`<span style="color:var(--white);font-weight:500;">${escapeHtml(i.label)}</span>`));
+          cell.appendChild(el(`<span style="color:var(--text-tertiary);font-size:11px;">${escapeHtml(i.sourceLabel)}</span>`));
+          return cell;
+        } },
+        { label: "When", render: (i) => i.overdue ? badge(fmtDate(i.when), "red") : escapeHtml(fmtDate(i.when)) },
+        { label: "Owner", render: (i) => escapeHtml(i.owner || "Unassigned") },
+        { label: "Status", render: (i) => badge(titleCase(i.status), toneForStatus(i.status)) },
+      ],
+      rows: items,
+      onRowClick: (i) => selectItem(i),
+      emptyMessage: "",
+    }));
+    listHost.appendChild(section);
+  });
+}
+
+function renderScheduleDetailPanel(panel, item, onClose) {
+  panel.innerHTML = "";
+  const head = el(`<div class="split-panel-head"></div>`);
+  const headTitle = el(`<div></div>`);
+  headTitle.appendChild(el(`<h2>${escapeHtml(item.label)}</h2>`));
+  headTitle.appendChild(el(`<div style="margin-top:6px;">${badge(titleCase(item.status), toneForStatus(item.status))}</div>`));
+  head.appendChild(headTitle);
+  const closeBtn = el(`<button type="button" class="split-panel-close" aria-label="Close">✕</button>`);
+  closeBtn.addEventListener("click", onClose);
+  head.appendChild(closeBtn);
+  panel.appendChild(head);
+
+  const factRowEl = (label, value) => el(`<div class="split-fact-row"><span class="label">${escapeHtml(label)}</span><span class="value">${escapeHtml(value || "—")}</span></div>`);
+  const section = el(`<div class="split-panel-section"><h4>Details</h4></div>`);
+  section.appendChild(factRowEl("Source", item.sourceLabel));
+  section.appendChild(factRowEl("Owner", item.owner || "Unassigned"));
+  if (item.kind === "task") {
+    section.appendChild(factRowEl("Due", fmtDate(item.when)));
+    if (item.raw.priority) section.appendChild(factRowEl("Priority", titleCase(item.raw.priority)));
+    if (item.raw.description) section.appendChild(factRowEl("Description", item.raw.description));
+  } else {
+    section.appendChild(factRowEl("Trigger", humanizeAutomationTrigger(item.raw.trigger)));
+    section.appendChild(factRowEl("Next Run", fmtDate(item.when)));
+    section.appendChild(factRowEl("Last Run", item.raw.last_run_at ? fmtDate(item.raw.last_run_at) : "—"));
+    section.appendChild(factRowEl("Action", automationActionSummary(item.raw)));
+  }
+  panel.appendChild(section);
+
+  const actions = el(`<div class="split-panel-actions"></div>`);
+  const linkBtn = el(`<button type="button" class="btn btn-ghost btn-sm">${item.kind === "task" ? "Open Task" : "Manage in Automations"}</button>`);
+  linkBtn.addEventListener("click", () => navigate(item.path));
+  actions.appendChild(linkBtn);
+  panel.appendChild(actions);
 }
 
 // ---------------------------------------------------------------
