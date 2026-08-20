@@ -3959,6 +3959,28 @@ async function renderSupportList(outlet, token) {
   });
 }
 
+// Structured context for Oyi's Support capability module — same
+// underlying fields already rendered on this page's Case Summary
+// section, machine-readable, so the capability can answer a specific
+// sub-question (customer/severity/category/SLA/resolution/assignee)
+// instead of only ever echoing the whole safe_summary string.
+function supportOyiContext(record, { contact, org } = {}) {
+  return {
+    support_case_ref: record.id,
+    safe_summary: `${record.title || "Support case"} · ${titleCase(record.status || "")} · ${titleCase(record.severity || "")} · ${titleCase(record.category || "")}`.trim(),
+    title: record.title || null,
+    status: record.status || null,
+    severity: record.severity || null,
+    category: record.category || null,
+    product_area: record.product_area || null,
+    assigned_staff: record.assigned_staff || null,
+    sla_target_at: record.sla_target_at || null,
+    resolution_notes: record.resolution_notes || null,
+    customer_name: contact ? contact.name : null,
+    organization_name: org ? org.name : null,
+  };
+}
+
 async function renderSupportDetail(outlet, id, token) {
   const canManage = hasPermission("support.assign");
   const [supportCases, contacts, organizations, portfolioEntries, tasks, meetings, notes, documents] = await Promise.all([
@@ -4059,10 +4081,7 @@ async function renderSupportDetail(outlet, id, token) {
     onBack: () => navigate("support"),
     mainSections,
     railSections,
-    oyiContext: {
-      support_case_ref: id,
-      safe_summary: `${record.title || "Support case"} · ${titleCase(record.status || "")} · ${titleCase(record.severity || "")} · ${titleCase(record.category || "")}`.trim(),
-    },
+    oyiContext: supportOyiContext(record, { contact, org }),
   });
 }
 
