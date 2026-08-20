@@ -792,6 +792,12 @@
   .toolbar-search { min-width: 180px; }
   .toolbar-search:focus, .toolbar-filter:focus { border-color: var(--red); outline: none; }
   .toolbar-spacer { flex: 1; }
+  /* renderToolbar's primaryAction/secondaryAction buttons render inline
+     in the toolbar row — same override .crm-tabs-action/.rail-card-head
+     .btn/.quick-filters .btn already apply for their own inline button
+     contexts, against .btn-primary's block-level default (width:100%,
+     margin-top:6px), meant for standalone form-submit buttons. */
+  .list-toolbar .btn { width: auto; margin-top: 0; flex-shrink: 0; }
   .btn-sm { padding: 6px 13px; font-size: 12px; }
   .btn-ghost.active { color: var(--white); border-color: var(--red-muted); background: rgba(179,36,27,0.08); }
   .pagination { display: flex; align-items: center; gap: 4px; margin-top: 14px; }
@@ -872,6 +878,44 @@
   .rail-list a { color: var(--white); text-decoration: none; }
   .rail-list a:hover { color: var(--red-bright); }
   .rail-sub { color: var(--text-tertiary); font-size: 11px; margin-left: 4px; }
+
+  /* Tasks Domain — split list+panel layout (Automations, and reused by
+     Tasks/Schedule per the same reference standard). Distinct from
+     .detail-rail (full-page nav shell): the list stays visible next
+     to the panel rather than being replaced by it. */
+  .split-layout { display: flex; gap: 20px; align-items: flex-start; }
+  .split-layout .split-main { flex: 1; min-width: 0; }
+  .split-panel {
+    width: 380px; flex-shrink: 0; border: 1px solid var(--line); border-radius: var(--radius);
+    background: var(--charcoal); padding: 18px; position: sticky; top: 0;
+  }
+  .split-panel-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; margin-bottom: 4px; }
+  .split-panel-head h2 { font-size: 15px; font-weight: 600; color: var(--white); margin: 0; }
+  .split-panel-close { background: none; border: none; color: var(--text-tertiary); cursor: pointer; padding: 2px; line-height: 1; font-size: 16px; }
+  .split-panel-close:hover { color: var(--white); }
+  .split-tabs { display: flex; gap: 14px; border-bottom: 1px solid var(--line); margin: 14px 0 16px; }
+  .split-tab { background: none; border: none; color: var(--text-tertiary); font-size: 12px; padding: 6px 0; cursor: pointer; border-bottom: 2px solid transparent; }
+  .split-tab:hover { color: var(--white); }
+  .split-tab.active { color: var(--white); border-color: var(--red); font-weight: 500; }
+  .split-panel-section { margin-bottom: 16px; }
+  .split-panel-section h4 { font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-tertiary); margin: 0 0 8px; }
+  .split-fact-row { display: flex; justify-content: space-between; gap: 10px; font-size: 12.5px; padding: 5px 0; border-bottom: 1px solid rgba(246,243,236,0.05); }
+  .split-fact-row .label { color: var(--text-tertiary); }
+  .split-fact-row .value { color: var(--white); text-align: right; }
+  .split-panel-perf { display: flex; align-items: center; gap: 16px; margin-top: 8px; }
+  .split-panel-perf-stats { display: flex; flex-direction: column; gap: 4px; font-size: 12px; }
+  .split-panel-perf-stats .stat-row { display: flex; justify-content: space-between; gap: 14px; }
+  .split-panel-perf-stats .stat-label { color: var(--text-tertiary); }
+  .split-panel-perf-stats .stat-value { color: var(--white); font-weight: 600; }
+  .split-panel-perf-stats .stat-value.red { color: var(--red-bright); }
+  .split-panel-actions { display: flex; flex-direction: column; gap: 8px; margin-top: 18px; padding-top: 16px; border-top: 1px solid var(--line); }
+  .split-panel-actions .btn { margin: 0; width: 100%; }
+  .split-panel-actions .btn-danger { background: transparent; border: 1px solid var(--red-muted); color: var(--red-bright); }
+  .split-panel-actions .btn-danger:hover { background: rgba(179,36,27,0.1); }
+  @media (max-width: 1000px) {
+    .split-layout { flex-direction: column; }
+    .split-panel { width: 100%; position: static; }
+  }
   .rail-empty { color: var(--text-tertiary); font-size: 12px; margin: 0; }
   .quick-filters { gap: 6px; }
   .quick-filters .btn { margin-top: 0; width: auto; }
