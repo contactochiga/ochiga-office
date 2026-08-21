@@ -107,7 +107,12 @@ export function normalizeOfficeInternalResponse(response, proposedActionsOverrid
     status: response?.ok ? "ok" : "error",
     answer: response?.answer || "",
     threadId: response?.conversation_thread_id || null,
-    cards: [],
+    // Oyi Conversational Runtime Completion Programme, Phase 4 — Backend's
+    // OfficeInternalOyiCoreResponse.blocks (semantic presentation blocks:
+    // table/record_list/key_value/status/warning/limitation), previously
+    // always empty here since office_internal never sent anything. See
+    // office.js's renderResponseBlocks().
+    cards: Array.isArray(response?.blocks) ? response.blocks : [],
     suggestions: response?.suggested_next_action ? [response.suggested_next_action] : [],
     toolProposals: normalizeToolProposals(proposals),
     confirmationRequired: normalizeToolProposals(proposals).length > 0,

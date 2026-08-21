@@ -528,6 +528,27 @@
   .oyi-proposal-to { color: var(--white); font-weight: 600; }
   .oyi-proposal-arrow { color: var(--text-tertiary); }
 
+  /* Phase 4 — adaptive response blocks (table/record_list, key_value,
+     status, warning/limitation). Reuses .badge and .oyi-block-label
+     rather than introducing a new visual language. */
+  .oyi-blocks { margin-top: 8px; display: flex; flex-direction: column; gap: 10px; }
+  .oyi-record-list { overflow-x: auto; }
+  .oyi-record-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  .oyi-record-table th {
+    text-align: left; font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.05em;
+    color: var(--text-tertiary); font-weight: 500; padding: 4px 8px; border-bottom: 1px solid var(--line-strong);
+  }
+  .oyi-record-table td { padding: 5px 8px; border-bottom: 1px solid var(--line); color: var(--text-secondary); }
+  .oyi-record-table tr:last-child td { border-bottom: none; }
+  .oyi-record-list-more { font-size: 11px; color: var(--text-tertiary); margin-top: 4px; }
+  .oyi-kv-list { margin: 0; }
+  .oyi-kv-row { display: flex; justify-content: space-between; gap: 12px; font-size: 12.5px; padding: 3px 0; }
+  .oyi-kv-row dt { color: var(--text-tertiary); margin: 0; }
+  .oyi-kv-row dd { color: var(--text-primary); margin: 0; font-weight: 500; text-align: right; }
+  .oyi-note { font-size: 11.5px; border-radius: var(--radius-sm); padding: 6px 9px; }
+  .oyi-note-warning { color: var(--amber); background: rgba(201, 134, 43, 0.08); border: 1px solid rgba(201, 134, 43, 0.3); }
+  .oyi-note-limitation { color: var(--text-tertiary); background: rgba(255,255,255,0.03); border: 1px solid var(--line-strong); }
+
   /* ---------------------------------------------------------------
      Phase 2 — Home + CRM
   ----------------------------------------------------------------*/

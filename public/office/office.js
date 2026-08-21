@@ -8384,10 +8384,97 @@ function renderOyiResponse(normalized) {
     );
     wrap.appendChild(list);
   }
+  if (normalized.cards.length) {
+    wrap.appendChild(renderResponseBlocks(normalized.cards));
+  }
   if (!normalized.answer && !wrap.children.length) {
     wrap.appendChild(el(`<p>Oyi Core responded without a readable message field.</p>`));
   }
   return wrap;
+}
+
+// Oyi Conversational Runtime Completion Programme, Phase 4 — Adaptive
+// response blocks (Ochiga-backend's ConversationBlock union in
+// conversationAnswerPresentation.ts, surfaced to office_internal via
+// OfficeInternalOyiCoreResponse.blocks). Deliberately restrained: reuses
+// the existing .badge/.oyi-block-label language rather than inventing a
+// new visual system. Unknown block types are skipped, not shown broken.
+const BLOCK_STATUS_TONE_CLASS = {
+  positive: "badge-green",
+  warning: "badge-amber",
+  critical: "badge-red",
+  neutral: "badge-blue",
+};
+function renderResponseBlocks(blocks) {
+  const wrap = el(`<div class="oyi-blocks"></div>`);
+  blocks.forEach((block) => {
+    const node = renderResponseBlock(block);
+    if (node) wrap.appendChild(node);
+  });
+  return wrap;
+}
+function renderResponseBlock(block) {
+  if (!block || typeof block !== "object") return null;
+  switch (block.type) {
+    case "table":
+    case "record_list": {
+      const columns = Array.isArray(block.columns) ? block.columns : [];
+      const rows = Array.isArray(block.rows) ? block.rows : [];
+      if (!columns.length || !rows.length) return null;
+      const frag = el(`<div class="oyi-record-list"></div>`);
+      if (block.title) frag.appendChild(el(`<div class="oyi-block-label">${escapeHtml(block.title)}</div>`));
+      const table = el(`<table class="oyi-record-table"></table>`);
+      const thead = el(`<thead><tr>${columns.map((c) => `<th>${escapeHtml(c.label)}</th>`).join("")}</tr></thead>`);
+      table.appendChild(thead);
+      const tbody = el(`<tbody></tbody>`);
+      rows.forEach((row) => {
+        const tr = el(`<tr></tr>`);
+        if (row.id != null) tr.setAttribute("data-id", String(row.id));
+        columns.forEach((col) => {
+          const raw = row[col.key];
+          const cell = el(`<td></td>`);
+          if (col.key === "status" && typeof raw === "string" && raw) {
+            cell.appendChild(el(`<span class="badge">${escapeHtml(titleCase(raw))}</span>`));
+          } else {
+            cell.textContent = raw == null || raw === "" ? "—" : String(raw);
+          }
+          tr.appendChild(cell);
+        });
+        tbody.appendChild(tr);
+      });
+      table.appendChild(tbody);
+      frag.appendChild(table);
+      if (block.total_count != null && rows.length < block.total_count) {
+        frag.appendChild(el(`<div class="oyi-record-list-more">Showing ${rows.length} of ${block.total_count}${block.truncated ? " — ask to narrow the list" : ""}.</div>`));
+      }
+      return frag;
+    }
+    case "key_value": {
+      const items = Array.isArray(block.items) ? block.items : [];
+      if (!items.length) return null;
+      const frag = el(`<div class="oyi-kv"></div>`);
+      if (block.title) frag.appendChild(el(`<div class="oyi-block-label">${escapeHtml(block.title)}</div>`));
+      const dl = el(`<dl class="oyi-kv-list"></dl>`);
+      items.forEach((item) => {
+        dl.appendChild(el(`<div class="oyi-kv-row"><dt>${escapeHtml(item.label)}</dt><dd>${escapeHtml(item.value)}</dd></div>`));
+      });
+      frag.appendChild(dl);
+      return frag;
+    }
+    case "status": {
+      if (!block.label) return null;
+      const toneClass = BLOCK_STATUS_TONE_CLASS[block.tone] || "";
+      return el(`<div><span class="badge ${toneClass}">${escapeHtml(block.label)}</span></div>`);
+    }
+    case "warning":
+    case "limitation": {
+      if (!block.text) return null;
+      const cls = block.type === "warning" ? "oyi-note oyi-note-warning" : "oyi-note oyi-note-limitation";
+      return el(`<div class="${cls}">${escapeHtml(block.text)}</div>`);
+    }
+    default:
+      return null;
+  }
 }
 
 // Approval Surface (Universal Interaction Shell, Programme 2/3/4) — every
