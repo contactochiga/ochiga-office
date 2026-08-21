@@ -986,6 +986,15 @@
     border-radius: var(--radius-sm); padding: 8px 10px; font-size: 13px; font-family: inherit;
   }
   .dialog-fields input:focus, .dialog-fields textarea:focus { border-color: var(--red); outline: none; }
+  /* Phase 4 — automation wizard weekday picker (New Automation, "Every
+     week, on selected days"). Overrides the generic .dialog-fields
+     label column layout for this one row of compact toggles. */
+  .wizard-weekday-picker { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 4px; }
+  .dialog-fields .wizard-weekday-option {
+    flex-direction: row; align-items: center; gap: 5px; width: auto;
+    border: 1px solid var(--line-strong); border-radius: var(--radius-sm);
+    padding: 5px 9px; text-transform: none; letter-spacing: 0;
+  }
   .dialog-actions { display: flex; justify-content: flex-end; gap: 8px; }
   .dialog-error { color: var(--red-bright); font-size: 12px; margin: 10px 0 0; }
 
