@@ -82,6 +82,38 @@ async function buildOpportunitiesSnapshot(store) {
   return { stale: stale.slice(0, SNAPSHOT_LIST_LIMIT), total_open: open.length };
 }
 
+// Phase 4, PR 2 (Oyi Conversational Runtime Completion Programme) —
+// mirrors buildOpportunitiesSnapshot's shape exactly: same
+// listCorporateRecords() accessor, same "open" filtering-then-cap
+// pattern, field names matching taskOyiContext() (office.js) so a task
+// looks the same whether it arrived via the single-record task_context
+// slot or this list snapshot.
+const OPEN_TASK_STATUS_EXCLUDE = /done|completed|cancelled/i;
+
+function taskIsOverdue(record) {
+  if (!record.due_at || record.completed_at) return false;
+  if (OPEN_TASK_STATUS_EXCLUDE.test(text(record.status))) return false;
+  const due = Date.parse(record.due_at);
+  return !Number.isNaN(due) && due < Date.now();
+}
+
+async function buildTasksSnapshot(store) {
+  const tasks = await listCorporateRecords(store, "tasks");
+  const open = (Array.isArray(tasks) ? tasks : []).filter(
+    (record) => !OPEN_TASK_STATUS_EXCLUDE.test(text(record.status))
+  );
+  const rows = open.slice(0, SNAPSHOT_LIST_LIMIT).map((record) => ({
+    id: text(record.id),
+    title: text(record.title) || `Task ${text(record.id)}`,
+    status: text(record.status || "open"),
+    priority: text(record.priority) || null,
+    owner: text(record.assignee) || null,
+    due_at: record.due_at || null,
+    overdue: taskIsOverdue(record),
+  }));
+  return { open: rows, total_open: open.length };
+}
+
 async function buildReportsSnapshot(store) {
   const pending = await store.listOfficeReports({ status: "submitted" });
   return {
@@ -139,7 +171,7 @@ async function buildFinancialSnapshot(config) {
 
 async function buildOperationalSnapshot({ authContext, store, config } = {}) {
   if (!store) return null;
-  const snapshot = { generated_at: new Date().toISOString(), leads: null, opportunities: null, reports: null, development: null, financial: null };
+  const snapshot = { generated_at: new Date().toISOString(), leads: null, opportunities: null, tasks: null, reports: null, development: null, financial: null };
   try {
     if (hasPermission(authContext, "crm.read")) {
       if (typeof store.listLeads === "function") snapshot.leads = await buildLeadsSnapshot(store);
@@ -147,6 +179,13 @@ async function buildOperationalSnapshot({ authContext, store, config } = {}) {
     }
   } catch {
     // Leave leads/opportunities null — reported honestly as unavailable.
+  }
+  try {
+    if (hasPermission(authContext, "tasks.read")) {
+      snapshot.tasks = await buildTasksSnapshot(store);
+    }
+  } catch {
+    // Leave tasks null.
   }
   try {
     if (hasPermission(authContext, "reports.write") && typeof store.listOfficeReports === "function") {
