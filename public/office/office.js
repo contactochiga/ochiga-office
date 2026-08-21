@@ -8551,21 +8551,40 @@ function renderApprovalSurface(proposedActions) {
 // resolve) — deliberately not a form: the exact operation and value
 // were already understood conversationally, this only asks the staff
 // member to approve or reject it.
+// A single proposal's diff row (prev -> next), reused for both the
+// single-record card and each child row of a batch card below.
+function appendProposalDiffRow(row, proposal) {
+  const prevEntry = proposal.previous_state ? Object.entries(proposal.previous_state)[0] : null;
+  const nextEntry = proposal.proposed_state ? Object.entries(proposal.proposed_state)[0] : null;
+  if (!prevEntry || !nextEntry) return;
+  row.appendChild(el(`
+    <div class="oyi-proposal-diff">
+      <span class="oyi-proposal-from">${escapeHtml(titleCase(String(prevEntry[1] ?? "—")))}</span>
+      <span class="oyi-proposal-arrow">→</span>
+      <span class="oyi-proposal-to">${escapeHtml(titleCase(String(nextEntry[1] ?? "—")))}</span>
+    </div>
+  `));
+}
+
 function renderActionProposalCard(pendingAction) {
   const wrap = el(`<div class="oyi-structured oyi-action-proposal"></div>`);
   wrap.appendChild(el(`<div class="oyi-block-label">Oyi Proposes a Change</div>`));
   const row = el(`<div class="oyi-proposal"></div>`);
   row.appendChild(el(`<div class="oyi-proposal-reason">${escapeHtml(pendingAction.description)}</div>`));
-  const prevEntry = pendingAction.previous_state ? Object.entries(pendingAction.previous_state)[0] : null;
-  const nextEntry = pendingAction.proposed_state ? Object.entries(pendingAction.proposed_state)[0] : null;
-  if (prevEntry && nextEntry) {
-    row.appendChild(el(`
-      <div class="oyi-proposal-diff">
-        <span class="oyi-proposal-from">${escapeHtml(titleCase(String(prevEntry[1] ?? "—")))}</span>
-        <span class="oyi-proposal-arrow">→</span>
-        <span class="oyi-proposal-to">${escapeHtml(titleCase(String(nextEntry[1] ?? "—")))}</span>
-      </div>
-    `));
+  // Phase 4, PR 4 — a batch proposal (child_operations present) lists
+  // each target's own from -> to diff instead of a single one; the
+  // parent's own description already names every target, so this is
+  // additional detail, not the only place the target list appears.
+  if (Array.isArray(pendingAction.child_operations) && pendingAction.child_operations.length) {
+    const list = el(`<ul class="oyi-list oyi-proposal-batch-list"></ul>`);
+    pendingAction.child_operations.forEach((child) => {
+      const item = el(`<li></li>`);
+      appendProposalDiffRow(item, child);
+      list.appendChild(item);
+    });
+    row.appendChild(list);
+  } else {
+    appendProposalDiffRow(row, pendingAction);
   }
   const actionsRow = el(`<div class="oyi-proposal-actions"></div>`);
   // btn-ghost/btn-sm, same as every existing renderApprovalSurface action
@@ -8609,6 +8628,46 @@ const OFFICE_ACTION_DOMAIN_SELECTED_TYPE = { office_tasks: "task", office_meetin
 // Backend never executes this itself, only proposes it and, once the
 // patch has actually succeeded, verifies the resulting state. See
 // officeActionProposal.ts in Ochiga-backend for the full design note.
+// Phase 4, PR 4 — iterates each child's own execute_directive through
+// the SAME apiPatchOperational route the single-record path uses below,
+// one call per target, collecting per-child success/failure honestly (a
+// failed PATCH is reported, never silently dropped). Rebuilds one
+// task_batch_context entry per successfully-patched record (same
+// taskOyiContext() shape the single-record rebuild already uses) and
+// resends the whole array for Backend's batch VERIFY turn.
+async function confirmBatchActionProposal(confirmed) {
+  const children = confirmed.child_operations;
+  const batchContextEntries = [];
+  let failedCount = 0;
+  for (const child of children) {
+    const directive = child.execute_directive;
+    if (!directive) {
+      failedCount += 1;
+      continue;
+    }
+    try {
+      const patched = await apiPatchOperational(directive.namespace, directive.collection, directive.record_id, directive.patch);
+      if (patched?.record) {
+        batchContextEntries.push(taskOyiContext(patched.record));
+        invalidate(directive.collection);
+      } else {
+        failedCount += 1;
+      }
+    } catch (err) {
+      failedCount += 1;
+    }
+  }
+  if (!batchContextEntries.length) {
+    appendOyiMessage("system", "Could not make any of those changes — please try again.");
+    return;
+  }
+  const verifyTurn = await callOyiChat("Yes, do it.", { task_batch_context: batchContextEntries });
+  appendOyiMessage("assistant", renderOyiResponse(verifyTurn.normalized));
+  if (failedCount) {
+    appendOyiMessage("system", `${failedCount} of ${children.length} change${children.length === 1 ? "" : "s"} could not be sent — please check ${failedCount === 1 ? "it" : "them"} directly.`);
+  }
+}
+
 async function confirmOyiActionProposal(pendingAction) {
   appendOyiMessage("user", "Yes, do it.");
   state.oyiBusy = true;
@@ -8616,7 +8675,15 @@ async function confirmOyiActionProposal(pendingAction) {
   try {
     const confirmedTurn = await callOyiChat("Yes, do it.");
     const confirmed = confirmedTurn.data.oyi_core?.pending_action;
-    const directive = confirmed?.status === "confirmed" ? confirmed.execute_directive : null;
+    if (confirmed?.status !== "confirmed") {
+      appendOyiMessage("system", confirmedTurn.normalized.answer || "Oyi couldn't confirm that action — please try again.");
+      return;
+    }
+    if (Array.isArray(confirmed.child_operations) && confirmed.child_operations.length) {
+      await confirmBatchActionProposal(confirmed);
+      return;
+    }
+    const directive = confirmed.execute_directive;
     if (!directive) {
       appendOyiMessage("system", confirmedTurn.normalized.answer || "Oyi couldn't confirm that action — please try again.");
       return;
@@ -8690,11 +8757,17 @@ function newOyiThreadId() {
 // must NOT show every intermediate turn as a chat bubble) can drive it
 // directly instead of going through sendOyiMessage's always-visible
 // user/assistant bubble pair.
-async function callOyiChat(message) {
+async function callOyiChat(message, extraBody) {
   if (!state.oyiThreadId) state.oyiThreadId = newOyiThreadId();
   const data = await api("/api/lead-agents/admin/office/intelligence/chat", {
     method: "POST",
-    body: { message, conversation_thread_id: state.oyiThreadId, page_context: currentPageContext(), ...currentSelectedObjectContext() },
+    body: {
+      message,
+      conversation_thread_id: state.oyiThreadId,
+      page_context: currentPageContext(),
+      ...currentSelectedObjectContext(),
+      ...(extraBody || {}),
+    },
   });
   const { normalizeOfficeInternalResponse } = await import("/office/shared/oyi-core/responseNormalizer.mjs");
   const normalized = normalizeOfficeInternalResponse(data.oyi_core || {}, data.proposed_actions);
