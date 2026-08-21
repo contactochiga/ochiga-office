@@ -4000,6 +4000,7 @@ function supportOyiContext(record, { contact, org } = {}) {
     safe_summary: `${record.title || "Support case"} · ${titleCase(record.status || "")} · ${titleCase(record.severity || "")} · ${titleCase(record.category || "")}`.trim(),
     title: record.title || null,
     status: record.status || null,
+    priority: record.priority || null,
     severity: record.severity || null,
     category: record.category || null,
     product_area: record.product_area || null,
@@ -8664,8 +8665,46 @@ const OFFICE_ACTION_DOMAIN_CONTEXT_BUILDER = {
   office_tasks: (record) => taskOyiContext(record),
   office_meetings: (record) => meetingOyiContext(record),
   office_support: (record) => supportOyiContext(record),
+  // Milestone 2 — Automations/Portfolio/Partnerships write capabilities.
+  automations: (record) => automationOyiContext(record),
+  office_portfolio: (record) => portfolioOyiContext(record),
+  corporate_partnerships: (record) => partnershipOyiContext(record),
 };
-const OFFICE_ACTION_DOMAIN_SELECTED_TYPE = { office_tasks: "task", office_meetings: "meeting", office_support: "support_case" };
+const OFFICE_ACTION_DOMAIN_SELECTED_TYPE = {
+  office_tasks: "task",
+  office_meetings: "meeting",
+  office_support: "support_case",
+  automations: "automation",
+  office_portfolio: "portfolio",
+  corporate_partnerships: "partnership",
+};
+
+// Milestone 2 — Automations doesn't go through the generic
+// apiPatchOperational(namespace, collection, id, patch) route
+// (/api/lead-agents/admin/${namespace}/${collection}/${id}) at all;
+// its real route is /api/lead-agents/admin/automations/:id (one fewer
+// path segment — see apiUpdateAutomation), already used by the admin
+// Automations page. execute_directive.namespace === "automations" is
+// the signal Backend's officeActionProposal.ts sets for exactly this
+// case (see officeAutomationsWriteModule). Normalizes the return shape
+// to { record } either way so the rest of the confirm flow (which reads
+// patched?.record uniformly) doesn't need to know which route ran.
+async function patchProposalTarget(directive) {
+  if (directive.namespace === "automations") {
+    const result = await apiUpdateAutomation(directive.record_id, directive.patch);
+    return result && result.automation ? { record: result.automation } : result;
+  }
+  return apiPatchOperational(directive.namespace, directive.collection, directive.record_id, directive.patch);
+}
+
+// Milestone 2 — generalizes confirmBatchActionProposal's rebuild step
+// (previously hardcoded to taskOyiContext regardless of domain) to any
+// batch-capable domain, using the SAME domain->builder map the
+// single-record confirm path already relies on.
+function batchContextEntry(domain, record) {
+  const builder = OFFICE_ACTION_DOMAIN_CONTEXT_BUILDER[domain];
+  return builder ? builder(record) : taskOyiContext(record);
+}
 
 // Confirm click performs the REAL mutation through Office's own existing,
 // already-permission-checked, already-audited apiPatchOperational route
@@ -8691,9 +8730,9 @@ async function confirmBatchActionProposal(confirmed) {
       continue;
     }
     try {
-      const patched = await apiPatchOperational(directive.namespace, directive.collection, directive.record_id, directive.patch);
+      const patched = await patchProposalTarget(directive);
       if (patched?.record) {
-        batchContextEntries.push(taskOyiContext(patched.record));
+        batchContextEntries.push(batchContextEntry(confirmed.domain, patched.record));
         invalidate(directive.collection);
       } else {
         failedCount += 1;
@@ -8739,7 +8778,7 @@ async function confirmOyiActionProposal(pendingAction) {
     }
     let patched;
     try {
-      patched = await apiPatchOperational(directive.namespace, directive.collection, directive.record_id, directive.patch);
+      patched = await patchProposalTarget(directive);
     } catch (err) {
       appendOyiMessage("system", `Could not make that change: ${err.message || "the request failed"}.`);
       // Phase 4, PR 5 — reports the failure so Oyi closes the proposal
