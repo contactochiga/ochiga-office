@@ -8659,6 +8659,10 @@ async function confirmBatchActionProposal(confirmed) {
   }
   if (!batchContextEntries.length) {
     appendOyiMessage("system", "Could not make any of those changes — please try again.");
+    // Phase 4, PR 5 — reports the failure so Oyi closes the proposal out
+    // immediately instead of leaving it "confirmed" until its 10-minute
+    // TTL expires.
+    await callOyiChat("The change could not be made.", { execution_failed: true, execution_failure_reason: "All batch updates failed" }).catch(() => {});
     return;
   }
   const verifyTurn = await callOyiChat("Yes, do it.", { task_batch_context: batchContextEntries });
@@ -8693,6 +8697,10 @@ async function confirmOyiActionProposal(pendingAction) {
       patched = await apiPatchOperational(directive.namespace, directive.collection, directive.record_id, directive.patch);
     } catch (err) {
       appendOyiMessage("system", `Could not make that change: ${err.message || "the request failed"}.`);
+      // Phase 4, PR 5 — reports the failure so Oyi closes the proposal
+      // out immediately instead of leaving it "confirmed" until its
+      // 10-minute TTL expires.
+      await callOyiChat("The change could not be made.", { execution_failed: true, execution_failure_reason: String(err.message || "the request failed") }).catch(() => {});
       return;
     }
     const builder = OFFICE_ACTION_DOMAIN_CONTEXT_BUILDER[confirmed.domain];
