@@ -299,6 +299,17 @@ async function buildOyiCoreOfficeInternalRequest({ authContext, message, body, r
     support_context: recordOf(safeBody.support_context),
     project_context: recordOf(safeBody.project_context),
     task_context: recordOf(safeBody.task_context),
+    // Phase 4, PR 4/PR 5 (Oyi Conversational Runtime Completion
+    // Programme) -- these were added to the wire contract and to
+    // Backend's normalizer/context passthrough, but this proxy function
+    // never forwarded them, so a batch confirm's VERIFY turn always
+    // arrived at Backend with task_batch_context silently missing (and
+    // any client-side PATCH failure report along with it). Found live in
+    // production: batch verification reported 0/N success even though
+    // every PATCH call had actually succeeded.
+    task_batch_context: Array.isArray(safeBody.task_batch_context) ? safeBody.task_batch_context : null,
+    execution_failed: Boolean(safeBody.execution_failed),
+    execution_failure_reason: text(safeBody.execution_failure_reason) || null,
     automation_context: recordOf(safeBody.automation_context),
     meeting_context: recordOf(safeBody.meeting_context),
     partnership_context: recordOf(safeBody.partnership_context),
