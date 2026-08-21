@@ -5211,6 +5211,7 @@ function openNewAutomationWizard(onCreated, initial = {}) {
     schedule_type: "daily",
     local_time: "08:00",
     local_datetime: "",
+    weekdays: [],
     operation: "create",
     workflow_type: OFFICE_AUTOMATION_WORKFLOW_TYPES[0].value,
     title: "",
@@ -5253,6 +5254,7 @@ function openNewAutomationWizard(onCreated, initial = {}) {
     if (step === "when") {
       if (!wiz.name.trim()) return "A name is required.";
       if (wiz.schedule_type === "once" && !wiz.local_datetime) return "Pick a date and time.";
+      if (wiz.schedule_type === "weekdays" && (!Array.isArray(wiz.weekdays) || !wiz.weekdays.length)) return "Pick at least one day.";
       return null;
     }
     if (step === "then") {
@@ -5267,9 +5269,9 @@ function openNewAutomationWizard(onCreated, initial = {}) {
   }
 
   function buildTrigger() {
-    return wiz.schedule_type === "once"
-      ? { type: "schedule", schedule_type: "once", local_datetime: wiz.local_datetime, timezone: "Africa/Lagos" }
-      : { type: "schedule", schedule_type: "daily", local_time: wiz.local_time, timezone: "Africa/Lagos" };
+    if (wiz.schedule_type === "once") return { type: "schedule", schedule_type: "once", local_datetime: wiz.local_datetime, timezone: "Africa/Lagos" };
+    if (wiz.schedule_type === "weekdays") return { type: "schedule", schedule_type: "weekdays", local_time: wiz.local_time, weekdays: wiz.weekdays, timezone: "Africa/Lagos" };
+    return { type: "schedule", schedule_type: "daily", local_time: wiz.local_time, timezone: "Africa/Lagos" };
   }
 
   function buildAction() {
@@ -5287,6 +5289,7 @@ function openNewAutomationWizard(onCreated, initial = {}) {
       <label>Runs
         <select name="schedule_type">
           <option value="daily">Every day, at a time</option>
+          <option value="weekdays">Every week, on selected days, at a time</option>
           <option value="once">Once, at a specific date and time</option>
         </select>
       </label>
@@ -5295,18 +5298,46 @@ function openNewAutomationWizard(onCreated, initial = {}) {
     wrap.appendChild(scheduleLabel);
 
     const timeLabel = el(`<label data-field="daily">Time (24h)<input name="local_time" type="time" value="${escapeHtml(wiz.local_time)}" /></label>`);
+    // Phase 4, PR 6 (Oyi Conversational Runtime Completion Programme) —
+    // the backend automation runtime (automationScheduleService.ts) has
+    // supported a "weekdays" schedule (local_time + an array of weekday
+    // indices) all along; this UI control was the missing piece, added
+    // so "do that every Friday"'s prefilled trigger has somewhere real
+    // to land. Reuses the SAME local_time field as "daily" above.
+    const weekdaysLabel = el(`<label data-field="weekdays">Time (24h)<input name="weekdays_local_time" type="time" value="${escapeHtml(wiz.local_time)}" /></label>`);
+    const weekdaysPicker = el(`<div data-field="weekdays" class="wizard-weekday-picker"></div>`);
+    const WEEKDAY_LABELS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+    WEEKDAY_LABELS.forEach((dayLabel, index) => {
+      const checkboxWrap = el(`<label class="wizard-weekday-option"><input type="checkbox" value="${index}" /> ${dayLabel}</label>`);
+      const checkbox = checkboxWrap.querySelector("input");
+      checkbox.checked = Array.isArray(wiz.weekdays) && wiz.weekdays.includes(index);
+      checkbox.addEventListener("change", () => {
+        const current = new Set(Array.isArray(wiz.weekdays) ? wiz.weekdays : []);
+        if (checkbox.checked) current.add(index); else current.delete(index);
+        wiz.weekdays = Array.from(current).sort();
+      });
+      weekdaysPicker.appendChild(checkboxWrap);
+    });
     const dateTimeLabel = el(`<label data-field="once">Date &amp; time<input name="local_datetime" type="datetime-local" value="${escapeHtml(wiz.local_datetime)}" /></label>`);
-    timeLabel.style.display = wiz.schedule_type === "daily" ? "" : "none";
-    dateTimeLabel.style.display = wiz.schedule_type === "once" ? "" : "none";
+
+    function syncScheduleFieldVisibility() {
+      timeLabel.style.display = wiz.schedule_type === "daily" ? "" : "none";
+      weekdaysLabel.style.display = wiz.schedule_type === "weekdays" ? "" : "none";
+      weekdaysPicker.style.display = wiz.schedule_type === "weekdays" ? "" : "none";
+      dateTimeLabel.style.display = wiz.schedule_type === "once" ? "" : "none";
+    }
+    syncScheduleFieldVisibility();
     wrap.appendChild(timeLabel);
+    wrap.appendChild(weekdaysPicker);
+    wrap.appendChild(weekdaysLabel);
     wrap.appendChild(dateTimeLabel);
 
     scheduleLabel.querySelector("select").addEventListener("change", (e) => {
       wiz.schedule_type = e.target.value;
-      timeLabel.style.display = wiz.schedule_type === "daily" ? "" : "none";
-      dateTimeLabel.style.display = wiz.schedule_type === "once" ? "" : "none";
+      syncScheduleFieldVisibility();
     });
     timeLabel.querySelector("input").addEventListener("input", (e) => { wiz.local_time = e.target.value; });
+    weekdaysLabel.querySelector("input").addEventListener("input", (e) => { wiz.local_time = e.target.value; });
     dateTimeLabel.querySelector("input").addEventListener("input", (e) => { wiz.local_datetime = e.target.value; });
     return wrap;
   }
@@ -8531,9 +8562,18 @@ function renderApprovalSurface(proposedActions) {
       // pre-fills the Name field; staff still walk every wizard step
       // (When/If/Then/Scope/Owner/Review) and nothing is created until
       // they submit Review themselves.
+      // Phase 4, PR 6 — "do that every Friday" also prefills the real
+      // TRIGGER (suggested_schedule: {schedule_type, weekdays, local_time}
+      // — the exact shape wiz's own fields already use, see
+      // openNewAutomationWizard's "weekdays" branch). The action/workflow
+      // fields are deliberately NOT prefilled — automations only ever
+      // create/transition a workflow, and the referenced operation here
+      // is a Task change, which isn't an automatable entity in this
+      // system; staff still choose the real action manually.
       const btn = el(`<button type="button" class="btn btn-ghost btn-sm">Review &amp; Create Automation</button>`);
       btn.addEventListener("click", () => openNewAutomationWizard(() => invalidate("automations"), {
         name: action.parameters?.suggested_name ? String(action.parameters.suggested_name).slice(0, 120) : "",
+        ...(action.parameters?.suggested_schedule ? action.parameters.suggested_schedule : {}),
       }));
       actionsRow.appendChild(btn);
     } else {
