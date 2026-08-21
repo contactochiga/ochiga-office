@@ -279,6 +279,40 @@ async function buildPartnershipsListSnapshot(store) {
   return { items: rows, total: active.length };
 }
 
+// Documents/Content — read-only surfaces (Milestone 2): list/inspect/
+// summarize/compare/status/metadata only, no generation/drafting/
+// publishing/approval capability is added here or anywhere downstream.
+// Both collections live in Office's own store (documents via
+// store.listOfficeDocuments, content via store.listContentItems — the
+// same calls the admin Documents/Content pages already make), same
+// "Office computes, Backend only reads as evidence" pattern as every
+// other section above.
+async function buildDocumentsSnapshot(store) {
+  if (typeof store.listOfficeDocuments !== "function") return null;
+  const documents = await store.listOfficeDocuments();
+  const rows = (Array.isArray(documents) ? documents : []).slice(0, SNAPSHOT_LIST_LIMIT).map((r) => ({
+    id: text(r.id),
+    title: text(r.title) || `Document ${text(r.id)}`,
+    document_type: text(r.document_type) || null,
+    status: text(r.status) || null,
+    owner: text(r.owner) || null,
+  }));
+  return { items: rows, total: Array.isArray(documents) ? documents.length : rows.length };
+}
+
+async function buildContentSnapshot(store) {
+  if (typeof store.listContentItems !== "function") return null;
+  const items = await store.listContentItems({});
+  const rows = (Array.isArray(items) ? items : []).slice(0, SNAPSHOT_LIST_LIMIT).map((r) => ({
+    id: text(r.id),
+    title: text(r.title) || `Content ${text(r.id)}`,
+    workflow_status: text(r.workflow_status) || null,
+    category: text(r.category) || null,
+    author: text(r.author) || null,
+  }));
+  return { items: rows, total: Array.isArray(items) ? items.length : rows.length };
+}
+
 async function buildOperationalSnapshot({ authContext, store, config } = {}) {
   if (!store) return null;
   const snapshot = {
@@ -294,6 +328,8 @@ async function buildOperationalSnapshot({ authContext, store, config } = {}) {
     support: null,
     portfolio: null,
     partnerships: null,
+    documents: null,
+    content: null,
   };
   try {
     if (hasPermission(authContext, "crm.read")) {
@@ -359,6 +395,20 @@ async function buildOperationalSnapshot({ authContext, store, config } = {}) {
     }
   } catch {
     // Leave partnerships null.
+  }
+  try {
+    if (hasPermission(authContext, "documents.generate")) {
+      snapshot.documents = await buildDocumentsSnapshot(store);
+    }
+  } catch {
+    // Leave documents null.
+  }
+  try {
+    if (hasPermission(authContext, "content.write")) {
+      snapshot.content = await buildContentSnapshot(store);
+    }
+  } catch {
+    // Leave content null.
   }
   return snapshot;
 }
