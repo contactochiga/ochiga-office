@@ -112,6 +112,25 @@ async function main() {
   assert.equal(pricing.pricing_status, "requires_staff_input");
   assert.equal(validateCommercialDocumentDraft({ approved_price_ref: "pricebook-1" }).allowed_to_price, true);
 
+  // Phase 4, PR 2 (Oyi Conversational Runtime Completion Programme) —
+  // buildTasksSnapshot()'s aggregate (mirrors leads/opportunities): an
+  // overdue open task must appear with overdue: true and the exact field
+  // names office_tasks.query.read (Ochiga-backend) expects, a
+  // done/cancelled task must never appear in the "open" list.
+  const overdueTask = await createCorporateRecord(store, "tasks", {
+    title: "Follow up on Havana site visit",
+    status: "in_progress",
+    priority: "high",
+    assignee: "Tony",
+    due_at: "2020-01-01T00:00:00Z",
+    business_unit: "development",
+  });
+  await createCorporateRecord(store, "tasks", {
+    title: "Archive old lease",
+    status: "done",
+    business_unit: "development",
+  });
+
   const home = await buildOfficeHomeProjection(store);
   assert.ok(home.summary.open_tasks >= 1);
   assert.ok(home.summary.open_support_cases >= 1);
@@ -147,6 +166,16 @@ async function main() {
   assert.equal(request.staff.email, "staff@example.com");
   assert.equal(request.business_unit, "technology");
   assert.equal(request.support_context.support_case_ref, support.id);
+
+  assert.ok(request.operational_snapshot.tasks, "operational_snapshot.tasks must be computed when the actor has tasks.read");
+  const openTasks = request.operational_snapshot.tasks.open;
+  assert.ok(openTasks.some((t) => t.id === overdueTask.id), "overdue open task must be in the snapshot");
+  assert.ok(!openTasks.some((t) => t.title === "Archive old lease"), "done tasks must never appear in the open list");
+  const snapshotTask = openTasks.find((t) => t.id === overdueTask.id);
+  assert.equal(snapshotTask.owner, "Tony", "owner must come from assignee");
+  assert.equal(snapshotTask.overdue, true, "a past due_at on a non-terminal status must be flagged overdue");
+  assert.equal(snapshotTask.status, "in_progress");
+  assert.equal(snapshotTask.priority, "high");
 
   const response = await callOyiCoreOfficeInternalConversation(
     {
