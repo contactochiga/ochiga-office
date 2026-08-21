@@ -523,14 +523,21 @@
   }
   .oyi-proposal-reason { font-size: 12px; color: var(--text-secondary); margin-bottom: 6px; }
   .oyi-proposal-actions { display: flex; gap: 8px; align-items: center; }
-  .oyi-proposal-diff { display: flex; align-items: center; gap: 8px; font-size: 12px; margin-bottom: 8px; }
+  .oyi-proposal-diff { display: flex; align-items: center; gap: 8px; font-size: 12px; margin-bottom: 6px; }
   .oyi-proposal-from { color: var(--text-tertiary); text-decoration: line-through; }
   .oyi-proposal-to { color: var(--white); font-weight: 600; }
   .oyi-proposal-arrow { color: var(--text-tertiary); }
+  /* Milestone 2 — a revision-accumulated proposal shows one diff row
+     PER FIELD (previously only ever the first, silently hiding any
+     field added by a later revision) with a short label naming which
+     field changed, so "move to Monday" + "assign to Tony" both show. */
+  .oyi-proposal-diff-list { display: flex; flex-direction: column; margin-bottom: 8px; }
+  .oyi-proposal-diff-list .oyi-proposal-diff { margin-bottom: 4px; }
+  .oyi-proposal-diff-field { color: var(--text-tertiary); font-weight: 600; min-width: 52px; }
   /* Phase 4 — batch proposal card lists one diff row per target. */
   .oyi-proposal-batch-list { list-style: none; padding: 0; margin: 0 0 8px; }
   .oyi-proposal-batch-list li { margin-bottom: 4px; }
-  .oyi-proposal-batch-list .oyi-proposal-diff { margin-bottom: 0; }
+  .oyi-proposal-batch-list .oyi-proposal-diff-list { margin-bottom: 0; }
 
   /* Phase 4 — adaptive response blocks (table/record_list, key_value,
      status, warning/limitation). Reuses .badge and .oyi-block-label

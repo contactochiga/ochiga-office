@@ -8597,19 +8597,53 @@ function renderApprovalSurface(proposedActions) {
 // resolve) — deliberately not a form: the exact operation and value
 // were already understood conversationally, this only asks the staff
 // member to approve or reject it.
-// A single proposal's diff row (prev -> next), reused for both the
-// single-record card and each child row of a batch card below.
+// Milestone 2 — readable field label + value formatting for the diff
+// card, shared by every field a revision-accumulated proposal can carry
+// across every write-capable domain (previously only ever showed the
+// FIRST field via Object.entries(...)[0], so "move this to Monday" +
+// "and give it to Tony" displayed only the due-date change, silently
+// hiding the owner change even though both were genuinely proposed —
+// the exact known Milestone 1 UI gap this fixes).
+const PROPOSAL_FIELD_LABEL = {
+  status: "Status",
+  review_status: "Status",
+  assignee: "Owner",
+  assigned_staff: "Owner",
+  due_at: "Due",
+  scheduled_at: "When",
+  priority: "Priority",
+  enabled: "State",
+};
+
+function formatProposalFieldValue(field, value) {
+  if (value === undefined || value === null || value === "") return "—";
+  if (field === "due_at" || field === "scheduled_at") return fmtDateTime(value);
+  if (field === "enabled") return value === true || value === "true" ? "Active" : "Paused";
+  return titleCase(String(value));
+}
+
+// A proposal's full diff (prev -> next per field), reused for both the
+// single-record card and each child row of a batch card below. Renders
+// every field present in EITHER previous_state or proposed_state, not
+// just the first.
 function appendProposalDiffRow(row, proposal) {
-  const prevEntry = proposal.previous_state ? Object.entries(proposal.previous_state)[0] : null;
-  const nextEntry = proposal.proposed_state ? Object.entries(proposal.proposed_state)[0] : null;
-  if (!prevEntry || !nextEntry) return;
-  row.appendChild(el(`
-    <div class="oyi-proposal-diff">
-      <span class="oyi-proposal-from">${escapeHtml(titleCase(String(prevEntry[1] ?? "—")))}</span>
-      <span class="oyi-proposal-arrow">→</span>
-      <span class="oyi-proposal-to">${escapeHtml(titleCase(String(nextEntry[1] ?? "—")))}</span>
-    </div>
-  `));
+  const prevState = proposal.previous_state || {};
+  const nextState = proposal.proposed_state || {};
+  const fields = Array.from(new Set([...Object.keys(prevState), ...Object.keys(nextState)]));
+  if (!fields.length) return;
+  const list = el(`<div class="oyi-proposal-diff-list"></div>`);
+  fields.forEach((field) => {
+    const item = el(`
+      <div class="oyi-proposal-diff">
+        <span class="oyi-proposal-diff-field">${escapeHtml(PROPOSAL_FIELD_LABEL[field] || titleCase(field))}</span>
+        <span class="oyi-proposal-from">${escapeHtml(formatProposalFieldValue(field, prevState[field]))}</span>
+        <span class="oyi-proposal-arrow">→</span>
+        <span class="oyi-proposal-to">${escapeHtml(formatProposalFieldValue(field, nextState[field]))}</span>
+      </div>
+    `);
+    list.appendChild(item);
+  });
+  row.appendChild(list);
 }
 
 function renderActionProposalCard(pendingAction) {
