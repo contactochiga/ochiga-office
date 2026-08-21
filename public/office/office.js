@@ -8454,26 +8454,31 @@ function renderResponseBlock(block) {
       if (!columns.length || !rows.length) return null;
       const frag = el(`<div class="oyi-record-list"></div>`);
       if (block.title) frag.appendChild(el(`<div class="oyi-block-label">${escapeHtml(block.title)}</div>`));
-      const table = el(`<table class="oyi-record-table"></table>`);
-      const thead = el(`<thead><tr>${columns.map((c) => `<th>${escapeHtml(c.label)}</th>`).join("")}</tr></thead>`);
-      table.appendChild(thead);
-      const tbody = el(`<tbody></tbody>`);
-      rows.forEach((row) => {
-        const tr = el(`<tr></tr>`);
-        if (row.id != null) tr.setAttribute("data-id", String(row.id));
-        columns.forEach((col) => {
-          const raw = row[col.key];
-          const cell = el(`<td></td>`);
-          if (col.key === "status" && typeof raw === "string" && raw) {
-            cell.appendChild(el(`<span class="badge">${escapeHtml(titleCase(raw))}</span>`));
-          } else {
-            cell.textContent = raw == null || raw === "" ? "—" : String(raw);
-          }
-          tr.appendChild(cell);
-        });
-        tbody.appendChild(tr);
-      });
-      table.appendChild(tbody);
+      // thead/tbody/tr/td MUST be parsed as part of one complete <table>
+      // string in a single el() call -- setting a <div>'s innerHTML to a
+      // BARE "<thead>...</thead>" (outside a <table> parent) is invalid
+      // per the HTML5 tree-construction algorithm and the browser
+      // silently drops the tag entirely (el() returns null), which then
+      // threw on appendChild(null) and crashed rendering with a
+      // misleading "Could not reach Oyi" error. Confirmed live in
+      // production. Building the whole table atomically avoids this.
+      const headHtml = `<thead><tr>${columns.map((c) => `<th>${escapeHtml(c.label)}</th>`).join("")}</tr></thead>`;
+      const bodyHtml = rows
+        .map((row) => {
+          const dataId = row.id != null ? ` data-id="${escapeHtml(String(row.id))}"` : "";
+          const cellsHtml = columns
+            .map((col) => {
+              const raw = row[col.key];
+              if (col.key === "status" && typeof raw === "string" && raw) {
+                return `<td><span class="badge">${escapeHtml(titleCase(raw))}</span></td>`;
+              }
+              return `<td>${escapeHtml(raw == null || raw === "" ? "—" : String(raw))}</td>`;
+            })
+            .join("");
+          return `<tr${dataId}>${cellsHtml}</tr>`;
+        })
+        .join("");
+      const table = el(`<table class="oyi-record-table">${headHtml}<tbody>${bodyHtml}</tbody></table>`);
       frag.appendChild(table);
       if (block.total_count != null && rows.length < block.total_count) {
         frag.appendChild(el(`<div class="oyi-record-list-more">Showing ${rows.length} of ${block.total_count}${block.truncated ? " — ask to narrow the list" : ""}.</div>`));
