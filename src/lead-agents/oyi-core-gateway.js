@@ -169,9 +169,132 @@ async function buildFinancialSnapshot(config) {
   };
 }
 
+// Oyi Office Conversational Runtime, Milestone 2 — five more list
+// aggregates, same "compute here, forward as evidence, never let
+// Backend touch Office's own store" architecture as tasks/leads/
+// opportunities above. Field selection mirrors FIELD_POLICY in
+// office-operational-workflows.js exactly (that file is the source of
+// truth for what each collection actually stores); "open"/"active"
+// filtering excludes each collection's own terminal statuses from
+// STATUS_TRANSITIONS in the same file, same pattern as
+// OPEN_TASK_STATUS_EXCLUDE above.
+const MEETING_STATUS_EXCLUDE = /cancelled/i;
+const SUPPORT_STATUS_EXCLUDE = /resolved|closed/i;
+const PORTFOLIO_STATUS_EXCLUDE = /completed|cancelled/i;
+const PARTNERSHIP_STATUS_EXCLUDE = /declined|closed/i;
+const WEEKDAY_LABELS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+
+function automationTriggerSummary(trigger) {
+  const t = recordOf(trigger);
+  if (t.schedule_type === "daily") return `Daily at ${text(t.local_time) || "?"}`;
+  if (t.schedule_type === "weekdays") {
+    const days = Array.isArray(t.weekdays) ? t.weekdays.map((d) => WEEKDAY_LABELS[d]).filter(Boolean).join(", ") : "";
+    return `Weekly${days ? ` on ${days}` : ""} at ${text(t.local_time) || "?"}`;
+  }
+  if (t.schedule_type === "once") return `Once at ${text(t.local_datetime) || "?"}`;
+  return "Custom trigger";
+}
+
+// Automations live in Backend's own consumer_automations table (the
+// Shared Automation Runtime, surface="office") — not Office's Supabase
+// project — so this reuses the existing REST bridge
+// (callOyiCoreListAutomations, already used by the admin Automations
+// page) rather than a second, parallel query path. Gated on tasks.read
+// to match server.js's existing permission pairing for the automations
+// routes ("Automations is part of the Tasks domain, not a separate
+// feature area").
+async function buildAutomationsSnapshot(config) {
+  // config.httpRequest is a test-only DI hook (same convention as
+  // fetchBackendFinancialSummary's own (config, options) shape) --
+  // production callers never set it, so this is a no-op there.
+  const result = await callOyiCoreListAutomations(config, {}, { httpRequest: config && config.httpRequest });
+  if (!result.ok) return null;
+  const rows = Array.isArray(result.data && result.data.automations) ? result.data.automations : [];
+  return {
+    items: rows.slice(0, SNAPSHOT_LIST_LIMIT).map((a) => ({
+      id: text(a.id),
+      name: text(a.name) || `Automation ${text(a.id)}`,
+      enabled: Boolean(a.enabled),
+      trigger_summary: automationTriggerSummary(a.trigger),
+      last_run_status: text(a.last_run_status) || null,
+      last_run_at: a.last_run_at || null,
+    })),
+    total: rows.length,
+  };
+}
+
+async function buildMeetingsSnapshot(store) {
+  const meetings = await listCorporateRecords(store, "meetings");
+  const active = (Array.isArray(meetings) ? meetings : []).filter((r) => !MEETING_STATUS_EXCLUDE.test(text(r.status)));
+  const rows = active.slice(0, SNAPSHOT_LIST_LIMIT).map((r) => ({
+    id: text(r.id),
+    title: text(r.title) || `Meeting ${text(r.id)}`,
+    status: text(r.status || "scheduled"),
+    scheduled_at: r.scheduled_at || null,
+    owner: text(r.owner) || null,
+    participants: Array.isArray(r.participants) ? r.participants.map(text).filter(Boolean) : [],
+  }));
+  return { items: rows, total: active.length };
+}
+
+async function buildSupportSnapshot(store) {
+  const cases = await listCorporateRecords(store, "support");
+  const open = (Array.isArray(cases) ? cases : []).filter((r) => !SUPPORT_STATUS_EXCLUDE.test(text(r.status)));
+  const rows = open.slice(0, SNAPSHOT_LIST_LIMIT).map((r) => ({
+    id: text(r.id),
+    title: text(r.title) || `Support case ${text(r.id)}`,
+    status: text(r.status || "open"),
+    priority: text(r.priority) || null,
+    severity: text(r.severity) || null,
+    owner: text(r.assigned_staff || r.owner) || null,
+  }));
+  return { items: rows, total: open.length };
+}
+
+async function buildPortfolioListSnapshot(store) {
+  const items = await listCorporateRecords(store, "portfolio");
+  const active = (Array.isArray(items) ? items : []).filter((r) => !PORTFOLIO_STATUS_EXCLUDE.test(text(r.status)));
+  const rows = active.slice(0, SNAPSHOT_LIST_LIMIT).map((r) => ({
+    id: text(r.id),
+    name: text(r.name || r.relationship_type) || `Portfolio ${text(r.id)}`,
+    status: text(r.status || "unknown"),
+    support_status: text(r.support_status) || null,
+    health_summary: text(r.health_summary) || null,
+    owner: text(r.owner) || null,
+  }));
+  return { items: rows, total: active.length };
+}
+
+async function buildPartnershipsListSnapshot(store) {
+  const items = await listCorporateRecords(store, "partnerships");
+  const active = (Array.isArray(items) ? items : []).filter((r) => !PARTNERSHIP_STATUS_EXCLUDE.test(text(r.status)));
+  const rows = active.slice(0, SNAPSHOT_LIST_LIMIT).map((r) => ({
+    id: text(r.id),
+    name: text(r.name || r.relationship_type) || `Partnership ${text(r.id)}`,
+    status: text(r.status || "new"),
+    review_status: text(r.review_status) || null,
+    relationship_type: text(r.relationship_type) || null,
+    owner: text(r.relationship_manager || r.owner) || null,
+  }));
+  return { items: rows, total: active.length };
+}
+
 async function buildOperationalSnapshot({ authContext, store, config } = {}) {
   if (!store) return null;
-  const snapshot = { generated_at: new Date().toISOString(), leads: null, opportunities: null, tasks: null, reports: null, development: null, financial: null };
+  const snapshot = {
+    generated_at: new Date().toISOString(),
+    leads: null,
+    opportunities: null,
+    tasks: null,
+    reports: null,
+    development: null,
+    financial: null,
+    automations: null,
+    meetings: null,
+    support: null,
+    portfolio: null,
+    partnerships: null,
+  };
   try {
     if (hasPermission(authContext, "crm.read")) {
       if (typeof store.listLeads === "function") snapshot.leads = await buildLeadsSnapshot(store);
@@ -183,9 +306,10 @@ async function buildOperationalSnapshot({ authContext, store, config } = {}) {
   try {
     if (hasPermission(authContext, "tasks.read")) {
       snapshot.tasks = await buildTasksSnapshot(store);
+      snapshot.automations = await buildAutomationsSnapshot(config);
     }
   } catch {
-    // Leave tasks null.
+    // Leave tasks/automations null.
   }
   try {
     if (hasPermission(authContext, "reports.write") && typeof store.listOfficeReports === "function") {
@@ -207,6 +331,34 @@ async function buildOperationalSnapshot({ authContext, store, config } = {}) {
     }
   } catch {
     // Leave financial null.
+  }
+  try {
+    if (hasPermission(authContext, "meetings.read")) {
+      snapshot.meetings = await buildMeetingsSnapshot(store);
+    }
+  } catch {
+    // Leave meetings null.
+  }
+  try {
+    if (hasPermission(authContext, "support.read")) {
+      snapshot.support = await buildSupportSnapshot(store);
+    }
+  } catch {
+    // Leave support null.
+  }
+  try {
+    if (hasPermission(authContext, "portfolio.read")) {
+      snapshot.portfolio = await buildPortfolioListSnapshot(store);
+    }
+  } catch {
+    // Leave portfolio null.
+  }
+  try {
+    if (hasPermission(authContext, "partnerships.read")) {
+      snapshot.partnerships = await buildPartnershipsListSnapshot(store);
+    }
+  } catch {
+    // Leave partnerships null.
   }
   return snapshot;
 }
@@ -518,9 +670,9 @@ function automationsBase(config) {
   return config.officeAutomationsPath || "/office/automations";
 }
 
-async function callOyiCoreListAutomations(config = {}, params = {}) {
+async function callOyiCoreListAutomations(config = {}, params = {}, options = {}) {
   const query = params.status ? `?status=${encodeURIComponent(params.status)}` : "";
-  return callBackendJson(config, "get", `${automationsBase(config)}${query}`, undefined);
+  return callBackendJson(config, "get", `${automationsBase(config)}${query}`, undefined, options);
 }
 async function callOyiCoreGetAutomation(config = {}, id) {
   return callBackendJson(config, "get", `${automationsBase(config)}/${encodeURIComponent(id)}`, undefined);

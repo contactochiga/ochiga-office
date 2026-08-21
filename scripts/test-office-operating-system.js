@@ -203,6 +203,89 @@ async function main() {
   assert.equal(batchRequest.execution_failed, true, "execution_failed must be forwarded to Backend");
   assert.equal(batchRequest.execution_failure_reason, "the request failed");
 
+  // Milestone 2 — five more operational_snapshot list aggregates
+  // (automations/meetings/support/portfolio/partnerships), same
+  // permission-gated pattern as tasks above. Automations is fetched via
+  // the existing callOyiCoreListAutomations REST bridge (Backend-owned
+  // consumer_automations table), stubbed here via httpRequest.
+  const meeting1 = await createCorporateRecord(store, "meetings", {
+    title: "Deployment review with Ada",
+    status: "scheduled",
+    scheduled_at: "2026-08-25T09:00:00.000Z",
+    owner: "Tony",
+    participants: ["Tony", "Ada Okafor"],
+    business_unit: "development",
+  });
+  await createCorporateRecord(store, "meetings", { title: "Old cancelled sync", status: "cancelled", business_unit: "development" });
+
+  const supportCase1 = await createCorporateRecord(store, "support", {
+    title: "Escalation for Havana deployment",
+    status: "open",
+    priority: "high",
+    severity: "critical",
+    assigned_staff: "Adoyi",
+    business_unit: "technology",
+  });
+  await createCorporateRecord(store, "support", { title: "Old resolved case", status: "resolved", business_unit: "technology" });
+
+  const portfolioItem1 = await createCorporateRecord(store, "portfolio", {
+    name: "Greenview Tower B",
+    status: "attention",
+    support_status: "escalated",
+    health_summary: null,
+    owner: "Tony",
+    business_unit: "technology",
+  });
+  await createCorporateRecord(store, "portfolio", { name: "Old completed deployment", status: "completed", business_unit: "technology" });
+
+  const partnership1 = await createCorporateRecord(store, "partnerships", {
+    relationship_type: "technology_integrator",
+    status: "active",
+    review_status: "active",
+    relationship_manager: "Ada Okafor",
+    business_unit: "technology",
+  });
+  await createCorporateRecord(store, "partnerships", { relationship_type: "old_declined", status: "declined", business_unit: "technology" });
+
+  const snapshotRequest = await buildOyiCoreOfficeInternalRequest({
+    authContext: { userId: "staff-1", email: "staff@example.com", role: "ochiga_staff", permissions: staffPermissions },
+    message: "Show me the active automations",
+    body: { office_session_id: "office-session-1" },
+    requestId: "req-office-milestone2-snapshot",
+    store,
+    config: {
+      officeBackendBaseUrl: "https://backend.example",
+      httpRequest: async () => ({
+        status: 200,
+        data: { ok: true, automations: [{ id: "auto-1", name: "Weekly follow-up sweep", enabled: true, trigger: { schedule_type: "weekdays", weekdays: [5], local_time: "09:00" }, last_run_status: "failed", last_run_at: "2026-08-18T09:00:00.000Z" }] },
+      }),
+    },
+  });
+  const snap = snapshotRequest.operational_snapshot;
+  assert.ok(snap.automations, "automations section must be computed when the actor has tasks.read");
+  assert.equal(snap.automations.items[0].id, "auto-1");
+  assert.equal(snap.automations.items[0].trigger_summary, "Weekly on Fri at 09:00");
+  assert.equal(snap.automations.items[0].last_run_status, "failed");
+
+  assert.ok(snap.meetings, "meetings section must be computed when the actor has meetings.read");
+  assert.ok(snap.meetings.items.some((m) => m.id === meeting1.id), "the scheduled meeting must be in the snapshot");
+  assert.ok(!snap.meetings.items.some((m) => m.title === "Old cancelled sync"), "cancelled meetings must never appear");
+  assert.deepEqual(snap.meetings.items.find((m) => m.id === meeting1.id).participants, ["Tony", "Ada Okafor"]);
+
+  assert.ok(snap.support, "support section must be computed when the actor has support.read");
+  assert.ok(snap.support.items.some((s) => s.id === supportCase1.id), "the open support case must be in the snapshot");
+  assert.ok(!snap.support.items.some((s) => s.title === "Old resolved case"), "resolved cases must never appear in the open list");
+  assert.equal(snap.support.items.find((s) => s.id === supportCase1.id).severity, "critical");
+
+  assert.ok(snap.portfolio, "portfolio section must be computed when the actor has portfolio.read");
+  assert.ok(snap.portfolio.items.some((p) => p.id === portfolioItem1.id), "the at-risk portfolio item must be in the snapshot");
+  assert.ok(!snap.portfolio.items.some((p) => p.name === "Old completed deployment"), "completed portfolio items must never appear");
+  assert.equal(snap.portfolio.items.find((p) => p.id === portfolioItem1.id).health_summary, null, "a genuinely absent health_summary must stay null, never fabricated");
+
+  assert.ok(snap.partnerships, "partnerships section must be computed when the actor has partnerships.read");
+  assert.ok(snap.partnerships.items.some((p) => p.id === partnership1.id), "the active partnership must be in the snapshot");
+  assert.ok(!snap.partnerships.items.some((p) => p.relationship_type === "old_declined"), "declined partnerships must never appear");
+
   const noBatchRequest = await buildOyiCoreOfficeInternalRequest({
     authContext: { userId: "staff-1", email: "staff@example.com", role: "ochiga_staff", permissions: staffPermissions },
     message: "hello",
