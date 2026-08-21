@@ -177,6 +177,42 @@ async function main() {
   assert.equal(snapshotTask.status, "in_progress");
   assert.equal(snapshotTask.priority, "high");
 
+  // Regression guard for a real production bug (found in live Milestone 1
+  // verification): task_batch_context/execution_failed/
+  // execution_failure_reason were added to the wire contract and to
+  // Backend's normalizer, but this proxy function never forwarded them
+  // from the incoming Office chat request to the outgoing Backend
+  // request -- so a batch confirm's VERIFY turn always arrived at
+  // Backend with task_batch_context silently missing, and batch
+  // verification reported 0 of N success even though every PATCH had
+  // actually succeeded.
+  const batchRequest = await buildOyiCoreOfficeInternalRequest({
+    authContext: { userId: "staff-1", email: "staff@example.com", role: "ochiga_staff", permissions: staffPermissions },
+    message: "Yes, do it.",
+    body: {
+      office_session_id: "office-session-1",
+      task_batch_context: [{ task_ref: overdueTask.id, title: overdueTask.title, status: "open", due_at: "2026-08-24T12:00:00.000Z" }],
+      execution_failed: true,
+      execution_failure_reason: "the request failed",
+    },
+    requestId: "req-office-2",
+    store,
+  });
+  assert.equal(batchRequest.task_batch_context.length, 1, "task_batch_context must be forwarded to Backend, not silently dropped");
+  assert.equal(batchRequest.task_batch_context[0].task_ref, overdueTask.id);
+  assert.equal(batchRequest.execution_failed, true, "execution_failed must be forwarded to Backend");
+  assert.equal(batchRequest.execution_failure_reason, "the request failed");
+
+  const noBatchRequest = await buildOyiCoreOfficeInternalRequest({
+    authContext: { userId: "staff-1", email: "staff@example.com", role: "ochiga_staff", permissions: staffPermissions },
+    message: "hello",
+    body: { office_session_id: "office-session-1" },
+    requestId: "req-office-3",
+    store,
+  });
+  assert.equal(noBatchRequest.task_batch_context, null, "an ordinary turn must not fabricate a batch context");
+  assert.equal(noBatchRequest.execution_failed, false);
+
   const response = await callOyiCoreOfficeInternalConversation(
     {
       officeBackendBaseUrl: "https://backend.example",
