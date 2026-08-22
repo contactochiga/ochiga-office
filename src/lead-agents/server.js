@@ -107,6 +107,7 @@ const {
   methodNotAllowed,
   notFound,
   readJsonBody,
+  readJsonBodyWithRaw,
   serveFile,
   serveBuffer,
   setCorsHeaders,
@@ -2002,7 +2003,8 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
         pathname === "/api/lead-agents/admin/communications/whatsapp/send" ||
         pathname === "/api/lead-agents/admin/communications/whatsapp/templates" ||
         pathname === "/api/lead-agents/admin/recipients/resolve" ||
-        pathname === "/api/lead-agents/admin/communications/activity";
+        pathname === "/api/lead-agents/admin/communications/activity" ||
+        pathname === "/api/lead-agents/admin/communications/create-task";
 
       if (
         pathname !== "/healthz" &&
@@ -2077,7 +2079,17 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           return;
         }
         if (req.method === "POST") {
-          const body = await readJsonBody(req);
+          const { raw, json: body } = await readJsonBodyWithRaw(req);
+          const signatureCheck = whatsappAdapter.verifySignature(raw, req.headers["x-hub-signature-256"]);
+          if (!signatureCheck.ok) {
+            log("warn", "whatsapp_webhook.signature_rejected", {
+              request_id: ctx.requestId,
+              reason: signatureCheck.reason,
+              has_signature_header: Boolean(req.headers["x-hub-signature-256"]),
+            });
+            json(res, 401, { error: "invalid_signature" }, { "x-request-id": ctx.requestId });
+            return;
+          }
           const events = whatsappAdapter.extractEvents(body);
           log("info", "whatsapp_webhook.received", { request_id: ctx.requestId, event_count: events.length });
           const results = [];
@@ -2210,6 +2222,40 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
             json(res, 200, { ok: true, activity_id: record?.id || null }, { "x-request-id": ctx.requestId });
           } catch (error) {
             json(res, 200, { ok: false, error: error?.message || "activity_create_failed" }, { "x-request-id": ctx.requestId });
+          }
+          return;
+        }
+
+        // Live Reply Loop programme -- lets a goal's reply_branches
+        // ("if he says he's interested, create a task for me to call
+        // him") create a REAL crm_tasks row through the existing Task
+        // system, not a second one. Mirrors the activity-creation bridge
+        // immediately above exactly (same auth, same createCorporateRecord
+        // call, same actor-attribution convention).
+        if (pathname === "/api/lead-agents/admin/communications/create-task") {
+          const body = await readJsonBody(req);
+          if (!body.title) {
+            json(res, 200, { ok: false, error: "missing_title" }, { "x-request-id": ctx.requestId });
+            return;
+          }
+          try {
+            const record = await createCorporateRecord(
+              store,
+              "tasks",
+              {
+                lead_id: body.lead_id || null,
+                opportunity_id: body.opportunity_id || null,
+                title: body.title,
+                description: body.description || "",
+                priority: body.priority || "normal",
+                assignee: body.assignee || "oyi",
+                due_at: body.due_at || null,
+              },
+              { actorEmail: body.actor || "oyi" }
+            );
+            json(res, 200, { ok: true, task_id: record?.id || null }, { "x-request-id": ctx.requestId });
+          } catch (error) {
+            json(res, 200, { ok: false, error: error?.message || "task_create_failed" }, { "x-request-id": ctx.requestId });
           }
           return;
         }

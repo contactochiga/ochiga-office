@@ -1,4 +1,5 @@
 const axios = require("axios");
+const crypto = require("crypto");
 const { normalizePhone } = require("./normalize-lead");
 
 class WhatsAppCloudAdapter {
@@ -31,6 +32,32 @@ class WhatsAppCloudAdapter {
       return challenge;
     }
     return null;
+  }
+
+  // Real gap found on audit: META_APP_SECRET was already read into config
+  // (and reported as "configured" by the readiness endpoint) but never
+  // actually used to verify anything -- every POST to /webhooks/whatsapp
+  // was processed as genuine Meta traffic purely because it arrived on
+  // the right URL. Verifies the X-Hub-Signature-256 header (HMAC-SHA256
+  // of the RAW request body, keyed by the Meta App Secret) using a
+  // constant-time comparison. Must be called with the raw body bytes
+  // BEFORE JSON.parse -- Meta signs the exact bytes it sent, not a
+  // reserialized object.
+  verifySignature(rawBody, signatureHeader) {
+    if (!this.config.metaAppSecret) return { ok: false, reason: "app_secret_not_configured" };
+    const header = String(signatureHeader || "");
+    const match = header.match(/^sha256=([0-9a-f]{64})$/i);
+    if (!match) return { ok: false, reason: "missing_or_malformed_signature" };
+    const expected = crypto
+      .createHmac("sha256", this.config.metaAppSecret)
+      .update(rawBody, "utf8")
+      .digest("hex");
+    const provided = Buffer.from(match[1].toLowerCase(), "hex");
+    const expectedBuf = Buffer.from(expected, "hex");
+    if (provided.length !== expectedBuf.length || !crypto.timingSafeEqual(provided, expectedBuf)) {
+      return { ok: false, reason: "signature_mismatch" };
+    }
+    return { ok: true, reason: null };
   }
 
   extractEvents(body) {
