@@ -2191,7 +2191,8 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
         const body = await readJsonBody(req);
         const to = String(body.to || "").trim();
         const text = String(body.body || "").trim();
-        if (!to || !text) {
+        const templateName = String(body.template_name || "").trim();
+        if (!to || (!text && !templateName)) {
           json(res, 400, { error: "missing_to_or_body" }, { "x-request-id": ctx.requestId });
           return;
         }
@@ -2205,11 +2206,18 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           return;
         }
         try {
-          const result = await whatsappAdapter.sendTextMessage({
-            to,
-            body: text,
-            contextMessageId: body.context_message_id || undefined,
-          });
+          const result = templateName
+            ? await whatsappAdapter.sendTemplateMessage({
+                to,
+                templateName,
+                languageCode: body.template_language || undefined,
+                components: body.template_components || undefined,
+              })
+            : await whatsappAdapter.sendTextMessage({
+                to,
+                body: text,
+                contextMessageId: body.context_message_id || undefined,
+              });
           await appendAuditRecord({
             store,
             authContext: null,
