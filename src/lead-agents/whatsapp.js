@@ -43,6 +43,7 @@ class WhatsAppCloudAdapter {
             kind: "message",
             from: normalizePhone(message.from),
             message_id: message.id,
+            message_type: message.type || "unknown",
             timestamp: message.timestamp,
             text:
               message.text?.body ||

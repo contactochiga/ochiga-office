@@ -1538,6 +1538,39 @@ async function resolveLeadForChannel(store, phone, source) {
   });
 }
 
+// Best-effort forward to Backend's Communication Runtime canonical event
+// log (/office/communications/webhook-event) -- same Office->Backend
+// direction/credential every other officeExport.ts call already uses.
+// Returns a coarse outcome for logging; NEVER throws (a forward failure
+// must not break WhatsApp webhook processing itself).
+async function forwardCommunicationWebhookEvent(config, payload, requestId) {
+  if (!config.officeBackendBaseUrl || !config.officeBackendApiKey) {
+    return { forwarded: false, reason: "backend_bridge_not_configured" };
+  }
+  try {
+    const response = await axios.post(
+      `${config.officeBackendBaseUrl.replace(/\/$/, "")}/office/communications/webhook-event`,
+      payload,
+      { headers: { "x-api-key": config.officeBackendApiKey }, timeout: 8000 }
+    );
+    log("info", "whatsapp_webhook.backend_forward_result", {
+      request_id: requestId,
+      provider_event_type: payload.provider_event_type,
+      status_code: response.status,
+      matched: Boolean(response.data?.matched),
+      ok: Boolean(response.data?.ok),
+    });
+    return { forwarded: true, ok: Boolean(response.data?.ok) };
+  } catch (error) {
+    log("error", "whatsapp_webhook.backend_forward_failed", {
+      request_id: requestId,
+      provider_event_type: payload.provider_event_type,
+      error: error?.message || String(error),
+    });
+    return { forwarded: false, reason: "request_failed" };
+  }
+}
+
 async function processWhatsAppEvent({ event, store, adapter, config, requestId }) {
   if (event.kind === "status") {
     await store.appendInboundEvent({
@@ -1547,18 +1580,12 @@ async function processWhatsAppEvent({ event, store, adapter, config, requestId }
       external_event_id: event.message_id,
       payload: event.raw,
     });
-    // Forward to Backend's Communication Runtime canonical event log
-    // (Phase 7/9) -- same Office->Backend direction/credential every
-    // other officeExport.ts route already uses. Best-effort: a forward
-    // failure must never break WhatsApp webhook processing itself.
-    if (config.officeBackendBaseUrl && config.officeBackendApiKey && event.message_id) {
-      axios
-        .post(
-          `${config.officeBackendBaseUrl.replace(/\/$/, "")}/office/communications/webhook-event`,
-          { channel: "whatsapp", provider_event_type: "status", provider_message_id: event.message_id, status: event.status, occurred_at: new Date(Number(event.timestamp || 0) * 1000 || Date.now()).toISOString() },
-          { headers: { "x-api-key": config.officeBackendApiKey }, timeout: 8000 }
-        )
-        .catch(() => {});
+    if (event.message_id) {
+      await forwardCommunicationWebhookEvent(
+        config,
+        { channel: "whatsapp", provider_event_type: "status", provider_message_id: event.message_id, status: event.status, occurred_at: new Date(Number(event.timestamp || 0) * 1000 || Date.now()).toISOString() },
+        requestId
+      );
     }
     return {
       kind: "status",
@@ -1568,6 +1595,7 @@ async function processWhatsAppEvent({ event, store, adapter, config, requestId }
   }
 
   const lead = await resolveLeadForChannel(store, event.from, "whatsapp");
+  log("info", "whatsapp_webhook.thread_resolved", { request_id: requestId, lead_id: lead.id });
   await store.updateLead(lead.id, {
     whatsapp_phone: event.from,
     primary_channel: "whatsapp",
@@ -1581,6 +1609,24 @@ async function processWhatsAppEvent({ event, store, adapter, config, requestId }
     external_event_id: event.message_id,
     payload: event.raw,
   });
+  // Forward the inbound message itself into the Communication Runtime's
+  // canonical thread (Phase 5) -- correlated by phone number so it lands
+  // in the SAME thread as any prior outbound send to this person.
+  if (event.message_id) {
+    await forwardCommunicationWebhookEvent(
+      config,
+      {
+        channel: "whatsapp",
+        provider_event_type: "message",
+        provider_message_id: event.message_id,
+        from: event.from,
+        text: event.text || "",
+        lead_id: lead.id,
+        occurred_at: new Date(Number(event.timestamp || 0) * 1000 || Date.now()).toISOString(),
+      },
+      requestId
+    );
+  }
 
   const channelState = await store.upsertLeadChannelState(lead.id, "whatsapp", {
     customer_service_window_expires_at: customerServiceWindowExpiry(event.timestamp),
@@ -1995,11 +2041,14 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
       if (pathname === "/webhooks/whatsapp") {
         if (req.method === "GET") {
           const url = new URL(req.url, "http://localhost");
+          const mode = url.searchParams.get("hub.mode");
           const challenge = whatsappAdapter.verifyWebhook(
-            url.searchParams.get("hub.mode"),
+            mode,
             url.searchParams.get("hub.verify_token"),
             url.searchParams.get("hub.challenge")
           );
+          // Diagnostic only -- never the token/challenge values themselves.
+          log("info", "whatsapp_webhook.verify_attempt", { request_id: ctx.requestId, mode, verified: Boolean(challenge) });
           if (!challenge) {
             json(res, 403, { error: "forbidden" });
             return;
@@ -2011,17 +2060,46 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
         if (req.method === "POST") {
           const body = await readJsonBody(req);
           const events = whatsappAdapter.extractEvents(body);
+          log("info", "whatsapp_webhook.received", { request_id: ctx.requestId, event_count: events.length });
           const results = [];
           for (const event of events) {
-            results.push(
-              await processWhatsAppEvent({
+            log("info", "whatsapp_webhook.event", {
+              request_id: ctx.requestId,
+              kind: event.kind,
+              message_type: event.message_type || null,
+              status: event.status || null,
+              message_id: event.message_id || null,
+              phone_number_id: event.metadata?.phone_number_id || null,
+              waba_display_number: event.metadata?.display_phone_number || null,
+              sender_present: Boolean(event.from),
+              timestamp: event.timestamp || null,
+            });
+            let outcome;
+            try {
+              outcome = await processWhatsAppEvent({
                 event,
                 store,
                 adapter: whatsappAdapter,
                 config,
                 requestId: ctx.requestId,
-              })
-            );
+              });
+              log("info", "whatsapp_webhook.event_processed", {
+                request_id: ctx.requestId,
+                kind: event.kind,
+                message_id: event.message_id || null,
+                lead_id: outcome?.lead_id || null,
+                paused: Boolean(outcome?.paused),
+              });
+            } catch (processError) {
+              outcome = { kind: event.kind, error: true };
+              log("error", "whatsapp_webhook.event_failed", {
+                request_id: ctx.requestId,
+                kind: event.kind,
+                message_id: event.message_id || null,
+                error: processError?.message || String(processError),
+              });
+            }
+            results.push(outcome);
           }
           json(res, 200, { ok: true, results }, { "x-request-id": ctx.requestId });
           return;
