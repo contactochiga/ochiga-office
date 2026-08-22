@@ -1911,6 +1911,16 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
       // itself (validated inside the route handler) is what gates
       // access here, not a staff session.
       const isPublicDocumentSharePath = /^\/api\/lead-agents\/documents\/shared\/[^/]+\/[^/]+$/.test(pathname);
+      // Backend->Office Communication Runtime bridge (Oyi Communication
+      // Runtime's WhatsAppAdapter calling out to reuse the existing
+      // WhatsAppCloudAdapter here, since credentials/webhook live only
+      // in Office). No Office staff session exists on this call path --
+      // authenticated instead by the SAME shared secret
+      // (OFFICE_SYNC_API_KEY/OFFICE_EXPORT_API_KEY) Office already sends
+      // to Backend today, checked inline in the route handler below via
+      // requireBackendBridgeKey, exactly like /webhooks/whatsapp bypasses
+      // the generic session/api-key gate for its own dedicated check.
+      const isBackendBridgePath = pathname === "/api/lead-agents/admin/communications/whatsapp/send";
 
       if (
         pathname !== "/healthz" &&
@@ -1921,7 +1931,8 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
         !isPublicOfficeShellPath &&
         !isPublicAdminSessionPath &&
         !isPublicWhatsappPath &&
-        !isPublicDocumentSharePath
+        !isPublicDocumentSharePath &&
+        !isBackendBridgePath
       ) {
         authContext = tryEdgeAuth(req, config) || enforceAuth(req, config);
         authContext = await enrichAuthContext(authContext, store);
@@ -1999,6 +2010,94 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           return;
         }
         methodNotAllowed(res, "GET,POST");
+        return;
+      }
+
+      if (isBackendBridgePath) {
+        if (req.method !== "POST") {
+          methodNotAllowed(res, "POST");
+          return;
+        }
+        const expectedKey = config.officeBackendApiKey;
+        const providedKey = String(
+          req.headers["x-api-key"] || req.headers["x-office-api-key"] || ""
+        ).trim();
+        if (!expectedKey || !providedKey || !secureCompare(providedKey, expectedKey)) {
+          json(res, 401, { error: "unauthorized" }, { "x-request-id": ctx.requestId });
+          return;
+        }
+        const body = await readJsonBody(req);
+        const to = String(body.to || "").trim();
+        const text = String(body.body || "").trim();
+        if (!to || !text) {
+          json(res, 400, { error: "missing_to_or_body" }, { "x-request-id": ctx.requestId });
+          return;
+        }
+        if (!whatsappAdapter.isConfigured()) {
+          json(
+            res,
+            200,
+            { ok: false, delivered: false, failure_reason: "not_configured" },
+            { "x-request-id": ctx.requestId }
+          );
+          return;
+        }
+        try {
+          const result = await whatsappAdapter.sendTextMessage({
+            to,
+            body: text,
+            contextMessageId: body.context_message_id || undefined,
+          });
+          await appendAuditRecord({
+            store,
+            authContext: null,
+            action: result.delivered ? "communication.whatsapp.sent" : "communication.whatsapp.send_failed",
+            resourceType: "communication",
+            resourceId: body.communication_id || "",
+            metadata: {
+              to,
+              external_message_id: result.external_message_id || null,
+              response_code: result.response_code || null,
+              source: "communication_runtime_bridge",
+            },
+            req,
+            status: result.delivered ? "success" : "failure",
+          });
+          json(
+            res,
+            200,
+            {
+              ok: Boolean(result.delivered),
+              delivered: Boolean(result.delivered),
+              external_message_id: result.external_message_id || null,
+              response_code: result.response_code || null,
+            },
+            { "x-request-id": ctx.requestId }
+          );
+        } catch (error) {
+          const statusCode = error?.response?.status || null;
+          await appendAuditRecord({
+            store,
+            authContext: null,
+            action: "communication.whatsapp.send_failed",
+            resourceType: "communication",
+            resourceId: body.communication_id || "",
+            metadata: { to, provider_status: statusCode, source: "communication_runtime_bridge" },
+            req,
+            status: "failure",
+          });
+          json(
+            res,
+            200,
+            {
+              ok: false,
+              delivered: false,
+              failure_reason: statusCode === 401 || statusCode === 403 ? "authentication_failed" : "provider_unavailable",
+              failure_detail: String(error?.response?.data?.error?.message || error?.message || error),
+            },
+            { "x-request-id": ctx.requestId }
+          );
+        }
         return;
       }
 

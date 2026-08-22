@@ -28,6 +28,8 @@ const AUDIT_EVENT_NAMES = Object.freeze([
   "ai.command.confirmed",
   "ai.command.cancelled",
   "ai.action.failed",
+  "communication.whatsapp.sent",
+  "communication.whatsapp.send_failed",
 ]);
 
 const LEGACY_ACTION_NAMES = Object.freeze({
