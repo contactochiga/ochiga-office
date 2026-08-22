@@ -461,6 +461,7 @@ create table if not exists admin_users (
   -- free-text since positions are organizational, not an enum the
   -- backend needs to reason about.
   office_position text,
+  phone text,
   passport_photo_url text,
   qr_credential text,
   permission_scopes text[] not null default '{}'::text[],
@@ -476,6 +477,7 @@ alter table admin_users add column if not exists passport_photo_url text;
 alter table admin_users add column if not exists qr_credential text;
 alter table admin_users add column if not exists permission_scopes text[] not null default '{}'::text[];
 alter table admin_users add column if not exists office_position text;
+alter table admin_users add column if not exists phone text;
 
 drop trigger if exists admin_users_set_updated_at on admin_users;
 create trigger admin_users_set_updated_at
@@ -485,10 +487,12 @@ execute function set_updated_at();
 
 create table if not exists admin_invites (
   id uuid primary key default gen_random_uuid(),
+  admin_user_id uuid references admin_users(id) on delete cascade,
   email text not null,
   role text not null default 'viewer',
   display_name text,
   office_position text,
+  phone text,
   token_hash text not null unique,
   status text not null default 'pending',
   invited_by text,
@@ -499,6 +503,8 @@ create table if not exists admin_invites (
 );
 
 alter table admin_invites add column if not exists office_position text;
+alter table admin_invites add column if not exists admin_user_id uuid references admin_users(id) on delete cascade;
+alter table admin_invites add column if not exists phone text;
 
 create index if not exists admin_invites_email_created_at_idx
 on admin_invites (email, created_at desc);

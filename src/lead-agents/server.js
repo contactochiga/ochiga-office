@@ -179,6 +179,16 @@ function sanitizeAdminUser(user) {
   return safe;
 }
 
+function requireKnownRole(role) {
+  const normalized = String(role || "viewer");
+  if (!Object.prototype.hasOwnProperty.call(ROLE_PERMISSIONS, normalized)) {
+    const error = new Error("invalid_role");
+    error.statusCode = 400;
+    throw error;
+  }
+  return normalized;
+}
+
 // Who should be told about a create/update on a given collection's
 // record — empty array means "no single owner, broadcast instead"
 // rather than "notify nobody". Kept in one place so trigger coverage
@@ -1012,12 +1022,31 @@ async function geocodeOfficeEstates({ config, store, limit = 50, force = false, 
   };
 }
 
-function absoluteUrl(req, pathname, token) {
-  const proto = req.headers["x-forwarded-proto"] || "https";
-  const host = req.headers["x-forwarded-host"] || req.headers.host || "localhost";
-  const base = `${proto}://${host}${pathname}`;
-  if (!token) return base;
-  return `${base}${base.includes("?") ? "&" : "?"}token=${encodeURIComponent(token)}`;
+function absoluteUrl(req, pathname, token, config = {}) {
+  const requestProto = String(req.headers["x-forwarded-proto"] || "http").split(",")[0].trim();
+  const requestHost = String(req.headers["x-forwarded-host"] || req.headers.host || "localhost").split(",")[0].trim();
+  const configuredOrigin = String(config.officeAppUrl || "").trim();
+  if (config.environment === "production" && !configuredOrigin) {
+    const error = new Error("OFFICE_APP_URL is required for production identity links");
+    error.statusCode = 503;
+    throw error;
+  }
+  let origin;
+  try {
+    origin = new URL(configuredOrigin || `${requestProto}://${requestHost}`);
+  } catch {
+    const error = new Error("OFFICE_APP_URL must be an absolute http(s) URL");
+    error.statusCode = 503;
+    throw error;
+  }
+  if (!["http:", "https:"].includes(origin.protocol) || origin.username || origin.password || origin.pathname !== "/") {
+    const error = new Error("OFFICE_APP_URL must be an origin without credentials or a path");
+    error.statusCode = 503;
+    throw error;
+  }
+  const url = new URL(pathname, origin.origin);
+  if (token) url.searchParams.set("token", token);
+  return url.toString();
 }
 
 function extractTextFromResponse(response) {
@@ -1983,7 +2012,12 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
       const isPublicAdminSessionPath =
         pathname === "/api/lead-agents/admin/session/login" ||
         pathname === "/api/lead-agents/admin/session/logout" ||
-        pathname === "/api/lead-agents/admin/session/me";
+        pathname === "/api/lead-agents/admin/session/me" ||
+        // These endpoints authenticate with a one-time, hashed token. They
+        // must remain reachable before an invited/recovering user has a
+        // session; each handler performs the token and expiry validation.
+        pathname === "/api/lead-agents/admin/session/invite/accept" ||
+        pathname === "/api/lead-agents/admin/session/reset/confirm";
       const isPublicWhatsappPath = pathname === "/webhooks/whatsapp";
       // A document share link is meant to be opened by an external
       // recipient (a lead/client with no Office login) — the token
@@ -2601,12 +2635,19 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           json(res, 400, { error: "invalid_or_expired_invite" });
           return;
         }
-        const user = await store.ensureAdminUser({
-          email: invite.email,
+        const existingUser = invite.admin_user_id
+          ? await store.getAdminUserById(invite.admin_user_id)
+          : await store.getAdminUserByEmail(invite.email);
+        if (!existingUser || normalizeEmail(existingUser.email) !== normalizeEmail(invite.email) || existingUser.status !== "invited") {
+          json(res, 409, { error: "staff_linkage_invalid", message: "This invitation is no longer linked to a pending staff account." });
+          return;
+        }
+        const user = await store.updateAdminUser(existingUser.id, {
           password_hash: hashPassword(body.password),
           role: invite.role || "viewer",
           display_name: body.display_name || invite.display_name || invite.email,
           office_position: invite.office_position || "",
+          phone: invite.phone || existingUser.phone || "",
           status: "active",
           password_changed_at: new Date().toISOString(),
         });
@@ -6117,9 +6158,10 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           const user = await store.ensureAdminUser({
             email: normalizeEmail(body.email),
             password_hash: hashPassword(body.password),
-            role: body.role || "viewer",
+            role: requireKnownRole(body.role || "viewer"),
             display_name: body.display_name || body.email,
             office_position: body.office_position || "",
+            phone: body.phone || "",
             status: body.status || "active",
             passport_photo_url: body.passport_photo_url || "",
             qr_credential: body.qr_credential || "",
@@ -6176,17 +6218,49 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           return;
         }
         const rawToken = generateOpaqueToken();
+        const normalizedEmail = normalizeEmail(body.email);
+        const invitedRole = requireKnownRole(body.role || "viewer");
+        const existingUser = await store.getAdminUserByEmail(normalizedEmail);
+        if (existingUser && existingUser.status !== "invited") {
+          json(res, 409, { error: "staff_already_exists", message: "An Office account already exists for this email." });
+          return;
+        }
+        const pendingInvites = (await store.listAdminInvites()).filter((item) =>
+          normalizeEmail(item.email) === normalizedEmail && item.status === "pending"
+        );
+        for (const pending of pendingInvites) {
+          await store.updateAdminInvite(pending.id, { status: "superseded" });
+        }
+        const staffUser = existingUser || await store.ensureAdminUser({
+          email: normalizedEmail,
+          password_hash: hashPassword(generateOpaqueToken()),
+          role: invitedRole,
+          display_name: body.display_name || normalizedEmail,
+          office_position: body.office_position || "",
+          phone: body.phone || "",
+          status: "invited",
+        });
+        if (existingUser) {
+          await store.updateAdminUser(existingUser.id, {
+            role: invitedRole,
+            display_name: body.display_name || existingUser.display_name,
+            office_position: body.office_position || existingUser.office_position,
+            phone: body.phone || existingUser.phone || "",
+          });
+        }
         const invite = await store.createAdminInvite({
-          email: body.email,
-          role: body.role || "viewer",
+          email: normalizedEmail,
+          admin_user_id: staffUser.id,
+          role: invitedRole,
           display_name: body.display_name || "",
           office_position: body.office_position || "",
+          phone: body.phone || "",
           token_hash: hashOpaqueToken(rawToken),
           status: "pending",
           invited_by: authContext?.email || "",
           expires_at: new Date(Date.now() + (Number(body.expires_in_hours || 72) * 60 * 60 * 1000)).toISOString(),
         });
-        const inviteUrl = absoluteUrl(req, "/dashboard?mode=invite", rawToken);
+        const inviteUrl = absoluteUrl(req, "/dashboard?mode=invite", rawToken, config);
         const inviteMessage = staffInviteEmail({
           displayName: invite.display_name || invite.email,
           inviteUrl,
@@ -6216,8 +6290,14 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           res,
           201,
           {
-            invite,
-            invite_token: rawToken,
+            invite: {
+              id: invite.id,
+              admin_user_id: invite.admin_user_id,
+              email: invite.email,
+              role: invite.role,
+              status: invite.status,
+              expires_at: invite.expires_at,
+            },
             invite_url: inviteUrl,
             email_delivery: emailDelivery,
           },
@@ -6238,7 +6318,8 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
         const patch = {};
         if (body.display_name !== undefined) patch.display_name = body.display_name;
         if (body.office_position !== undefined) patch.office_position = body.office_position;
-        if (body.role !== undefined) patch.role = body.role;
+        if (body.phone !== undefined) patch.phone = body.phone;
+        if (body.role !== undefined) patch.role = requireKnownRole(body.role);
         if (body.status !== undefined) patch.status = body.status;
         if (body.passport_photo_url !== undefined) patch.passport_photo_url = body.passport_photo_url;
         if (body.qr_credential !== undefined) patch.qr_credential = body.qr_credential;
@@ -6339,7 +6420,7 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           requested_by: authContext?.email || "",
           expires_at: new Date(Date.now() + (Number(body?.expires_in_hours || 24) * 60 * 60 * 1000)).toISOString(),
         });
-        const resetUrl = absoluteUrl(req, "/dashboard?mode=reset", rawToken);
+        const resetUrl = absoluteUrl(req, "/dashboard?mode=reset", rawToken, config);
         const resetMessage = passwordResetEmail({
           displayName: user.display_name || user.email,
           resetUrl,
