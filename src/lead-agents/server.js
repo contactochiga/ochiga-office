@@ -83,6 +83,7 @@ const {
   validateRelatedObject,
 } = require("./office-operational-workflows");
 const { WhatsAppCloudAdapter } = require("./whatsapp");
+const { resolveRecipient, resolveRecipientByEntity } = require("./recipient-resolution");
 const { buildCalendarLinks, parsePreferredSchedule } = require("./scheduling");
 const { buildProposal, inferCommercialFacts } = require("./commercial");
 const { PIPELINE_STAGES, qualifyLead } = require("./commercial-ops");
@@ -1920,7 +1921,9 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
       // to Backend today, checked inline in the route handler below via
       // requireBackendBridgeKey, exactly like /webhooks/whatsapp bypasses
       // the generic session/api-key gate for its own dedicated check.
-      const isBackendBridgePath = pathname === "/api/lead-agents/admin/communications/whatsapp/send";
+      const isBackendBridgePath =
+        pathname === "/api/lead-agents/admin/communications/whatsapp/send" ||
+        pathname === "/api/lead-agents/admin/recipients/resolve";
 
       if (
         pathname !== "/healthz" &&
@@ -2026,6 +2029,23 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           json(res, 401, { error: "unauthorized" }, { "x-request-id": ctx.requestId });
           return;
         }
+
+        if (pathname === "/api/lead-agents/admin/recipients/resolve") {
+          const body = await readJsonBody(req);
+          try {
+            const result = body.entity_type && body.entity_id
+              ? await (async () => {
+                  const candidate = await resolveRecipientByEntity(store, { entityType: body.entity_type, entityId: body.entity_id });
+                  return candidate ? { status: "resolved", candidates: [candidate] } : { status: "not_found", candidates: [] };
+                })()
+              : await resolveRecipient(store, { query: body.query, queryType: body.query_type });
+            json(res, 200, { ok: true, ...result }, { "x-request-id": ctx.requestId });
+          } catch (error) {
+            json(res, 200, { ok: false, status: "not_found", candidates: [], error: error?.message || "resolution_failed" }, { "x-request-id": ctx.requestId });
+          }
+          return;
+        }
+
         const body = await readJsonBody(req);
         const to = String(body.to || "").trim();
         const text = String(body.body || "").trim();
