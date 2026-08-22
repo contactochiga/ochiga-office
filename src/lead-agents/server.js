@@ -1923,7 +1923,8 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
       // the generic session/api-key gate for its own dedicated check.
       const isBackendBridgePath =
         pathname === "/api/lead-agents/admin/communications/whatsapp/send" ||
-        pathname === "/api/lead-agents/admin/recipients/resolve";
+        pathname === "/api/lead-agents/admin/recipients/resolve" ||
+        pathname === "/api/lead-agents/admin/communications/activity";
 
       if (
         pathname !== "/healthz" &&
@@ -2042,6 +2043,41 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
             json(res, 200, { ok: true, ...result }, { "x-request-id": ctx.requestId });
           } catch (error) {
             json(res, 200, { ok: false, status: "not_found", candidates: [], error: error?.message || "resolution_failed" }, { "x-request-id": ctx.requestId });
+          }
+          return;
+        }
+
+        // Communication outcomes -> CRM activity (Phase 13 of the
+        // Communication Runtime programme). Purely additive: appends a
+        // crm_activities row, never mutates lead/contact/opportunity
+        // stage or status -- business state changes stay governed and
+        // evidence-based elsewhere, not inferred from a delivery event.
+        if (pathname === "/api/lead-agents/admin/communications/activity") {
+          const body = await readJsonBody(req);
+          if (!body.lead_id && !body.contact_id && !body.organization_id) {
+            json(res, 200, { ok: false, error: "no_crm_linkage" }, { "x-request-id": ctx.requestId });
+            return;
+          }
+          try {
+            const record = await createCorporateRecord(
+              store,
+              "activities",
+              {
+                lead_id: body.lead_id || null,
+                contact_id: body.contact_id || null,
+                organization_id: body.organization_id || null,
+                activity_type: body.activity_type || "communication",
+                title: body.title || "Communication",
+                body: body.body || "",
+                source: "communication_runtime",
+                actor: body.actor || "oyi",
+                occurred_at: body.occurred_at || new Date().toISOString(),
+              },
+              { actorEmail: body.actor || "oyi" }
+            );
+            json(res, 200, { ok: true, activity_id: record?.id || null }, { "x-request-id": ctx.requestId });
+          } catch (error) {
+            json(res, 200, { ok: false, error: error?.message || "activity_create_failed" }, { "x-request-id": ctx.requestId });
           }
           return;
         }
