@@ -1547,6 +1547,19 @@ async function processWhatsAppEvent({ event, store, adapter, config, requestId }
       external_event_id: event.message_id,
       payload: event.raw,
     });
+    // Forward to Backend's Communication Runtime canonical event log
+    // (Phase 7/9) -- same Office->Backend direction/credential every
+    // other officeExport.ts route already uses. Best-effort: a forward
+    // failure must never break WhatsApp webhook processing itself.
+    if (config.officeBackendBaseUrl && config.officeBackendApiKey && event.message_id) {
+      axios
+        .post(
+          `${config.officeBackendBaseUrl.replace(/\/$/, "")}/office/communications/webhook-event`,
+          { channel: "whatsapp", provider_event_type: "status", provider_message_id: event.message_id, status: event.status, occurred_at: new Date(Number(event.timestamp || 0) * 1000 || Date.now()).toISOString() },
+          { headers: { "x-api-key": config.officeBackendApiKey }, timeout: 8000 }
+        )
+        .catch(() => {});
+    }
     return {
       kind: "status",
       message_id: event.message_id,
