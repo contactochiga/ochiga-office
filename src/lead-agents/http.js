@@ -68,7 +68,7 @@ function createRequestContext(req) {
   };
 }
 
-async function readJsonBody(req, maxBytes = 1024 * 1024) {
+async function readRawBody(req, maxBytes = 1024 * 1024) {
   const chunks = [];
   let size = 0;
 
@@ -82,7 +82,11 @@ async function readJsonBody(req, maxBytes = 1024 * 1024) {
     chunks.push(chunk);
   }
 
-  const raw = Buffer.concat(chunks).toString("utf8");
+  return Buffer.concat(chunks).toString("utf8");
+}
+
+async function readJsonBody(req, maxBytes = 1024 * 1024) {
+  const raw = await readRawBody(req, maxBytes);
   if (!raw) {
     return {};
   }
@@ -94,6 +98,23 @@ async function readJsonBody(req, maxBytes = 1024 * 1024) {
     err.message = "Invalid JSON body";
     throw err;
   }
+}
+
+// Signature-verified webhooks (Meta) need the EXACT raw bytes to HMAC --
+// re-serializing a parsed object would not reproduce the same signature.
+async function readJsonBodyWithRaw(req, maxBytes = 1024 * 1024) {
+  const raw = await readRawBody(req, maxBytes);
+  let json = {};
+  if (raw) {
+    try {
+      json = JSON.parse(raw);
+    } catch (err) {
+      err.statusCode = 400;
+      err.message = "Invalid JSON body";
+      throw err;
+    }
+  }
+  return { raw, json };
 }
 
 function getPathname(req) {
@@ -163,6 +184,7 @@ module.exports = {
   methodNotAllowed,
   notFound,
   readJsonBody,
+  readJsonBodyWithRaw,
   serveFile,
   serveBuffer,
   setCorsHeaders,
