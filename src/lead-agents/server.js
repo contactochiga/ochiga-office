@@ -1557,7 +1557,12 @@ async function forwardCommunicationWebhookEvent(config, payload, requestId) {
       request_id: requestId,
       provider_event_type: payload.provider_event_type,
       status_code: response.status,
+      // "status" events return matched (an existing row was found to
+      // update); "message" events return matched_outbound (correlated
+      // to a prior send on the same thread) -- distinct response shapes.
       matched: Boolean(response.data?.matched),
+      matched_outbound: Boolean(response.data?.matched_outbound),
+      thread_reference: response.data?.thread_reference || null,
       ok: Boolean(response.data?.ok),
     });
     return { forwarded: true, ok: Boolean(response.data?.ok) };
@@ -2112,6 +2117,13 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
                 kind: event.kind,
                 message_id: event.message_id || null,
                 error: processError?.message || String(processError),
+                // Diagnostic only -- HTTP status/PostgREST error code and
+                // hint, never the request payload (could carry message
+                // text) or any credential.
+                http_status: processError?.response?.status || null,
+                provider_error_code: processError?.response?.data?.code || null,
+                provider_error_hint: processError?.response?.data?.hint || null,
+                request_url: processError?.config?.url || null,
               });
             }
             results.push(outcome);
