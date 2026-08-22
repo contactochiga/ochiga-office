@@ -44,7 +44,10 @@ function createConfig() {
     // The one canonical browser origin for every Office identity link.
     // Production must set this explicitly; local development may omit it
     // so links follow the localhost request that started the operation.
-    officeAppUrl: String(process.env.OFFICE_APP_URL || "").replace(/\/$/, ""),
+    officeAppUrl: String(
+      process.env.OFFICE_APP_URL ||
+      (process.env.NODE_ENV === "production" ? "https://office.ochiga.com.ng" : "")
+    ).replace(/\/$/, ""),
     defaultLeadSource: process.env.LEAD_AGENTS_DEFAULT_SOURCE || "website_chat",
     environment: process.env.NODE_ENV || "development",
     toolsPath: path.join(cwd, "config", "openai", "lead-agent-tools.json"),
