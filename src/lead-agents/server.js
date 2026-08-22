@@ -1581,9 +1581,22 @@ async function processWhatsAppEvent({ event, store, adapter, config, requestId }
       payload: event.raw,
     });
     if (event.message_id) {
+      // Meta attaches a real error code/title on a "failed" status
+      // (e.g. 131047 = outside the 24h customer-service window, a
+      // template is required) -- forwarded so the canonical record
+      // reports the ACTUAL provider reason, not a generic "failed".
+      const providerError = Array.isArray(event.raw?.errors) ? event.raw.errors[0] : null;
       await forwardCommunicationWebhookEvent(
         config,
-        { channel: "whatsapp", provider_event_type: "status", provider_message_id: event.message_id, status: event.status, occurred_at: new Date(Number(event.timestamp || 0) * 1000 || Date.now()).toISOString() },
+        {
+          channel: "whatsapp",
+          provider_event_type: "status",
+          provider_message_id: event.message_id,
+          status: event.status,
+          error_code: providerError?.code ?? null,
+          error_title: providerError?.title || providerError?.message || null,
+          occurred_at: new Date(Number(event.timestamp || 0) * 1000 || Date.now()).toISOString(),
+        },
         requestId
       );
     }
@@ -2068,6 +2081,8 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
               kind: event.kind,
               message_type: event.message_type || null,
               status: event.status || null,
+              error_code: event.status === "failed" ? (event.raw?.errors?.[0]?.code ?? null) : null,
+              error_title: event.status === "failed" ? (event.raw?.errors?.[0]?.title || event.raw?.errors?.[0]?.message || null) : null,
               message_id: event.message_id || null,
               phone_number_id: event.metadata?.phone_number_id || null,
               waba_display_number: event.metadata?.display_phone_number || null,
