@@ -135,6 +135,18 @@ class WhatsAppCloudAdapter {
       external_message_id: response.data.messages?.[0]?.id || "",
     };
   }
+
+  // Phase 2 -- Oyi needs to know what's actually approved before
+  // offering a template retry, not assume a name exists. Queries Meta
+  // directly rather than hard-coding any template name.
+  async listApprovedTemplates() {
+    if (!this.isConfigured() || !this.config.whatsappBusinessAccountId) return [];
+    const response = await this.client.get(
+      `/${this.config.whatsappBusinessAccountId}/message_templates`,
+      { params: { fields: "name,status,category,language", status: "APPROVED", limit: 50 } }
+    );
+    return (response.data?.data || []).map((t) => ({ name: t.name, language: t.language, category: t.category }));
+  }
 }
 
 module.exports = {

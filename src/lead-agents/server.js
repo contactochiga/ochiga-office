@@ -2000,6 +2000,7 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
       // the generic session/api-key gate for its own dedicated check.
       const isBackendBridgePath =
         pathname === "/api/lead-agents/admin/communications/whatsapp/send" ||
+        pathname === "/api/lead-agents/admin/communications/whatsapp/templates" ||
         pathname === "/api/lead-agents/admin/recipients/resolve" ||
         pathname === "/api/lead-agents/admin/communications/activity";
 
@@ -2161,6 +2162,19 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
             json(res, 200, { ok: true, ...result }, { "x-request-id": ctx.requestId });
           } catch (error) {
             json(res, 200, { ok: false, status: "not_found", candidates: [], error: error?.message || "resolution_failed" }, { "x-request-id": ctx.requestId });
+          }
+          return;
+        }
+
+        // Phase 2 -- lets Oyi offer a REAL approved template instead of
+        // just reporting a "template required" failure. Queries Meta
+        // directly; never a hard-coded template name.
+        if (pathname === "/api/lead-agents/admin/communications/whatsapp/templates") {
+          try {
+            const templates = await whatsappAdapter.listApprovedTemplates();
+            json(res, 200, { ok: true, templates }, { "x-request-id": ctx.requestId });
+          } catch (error) {
+            json(res, 200, { ok: false, templates: [], error: error?.message || "templates_lookup_failed" }, { "x-request-id": ctx.requestId });
           }
           return;
         }
