@@ -2013,6 +2013,7 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
         pathname === "/api/lead-agents/admin/session/login" ||
         pathname === "/api/lead-agents/admin/session/logout" ||
         pathname === "/api/lead-agents/admin/session/me" ||
+        pathname === "/api/lead-agents/admin/session/reset/request" ||
         // These endpoints authenticate with a one-time, hashed token. They
         // must remain reachable before an invited/recovering user has a
         // session; each handler performs the token and expiry validation.
@@ -2386,6 +2387,57 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
             { "x-request-id": ctx.requestId }
           );
         }
+        return;
+      }
+
+      if (pathname === "/api/lead-agents/admin/session/reset/request") {
+        if (req.method !== "POST") {
+          methodNotAllowed(res, "POST");
+          return;
+        }
+        const body = await readJsonBody(req);
+        const email = normalizeEmail(body.email);
+        try {
+          adminLoginRateLimiter.checkKey(loginAttemptKey(req, email));
+        } catch (error) {
+          json(res, 429, {
+            error: "reset_rate_limit_exceeded",
+            message: "Too many reset requests. Please wait a few minutes and try again.",
+          });
+          return;
+        }
+        const user = email ? await store.getAdminUserByEmail(email) : null;
+        if (user && user.status === "active") {
+          try {
+            const rawToken = generateOpaqueToken();
+            const reset = await store.createPasswordResetToken({
+              admin_user_id: user.id,
+              email: user.email,
+              token_hash: hashOpaqueToken(rawToken),
+              requested_by: "self_service",
+              expires_at: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
+            });
+            const resetUrl = absoluteUrl(req, "/office?mode=reset", rawToken, config);
+            const emailDelivery = await sendOfficeEmail(config, {
+              to: user.email,
+              ...passwordResetEmail({ displayName: user.display_name || user.email, resetUrl }),
+            });
+            await appendAudit(store, { userId: user.id, email: user.email, role: user.role }, "password_reset_issued", "admin_user", user.id, {
+              email: user.email,
+              reset_id: reset.id,
+              request_source: "self_service",
+              email_delivery: emailDelivery,
+            });
+          } catch (error) {
+            log("error", "office_auth.password_reset_request_failed", {
+              request_id: ctx.requestId,
+              failure_category: "delivery_or_persistence",
+            });
+          }
+        }
+        // Deliberately non-enumerating: unknown, inactive and active emails
+        // receive the same response and no delivery metadata or token.
+        json(res, 202, { ok: true, message: "If that Office account exists, a reset link has been sent." });
         return;
       }
 
@@ -6260,7 +6312,7 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           invited_by: authContext?.email || "",
           expires_at: new Date(Date.now() + (Number(body.expires_in_hours || 72) * 60 * 60 * 1000)).toISOString(),
         });
-        const inviteUrl = absoluteUrl(req, "/dashboard?mode=invite", rawToken, config);
+        const inviteUrl = absoluteUrl(req, "/office?mode=invite", rawToken, config);
         const inviteMessage = staffInviteEmail({
           displayName: invite.display_name || invite.email,
           inviteUrl,
@@ -6420,7 +6472,7 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           requested_by: authContext?.email || "",
           expires_at: new Date(Date.now() + (Number(body?.expires_in_hours || 24) * 60 * 60 * 1000)).toISOString(),
         });
-        const resetUrl = absoluteUrl(req, "/dashboard?mode=reset", rawToken, config);
+        const resetUrl = absoluteUrl(req, "/office?mode=reset", rawToken, config);
         const resetMessage = passwordResetEmail({
           displayName: user.display_name || user.email,
           resetUrl,

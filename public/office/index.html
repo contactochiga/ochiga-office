@@ -154,6 +154,12 @@
   .login-card p.sub {
     margin: 0 0 22px; color: var(--text-tertiary); font-size: 12.5px;
   }
+  .login-link {
+    display: inline-block; margin-top: 14px; padding: 0; border: 0;
+    background: transparent; color: var(--text-secondary); font: inherit;
+    cursor: pointer; text-decoration: underline; text-underline-offset: 3px;
+  }
+  .login-link:hover { color: var(--white); }
   .field { margin-bottom: 14px; }
   .field label {
     display: block; font-size: 11.5px; color: var(--text-tertiary);
@@ -1072,9 +1078,10 @@
     <section class="login-screen" id="loginScreen">
       <form class="login-card" id="loginForm" autocomplete="on">
         <div class="login-brand"><span class="mark"></span><span>Ochiga Office</span></div>
-        <h1>Sign in</h1>
-        <p class="sub">The internal operating environment for Ochiga staff.</p>
+        <h1 id="authCardTitle">Sign in</h1>
+        <p class="sub" id="authCardSubtitle">The internal operating environment for Ochiga staff.</p>
         <div class="form-error" id="loginError" role="alert"></div>
+        <div id="loginFields">
         <div class="field">
           <label for="loginEmail">Email</label>
           <input id="loginEmail" name="email" type="email" autocomplete="username" required />
@@ -1084,6 +1091,28 @@
           <input id="loginPassword" name="password" type="password" autocomplete="current-password" required />
         </div>
         <button class="btn btn-primary" type="submit" id="loginSubmit">Sign in</button>
+        <button class="login-link" type="button" id="forgotPasswordBtn">Forgot password?</button>
+        </div>
+        <div id="forgotFields" style="display:none;">
+          <div class="field">
+            <label for="forgotEmail">Email</label>
+            <input id="forgotEmail" type="email" autocomplete="email" />
+          </div>
+          <button class="btn btn-primary" type="button" id="forgotSubmit">Send reset link</button>
+          <button class="login-link" type="button" id="backToLoginBtn">Back to sign in</button>
+        </div>
+        <div id="tokenFields" style="display:none;">
+          <div class="field" id="inviteNameField" style="display:none;">
+            <label for="tokenDisplayName">Display name</label>
+            <input id="tokenDisplayName" type="text" autocomplete="name" />
+          </div>
+          <div class="field">
+            <label for="tokenPassword">New password</label>
+            <input id="tokenPassword" type="password" autocomplete="new-password" minlength="8" />
+          </div>
+          <button class="btn btn-primary" type="button" id="tokenSubmit">Set password</button>
+          <button class="login-link" type="button" id="tokenBackToLoginBtn">Back to sign in</button>
+        </div>
       </form>
     </section>
 
