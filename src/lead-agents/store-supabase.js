@@ -459,8 +459,17 @@ class SupabaseLeadAgentsStore {
   }
 
   async upsertLeadChannelState(leadId, channel, patch) {
+    // lead_channel_states has a unique(lead_id, channel) constraint, not
+    // a plain primary-key-only shape -- PostgREST's merge-duplicates
+    // upsert needs an explicit on_conflict target to resolve against
+    // that constraint; without it, a second write for the same
+    // lead+channel hits the unique constraint as a genuine INSERT
+    // conflict (409) instead of being merged. Real production bug found
+    // via a live inbound WhatsApp message (the first write per lead+
+    // channel succeeded silently; a second one always 409'd, breaking
+    // channel-state tracking and the AI reply that runs after it).
     const response = await this.client.post(
-      "/lead_channel_states",
+      "/lead_channel_states?on_conflict=lead_id,channel",
       {
         lead_id: leadId,
         channel,
