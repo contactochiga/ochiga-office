@@ -108,6 +108,33 @@ class WhatsAppCloudAdapter {
       external_message_id: response.data.messages?.[0]?.id || "",
     };
   }
+
+  // Phase 2 -- a recipient outside the 24h customer-service window can
+  // only be reached via an approved message template (Meta policy; a
+  // free-form send fails with error 131047/470). Never bypasses this --
+  // this is the LEGITIMATE path Meta requires, not a workaround.
+  async sendTemplateMessage({ to, templateName, languageCode, components }) {
+    if (!this.isConfigured()) {
+      return { delivered: false, response_code: null, skipped: true };
+    }
+    const payload = {
+      messaging_product: "whatsapp",
+      to,
+      type: "template",
+      template: {
+        name: templateName,
+        language: { code: languageCode || "en_US" },
+        ...(Array.isArray(components) && components.length ? { components } : {}),
+      },
+    };
+    const response = await this.client.post(`/${this.config.whatsappPhoneNumberId}/messages`, payload);
+    return {
+      delivered: true,
+      response_code: response.status,
+      response: response.data,
+      external_message_id: response.data.messages?.[0]?.id || "",
+    };
+  }
 }
 
 module.exports = {
