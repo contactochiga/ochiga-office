@@ -9580,10 +9580,35 @@ function showLogin() {
   document.body.classList.add("auth-logged-out");
 }
 
+function authTokenState() {
+  const params = new URLSearchParams(window.location.search);
+  const mode = params.get("mode");
+  const token = params.get("token");
+  return token && (mode === "invite" || mode === "reset") ? { mode, token } : null;
+}
+
 function wireLogin() {
   const form = document.getElementById("loginForm");
   const errorBox = document.getElementById("loginError");
   const submit = document.getElementById("loginSubmit");
+  const title = document.getElementById("authCardTitle");
+  const subtitle = document.getElementById("authCardSubtitle");
+  const loginFields = document.getElementById("loginFields");
+  const forgotFields = document.getElementById("forgotFields");
+  const tokenFields = document.getElementById("tokenFields");
+  const showAuthView = (view) => {
+    loginFields.style.display = view === "login" ? "block" : "none";
+    forgotFields.style.display = view === "forgot" ? "block" : "none";
+    tokenFields.style.display = view === "token" ? "block" : "none";
+    errorBox.classList.remove("visible");
+    if (view === "login") {
+      title.textContent = "Sign in";
+      subtitle.textContent = "The internal operating environment for Ochiga staff.";
+    } else if (view === "forgot") {
+      title.textContent = "Reset your password";
+      subtitle.textContent = "Enter your Office email and we will send a secure reset link.";
+    }
+  };
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
     errorBox.classList.remove("visible");
@@ -9600,6 +9625,80 @@ function wireLogin() {
       submit.textContent = "Sign in";
     }
   });
+  document.getElementById("forgotPasswordBtn").addEventListener("click", () => showAuthView("forgot"));
+  document.getElementById("backToLoginBtn").addEventListener("click", () => showAuthView("login"));
+  document.getElementById("tokenBackToLoginBtn").addEventListener("click", () => {
+    history.replaceState({}, "", "/office");
+    showAuthView("login");
+  });
+  document.getElementById("forgotSubmit").addEventListener("click", async () => {
+    const button = document.getElementById("forgotSubmit");
+    button.disabled = true;
+    try {
+      const result = await api("/api/lead-agents/admin/session/reset/request", {
+        method: "POST",
+        body: { email: document.getElementById("forgotEmail").value.trim() },
+      });
+      errorBox.textContent = result.message;
+      errorBox.classList.add("visible");
+    } catch (err) {
+      errorBox.textContent = err.message || "Could not request a reset link.";
+      errorBox.classList.add("visible");
+    } finally {
+      button.disabled = false;
+    }
+  });
+  document.getElementById("tokenSubmit").addEventListener("click", async () => {
+    const tokenState = authTokenState();
+    if (!tokenState) {
+      errorBox.textContent = "This password link is invalid or incomplete.";
+      errorBox.classList.add("visible");
+      return;
+    }
+    const button = document.getElementById("tokenSubmit");
+    const password = document.getElementById("tokenPassword").value;
+    if (!password) {
+      errorBox.textContent = "Choose a new password.";
+      errorBox.classList.add("visible");
+      return;
+    }
+    button.disabled = true;
+    try {
+      if (tokenState.mode === "invite") {
+        const result = await api("/api/lead-agents/admin/session/invite/accept", {
+          method: "POST",
+          body: { token: tokenState.token, password, display_name: document.getElementById("tokenDisplayName").value.trim() || undefined },
+        });
+        state.admin = result.admin;
+        history.replaceState({}, "", "/office");
+        showShell();
+      } else {
+        await api("/api/lead-agents/admin/session/reset/confirm", {
+          method: "POST",
+          body: { token: tokenState.token, new_password: password },
+        });
+        history.replaceState({}, "", "/office");
+        showAuthView("login");
+        errorBox.textContent = "Password updated. Sign in with your new password.";
+        errorBox.classList.add("visible");
+      }
+    } catch (err) {
+      errorBox.textContent = err.data?.error === "invalid_or_expired_reset" || err.data?.error === "invalid_or_expired_invite"
+        ? "This password link is invalid, expired, or has already been used."
+        : (err.message || "Could not complete password setup.");
+      errorBox.classList.add("visible");
+    } finally {
+      button.disabled = false;
+    }
+  });
+  const tokenState = authTokenState();
+  if (tokenState) {
+    showAuthView("token");
+    title.textContent = tokenState.mode === "invite" ? "Set up your Office account" : "Choose a new password";
+    subtitle.textContent = "Complete this secure step inside the current Ochiga Office.";
+    document.getElementById("inviteNameField").style.display = tokenState.mode === "invite" ? "block" : "none";
+    document.getElementById("tokenSubmit").textContent = tokenState.mode === "invite" ? "Activate account" : "Update password";
+  }
 }
 function wireShellChrome() {
   document.getElementById("navLogout").addEventListener("click", async () => {
@@ -9627,6 +9726,10 @@ async function boot() {
   wireShellChrome();
   wireOyiControl();
   registerServiceWorker();
+  if (authTokenState()) {
+    showLogin();
+    return;
+  }
   const authed = await fetchSession();
   if (authed) showShell();
   else showLogin();
