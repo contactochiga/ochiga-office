@@ -31,6 +31,8 @@ services:
         value: 60
       - key: OFFICE_EMAIL_FROM
         value: Ochiga Office <office@ochiga.com.ng>
+      - key: OFFICE_APP_URL
+        value: https://office.ochiga.com.ng
       - key: OFFICE_STORAGE_DIR
         value: data/office-storage
       - key: LEAD_AGENTS_ALLOWED_ORIGINS

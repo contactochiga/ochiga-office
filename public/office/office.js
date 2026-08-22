@@ -7161,9 +7161,11 @@ async function renderTeamView(outlet, token) {
     const toolbar = el(`<div class="list-toolbar"></div>`);
     const spacer = el(`<div class="toolbar-spacer"></div>`);
     toolbar.appendChild(spacer);
-    const inviteBtn = el(`<button type="button" class="btn btn-ghost btn-sm">Invite Staff</button>`);
-    inviteBtn.addEventListener("click", () => openInviteStaffDialog(canonicalRoles, token));
-    toolbar.appendChild(inviteBtn);
+    if (canManageSecurity) {
+      const inviteBtn = el(`<button type="button" class="btn btn-ghost btn-sm">Invite Staff</button>`);
+      inviteBtn.addEventListener("click", () => openInviteStaffDialog(canonicalRoles, token));
+      toolbar.appendChild(inviteBtn);
+    }
     const addBtn = el(`<button type="button" class="btn btn-primary btn-sm">Add Staff</button>`);
     addBtn.addEventListener("click", () => openAddStaffDialog(canonicalRoles, token));
     toolbar.appendChild(addBtn);
@@ -7180,6 +7182,8 @@ async function renderTeamView(outlet, token) {
         },
       },
       { label: "Name", render: (u) => escapeHtml(u.display_name || u.email) },
+      { label: "Email", render: (u) => escapeHtml(u.email) },
+      { label: "Phone", render: (u) => escapeHtml(u.phone || "—") },
       { label: "Position", render: (u) => escapeHtml(u.office_position || "—") },
       { label: "Role", render: (u) => badge(titleCase(u.role), u.role === "super_admin" || u.role === "admin" ? "red" : "default") },
       { label: "Status", render: (u) => badge(titleCase(u.status || "active"), toneForStatus(u.status || "active")) },
@@ -7203,6 +7207,7 @@ function openAddStaffDialog(canonicalRoles, token) {
   openDialog("Add Staff", [
     { name: "display_name", label: "Full name" },
     { name: "email", label: "Email", type: "email" },
+    { name: "phone", label: "Phone number", type: "tel" },
     { name: "password", label: "Temporary password", type: "password" },
     { name: "office_position", label: "Office Position (e.g. CEO, Sales Director)" },
     { name: "role", label: "System Role", type: "select", options: canonicalRoles, value: canonicalRoles[0] },
@@ -7212,6 +7217,7 @@ function openAddStaffDialog(canonicalRoles, token) {
       email: data.email,
       password: data.password,
       display_name: data.display_name || data.email,
+      phone: data.phone || "",
       office_position: data.office_position || "",
       role: data.role,
     });
@@ -7224,6 +7230,7 @@ function openInviteStaffDialog(canonicalRoles, token) {
   openDialog("Invite Staff", [
     { name: "display_name", label: "Full name" },
     { name: "email", label: "Email", type: "email" },
+    { name: "phone", label: "Phone number", type: "tel" },
     { name: "office_position", label: "Office Position (e.g. CEO, Sales Director)" },
     { name: "role", label: "System Role", type: "select", options: canonicalRoles, value: canonicalRoles[0] },
   ], async (data) => {
@@ -7231,11 +7238,13 @@ function openInviteStaffDialog(canonicalRoles, token) {
     const result = await apiInviteAdminUser({
       email: data.email,
       display_name: data.display_name || "",
+      phone: data.phone || "",
       office_position: data.office_position || "",
       role: data.role,
     });
     const delivered = result?.email_delivery?.delivered;
     toast(delivered ? `Invite sent to ${data.email}.` : `Invite created for ${data.email}, but the email could not be delivered — share the link manually.`);
+    await renderTeamView(document.getElementById("viewOutlet"), ++state.renderToken);
   });
 }
 
@@ -7291,6 +7300,10 @@ async function toggleTeamEditRow(user, canonicalRoles, canManageSecurity) {
         <label for="teamEditPosition">Office Position</label>
         <input id="teamEditPosition" type="text" value="${escapeHtml(user.office_position || "")}" placeholder="e.g. Technical Advisor — AI &amp; Robotics" />
         <span class="hint">The person's actual job title — never shown as their system role.</span>
+      </div>
+      <div class="field">
+        <label for="teamEditPhone">Phone number</label>
+        <input id="teamEditPhone" type="tel" value="${escapeHtml(user.phone || "")}" />
       </div>
       <div class="field">
         <label for="teamEditRole">System Role</label>
@@ -7393,6 +7406,7 @@ async function toggleTeamEditRow(user, canonicalRoles, canManageSecurity) {
         role: selectedRole,
         status: form.querySelector("#teamEditStatus").value,
         office_position: form.querySelector("#teamEditPosition").value,
+        phone: form.querySelector("#teamEditPhone").value,
         permission_scopes: permissionScopes,
       });
       wrap.innerHTML = "";

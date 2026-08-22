@@ -939,6 +939,7 @@ class SupabaseLeadAgentsStore {
         status: input.status || "active",
         display_name: input.display_name || "",
         office_position: input.office_position || "",
+        phone: input.phone || "",
         passport_photo_url: input.passport_photo_url || "",
         qr_credential: input.qr_credential || "",
         permission_scopes: Array.isArray(input.permission_scopes) ? input.permission_scopes : [],
@@ -978,10 +979,12 @@ class SupabaseLeadAgentsStore {
     const response = await this.client.post(
       "/admin_invites",
       {
+        admin_user_id: input.admin_user_id || null,
         email: normalizeEmail(input.email),
         role: input.role || "viewer",
         display_name: input.display_name || "",
         office_position: input.office_position || "",
+        phone: input.phone || "",
         token_hash: input.token_hash,
         status: input.status || "pending",
         invited_by: input.invited_by || "",
