@@ -55,6 +55,19 @@ async function main() {
     assert.deepEqual(names, ["David Musa (XYZ Ltd)", "David Okoro (ABC Ltd)"]);
   }
 
+  // ============================= Short-token guard (regression) =============================
+  // Found via live testing: "he" (a pronoun the caller should have
+  // resolved via conversation continuity, not sent here at all) matched
+  // "Check"/"Head"/etc. as an ilike substring, producing a false
+  // "ambiguous" result out of unrelated records.
+  {
+    const store = fakeStore([
+      [/^\/admin_users\?display_name=ilike/, [{ id: "x", display_name: "Someone With Check In Their Name" }]],
+    ]);
+    const result = await resolveRecipient(store, { query: "he", queryType: "name" });
+    assert.equal(result.status, "not_found", "a 2-character token must never trigger a substring search");
+  }
+
   // ============================= No match =============================
   {
     const store = fakeStore([

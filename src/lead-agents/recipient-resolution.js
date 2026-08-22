@@ -113,7 +113,12 @@ function contactCandidate(row, orgById) {
 // query that matches nothing returns status "not_found", not a guess.
 async function resolveRecipient(store, { query, queryType }) {
   const raw = normalizeText(query);
-  if (!raw) return { status: "not_found", candidates: [] };
+  // Defense in depth against the caller ever forwarding a bare pronoun
+  // or other too-short fragment -- an ilike substring search on 1-2
+  // characters matches unrelated records purely by coincidence (e.g.
+  // "he" inside "Check"), which would look like a real ambiguous match
+  // but isn't one.
+  if (!raw || raw.length < 3) return { status: "not_found", candidates: [] };
   const pattern = `*${escapeIlike(raw)}*`;
   const wantsRole = queryType === "role" || (queryType !== "name" && looksLikeRolePhrase(raw));
 
