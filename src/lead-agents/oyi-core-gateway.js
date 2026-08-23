@@ -313,8 +313,36 @@ async function buildContentSnapshot(store) {
   return { items: rows, total: Array.isArray(items) ? items.length : rows.length };
 }
 
-async function buildOperationalSnapshot({ authContext, store, config } = {}) {
+function officeSnapshotStageInterest(message = "") {
+  const value = text(message).toLowerCase();
+  const crm = /\blead|opportunit|crm|customer|client|follow[- ]?up\b/.test(value);
+  const tasks = /\btask|to-?do|deadline|overdue|due\b/.test(value);
+  const automations = /\bautomation|automate|if .* (hasn'?t|has not)|follow up .* tomorrow\b/.test(value);
+  const meetings = /\bmeeting|calendar|appointment\b/.test(value);
+  const portfolio = /\bportfolio|estate|propert|building\b/.test(value);
+  const documents = /\bdocument|file|report|proposal\b/.test(value);
+  const communications = /\bemail|message|whatsapp|reply|replied|communication\b/.test(value);
+  const broadPhrase = /what (needs|requires) (my )?attention|catch me up|office overview|show priorities|what changed/.test(value);
+  const broad = broadPhrase && ![crm, tasks, automations, meetings, portfolio, documents, communications].some(Boolean);
+  return {
+    broad,
+    crm: broad || crm,
+    tasks: broad || tasks,
+    automations,
+    meetings,
+    portfolio,
+    documents,
+    communications,
+    deadlines: /\bdeadline|overdue|due\b/.test(value),
+  };
+}
+
+async function buildOperationalSnapshot({ authContext, store, config, message, onStage } = {}) {
   if (!store) return null;
+  const interest = officeSnapshotStageInterest(message);
+  const stage = (name) => {
+    if (typeof onStage === "function") onStage(name);
+  };
   const snapshot = {
     generated_at: new Date().toISOString(),
     leads: null,
@@ -333,6 +361,7 @@ async function buildOperationalSnapshot({ authContext, store, config } = {}) {
   };
   try {
     if (hasPermission(authContext, "crm.read")) {
+      if (interest.crm) stage("reviewing_leads");
       if (typeof store.listLeads === "function") snapshot.leads = await buildLeadsSnapshot(store);
       snapshot.opportunities = await buildOpportunitiesSnapshot(store);
     }
@@ -341,7 +370,10 @@ async function buildOperationalSnapshot({ authContext, store, config } = {}) {
   }
   try {
     if (hasPermission(authContext, "tasks.read")) {
+      if (interest.tasks) stage("checking_tasks");
       snapshot.tasks = await buildTasksSnapshot(store);
+      if (interest.deadlines) stage("checking_deadlines");
+      if (interest.automations) stage("scheduling");
       snapshot.automations = await buildAutomationsSnapshot(config);
     }
   } catch {
@@ -370,6 +402,7 @@ async function buildOperationalSnapshot({ authContext, store, config } = {}) {
   }
   try {
     if (hasPermission(authContext, "meetings.read")) {
+      if (interest.meetings) stage("checking_meetings");
       snapshot.meetings = await buildMeetingsSnapshot(store);
     }
   } catch {
@@ -384,6 +417,7 @@ async function buildOperationalSnapshot({ authContext, store, config } = {}) {
   }
   try {
     if (hasPermission(authContext, "portfolio.read")) {
+      if (interest.portfolio) stage("querying_portfolio");
       snapshot.portfolio = await buildPortfolioListSnapshot(store);
     }
   } catch {
@@ -398,6 +432,7 @@ async function buildOperationalSnapshot({ authContext, store, config } = {}) {
   }
   try {
     if (hasPermission(authContext, "documents.generate")) {
+      if (interest.documents) stage("reading_document");
       snapshot.documents = await buildDocumentsSnapshot(store);
     }
   } catch {
@@ -469,11 +504,11 @@ function buildOyiCoreCorporateConversationRequest({ session, message, lead, body
   };
 }
 
-async function buildOyiCoreOfficeInternalRequest({ authContext, message, body, requestId, store, config } = {}) {
+async function buildOyiCoreOfficeInternalRequest({ authContext, message, body, requestId, store, config, onStage } = {}) {
   const safeBody = recordOf(body);
   const page = recordOf(safeBody.page_context);
   const staff = recordOf(safeBody.staff);
-  const operationalSnapshot = await buildOperationalSnapshot({ authContext, store, config });
+  const operationalSnapshot = await buildOperationalSnapshot({ authContext, store, config, message, onStage });
   return {
     request_id: text(requestId || safeBody.request_id),
     message: text(message || safeBody.message),

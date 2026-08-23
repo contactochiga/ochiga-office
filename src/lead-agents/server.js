@@ -5014,6 +5014,32 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           json(res, 400, { error: "message is required" });
           return;
         }
+        // Additive streaming contract for Office's single processing
+        // row. Events describe only real request boundaries observed by
+        // this gateway; they never expose model reasoning or timed UI
+        // theatre. Existing JSON callers retain the original response.
+        const streamsRuntimeStages = /application\/x-ndjson/i.test(String(req.headers.accept || ""));
+        let runtimeStageSequence = 0;
+        let lastRuntimeStage = "";
+        if (streamsRuntimeStages) {
+          res.writeHead(200, {
+            "content-type": "application/x-ndjson; charset=utf-8",
+            "cache-control": "no-cache, no-transform",
+            connection: "keep-alive",
+            "x-accel-buffering": "no",
+            "x-request-id": ctx.requestId,
+          });
+          if (typeof res.flushHeaders === "function") res.flushHeaders();
+        }
+        const emitRuntimeStage = (stage) => {
+          if (!streamsRuntimeStages || !stage || stage === lastRuntimeStage) return;
+          lastRuntimeStage = stage;
+          runtimeStageSequence += 1;
+          res.write(`${JSON.stringify({ type: "stage", stage, sequence: runtimeStageSequence, occurred_at: new Date().toISOString() })}\n`);
+        };
+        const finishRuntimeStream = (payload) => {
+          res.end(`${JSON.stringify(payload)}\n`);
+        };
         const oyiCoreRequest = await buildOyiCoreOfficeInternalRequest({
           authContext,
           message: body.message,
@@ -5021,6 +5047,7 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           requestId: ctx.requestId,
           store,
           config,
+          onStage: emitRuntimeStage,
         });
         const chatStartedAt = Date.now();
         // A photo or file attached to this turn means Backend does a
@@ -5033,6 +5060,8 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
         const chatConfig = hasAttachedMedia
           ? { ...config, officeBackendEventTimeoutMs: Math.max(config.officeBackendEventTimeoutMs || 10_000, 45_000) }
           : config;
+        const preparesAction = /\b(create|update|send|schedule|automate|follow up with|assign|cancel|move)\b/i.test(body.message);
+        emitRuntimeStage(preparesAction ? "preparing_action" : "preparing_summary");
         const oyiCoreResult = await callOyiCoreOfficeInternalConversation(chatConfig, oyiCoreRequest);
         // Agent Observatory (Programme 13) — office_internal previously had
         // zero observability of its own, unlike the older lead-agent
@@ -5061,6 +5090,16 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           }).catch(() => null);
         }
         if (!oyiCoreResult.ok) {
+          if (streamsRuntimeStages) {
+            emitRuntimeStage("failed");
+            finishRuntimeStream({
+              type: "error",
+              status: 503,
+              error: "oyi_core_unavailable",
+              message: "Oyi Core is unavailable, so Office Internal intelligence cannot answer from a separate reasoning path.",
+            });
+            return;
+          }
           json(res, 503, {
             error: "oyi_core_unavailable",
             message: "Oyi Core is unavailable, so Office Internal intelligence cannot answer from a separate reasoning path.",
@@ -5068,10 +5107,16 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           }, { "x-request-id": ctx.requestId });
           return;
         }
-        json(res, 200, {
+        const responsePayload = {
           oyi_core: oyiCoreResult.response,
           proposed_actions: oyiCoreResult.response.tool_proposals || [],
-        }, { "x-request-id": ctx.requestId });
+        };
+        if (streamsRuntimeStages) {
+          emitRuntimeStage("completed");
+          finishRuntimeStream({ type: "result", data: responsePayload });
+          return;
+        }
+        json(res, 200, responsePayload, { "x-request-id": ctx.requestId });
         return;
       }
 
