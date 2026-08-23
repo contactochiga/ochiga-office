@@ -14,7 +14,8 @@ assert(html.includes('placeholder="Ask Oyi anything…"'), "reference composer p
 assert(html.includes('id="oyiSend" aria-label="Send" disabled'), "send must begin disabled");
 assert(html.includes('aria-haspopup="menu"') && html.includes('aria-controls="oyiPlusMenu"'), "capability trigger needs menu semantics");
 assert(html.includes("Share file") && html.includes("Send photo / video") && html.includes("Voice chat"), "capability menu is incomplete");
-assert(html.includes(".oyi-composer .oyi-plus-item { width: 100%; height: auto"), "capability rows must override icon-button dimensions");
+assert(/\.oyi-composer \.oyi-plus-item\s*\{[\s\S]*?width: 100%; height: auto/.test(html), "capability rows must override icon-button dimensions");
+assert(html.includes("background: none; border: none; color: var(--text-secondary)"), "capability rows must override the generic red send-button treatment");
 assert(html.includes("prefers-reduced-motion: reduce"), "reduced-motion support is missing");
 
 assert(client.includes('event.key === "Enter" && !event.shiftKey'), "Enter/Shift+Enter behavior is missing");

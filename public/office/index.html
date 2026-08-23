@@ -607,7 +607,12 @@
   }
   /* Override the generic 32px composer button dimensions: capability
      entries are menu rows, not icon controls. */
-  .oyi-composer .oyi-plus-item { width: 100%; height: auto; flex-shrink: 0; justify-content: flex-start; }
+  .oyi-composer .oyi-plus-item {
+    width: 100%; height: auto; flex-shrink: 0; justify-content: flex-start;
+    background: none; border: none; color: var(--text-secondary);
+  }
+  .oyi-composer .oyi-plus-item:hover,
+  .oyi-composer .oyi-plus-item:focus-visible { background: rgba(255,255,255,0.06); color: var(--white); }
   .oyi-plus-item:hover, .oyi-plus-item:focus-visible { background: rgba(255,255,255,0.06); color: var(--white); }
   .oyi-plus-item:focus-visible { outline: 1px solid var(--red-muted); outline-offset: -1px; }
   .oyi-plus-icon {
