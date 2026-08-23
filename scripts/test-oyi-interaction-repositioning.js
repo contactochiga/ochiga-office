@@ -19,6 +19,11 @@ assert(html.includes("background: none; border: none; color: var(--text-secondar
 assert(html.includes("prefers-reduced-motion: reduce"), "reduced-motion support is missing");
 
 assert(client.includes('event.key === "Enter" && !event.shiftKey'), "Enter/Shift+Enter behavior is missing");
+assert(!client.includes('getElementById("oyiContext")'), "removed context-label presentation must not be a navigation dependency");
+assert(client.includes("syncOyiPresentationSafely()"), "Oyi presentation synchronization must be isolated from route state");
+assert(client.includes("async function renderRouteSafely()"), "the Office outlet needs a route-level error boundary");
+assert(client.includes("resetOyiTransientModesForNavigation()"), "navigation must clear turn-scoped visual/voice UI state");
+assert(client.includes("page_context: currentPageContext()"), "internal Oyi page context must remain in the canonical chat request");
 assert(client.includes('event.key === "ArrowDown" || event.key === "ArrowUp"'), "menu arrow-key navigation is missing");
 assert(client.includes("closeOyiPlusMenu({ restoreFocus: true })"), "Escape must restore focus to the menu trigger");
 assert(client.includes("initialOyiActivity(message)"), "honest processing-state selection is missing");
