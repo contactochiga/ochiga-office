@@ -8479,6 +8479,28 @@ const OYI_ACTIVITY_ICONS = {
   reasoning: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v2M12 19v2M3 12h2M19 12h2M5.6 5.6l1.4 1.4M17 17l1.4 1.4M18.4 5.6 17 7M7 17l-1.4 1.4"></path><circle cx="12" cy="12" r="3.5"></circle></svg>`,
   visual: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 8h3l2-2h6l2 2h3v11H4z"></path><circle cx="12" cy="14" r="3.2"></circle></svg>`,
 };
+const OYI_RUNTIME_STAGE_PRESENTATION = {
+  searching: { label: "Searching Office records…", icon: "searching" },
+  resolving_entity: { label: "Resolving record…", icon: "reviewing" },
+  reviewing_leads: { label: "Reviewing leads…", icon: "leads" },
+  checking_tasks: { label: "Reviewing tasks…", icon: "tasks" },
+  checking_deadlines: { label: "Checking deadlines…", icon: "scheduling" },
+  checking_communications: { label: "Checking communications…", icon: "communications" },
+  checking_meetings: { label: "Checking meetings…", icon: "scheduling" },
+  reading_document: { label: "Reading document…", icon: "documents" },
+  querying_portfolio: { label: "Reviewing portfolio records…", icon: "documents" },
+  preparing_summary: { label: "Preparing summary…", icon: "reasoning" },
+  preparing_action: { label: "Preparing action…", icon: "creating" },
+  validating_action: { label: "Validating action…", icon: "verifying" },
+  scheduling: { label: "Checking schedule…", icon: "scheduling" },
+  executing: { label: "Executing action…", icon: "executing" },
+  verifying_result: { label: "Verifying result…", icon: "verifying" },
+  waiting_for_provider: { label: "Waiting for provider…", icon: "thinking" },
+};
+function applyOyiRuntimeStage(stage) {
+  const presentation = OYI_RUNTIME_STAGE_PRESENTATION[stage];
+  if (presentation) updateOyiActivity(presentation.label, presentation.icon);
+}
 function oyiActivityIconClass(iconKey) {
   return iconKey === "executing" ? "spin" : "pulse";
 }
@@ -9108,16 +9130,55 @@ function newOyiThreadId() {
 // user/assistant bubble pair.
 async function callOyiChat(message, extraBody) {
   if (!state.oyiThreadId) state.oyiThreadId = newOyiThreadId();
-  const data = await api("/api/lead-agents/admin/office/intelligence/chat", {
+  const response = await fetch("/api/lead-agents/admin/office/intelligence/chat", {
     method: "POST",
-    body: {
+    credentials: "same-origin",
+    headers: { "content-type": "application/json", accept: "application/x-ndjson" },
+    body: JSON.stringify({
       message,
       conversation_thread_id: state.oyiThreadId,
       page_context: currentPageContext(),
       ...currentSelectedObjectContext(),
       ...(extraBody || {}),
-    },
+    }),
   });
+  if (!response.ok) {
+    const failure = await response.json().catch(() => null);
+    const err = new Error(failure?.message || failure?.error || `Request failed (${response.status})`);
+    err.status = response.status;
+    err.data = failure;
+    throw err;
+  }
+  if (!response.body) throw new Error("Oyi runtime stream was unavailable");
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let data = null;
+  const consumeLine = (line) => {
+    if (!line.trim()) return;
+    const event = JSON.parse(line);
+    if (event.type === "stage") {
+      applyOyiRuntimeStage(event.stage);
+      return;
+    }
+    if (event.type === "result") data = event.data;
+    if (event.type === "error") {
+      const err = new Error(event.message || event.error || "Oyi Core is unavailable");
+      err.status = Number(event.status || 503);
+      err.data = event;
+      throw err;
+    }
+  };
+  while (true) {
+    const { value, done } = await reader.read();
+    buffer += decoder.decode(value || new Uint8Array(), { stream: !done });
+    const lines = buffer.split("\n");
+    buffer = lines.pop() || "";
+    lines.forEach(consumeLine);
+    if (done) break;
+  }
+  if (buffer.trim()) consumeLine(buffer);
+  if (!data) throw new Error("Oyi runtime completed without a response");
   const { normalizeOfficeInternalResponse } = await import("/office/shared/oyi-core/responseNormalizer.mjs");
   const normalized = normalizeOfficeInternalResponse(data.oyi_core || {}, data.proposed_actions);
   // Backend echoes back the thread id it actually persisted under —
@@ -9302,7 +9363,8 @@ function updateOyiSendState() {
   const input = document.getElementById("oyiInput");
   const send = document.getElementById("oyiSend");
   if (!input || !send) return;
-  send.disabled = !input.value.trim() || state.oyiBusy;
+  const recording = document.getElementById("oyiComposer")?.classList.contains("voice-recording");
+  send.disabled = state.oyiBusy || (!recording && !input.value.trim());
 }
 function closeOyiPlusMenu({ restoreFocus = false } = {}) {
   document.getElementById("oyiPlusMenu").classList.remove("open");
@@ -9627,6 +9689,7 @@ function exitOyiRecordingUi() {
   document.getElementById("oyiComposer").classList.remove("voice-recording");
   document.getElementById("oyiMicBtn").classList.remove("recording");
   document.getElementById("oyiRecordingTime").textContent = "0:00";
+  updateOyiSendState();
 }
 async function startOyiVoiceRecording() {
   if (state.oyiBusy) return;
@@ -9643,6 +9706,7 @@ async function startOyiVoiceRecording() {
   }
   document.getElementById("oyiComposer").classList.add("voice-recording");
   document.getElementById("oyiMicBtn").classList.add("recording");
+  updateOyiSendState();
   buildOyiRecordingMeterBars();
   startOyiAudioMeter(oyiMediaStream);
   oyiRecordingStartedAt = Date.now();
@@ -9680,7 +9744,7 @@ function cancelOyiVoiceRecording() {
   cleanupOyiRecordingMedia();
   exitOyiRecordingUi();
 }
-async function finishOyiVoiceRecording() {
+async function finishOyiVoiceRecording({ sendImmediately = false } = {}) {
   if (!oyiMediaRecorder || oyiMediaRecorder.state === "inactive") return;
   const recorder = oyiMediaRecorder;
   const durationMs = Date.now() - oyiRecordingStartedAt;
@@ -9712,7 +9776,7 @@ async function finishOyiVoiceRecording() {
   let transcriptText = "";
   state.oyiBusy = true;
   setOyiPresence("thinking");
-  showOyiActivity("Transcribing your recording…", "thinking");
+  showOyiActivity("Transcribing…", "thinking");
   try {
     const dataUrl = await readFileAsDataUrl(new File([blob], `oyi-voice${oyiAudioExtension(mimeType)}`, { type: mimeType }));
     const result = await apiTranscribeOyiVoice(dataUrl, mimeType, `oyi-voice${oyiAudioExtension(mimeType)}`, durationMs);
@@ -9731,7 +9795,15 @@ async function finishOyiVoiceRecording() {
     appendOyiMessage("system", "I didn't catch that — please try recording again.");
     return;
   }
-  await sendOyiMessage(transcriptText);
+  const input = document.getElementById("oyiInput");
+  input.value = transcriptText;
+  autoGrowOyiInput();
+  input.focus();
+  if (sendImmediately) {
+    input.value = "";
+    autoGrowOyiInput();
+    await sendOyiMessage(transcriptText, { displayText: `🎙️ ${transcriptText}` });
+  }
 }
 
 // ---------------------------------------------------------------------
@@ -10181,13 +10253,14 @@ async function wireOyiControl() {
     startOyiVoiceRecording();
   });
   document.getElementById("oyiRecordingCancel").addEventListener("click", cancelOyiVoiceRecording);
+  document.getElementById("oyiRecordingStop").addEventListener("click", () => finishOyiVoiceRecording());
   // The send button doubles as "finish recording" while the composer is
   // in voice-recording mode (the static plus/textarea/mic row is hidden
   // then, so there's no ambiguity about what it does).
   document.getElementById("oyiSend").addEventListener("click", (event) => {
     if (document.getElementById("oyiComposer").classList.contains("voice-recording")) {
       event.preventDefault();
-      finishOyiVoiceRecording();
+      finishOyiVoiceRecording({ sendImmediately: true });
     }
   });
 

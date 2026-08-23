@@ -52,6 +52,11 @@ function startFakeOchigaBackend() {
         }));
         return;
       }
+      if (req.url.startsWith("/office/conversation/speech")) {
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify({ ok: true, audio_data_url: "data:audio/wav;base64,UklGRg==", mime_type: "audio/wav" }));
+        return;
+      }
       res.writeHead(404, { "content-type": "application/json" });
       res.end(JSON.stringify({ error: "not_found" }));
     });
@@ -91,7 +96,13 @@ async function main() {
     officeRateLimiter: new MemoryRateLimiter({ windowMs: 60_000, maxRequests: 300 }),
     loginRateLimiter: new MemoryRateLimiter({ windowMs: 60_000, maxRequests: 50 }),
     whatsappAdapter: { verifyWebhook: () => null, extractEvents: () => [] },
-    openaiClient: {},
+    openaiClient: {
+      createTranscription: async ({ buffer, mimeType }) => {
+        assert.ok(buffer.length >= 900);
+        assert.equal(mimeType, "audio/webm");
+        return { text: "What tasks are overdue?" };
+      },
+    },
     toolExecutor,
   });
 
@@ -140,7 +151,55 @@ async function main() {
     assert.equal(sent.body.portfolio_context.safe_summary.includes("wallet"), false, "safe_summary must never carry raw Facility fields");
     console.log("B. Ochiga Backend receives page_context + portfolio_context intact, with the correct credential header — PASS");
 
-    // C. Ochiga Backend unreachable -> honest 503, never a locally
+    // C. Streaming is additive and contains only safe operational stage
+    // identifiers emitted at real gateway/runtime boundaries. The final
+    // result remains the same canonical Backend response.
+    const streamRes = await fetch(`${base}/api/lead-agents/admin/office/intelligence/chat`, {
+      method: "POST",
+      headers: { "content-type": "application/json", accept: "application/x-ndjson", cookie },
+      body: JSON.stringify({ message: "What tasks are overdue?", page_context: { page: "tasks" } }),
+    });
+    assert.equal(streamRes.status, 200);
+    assert.match(streamRes.headers.get("content-type") || "", /application\/x-ndjson/);
+    const events = (await streamRes.text()).trim().split("\n").map((line) => JSON.parse(line));
+    const stages = events.filter((event) => event.type === "stage").map((event) => event.stage);
+    assert.deepEqual(stages, ["checking_tasks", "checking_deadlines", "preparing_summary", "completed"]);
+    assert.ok(events.every((event, index) => event.type !== "stage" || event.sequence === index + 1));
+    assert.equal(events.at(-1).type, "result");
+    assert.equal(events.at(-1).data.oyi_core.message, "This building has 20 homes, 15 active, with 1 open escalation.");
+    console.log("C. Runtime stages stream sequentially from real boundaries before the canonical result — PASS");
+
+    const leadStreamRes = await fetch(`${base}/api/lead-agents/admin/office/intelligence/chat`, {
+      method: "POST",
+      headers: { "content-type": "application/json", accept: "application/x-ndjson", cookie },
+      body: JSON.stringify({ message: "Show me the leads that need attention today.", page_context: { page: "crm" } }),
+    });
+    const leadEvents = (await leadStreamRes.text()).trim().split("\n").map((line) => JSON.parse(line));
+    assert.deepEqual(
+      leadEvents.filter((event) => event.type === "stage").map((event) => event.stage),
+      ["reviewing_leads", "preparing_summary", "completed"],
+      "an explicit leads request must not emit unrelated task/meeting stages"
+    );
+    console.log("C2. Explicit CRM intent suppresses unrelated domain stages — PASS");
+
+    const audioDataUrl = `data:audio/webm;base64,${Buffer.alloc(1000, 1).toString("base64")}`;
+    const transcriptionRes = await fetch(`${base}/api/lead-agents/admin/office/intelligence/transcribe`, {
+      method: "POST",
+      headers: { "content-type": "application/json", cookie },
+      body: JSON.stringify({ audio_data_url: audioDataUrl, mime_type: "audio/webm", file_name: "turn.webm", duration_ms: 1200 }),
+    });
+    assert.equal(transcriptionRes.status, 200);
+    assert.equal((await transcriptionRes.json()).text, "What tasks are overdue?");
+    const speechRes = await fetch(`${base}/api/lead-agents/admin/office/intelligence/speech`, {
+      method: "POST",
+      headers: { "content-type": "application/json", cookie },
+      body: JSON.stringify({ text: "Two tasks are overdue." }),
+    });
+    assert.equal(speechRes.status, 200);
+    assert.match((await speechRes.json()).audio_data_url, /^data:audio\/wav/);
+    console.log("C3. Authenticated transcription and turn-based speech legs remain operational — PASS");
+
+    // D. Ochiga Backend unreachable -> honest 503, never a locally
     // generated fallback answer.
     await close(fakeBackend);
     const outageRes = await fetch(`${base}/api/lead-agents/admin/office/intelligence/chat`, {
@@ -152,7 +211,7 @@ async function main() {
     const outageBody = await outageRes.json();
     assert.equal(outageBody.error, "oyi_core_unavailable");
     assert.ok(!("message" in outageBody) || outageBody.message.includes("unavailable"), "must not silently substitute a generated answer");
-    console.log("C. Ochiga Backend outage returns an honest 503, no silent fallback answer — PASS");
+    console.log("D. Ochiga Backend outage returns an honest 503, no silent fallback answer — PASS");
   } finally {
     await close(server);
   }
