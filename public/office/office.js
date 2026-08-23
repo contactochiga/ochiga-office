@@ -9244,6 +9244,7 @@ function openOyiCameraSheet() {
   closeOyiPlusMenu();
   document.getElementById("oyiCameraBackdrop").classList.add("open");
   resetOyiCameraSheet();
+  document.getElementById("oyiCameraClose").focus();
 }
 function closeOyiCameraSheet() {
   stopOyiCameraStream();
@@ -9719,7 +9720,9 @@ async function wireOyiControl() {
     }
   });
   document.addEventListener("keydown", (event) => {
-    if (event.key === "Escape" && plusMenu.classList.contains("open")) closeOyiPlusMenu();
+    if (event.key !== "Escape") return;
+    if (plusMenu.classList.contains("open")) closeOyiPlusMenu();
+    if (document.getElementById("oyiCameraBackdrop").classList.contains("open")) closeOyiCameraSheet();
   });
 
   // Phase 8 — camera/visual-context sheet.
