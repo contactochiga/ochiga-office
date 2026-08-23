@@ -602,9 +602,12 @@
   .oyi-plus-menu.open { display: flex; animation: oyi-reveal 140ms ease-out; }
   .oyi-plus-item {
     display: flex; align-items: flex-start; gap: 10px; background: none; border: none; color: var(--text-secondary);
-    padding: 9px; border-radius: var(--radius-sm); cursor: pointer; text-align: left; width: 100%;
+    padding: 9px; border-radius: var(--radius-sm); cursor: pointer; text-align: left; width: 100%; height: auto;
     transition: background var(--duration-fast) var(--ease);
   }
+  /* Override the generic 32px composer button dimensions: capability
+     entries are menu rows, not icon controls. */
+  .oyi-composer .oyi-plus-item { width: 100%; height: auto; flex-shrink: 0; justify-content: flex-start; }
   .oyi-plus-item:hover, .oyi-plus-item:focus-visible { background: rgba(255,255,255,0.06); color: var(--white); }
   .oyi-plus-item:focus-visible { outline: 1px solid var(--red-muted); outline-offset: -1px; }
   .oyi-plus-icon {
@@ -1408,7 +1411,7 @@
         <div class="oyi-quick-prompts" id="oyiQuickPrompts"></div>
         <form class="oyi-composer" id="oyiComposer">
           <div class="oyi-composer-static">
-            <button type="button" class="oyi-composer-btn" id="oyiPlusBtn" aria-haspopup="true" aria-expanded="false" aria-label="More ways to talk to Oyi" title="More ways to talk to Oyi">
+            <button type="button" class="oyi-composer-btn" id="oyiPlusBtn" aria-haspopup="menu" aria-controls="oyiPlusMenu" aria-expanded="false" aria-label="More ways to talk to Oyi" title="More ways to talk to Oyi">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"></path></svg>
             </button>
             <textarea id="oyiInput" rows="1" placeholder="Ask Oyi anything…"></textarea>
@@ -1456,7 +1459,7 @@
         <span class="oyi-avatar-dot" aria-hidden="true"></span>
         <div class="oyi-minimized-text">
           <div class="oyi-minimized-title">Oyi</div>
-          <div class="oyi-minimized-subtitle">Living Intelligence</div>
+          <div class="oyi-minimized-subtitle">Office Intelligence</div>
         </div>
         <button type="button" id="oyiRestore" aria-label="Restore Oyi" title="Restore">▢</button>
         <button type="button" id="oyiMinimizedClose" aria-label="Close Oyi" title="Close">×</button>
