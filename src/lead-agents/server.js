@@ -44,6 +44,7 @@ const {
   buildOyiCoreOfficeInternalRequest,
   callOyiCoreCorporateConversation,
   callOyiCoreOfficeInternalConversation,
+  callOyiCoreSpeechSynthesis,
   callOyiCoreObservabilityEvents,
   callOyiCoreListAutomations,
   callOyiCoreGetAutomation,
@@ -5005,7 +5006,9 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           return;
         }
         authorizePermission(authContext, "office.intelligence");
-        const body = await readJsonBody(req);
+        // Same generous limit as the transcribe route below -- a turn
+        // can now carry an attached photo or file as a base64 data URL.
+        const body = await readJsonBody(req, 30 * 1024 * 1024);
         requireObject(body, "body");
         if (!body.message || typeof body.message !== "string") {
           json(res, 400, { error: "message is required" });
@@ -5020,7 +5023,17 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           config,
         });
         const chatStartedAt = Date.now();
-        const oyiCoreResult = await callOyiCoreOfficeInternalConversation(config, oyiCoreRequest);
+        // A photo or file attached to this turn means Backend does a
+        // real extra OpenAI analysis call before it even starts
+        // orchestrating an answer -- the default 10s chat timeout is
+        // sized for text-only turns and is too tight for that combined
+        // round-trip, so it's raised only when media is genuinely
+        // attached, never as a blanket change to every chat call.
+        const hasAttachedMedia = Boolean(oyiCoreRequest.image_data_url || oyiCoreRequest.document_data_url);
+        const chatConfig = hasAttachedMedia
+          ? { ...config, officeBackendEventTimeoutMs: Math.max(config.officeBackendEventTimeoutMs || 10_000, 45_000) }
+          : config;
+        const oyiCoreResult = await callOyiCoreOfficeInternalConversation(chatConfig, oyiCoreRequest);
         // Agent Observatory (Programme 13) — office_internal previously had
         // zero observability of its own, unlike the older lead-agent
         // runtime.js chat path, which already writes real trace rows.
@@ -5110,6 +5123,31 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           log("error", "office_intelligence_transcribe_failed", { request_id: ctx.requestId, error: err?.stack || err?.message || String(err) });
           json(res, err.statusCode && err.statusCode >= 400 ? err.statusCode : 502, { error: "transcription_failed", message: "Unable to transcribe this recording right now." }, { "x-request-id": ctx.requestId });
         }
+        return;
+      }
+
+      // Oyi Office Intelligence Interaction Repositioning -- speech-out
+      // leg of the turn-based Voice Chat shell. Reuses Backend's real
+      // synthesizeOyiSpeech() (already proven live on the consumer
+      // website's voice turns), never a second speech capability.
+      if (pathname === "/api/lead-agents/admin/office/intelligence/speech") {
+        if (req.method !== "POST") {
+          methodNotAllowed(res, "POST");
+          return;
+        }
+        authorizePermission(authContext, "office.intelligence");
+        const body = await readJsonBody(req);
+        const speechText = String(body.text || "").trim();
+        if (!speechText) {
+          json(res, 400, { error: "text is required" }, { "x-request-id": ctx.requestId });
+          return;
+        }
+        const result = await callOyiCoreSpeechSynthesis(config, speechText.slice(0, 4000));
+        if (!result.ok) {
+          json(res, 502, { error: "speech_synthesis_failed", message: "Oyi couldn't generate speech for that reply right now." }, { "x-request-id": ctx.requestId });
+          return;
+        }
+        json(res, 200, { audio_data_url: result.audio_data_url, mime_type: result.mime_type }, { "x-request-id": ctx.requestId });
         return;
       }
 

@@ -517,6 +517,14 @@ async function buildOyiCoreOfficeInternalRequest({ authContext, message, body, r
     partnership_context: recordOf(safeBody.partnership_context),
     document_context: recordOf(safeBody.document_context),
     content_context: recordOf(safeBody.content_context),
+    // Oyi Office Intelligence Interaction Repositioning -- a photo or
+    // file attached to this turn (mutually exclusive; the camera sheet
+    // and Share file each only ever set one). Backend performs the
+    // real analysis and folds it into the same message before
+    // orchestration -- this proxy only needs to forward the raw data.
+    image_data_url: text(safeBody.image_data_url) || undefined,
+    document_data_url: text(safeBody.document_data_url) || undefined,
+    document_filename: text(safeBody.document_filename) || undefined,
     requested_capability: text(safeBody.requested_capability || "office_internal_conversation"),
     knowledge_context: Array.isArray(safeBody.knowledge_context) ? safeBody.knowledge_context : [],
     metadata: {
@@ -580,6 +588,33 @@ async function callOyiCoreOfficeInternalConversation(config = {}, payload = {}, 
     payload,
     options
   );
+}
+
+// Voice Chat's speech-out leg -- reuses the exact same authenticated
+// POST convention as every other Backend call in this file (shared
+// office key, same base URL), just against a different path.
+async function callOyiCoreSpeechSynthesis(config = {}, speechText = "", options = {}) {
+  const baseUrl = String(config.officeBackendBaseUrl || "").replace(/\/+$/, "");
+  if (!baseUrl) return { ok: false, unavailable: true, reason: "not_configured" };
+  const headers = { "content-type": "application/json" };
+  if (config.officeBackendApiKey) headers["x-office-api-key"] = config.officeBackendApiKey;
+  if (config.officeBackendBearerToken) headers.authorization = `Bearer ${config.officeBackendBearerToken}`;
+  const post = options.httpPost || ((targetUrl, body, requestConfig) => axios.post(targetUrl, body, requestConfig));
+  try {
+    const response = await post(`${baseUrl}/office/conversation/speech`, { text: speechText }, {
+      timeout: Math.max(config.officeBackendEventTimeoutMs || 10_000, 30_000),
+      headers,
+      validateStatus: () => true,
+    });
+    const status = Number(response && response.status) || 0;
+    const body = recordOf(response && response.data);
+    if (status >= 200 && status < 300 && body.ok !== false) {
+      return { ok: true, audio_data_url: body.audio_data_url, mime_type: body.mime_type };
+    }
+    return { ok: false, unavailable: true, status, reason: text(body.error || "backend_rejected") };
+  } catch (error) {
+    return { ok: false, unavailable: true, status: 0, reason: "network_error", error: error && error.code ? String(error.code) : "request_failed" };
+  }
 }
 
 // Oyi Cross-Surface Observability Closure — Backend's new safe,
@@ -761,6 +796,7 @@ module.exports = {
   buildOyiCoreOfficeInternalRequest,
   callOyiCoreCorporateConversation,
   callOyiCoreOfficeInternalConversation,
+  callOyiCoreSpeechSynthesis,
   callOyiCoreObservabilityEvents,
   callOyiCoreCreateWorkflow,
   callOyiCoreTransitionWorkflow,

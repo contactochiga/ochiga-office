@@ -456,7 +456,6 @@
   .oyi-panel-head .title-group { flex: 1; min-width: 0; }
   .oyi-panel-head .title { font-size: 12.5px; color: var(--white); font-weight: 600; line-height: 1.3; }
   .oyi-panel-head .subtitle { font-size: 10.5px; color: var(--text-tertiary); line-height: 1.3; }
-  .oyi-panel-head .context { font-size: 10.5px; color: var(--text-tertiary); }
   .oyi-panel-head button {
     background: none; border: none; color: var(--text-tertiary); cursor: pointer; font-size: 15px; line-height: 1;
     width: 24px; height: 24px; flex-shrink: 0; display: flex; align-items: center; justify-content: center; border-radius: 6px;
@@ -507,6 +506,17 @@
   }
   .oyi-composer button:hover { background: var(--red-bright); }
   .oyi-composer button:disabled { opacity: 0.4; cursor: default; }
+  /* Send affordance: dim/inactive with nothing to send, a subtle
+     transition into active Ochiga red the instant there's text —
+     never bright red while empty. */
+  #oyiSend {
+    background: rgba(255,255,255,0.05); color: var(--text-tertiary);
+    transition: background var(--duration-fast) var(--ease), color var(--duration-fast) var(--ease);
+  }
+  #oyiSend svg { width: 16px; height: 16px; }
+  #oyiSend:not(:disabled) { background: var(--red); color: var(--white); }
+  #oyiSend:not(:disabled):hover { background: var(--red-bright); }
+  #oyiSend:disabled { opacity: 1; cursor: default; }
 
   .oyi-quick-prompts { display: none; flex-wrap: wrap; gap: 6px; padding: 0 12px 10px; }
   .quick-prompt {
@@ -548,6 +558,23 @@
   @keyframes oyi-spin { to { transform: rotate(360deg); } }
   .oyi-activity-icon.pulse { animation: oyi-presence-pulse 1.4s ease-in-out infinite; }
 
+  /* Compact scanning card — an honest, small abstraction of the real
+     search-evidence / build-answer pipeline stages (never fabricated
+     per-domain theatre). Used only for the initial "thinking about the
+     message" state; confirm/execute/verify keep the plain single-line
+     .oyi-activity-row above since those already ARE precise real-time
+     labels for one specific network call. */
+  .oyi-activity-card {
+    display: flex !important; flex-direction: column; gap: 7px;
+    background: rgba(255,255,255,0.025) !important; border: 1px solid var(--line) !important;
+    border-radius: var(--radius-sm); padding: 10px 11px !important; max-width: 88%;
+  }
+  .oyi-activity-card-head { display: flex; align-items: center; gap: 7px; font-size: 12px; color: var(--white); font-weight: 500; }
+  .oyi-activity-card-head .oyi-activity-icon { color: var(--red-bright); }
+  .oyi-activity-steps { display: flex; flex-direction: column; gap: 4px; margin-left: 21px; }
+  .oyi-activity-step { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--text-tertiary); }
+  .oyi-activity-step svg { width: 12px; height: 12px; flex-shrink: 0; opacity: 0.75; }
+
   /* Phase 6/7 — composer upgrade: compact "+" context control and mic,
      auto-growing textarea, same restrained visual language as the
      existing send button (no new prominence pattern introduced). */
@@ -567,17 +594,27 @@
   .oyi-composer-btn.recording svg { animation: oyi-presence-pulse 1.2s ease-in-out infinite; }
 
   .oyi-plus-menu {
-    position: absolute; bottom: calc(100% + 6px); left: 12px;
+    position: absolute; bottom: calc(100% + 8px); left: 12px;
     background: var(--charcoal); border: 1px solid var(--line-strong); border-radius: var(--radius);
-    box-shadow: 0 12px 30px rgba(0,0,0,0.5); padding: 4px; display: none; flex-direction: column; min-width: 168px; z-index: 2;
+    box-shadow: 0 16px 40px rgba(0,0,0,0.55); padding: 6px; display: none; flex-direction: column; width: 252px;
+    max-width: calc(100vw - 24px); z-index: 2;
   }
-  .oyi-plus-menu.open { display: flex; }
-  .oyi-plus-menu button {
-    display: flex; align-items: center; gap: 8px; background: none; border: none; color: var(--text-secondary);
-    font-size: 12px; padding: 8px 9px; border-radius: var(--radius-sm); cursor: pointer; text-align: left;
+  .oyi-plus-menu.open { display: flex; animation: oyi-reveal 140ms ease-out; }
+  .oyi-plus-item {
+    display: flex; align-items: flex-start; gap: 10px; background: none; border: none; color: var(--text-secondary);
+    padding: 9px; border-radius: var(--radius-sm); cursor: pointer; text-align: left; width: 100%;
+    transition: background var(--duration-fast) var(--ease);
   }
-  .oyi-plus-menu button:hover { background: rgba(255,255,255,0.05); color: var(--white); }
-  .oyi-plus-menu button svg { width: 15px; height: 15px; flex-shrink: 0; color: var(--red-bright); }
+  .oyi-plus-item:hover, .oyi-plus-item:focus-visible { background: rgba(255,255,255,0.06); color: var(--white); }
+  .oyi-plus-item:focus-visible { outline: 1px solid var(--red-muted); outline-offset: -1px; }
+  .oyi-plus-icon {
+    width: 30px; height: 30px; flex-shrink: 0; border-radius: var(--radius-sm); background: rgba(179,36,27,0.12);
+    color: var(--red-bright); display: flex; align-items: center; justify-content: center;
+  }
+  .oyi-plus-icon svg { width: 15px; height: 15px; }
+  .oyi-plus-copy { display: flex; flex-direction: column; gap: 1px; min-width: 0; padding-top: 1px; }
+  .oyi-plus-title { font-size: 12.5px; font-weight: 500; color: var(--white); }
+  .oyi-plus-desc { font-size: 10.5px; color: var(--text-tertiary); line-height: 1.3; }
 
   /* Voice recording state — replaces the plus/mic row with a level
      meter + elapsed time + cancel/finish, restrained (one bar, no chrome
@@ -615,9 +652,13 @@
   .oyi-camera-sheet-body { padding: 14px; display: flex; flex-direction: column; gap: 10px; overflow-y: auto; }
   .oyi-camera-preview {
     width: 100%; aspect-ratio: 4/3; background: var(--black); border-radius: var(--radius-sm); border: 1px solid var(--line-strong);
-    display: flex; align-items: center; justify-content: center; overflow: hidden; position: relative;
+    overflow: hidden; position: relative;
   }
-  .oyi-camera-preview video, .oyi-camera-preview img { width: 100%; height: 100%; object-fit: cover; }
+  /* Content that gets rebuilt on every capture (empty state / live
+     video / captured photo) lives in this inner wrapper so the
+     "Oyi is looking…" overlay, a sibling, is never wiped out mid-flow. */
+  #oyiCameraFeed { width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; }
+  #oyiCameraFeed video, #oyiCameraFeed img { width: 100%; height: 100%; object-fit: cover; }
   .oyi-camera-empty { color: var(--text-tertiary); font-size: 12px; text-align: center; padding: 20px; }
   .oyi-camera-actions { display: flex; gap: 8px; }
   .oyi-camera-actions .btn { flex: 1; }
@@ -627,8 +668,63 @@
   }
   .oyi-camera-note-field:focus { border-color: var(--red); }
   .oyi-camera-limitation { font-size: 10.5px; color: var(--text-tertiary); line-height: 1.4; }
+  .oyi-camera-limitation:not(:empty) { display: block !important; }
   .oyi-camera-sheet-foot { display: flex; gap: 8px; padding: 12px 14px; border-top: 1px solid var(--line); }
   .oyi-camera-sheet-foot .btn { flex: 1; }
+
+  /* Visual mode — a reserved analysis surface ABOVE the video/image
+     feed (never below), and a subtle "Oyi is looking…" overlay while a
+     real analysis call is in flight. Matches the reference's visual
+     mode without becoming a second, disconnected product. */
+  .oyi-visual-analysis {
+    background: rgba(255,255,255,0.03); border: 1px solid var(--line); border-radius: var(--radius-sm);
+    padding: 9px 10px; animation: oyi-reveal 200ms ease-out;
+  }
+  .oyi-visual-analysis-label { font-size: 10px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--red-bright); display: flex; align-items: center; gap: 5px; }
+  .oyi-visual-analysis p { margin: 5px 0 0; font-size: 12px; line-height: 1.5; color: var(--text-primary); }
+  .oyi-visual-looking {
+    position: absolute; left: 8px; bottom: 8px; right: 8px;
+    display: flex; align-items: center; gap: 8px;
+    background: rgba(10,10,10,0.72); backdrop-filter: blur(4px); border-radius: var(--radius-sm);
+    padding: 7px 9px; color: var(--white);
+  }
+  .oyi-visual-looking svg { width: 15px; height: 15px; flex-shrink: 0; color: var(--red-bright); animation: oyi-presence-pulse 1.6s ease-in-out infinite; }
+  .oyi-visual-looking strong { display: block; font-size: 11.5px; font-weight: 500; line-height: 1.3; }
+  .oyi-visual-looking small { display: block; font-size: 10px; color: var(--text-tertiary); line-height: 1.3; }
+
+  /* Voice chat — a live turn-based AI voice conversation, distinct
+     from the composer's push-to-talk mic (speech-to-text into the
+     typed message pipeline). Same restrained visual language as the
+     camera sheet, not a separate product. */
+  .oyi-voicechat-backdrop {
+    position: fixed; inset: 0; background: rgba(0,0,0,0.6); z-index: 60; display: none; align-items: flex-end; justify-content: center;
+  }
+  .oyi-voicechat-backdrop.open { display: flex; }
+  @media (min-width: 640px) { .oyi-voicechat-backdrop { align-items: center; } }
+  .oyi-voicechat-sheet {
+    width: min(380px, 100%); background: var(--charcoal); border: 1px solid var(--line-strong);
+    border-radius: var(--radius) var(--radius) 0 0; box-shadow: 0 20px 60px rgba(0,0,0,0.55);
+    display: flex; flex-direction: column; overflow: hidden;
+  }
+  @media (min-width: 640px) { .oyi-voicechat-sheet { border-radius: var(--radius); } }
+  .oyi-voicechat-body { display: flex; flex-direction: column; align-items: center; gap: 12px; padding: 28px 20px 20px; }
+  .oyi-voicechat-mic-wrap { position: relative; }
+  .oyi-voicechat-mic {
+    width: 64px; height: 64px; border-radius: 50%; background: rgba(179,36,27,0.12); border: 1px solid var(--line-strong);
+    color: var(--text-secondary); display: flex; align-items: center; justify-content: center; cursor: pointer;
+    transition: border-color var(--duration-fast) var(--ease), color var(--duration-fast) var(--ease), background var(--duration-fast) var(--ease);
+  }
+  .oyi-voicechat-mic svg { width: 24px; height: 24px; }
+  .oyi-voicechat-mic:hover { border-color: var(--red-muted); color: var(--white); }
+  .oyi-voicechat-mic.listening { border-color: var(--red-bright); color: var(--red-bright); background: rgba(179,36,27,0.18); animation: oyi-presence-pulse 1.3s ease-in-out infinite; }
+  .oyi-voicechat-mic.speaking { border-color: var(--red-bright); color: var(--red-bright); }
+  .oyi-voicechat-mic:disabled { opacity: 0.5; cursor: default; }
+  .oyi-voicechat-waveform { display: flex; align-items: center; gap: 2px; height: 26px; }
+  .oyi-voicechat-waveform-bar { width: 2.5px; min-height: 3px; border-radius: 2px; background: var(--red-muted); transition: height 90ms ease-out, background-color 90ms; }
+  .oyi-voicechat-time { font-size: 11px; color: var(--text-tertiary); font-variant-numeric: tabular-nums; }
+  .oyi-voicechat-status { margin: 0; font-size: 12px; color: var(--text-secondary); text-align: center; min-height: 16px; }
+  .oyi-voicechat-foot { display: flex; gap: 8px; padding: 12px 14px; border-top: 1px solid var(--line); }
+  .oyi-voicechat-foot .btn { flex: 1; }
 
   .oyi-structured p { margin: 0 0 8px; }
   .oyi-structured p:last-child { margin-bottom: 0; }
@@ -1302,9 +1398,8 @@
           <span class="oyi-avatar-dot" aria-hidden="true"></span>
           <div class="title-group">
             <div class="title">Oyi</div>
-            <div class="subtitle">Living Intelligence</div>
+            <div class="subtitle">Office Intelligence</div>
           </div>
-          <div class="context" id="oyiContext"></div>
           <button type="button" id="oyiNewConversation" aria-label="New conversation" title="New conversation">+</button>
           <button type="button" id="oyiMinimize" aria-label="Minimize Oyi" title="Minimize">−</button>
           <button type="button" id="oyiClose" aria-label="Close Oyi" title="Close">×</button>
@@ -1313,7 +1408,7 @@
         <div class="oyi-quick-prompts" id="oyiQuickPrompts"></div>
         <form class="oyi-composer" id="oyiComposer">
           <div class="oyi-composer-static">
-            <button type="button" class="oyi-composer-btn" id="oyiPlusBtn" aria-haspopup="true" aria-expanded="false" aria-label="Add context" title="Add context">
+            <button type="button" class="oyi-composer-btn" id="oyiPlusBtn" aria-haspopup="true" aria-expanded="false" aria-label="More ways to talk to Oyi" title="More ways to talk to Oyi">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"></path></svg>
             </button>
             <textarea id="oyiInput" rows="1" placeholder="Ask Oyi anything…"></textarea>
@@ -1329,11 +1424,30 @@
             <div class="oyi-recording-meter" id="oyiRecordingMeter" aria-hidden="true"></div>
             <span class="oyi-recording-time" id="oyiRecordingTime">0:00</span>
           </div>
-          <button type="submit" id="oyiSend" aria-label="Send">→</button>
+          <button type="submit" id="oyiSend" aria-label="Send" disabled>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6"></path></svg>
+          </button>
           <div class="oyi-plus-menu" id="oyiPlusMenu" role="menu">
-            <button type="button" id="oyiCameraOption" role="menuitem">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 8h3l2-2h6l2 2h3v11H4z"></path><circle cx="12" cy="14" r="3.2"></circle></svg>
-              Add a photo
+            <button type="button" class="oyi-plus-item" id="oyiFileOption" role="menuitem">
+              <span class="oyi-plus-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><path d="M14 2v6h6"></path></svg></span>
+              <span class="oyi-plus-copy">
+                <span class="oyi-plus-title">Share file</span>
+                <span class="oyi-plus-desc">Upload any file for Oyi to analyse</span>
+              </span>
+            </button>
+            <button type="button" class="oyi-plus-item" id="oyiCameraOption" role="menuitem">
+              <span class="oyi-plus-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 8h3l2-2h6l2 2h3v11H4z"></path><circle cx="12" cy="14" r="3.2"></circle></svg></span>
+              <span class="oyi-plus-copy">
+                <span class="oyi-plus-title">Send photo / video</span>
+                <span class="oyi-plus-desc">Take or upload a photo for Oyi to see</span>
+              </span>
+            </button>
+            <button type="button" class="oyi-plus-item" id="oyiVoiceChatOption" role="menuitem">
+              <span class="oyi-plus-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.127.96.361 1.903.7 2.81a2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c.907.339 1.85.573 2.81.7A2 2 0 0 1 22 16.92z"></path></svg></span>
+              <span class="oyi-plus-copy">
+                <span class="oyi-plus-title">Voice chat</span>
+                <span class="oyi-plus-desc">Talk naturally with Oyi using voice</span>
+              </span>
             </button>
           </div>
         </form>
@@ -1355,24 +1469,70 @@
     <div class="oyi-camera-sheet-backdrop" id="oyiCameraBackdrop">
       <div class="oyi-camera-sheet" role="dialog" aria-modal="true" aria-labelledby="oyiCameraTitle">
         <div class="oyi-camera-sheet-head">
-          <span class="title" id="oyiCameraTitle">Add a photo</span>
+          <span class="oyi-avatar-dot" aria-hidden="true"></span>
+          <div class="title-group">
+            <div class="title" id="oyiCameraTitle">Oyi</div>
+            <div class="subtitle">Office Intelligence</div>
+          </div>
           <button type="button" class="oyi-camera-sheet-close" id="oyiCameraClose" aria-label="Close">×</button>
         </div>
         <div class="oyi-camera-sheet-body">
+          <div class="oyi-visual-analysis" id="oyiVisualAnalysis" hidden>
+            <span class="oyi-visual-analysis-label">Visual analysis</span>
+            <p id="oyiVisualAnalysisText"></p>
+          </div>
           <div class="oyi-camera-preview" id="oyiCameraPreview">
-            <div class="oyi-camera-empty" id="oyiCameraEmpty">Take a photo or choose one from your device.</div>
+            <div id="oyiCameraFeed">
+              <div class="oyi-camera-empty" id="oyiCameraEmpty">Take a photo or choose one from your device.</div>
+            </div>
+            <div class="oyi-visual-looking" id="oyiVisualLooking" hidden>
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"></circle><path d="m21 21-4.3-4.3"></path></svg>
+              <span>
+                <strong>Oyi is looking…</strong>
+                <small>Analysing your image</small>
+              </span>
+            </div>
           </div>
           <div class="oyi-camera-actions" id="oyiCameraActions">
             <button type="button" class="btn btn-ghost btn-sm" id="oyiCameraCapture">Take Photo</button>
             <button type="button" class="btn btn-ghost btn-sm" id="oyiCameraChoose">Choose File</button>
           </div>
           <input type="file" accept="image/*" capture="environment" id="oyiCameraFileInput" hidden />
-          <textarea class="oyi-camera-note-field" id="oyiCameraNote" rows="2" placeholder="Optional note for Oyi (e.g. what to look for)…"></textarea>
-          <div class="oyi-camera-limitation" id="oyiCameraLimitation" hidden>Oyi can't yet see the contents of a photo — it will be attached for the record, and your note (if any) is what Oyi actually reads.</div>
+          <textarea class="oyi-camera-note-field" id="oyiCameraNote" rows="2" placeholder="Optional — what should Oyi look for?"></textarea>
+          <div class="oyi-camera-limitation" id="oyiCameraLimitation" hidden></div>
         </div>
         <div class="oyi-camera-sheet-foot">
           <button type="button" class="btn btn-ghost btn-sm" id="oyiCameraCancel">Cancel</button>
-          <button type="button" class="btn btn-primary btn-sm" id="oyiCameraSend" disabled>Send</button>
+          <button type="button" class="btn btn-primary btn-sm" id="oyiCameraSend" disabled>Show Oyi</button>
+        </div>
+      </div>
+    </div>
+
+    <input type="file" id="oyiShareFileInput" accept=".pdf,.txt,.csv,.md,.json,image/jpeg,image/png,image/webp,application/pdf,text/plain,text/csv,text/markdown,application/json" hidden />
+
+    <div class="oyi-voicechat-backdrop" id="oyiVoiceChatBackdrop">
+      <div class="oyi-voicechat-sheet" role="dialog" aria-modal="true" aria-labelledby="oyiVoiceChatTitle">
+        <div class="oyi-camera-sheet-head">
+          <span class="oyi-avatar-dot" aria-hidden="true"></span>
+          <div class="title-group">
+            <div class="title" id="oyiVoiceChatTitle">Oyi</div>
+            <div class="subtitle">Office Intelligence</div>
+          </div>
+          <button type="button" class="oyi-camera-sheet-close" id="oyiVoiceChatClose" aria-label="Close voice chat">×</button>
+        </div>
+        <div class="oyi-voicechat-body">
+          <div class="oyi-voicechat-mic-wrap">
+            <button type="button" class="oyi-voicechat-mic" id="oyiVoiceChatMic" aria-label="Start listening">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 15a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3Z"></path><path d="M19 11a7 7 0 0 1-14 0"></path><path d="M12 18v3"></path></svg>
+            </button>
+          </div>
+          <div class="oyi-voicechat-waveform" id="oyiVoiceChatWaveform" aria-hidden="true"></div>
+          <div class="oyi-voicechat-time" id="oyiVoiceChatTime">00:00</div>
+          <p class="oyi-voicechat-status" id="oyiVoiceChatStatus" role="status" aria-live="polite">Tap the microphone to start talking</p>
+        </div>
+        <div class="oyi-voicechat-foot">
+          <button type="button" class="btn btn-ghost btn-sm" id="oyiVoiceChatCancel">Cancel turn</button>
+          <button type="button" class="btn btn-primary btn-sm" id="oyiVoiceChatEnd">End</button>
         </div>
       </div>
     </div>
