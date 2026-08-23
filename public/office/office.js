@@ -1160,7 +1160,7 @@ function renderStatusActions(namespace, collection, record, onDone, options = {}
 function promptAddRelatedNote(relatedType, relatedId) {
   openDialog("Add Note", [{ name: "title", label: "Title" }, { name: "body", label: "Note", type: "textarea" }], async (data) => {
     await apiCreateRelatedActivity(relatedType, relatedId, { title: data.title || "Note", body: data.body });
-    renderRoute();
+    renderRouteSafely();
   });
 }
 
@@ -1177,13 +1177,27 @@ function currentSegmentsFromHash() {
 }
 function navigate(path) {
   const target = `#/${path}`;
-  if (window.location.hash === target) renderRoute();
+  if (window.location.hash === target) {
+    resetOyiTransientModesForNavigation();
+    renderRouteSafely();
+  }
   else window.location.hash = target;
 }
 window.addEventListener("hashchange", () => {
+  resetOyiTransientModesForNavigation();
   state.segments = currentSegmentsFromHash();
-  renderRoute();
+  renderRouteSafely();
 });
+
+function resetOyiTransientModesForNavigation() {
+  const plusMenu = document.getElementById("oyiPlusMenu");
+  if (plusMenu?.classList.contains("open")) closeOyiPlusMenu();
+  const camera = document.getElementById("oyiCameraBackdrop");
+  if (camera?.classList.contains("open")) closeOyiCameraSheet();
+  const voiceChat = document.getElementById("oyiVoiceChatBackdrop");
+  if (voiceChat?.classList.contains("open")) closeOyiVoiceChat();
+  if (document.getElementById("oyiComposer")?.classList.contains("voice-recording")) cancelOyiVoiceRecording();
+}
 
 function setTopbar(title, meta) {
   document.getElementById("topbarTitle").textContent = title;
@@ -1198,7 +1212,7 @@ function setTopbar(title, meta) {
 // projection, never raw Facility/resident data.
 function setSelectedObject(type, id, label, extraContext) {
   state.selectedObject = type ? { type, id, label, extraContext: extraContext || null } : null;
-  updateOyiContext();
+  syncOyiPresentationSafely();
 }
 
 async function renderRoute() {
@@ -1281,6 +1295,24 @@ async function renderRoute() {
   if (token !== state.renderToken) return;
   syncNavActiveState();
   closeNavOnMobile();
+}
+
+// A page-module failure is localized to the main outlet and logged with
+// its route while the Office shell and Oyi remain usable. Oyi's optional
+// presentation synchronization has its own narrower boundary below.
+async function renderRouteSafely() {
+  try {
+    await renderRoute();
+  } catch (error) {
+    console.error("office_route_render_failed", { route: state.segments.join("/"), error });
+    const outlet = document.getElementById("viewOutlet");
+    if (outlet) {
+      outlet.innerHTML = "";
+      outlet.appendChild(errorPanel("This Office page could not finish loading. Please try again."));
+    }
+    syncNavActiveState();
+    closeNavOnMobile();
+  }
 }
 
 function renderPlaceholderView(outlet, item) {
@@ -3304,7 +3336,7 @@ function promptAddNote(refs) {
   openDialog("Add Note", [{ name: "title", label: "Title" }, { name: "body", label: "Note", type: "textarea" }], async (data) => {
     await apiCreateCrm("activities", { ...refs, activity_type: "note", title: data.title || "Note", body: data.body });
     invalidate("activities");
-    renderRoute();
+    renderRouteSafely();
   });
 }
 
@@ -3387,7 +3419,7 @@ function openCreateMeetingDialog(prefill = {}) {
       related_id: prefill.related_id,
     });
     invalidate("meetings");
-    renderRoute();
+    renderRouteSafely();
   });
 }
 
@@ -3411,7 +3443,7 @@ function openCreateTaskDialog(prefill = {}) {
       partnership_relationship_id: prefill.partnership_relationship_id,
     });
     invalidate("tasks");
-    renderRoute();
+    renderRouteSafely();
   });
 }
 
@@ -8338,19 +8370,26 @@ const QUICK_PROMPTS = {
 };
 
 function updateOyiContext() {
-  const contextEl = document.getElementById("oyiContext");
-  const quickPromptsEl = document.getElementById("oyiQuickPrompts");
+  // Internal context comes from canonical route/selection state.
+  // currentPageContext() forwards it to Oyi independently of any
+  // optional header presentation node.
   if (state.selectedObject) {
-    contextEl.textContent = `Context: ${state.selectedObject.label}`;
     renderQuickPrompts(QUICK_PROMPTS[state.selectedObject.type] || []);
   } else {
     const item = findNavItem(state.segments[0]) || PRIMARY_NAV[0];
-    contextEl.textContent = `Context: ${item.label}`;
     renderQuickPrompts(item.key === "home" ? ["Show me the leads that need attention today.", "Which opportunities haven't been followed up this week?"] : []);
+  }
+}
+function syncOyiPresentationSafely() {
+  try {
+    updateOyiContext();
+  } catch (error) {
+    console.error("office_oyi_presentation_sync_failed", { route: state.segments.join("/"), error });
   }
 }
 function renderQuickPrompts(prompts) {
   const host = document.getElementById("oyiQuickPrompts");
+  if (!host) return;
   host.innerHTML = "";
   prompts.forEach((prompt) => {
     const chip = el(`<button type="button" class="quick-prompt">${escapeHtml(prompt)}</button>`);
@@ -9338,8 +9377,10 @@ function openOyiCameraSheet() {
   document.getElementById("oyiCameraClose").focus();
 }
 function closeOyiCameraSheet() {
-  stopOyiCameraStream();
   document.getElementById("oyiCameraBackdrop").classList.remove("open");
+  // Visual input is turn-scoped. Clear captured media and any analysis
+  // or failure presentation before ordinary text/page navigation resumes.
+  resetOyiCameraSheet();
 }
 function setOyiVisualLooking(active) {
   const overlay = document.getElementById("oyiVisualLooking");
@@ -10565,7 +10606,7 @@ function showShell() {
   if (hasPermission("notifications.read")) refreshNotifications();
   if (hasPermission("notifications.read") || hasPermission("messages.read")) connectRealtimeStream();
   state.segments = currentSegmentsFromHash();
-  renderRoute();
+  renderRouteSafely();
 }
 function showLogin() {
   document.body.classList.add("auth-logged-out");
