@@ -9279,15 +9279,18 @@ function updateOyiSendState() {
   if (!input || !send) return;
   send.disabled = !input.value.trim() || state.oyiBusy;
 }
-function closeOyiPlusMenu() {
+function closeOyiPlusMenu({ restoreFocus = false } = {}) {
   document.getElementById("oyiPlusMenu").classList.remove("open");
-  document.getElementById("oyiPlusBtn").setAttribute("aria-expanded", "false");
+  const button = document.getElementById("oyiPlusBtn");
+  button.setAttribute("aria-expanded", "false");
+  if (restoreFocus) button.focus();
 }
 function toggleOyiPlusMenu() {
   const menu = document.getElementById("oyiPlusMenu");
   const open = !menu.classList.contains("open");
   menu.classList.toggle("open", open);
   document.getElementById("oyiPlusBtn").setAttribute("aria-expanded", String(open));
+  if (open) menu.querySelector('[role="menuitem"]')?.focus();
 }
 
 // ---------------------------------------------------------------------
@@ -10066,6 +10069,20 @@ async function wireOyiControl() {
     event.stopPropagation();
     toggleOyiPlusMenu();
   });
+  plusMenu.addEventListener("keydown", (event) => {
+    const items = Array.from(plusMenu.querySelectorAll('[role="menuitem"]'));
+    const current = items.indexOf(document.activeElement);
+    if (event.key === "Escape") {
+      event.preventDefault();
+      closeOyiPlusMenu({ restoreFocus: true });
+      return;
+    }
+    if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+      event.preventDefault();
+      const delta = event.key === "ArrowDown" ? 1 : -1;
+      items[(current + delta + items.length) % items.length]?.focus();
+    }
+  });
   document.getElementById("oyiCameraOption").addEventListener("click", () => {
     closeOyiPlusMenu();
     openOyiCameraSheet();
@@ -10085,7 +10102,7 @@ async function wireOyiControl() {
   });
   document.addEventListener("keydown", (event) => {
     if (event.key !== "Escape") return;
-    if (plusMenu.classList.contains("open")) closeOyiPlusMenu();
+    if (plusMenu.classList.contains("open")) closeOyiPlusMenu({ restoreFocus: true });
     if (document.getElementById("oyiCameraBackdrop").classList.contains("open")) closeOyiCameraSheet();
     if (document.getElementById("oyiVoiceChatBackdrop").classList.contains("open")) closeOyiVoiceChat();
   });

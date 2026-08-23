@@ -1,0 +1,33 @@
+const assert = require("assert");
+const fs = require("fs");
+const path = require("path");
+
+const root = path.resolve(__dirname, "..");
+const html = fs.readFileSync(path.join(root, "public/office/index.html"), "utf8");
+const client = fs.readFileSync(path.join(root, "public/office/office.js"), "utf8");
+const gateway = fs.readFileSync(path.join(root, "src/lead-agents/oyi-core-gateway.js"), "utf8");
+const server = fs.readFileSync(path.join(root, "src/lead-agents/server.js"), "utf8");
+
+assert(html.includes('<div class="subtitle">Office Intelligence</div>'), "canonical Oyi header subtitle is missing");
+assert(html.includes('<div class="oyi-minimized-subtitle">Office Intelligence</div>'), "minimized identity must match the header");
+assert(html.includes('placeholder="Ask Oyi anything…"'), "reference composer placeholder is missing");
+assert(html.includes('id="oyiSend" aria-label="Send" disabled'), "send must begin disabled");
+assert(html.includes('aria-haspopup="menu"') && html.includes('aria-controls="oyiPlusMenu"'), "capability trigger needs menu semantics");
+assert(html.includes("Share file") && html.includes("Send photo / video") && html.includes("Voice chat"), "capability menu is incomplete");
+assert(html.includes(".oyi-composer .oyi-plus-item { width: 100%; height: auto"), "capability rows must override icon-button dimensions");
+assert(html.includes("prefers-reduced-motion: reduce"), "reduced-motion support is missing");
+
+assert(client.includes('event.key === "Enter" && !event.shiftKey'), "Enter/Shift+Enter behavior is missing");
+assert(client.includes('event.key === "ArrowDown" || event.key === "ArrowUp"'), "menu arrow-key navigation is missing");
+assert(client.includes("closeOyiPlusMenu({ restoreFocus: true })"), "Escape must restore focus to the menu trigger");
+assert(client.includes("initialOyiActivity(message)"), "honest processing-state selection is missing");
+assert(client.includes("renderResponseBlocks(normalized.cards)"), "canonical structured block renderer is not connected");
+assert(client.includes("renderApprovalSurface(normalized.toolProposals)"), "governed proposal renderer is not connected");
+assert(client.includes("apiTranscribeOyiVoice") && client.includes("openOyiVoiceChat"), "dictation and voice chat paths must remain distinct and real");
+
+assert(gateway.includes("image_data_url") && gateway.includes("document_data_url"), "visual/file contracts are not forwarded to Backend");
+assert(server.includes('/api/lead-agents/admin/office/intelligence/transcribe'), "authenticated Office transcription route is missing");
+assert(server.includes('/api/lead-agents/admin/office/intelligence/speech'), "voice-chat speech route is missing");
+assert(server.includes('authorizePermission(authContext, "office.intelligence")'), "Office intelligence routes must remain permission-gated");
+
+console.log("oyi interaction repositioning acceptance: PASS");
