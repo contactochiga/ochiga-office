@@ -290,6 +290,12 @@ async function apiTranscribeOyiVoice(audioDataUrl, mimeType, fileName, durationM
     body: { audio_data_url: audioDataUrl, mime_type: mimeType, file_name: fileName, duration_ms: durationMs, language: "en" },
   });
 }
+// Voice Chat's speech-out leg -- reuses Backend's real
+// synthesizeOyiSpeech() (same function already proven live on the
+// consumer website's voice turns), never a second speech capability.
+async function apiSynthesizeOyiSpeech(text) {
+  return api("/api/lead-agents/admin/office/intelligence/speech", { method: "POST", body: { text } });
+}
 async function apiUploadContentImage(dataUrl, filename, mimeType) {
   return api("/api/lead-agents/admin/storage", { method: "POST", body: { data_url: dataUrl, purpose: "content_featured_image", filename, mime_type: mimeType } });
 }
@@ -8422,34 +8428,57 @@ function appendOyiMessage(role, contentNodeOrText) {
 const OYI_ACTIVITY_ICONS = {
   thinking: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="1.6" fill="currentColor" stroke="none"></circle><path d="M12 3.5v3M12 17.5v3M4.5 12h3M16.5 12h3" opacity="0.6"></path></svg>`,
   reviewing: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="6.5"></circle><path d="m20 20-3.6-3.6"></path></svg>`,
+  searching: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="6.5"></circle><path d="m20 20-3.6-3.6"></path></svg>`,
   scheduling: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3.5" y="5" width="17" height="16" rx="2"></rect><path d="M8 3v4M16 3v4M3.5 10h17"></path></svg>`,
   executing: `<svg viewBox="0 0 24 24" fill="currentColor" stroke="none"><path d="M13 2 4 14h6l-1 8 9-12h-6l1-8Z"></path></svg>`,
   verifying: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"></path></svg>`,
   creating: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="4" width="16" height="16" rx="3"></rect><path d="m8 12 2.5 2.5L16 9"></path></svg>`,
+  leads: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path><circle cx="9" cy="7" r="4"></circle><path d="M23 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"></path></svg>`,
+  tasks: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3.5" y="4" width="17" height="17" rx="2"></rect><path d="m8 12 2.5 2.5L16 9"></path></svg>`,
+  communications: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"></path></svg>`,
+  documents: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><path d="M14 2v6h6M9 13h6M9 17h6"></path></svg>`,
+  reasoning: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v2M12 19v2M3 12h2M19 12h2M5.6 5.6l1.4 1.4M17 17l1.4 1.4M18.4 5.6 17 7M7 17l-1.4 1.4"></path><circle cx="12" cy="12" r="3.5"></circle></svg>`,
+  visual: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 8h3l2-2h6l2 2h3v11H4z"></path><circle cx="12" cy="14" r="3.2"></circle></svg>`,
 };
 function oyiActivityIconClass(iconKey) {
   return iconKey === "executing" ? "spin" : "pulse";
 }
-function showOyiActivity(label, iconKey) {
+function oyiActivityIcon(iconKey) {
+  return OYI_ACTIVITY_ICONS[iconKey] || OYI_ACTIVITY_ICONS.thinking;
+}
+// Compact scanning card — an honest, small abstraction of the real
+// search-evidence / build-answer pipeline (never fabricated per-domain
+// theatre; see initialOyiActivity() for how steps are actually chosen).
+function showOyiActivity(label, iconKey, steps) {
   hideOyiActivity();
   const thread = document.getElementById("oyiThread");
+  const stepsList = Array.isArray(steps) ? steps : [];
+  const cls = stepsList.length ? "oyi-msg assistant oyi-activity-row oyi-activity-card" : "oyi-msg assistant oyi-activity-row";
+  const stepsHtml = stepsList.length
+    ? `<div class="oyi-activity-steps">${stepsList
+        .map((step) => `<div class="oyi-activity-step">${oyiActivityIcon(step.icon)}<span>${escapeHtml(step.text)}</span></div>`)
+        .join("")}</div>`
+    : "";
   const row = el(
-    `<div class="oyi-msg assistant oyi-activity-row" id="oyiActivityRow" role="status" aria-live="polite">` +
-      `<span class="oyi-activity-icon ${oyiActivityIconClass(iconKey)}">${OYI_ACTIVITY_ICONS[iconKey] || OYI_ACTIVITY_ICONS.thinking}</span>` +
-      `<span class="oyi-activity-text">${escapeHtml(label)}</span></div>`
+    `<div class="${cls}" id="oyiActivityRow" role="status" aria-live="polite">` +
+      `<div class="oyi-activity-card-head"><span class="oyi-activity-icon ${oyiActivityIconClass(iconKey)}">${oyiActivityIcon(iconKey)}</span>` +
+      `<span class="oyi-activity-text">${escapeHtml(label)}</span></div>${stepsHtml}</div>`
   );
   thread.appendChild(row);
   thread.scrollTop = thread.scrollHeight;
 }
 function updateOyiActivity(label, iconKey) {
   const row = document.getElementById("oyiActivityRow");
-  if (!row) {
+  if (!row || row.classList.contains("oyi-activity-card")) {
+    // Network-boundary updates (confirming/executing/verifying) are
+    // always single-line — rebuild fresh rather than trying to patch a
+    // multi-step card back down to one line.
     showOyiActivity(label, iconKey);
     return;
   }
   const iconEl = row.querySelector(".oyi-activity-icon");
   iconEl.className = `oyi-activity-icon ${oyiActivityIconClass(iconKey)}`;
-  iconEl.innerHTML = OYI_ACTIVITY_ICONS[iconKey] || OYI_ACTIVITY_ICONS.thinking;
+  iconEl.innerHTML = oyiActivityIcon(iconKey);
   row.querySelector(".oyi-activity-text").textContent = label;
   const thread = document.getElementById("oyiThread");
   thread.scrollTop = thread.scrollHeight;
@@ -8478,10 +8507,51 @@ const OYI_CONTEXT_ACTIVITY_LABEL = {
   document: "Reviewing the document…",
   content: "Reviewing content…",
 };
-function initialOyiActivity() {
+// Keyword -> real capability domain the message is actually about.
+// Only ever surfaces a step when the outgoing message genuinely
+// mentions that domain -- never fixed theatre unrelated to the query.
+const OYI_MESSAGE_STEP_KEYWORDS = [
+  { re: /\blead|opportunit|crm|customer|client\b/i, icon: "leads", text: "Reviewing leads" },
+  { re: /\btask|follow[- ]?up|to-?do\b/i, icon: "tasks", text: "Checking tasks" },
+  { re: /\bmessag|inbox|whatsapp|email|communicat/i, icon: "communications", text: "Checking communications" },
+  { re: /\bmeeting|calendar|schedul/i, icon: "scheduling", text: "Checking the calendar" },
+  { re: /\bautomation\b/i, icon: "creating", text: "Checking automations" },
+  { re: /\bsupport|case|issue|complaint\b/i, icon: "reviewing", text: "Reviewing support" },
+  { re: /\bportfolio|estate|propert|project\b/i, icon: "documents", text: "Reviewing the portfolio" },
+  { re: /\bdocument|report|proposal\b/i, icon: "documents", text: "Reviewing documents" },
+];
+// The real attention/office-snapshot capability genuinely does
+// aggregate leads + tasks + communications together -- this phrasing
+// match mirrors what that capability actually does, not fabricated.
+const OYI_ATTENTION_PHRASING = /\battention|today|catch me up|what'?s (going on|new)|overview\b/i;
+function initialOyiActivity(message) {
   const selected = state.selectedObject;
-  const label = selected ? OYI_CONTEXT_ACTIVITY_LABEL[selected.type] : null;
-  return label ? { label, icon: "reviewing" } : { label: "Thinking…", icon: "thinking" };
+  if (selected) {
+    const label = OYI_CONTEXT_ACTIVITY_LABEL[selected.type];
+    if (label) return { label, icon: "reviewing", steps: [] };
+  }
+  message = String(message || "");
+  if (OYI_ATTENTION_PHRASING.test(message)) {
+    return {
+      label: "Scanning across Office…",
+      icon: "searching",
+      steps: [
+        { icon: "leads", text: "Reviewing leads" },
+        { icon: "tasks", text: "Checking tasks" },
+        { icon: "communications", text: "Checking communications" },
+        { icon: "reasoning", text: "Preparing summary" },
+      ],
+    };
+  }
+  const matched = OYI_MESSAGE_STEP_KEYWORDS.filter((entry) => entry.re.test(message)).slice(0, 3);
+  if (matched.length) {
+    return {
+      label: "Scanning across Office…",
+      icon: "searching",
+      steps: [...matched.map((entry) => ({ icon: entry.icon, text: entry.text })), { icon: "reasoning", text: "Preparing summary" }],
+    };
+  }
+  return { label: "Thinking…", icon: "thinking", steps: [] };
 }
 
 // Rich response rendering (Universal Interaction Shell) — renders a
@@ -9041,13 +9111,17 @@ async function sendOyiMessage(message, options = {}) {
   // Oyi still receives the real content.
   appendOyiMessage("user", options.displayText || message);
   state.oyiBusy = true;
-  document.getElementById("oyiSend").disabled = true;
+  updateOyiSendState();
   setOyiPresence("thinking");
-  const initial = initialOyiActivity();
-  showOyiActivity(initial.label, initial.icon);
+  const initial = options.extraBody?.image_data_url
+    ? { label: "Analysing your image…", icon: "visual", steps: [] }
+    : options.extraBody?.document_data_url
+    ? { label: "Analysing your file…", icon: "documents", steps: [] }
+    : initialOyiActivity(message);
+  showOyiActivity(initial.label, initial.icon, initial.steps);
 
   try {
-    const { data, normalized } = await callOyiChat(message);
+    const { data, normalized } = await callOyiChat(message, options.extraBody);
     hideOyiActivity();
     appendOyiMessage("assistant", renderOyiResponse(normalized));
     if (normalized.toolProposals.length) {
@@ -9057,15 +9131,17 @@ async function sendOyiMessage(message, options = {}) {
     if (pendingAction && pendingAction.status === "pending") {
       appendOyiMessage("system", renderActionProposalCard(pendingAction));
     }
+    return normalized;
   } catch (err) {
     hideOyiActivity();
     if (err.status === 503) appendOyiMessage("system", "Oyi Core is unavailable right now. Nothing was answered from a separate reasoning path — please try again shortly.");
     else if (err.status === 403) appendOyiMessage("system", "You don't have permission to use Office intelligence.");
     else appendOyiMessage("system", "Could not reach Oyi. Please try again.");
+    return null;
   } finally {
     hideOyiActivity();
     state.oyiBusy = false;
-    document.getElementById("oyiSend").disabled = false;
+    updateOyiSendState();
     setOyiPresence("idle");
   }
 }
@@ -9105,6 +9181,7 @@ function closeOyiPanel() {
   // running, matching "minimize must never equal close").
   cancelOyiVoiceRecording();
   closeOyiCameraSheet();
+  closeOyiVoiceChat();
 }
 
 // Edge-docked Universal Interaction Shell orb (Consumer's visual
@@ -9192,6 +9269,15 @@ function autoGrowOyiInput() {
   const input = document.getElementById("oyiInput");
   input.style.height = "auto";
   input.style.height = `${Math.min(input.scrollHeight, 96)}px`;
+  updateOyiSendState();
+}
+// Dim/inactive with nothing to send, active Ochiga red the instant
+// there's real text -- never bright red while the composer is empty.
+function updateOyiSendState() {
+  const input = document.getElementById("oyiInput");
+  const send = document.getElementById("oyiSend");
+  if (!input || !send) return;
+  send.disabled = !input.value.trim() || state.oyiBusy;
 }
 function closeOyiPlusMenu() {
   document.getElementById("oyiPlusMenu").classList.remove("open");
@@ -9205,21 +9291,16 @@ function toggleOyiPlusMenu() {
 }
 
 // ---------------------------------------------------------------------
-// Phase 8 — camera/visual-context capture. A compact sheet, not a
-// full-screen takeover. Reuses the EXISTING generic upload endpoint
-// (apiUploadAttachment -> /api/lead-agents/admin/storage,
-// purpose:"message_attachment", already used by the staff-conversation
-// inbox's own attachment flow) rather than a new upload path.
-//
-// HONEST LIMIT (audited before building this): Oyi Core has no
-// vision/image-understanding pipeline today — the shared engagement-
-// mode vocabulary (PublicIntelligenceMode in Ochiga-backend) has no
-// image/vision mode, and office_internal's own request contract carries
-// no image field. The photo is genuinely uploaded and referenced in
-// Oyi's context so it's on record and reachable, but Oyi answers from
-// the optional note text, not from the photo's actual pixel content —
-// the sheet says so plainly (oyi-camera-limitation) rather than
-// implying a capability that isn't real.
+// Oyi Office Intelligence Interaction Repositioning — real visual
+// mode. Backend's /office/conversation/internal route now performs a
+// genuine OpenAI multimodal analysis of the captured frame (same proven
+// function already live on the consumer website's own camera dock,
+// analyzeCommunicationFrame) and folds the result into Oyi's answer —
+// this is no longer an honest-limitation stub. The analysis surface
+// sits ABOVE the video/image feed; a subtle "Oyi is looking…" overlay
+// shows only while the real analysis call is genuinely in flight.
+// oyi-camera-limitation is now used only for a clean failure note
+// (never a raw backend error code) if that call fails.
 // ---------------------------------------------------------------------
 let oyiCameraStream = null;
 let oyiCameraCapturedDataUrl = null;
@@ -9235,10 +9316,17 @@ function resetOyiCameraSheet() {
   oyiCameraCapturedDataUrl = null;
   document.getElementById("oyiCameraNote").value = "";
   document.getElementById("oyiCameraSend").disabled = true;
-  document.getElementById("oyiCameraPreview").innerHTML = `<div class="oyi-camera-empty">Take a photo or choose one from your device.</div>`;
+  document.getElementById("oyiCameraFeed").innerHTML = `<div class="oyi-camera-empty" id="oyiCameraEmpty">Take a photo or choose one from your device.</div>`;
+  setOyiVisualLooking(false);
   const captureBtn = document.getElementById("oyiCameraCapture");
   captureBtn.textContent = "Take Photo";
   captureBtn.onclick = startOyiCameraCapture;
+  const analysis = document.getElementById("oyiVisualAnalysis");
+  analysis.hidden = true;
+  document.getElementById("oyiVisualAnalysisText").textContent = "";
+  const limitation = document.getElementById("oyiCameraLimitation");
+  limitation.hidden = true;
+  limitation.textContent = "";
 }
 function openOyiCameraSheet() {
   closeOyiPlusMenu();
@@ -9250,13 +9338,17 @@ function closeOyiCameraSheet() {
   stopOyiCameraStream();
   document.getElementById("oyiCameraBackdrop").classList.remove("open");
 }
+function setOyiVisualLooking(active) {
+  const overlay = document.getElementById("oyiVisualLooking");
+  if (overlay) overlay.hidden = !active;
+}
 function showOyiCameraPreviewImage(dataUrl) {
-  const preview = document.getElementById("oyiCameraPreview");
-  preview.innerHTML = "";
+  const feed = document.getElementById("oyiCameraFeed");
+  feed.innerHTML = "";
   const img = document.createElement("img");
   img.src = dataUrl;
   img.alt = "Captured photo";
-  preview.appendChild(img);
+  feed.appendChild(img);
   document.getElementById("oyiCameraSend").disabled = false;
 }
 function capturePhotoFromVideo(video) {
@@ -9281,14 +9373,14 @@ async function startOyiCameraCapture() {
   try {
     stopOyiCameraStream();
     oyiCameraStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } });
-    const preview = document.getElementById("oyiCameraPreview");
-    preview.innerHTML = "";
+    const feed = document.getElementById("oyiCameraFeed");
+    feed.innerHTML = "";
     const video = document.createElement("video");
     video.autoplay = true;
     video.muted = true;
     video.playsInline = true;
     video.srcObject = oyiCameraStream;
-    preview.appendChild(video);
+    feed.appendChild(video);
     const captureBtn = document.getElementById("oyiCameraCapture");
     captureBtn.textContent = "Capture";
     captureBtn.onclick = () => capturePhotoFromVideo(video);
@@ -9313,15 +9405,74 @@ async function sendOyiCameraCapture() {
   if (!oyiCameraCapturedDataUrl || state.oyiBusy) return;
   const note = document.getElementById("oyiCameraNote").value.trim();
   const dataUrl = oyiCameraCapturedDataUrl;
-  closeOyiCameraSheet();
+  document.getElementById("oyiCameraSend").disabled = true;
+  setOyiVisualLooking(true);
+  const analysis = document.getElementById("oyiVisualAnalysis");
+  const analysisText = document.getElementById("oyiVisualAnalysisText");
+  const limitation = document.getElementById("oyiCameraLimitation");
+  analysis.hidden = true;
+  limitation.hidden = true;
+  const displayText = note ? `📷 ${note}` : "📷 Photo";
   try {
-    const uploaded = await apiUploadAttachment(dataUrl, `oyi-photo-${Date.now()}.jpg`, "image/jpeg");
-    const url = uploaded?.file?.url || "";
-    const displayText = note ? `📷 ${note}` : "📷 Photo";
-    const fullMessage = `${note || "I've attached a photo for the record."}${url ? `\n\n[Photo attached: ${url}]` : ""}`;
-    await sendOyiMessage(fullMessage, { displayText });
+    const normalized = await sendOyiMessage(note || "What can you tell me about this photo?", {
+      displayText,
+      extraBody: { image_data_url: dataUrl },
+    });
+    setOyiVisualLooking(false);
+    document.getElementById("oyiCameraSend").disabled = false;
+    if (normalized && normalized.answer) {
+      analysisText.textContent = normalized.answer;
+      analysis.hidden = false;
+    } else {
+      limitation.textContent = "Oyi couldn't complete the visual analysis right now. Try again in a moment.";
+      limitation.hidden = false;
+    }
   } catch (err) {
-    appendOyiMessage("system", "Could not attach that photo. Please try again.");
+    setOyiVisualLooking(false);
+    document.getElementById("oyiCameraSend").disabled = false;
+    limitation.textContent = "Oyi couldn't complete the visual analysis right now. Try again in a moment.";
+    limitation.hidden = false;
+  }
+}
+
+// ---------------------------------------------------------------------
+// Oyi Office Intelligence Interaction Repositioning — "Share file".
+// Sends the file straight to Backend as a data URL for real analysis
+// (analyzeCommunicationDocument, the same OpenAI Responses pattern
+// already proven for photos), never a decorative attach-only flow.
+// Client-side type/size checks mirror Backend's own so a rejection is
+// immediate rather than a round trip.
+// ---------------------------------------------------------------------
+const OYI_SHARE_FILE_ACCEPTED_MIME = new Set([
+  "application/pdf",
+  "text/plain",
+  "text/csv",
+  "text/markdown",
+  "application/json",
+  "image/jpeg",
+  "image/jpg",
+  "image/png",
+  "image/webp",
+]);
+const OYI_SHARE_FILE_MAX_BYTES = 15 * 1024 * 1024;
+async function handleOyiShareFileChosen(file) {
+  if (!file || state.oyiBusy) return;
+  if (!OYI_SHARE_FILE_ACCEPTED_MIME.has(file.type)) {
+    toast("Oyi can read PDFs, text/CSV/JSON files, and images right now — try one of those.", "error");
+    return;
+  }
+  if (file.size > OYI_SHARE_FILE_MAX_BYTES) {
+    toast("That file is too large — try one under 15MB.", "error");
+    return;
+  }
+  try {
+    const dataUrl = await readFileAsDataUrl(file);
+    await sendOyiMessage(`Please review this file: ${file.name}`, {
+      displayText: `📄 ${file.name}`,
+      extraBody: { document_data_url: dataUrl, document_filename: file.name },
+    });
+  } catch (err) {
+    toast("Could not read that file. Please try again.", "error");
   }
 }
 
@@ -9554,21 +9705,223 @@ async function finishOyiVoiceRecording() {
 }
 
 // ---------------------------------------------------------------------
-// Phase 10 — live voice/call state boundary. This is ONLY a clean seam
-// for a FUTURE live-voice/telephony integration to land in — no
-// continuous voice call capability exists yet (that would require a
-// real media-streaming/STT/TTS pipeline, see the production report's
-// design section), and nothing here fabricates one. Deliberately not
-// wired to any UI control today; kept as a documented, importable
-// vocabulary so a later integration doesn't have to invent one under
-// time pressure, and doesn't touch CommunicationRuntime/telephony in any
-// way.
+// Oyi Office Intelligence Interaction Repositioning — Voice Chat, a
+// genuine but TURN-BASED AI voice conversation: record a turn, stop,
+// transcribe (apiTranscribeOyiVoice — same Whisper call Phase 9's mic
+// already uses), send through the SAME sendOyiMessage()/thread every
+// typed message uses, synthesize the reply as real speech
+// (apiSynthesizeOyiSpeech -> Backend's synthesizeOyiSpeech, the same
+// function already proven live on the consumer website), play it back.
+// This is NOT continuous duplex streaming and NOT Twilio/PSTN
+// telephony — both remain explicitly out of scope here (Twilio is
+// externally blocked per the separate Communication Runtime programme;
+// see that programme's report for exact status). The status copy below
+// is written to be accurate to what's actually happening at each step,
+// never implying an always-listening call.
 // ---------------------------------------------------------------------
 const OYI_VOICE_CALL_STATES = ["idle", "connecting", "listening", "user_speaking", "processing", "oyi_speaking", "muted", "ending", "ended", "error"];
 state.oyiVoiceCallState = "idle";
 function setOyiVoiceCallState(nextState) {
   if (!OYI_VOICE_CALL_STATES.includes(nextState)) return;
   state.oyiVoiceCallState = nextState;
+}
+
+const OYI_VOICECHAT_STATUS_COPY = {
+  idle: "Tap the microphone to start talking",
+  listening: "Listening — tap again to send",
+  processing: "Oyi is thinking…",
+  oyi_speaking: "Oyi is speaking…",
+  error: "Something went wrong — tap to try again",
+};
+let oyiVoiceChatStream = null;
+let oyiVoiceChatRecorder = null;
+let oyiVoiceChatChunks = [];
+let oyiVoiceChatStartedAt = 0;
+let oyiVoiceChatTimer = null;
+let oyiVoiceChatAudioContext = null;
+let oyiVoiceChatAnalyser = null;
+let oyiVoiceChatMeterFrame = null;
+let oyiVoiceChatMeterData = null;
+let oyiVoiceChatPlayer = null;
+
+function buildOyiVoiceChatWaveform() {
+  const wave = document.getElementById("oyiVoiceChatWaveform");
+  wave.innerHTML = "";
+  for (let i = 0; i < 24; i += 1) {
+    wave.appendChild(el(`<span class="oyi-voicechat-waveform-bar" style="height:3px"></span>`));
+  }
+}
+function setOyiVoiceChatWaveformLevel(level) {
+  const bars = document.querySelectorAll("#oyiVoiceChatWaveform .oyi-voicechat-waveform-bar");
+  bars.forEach((bar, i) => {
+    const jitter = 0.55 + Math.abs(Math.sin(i * 1.3 + Date.now() / 180)) * 0.45;
+    bar.style.height = `${Math.max(3, Math.min(22, Math.round(level * 22 * jitter)))}px`;
+  });
+}
+function stopOyiVoiceChatMeter() {
+  if (oyiVoiceChatMeterFrame) window.cancelAnimationFrame(oyiVoiceChatMeterFrame);
+  oyiVoiceChatMeterFrame = null;
+  if (oyiVoiceChatAudioContext) oyiVoiceChatAudioContext.close().catch(() => {});
+  oyiVoiceChatAudioContext = null;
+  oyiVoiceChatAnalyser = null;
+  oyiVoiceChatMeterData = null;
+}
+function startOyiVoiceChatMeter(stream) {
+  const AudioContext = window.AudioContext || window.webkitAudioContext;
+  if (!AudioContext) return;
+  try {
+    oyiVoiceChatAudioContext = new AudioContext();
+    const source = oyiVoiceChatAudioContext.createMediaStreamSource(stream);
+    oyiVoiceChatAnalyser = oyiVoiceChatAudioContext.createAnalyser();
+    oyiVoiceChatAnalyser.fftSize = 512;
+    oyiVoiceChatMeterData = new Uint8Array(oyiVoiceChatAnalyser.fftSize);
+    source.connect(oyiVoiceChatAnalyser);
+    const tick = () => {
+      if (!oyiVoiceChatAnalyser || !oyiVoiceChatMeterData) return;
+      oyiVoiceChatAnalyser.getByteTimeDomainData(oyiVoiceChatMeterData);
+      let sum = 0;
+      for (let i = 0; i < oyiVoiceChatMeterData.length; i += 1) {
+        const centered = (oyiVoiceChatMeterData[i] - 128) / 128;
+        sum += centered * centered;
+      }
+      setOyiVoiceChatWaveformLevel(Math.min(1, Math.sqrt(sum / oyiVoiceChatMeterData.length) * 7));
+      oyiVoiceChatMeterFrame = window.requestAnimationFrame(tick);
+    };
+    tick();
+  } catch {
+    // No live meter -- recording itself still works, just static bars.
+  }
+}
+function stopOyiVoiceChatTimer() {
+  if (oyiVoiceChatTimer) window.clearInterval(oyiVoiceChatTimer);
+  oyiVoiceChatTimer = null;
+}
+function setOyiVoiceChatStatus(uiState, label) {
+  setOyiVoiceCallState(uiState);
+  document.getElementById("oyiVoiceChatStatus").textContent = label || OYI_VOICECHAT_STATUS_COPY[uiState] || "";
+  const mic = document.getElementById("oyiVoiceChatMic");
+  mic.classList.toggle("listening", uiState === "listening");
+  mic.classList.toggle("speaking", uiState === "oyi_speaking");
+  mic.disabled = uiState === "processing" || uiState === "oyi_speaking";
+  mic.setAttribute("aria-label", uiState === "listening" ? "Stop and send" : "Start listening");
+}
+function cleanupOyiVoiceChatMedia() {
+  stopOyiVoiceChatMeter();
+  stopOyiVoiceChatTimer();
+  if (oyiVoiceChatStream) {
+    oyiVoiceChatStream.getTracks().forEach((track) => track.stop());
+    oyiVoiceChatStream = null;
+  }
+  oyiVoiceChatRecorder = null;
+  oyiVoiceChatChunks = [];
+  if (oyiVoiceChatPlayer) {
+    oyiVoiceChatPlayer.pause();
+    oyiVoiceChatPlayer = null;
+  }
+}
+function openOyiVoiceChat() {
+  document.getElementById("oyiVoiceChatBackdrop").classList.add("open");
+  buildOyiVoiceChatWaveform();
+  document.getElementById("oyiVoiceChatTime").textContent = "00:00";
+  setOyiVoiceChatStatus("idle");
+  document.getElementById("oyiVoiceChatClose").focus();
+}
+function closeOyiVoiceChat() {
+  cleanupOyiVoiceChatMedia();
+  setOyiVoiceChatStatus("idle");
+  document.getElementById("oyiVoiceChatBackdrop").classList.remove("open");
+}
+async function startOyiVoiceChatListening() {
+  if (!oyiSupportsMediaRecorder()) {
+    toast("Voice input isn't supported in this browser.", "error");
+    return;
+  }
+  try {
+    oyiVoiceChatStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  } catch {
+    toast("Microphone permission was denied, or no microphone is available.", "error");
+    return;
+  }
+  oyiVoiceChatChunks = [];
+  const mimeType = oyiPreferredAudioMime();
+  try {
+    oyiVoiceChatRecorder = new MediaRecorder(oyiVoiceChatStream, mimeType ? { mimeType } : undefined);
+  } catch {
+    cleanupOyiVoiceChatMedia();
+    toast("Could not start recording in this browser.", "error");
+    return;
+  }
+  oyiVoiceChatRecorder.ondataavailable = (event) => {
+    if (event.data && event.data.size > 0) oyiVoiceChatChunks.push(event.data);
+  };
+  oyiVoiceChatRecorder.start();
+  startOyiVoiceChatMeter(oyiVoiceChatStream);
+  oyiVoiceChatStartedAt = Date.now();
+  oyiVoiceChatTimer = window.setInterval(() => {
+    document.getElementById("oyiVoiceChatTime").textContent = formatOyiRecordingTime(Date.now() - oyiVoiceChatStartedAt);
+  }, 250);
+  setOyiVoiceChatStatus("listening");
+}
+async function stopOyiVoiceChatAndSend() {
+  if (!oyiVoiceChatRecorder || oyiVoiceChatRecorder.state === "inactive") return;
+  const mimeType = oyiVoiceChatRecorder.mimeType || oyiPreferredAudioMime() || "audio/webm";
+  const durationMs = Date.now() - oyiVoiceChatStartedAt;
+  const blob = await new Promise((resolve) => {
+    oyiVoiceChatRecorder.onstop = () => resolve(new Blob(oyiVoiceChatChunks, { type: mimeType }));
+    oyiVoiceChatRecorder.stop();
+  });
+  stopOyiVoiceChatMeter();
+  stopOyiVoiceChatTimer();
+  if (oyiVoiceChatStream) {
+    oyiVoiceChatStream.getTracks().forEach((track) => track.stop());
+    oyiVoiceChatStream = null;
+  }
+  if (durationMs < 400 || blob.size < 800) {
+    setOyiVoiceChatStatus("idle", "That was too short — tap to try again");
+    return;
+  }
+  setOyiVoiceChatStatus("processing");
+  try {
+    const dataUrl = await readFileAsDataUrl(new File([blob], `oyi-voicechat${oyiAudioExtension(mimeType)}`, { type: mimeType }));
+    const transcription = await apiTranscribeOyiVoice(dataUrl, mimeType, `oyi-voicechat${oyiAudioExtension(mimeType)}`, durationMs);
+    const transcriptText = String(transcription?.text || "").trim();
+    if (!transcriptText) {
+      setOyiVoiceChatStatus("idle", "I didn't catch that — tap to try again");
+      return;
+    }
+    const normalized = await sendOyiMessage(transcriptText, { displayText: `🎙️ ${transcriptText}` });
+    if (!normalized || !normalized.answer) {
+      setOyiVoiceChatStatus("idle", "Tap the microphone to try again");
+      return;
+    }
+    setOyiVoiceChatStatus("oyi_speaking");
+    try {
+      const speech = await apiSynthesizeOyiSpeech(normalized.answer);
+      if (speech?.audio_data_url) {
+        oyiVoiceChatPlayer = new Audio(speech.audio_data_url);
+        oyiVoiceChatPlayer.addEventListener("ended", () => setOyiVoiceChatStatus("idle"));
+        oyiVoiceChatPlayer.addEventListener("error", () => setOyiVoiceChatStatus("idle"));
+        await oyiVoiceChatPlayer.play().catch(() => setOyiVoiceChatStatus("idle"));
+      } else {
+        setOyiVoiceChatStatus("idle");
+      }
+    } catch {
+      // Backend answered but speech synthesis failed -- the reply is
+      // already visible as text in the thread, so fall back silently
+      // to idle rather than a scary error for a non-critical step.
+      setOyiVoiceChatStatus("idle");
+    }
+  } catch {
+    setOyiVoiceChatStatus("error");
+  }
+}
+async function cancelOyiVoiceChatTurn() {
+  if (oyiVoiceChatRecorder && oyiVoiceChatRecorder.state !== "inactive") {
+    oyiVoiceChatRecorder.onstop = null;
+    oyiVoiceChatRecorder.stop();
+  }
+  cleanupOyiVoiceChatMedia();
+  setOyiVoiceChatStatus("idle");
 }
 
 async function wireOyiControl() {
@@ -9687,6 +10040,7 @@ async function wireOyiControl() {
   });
   composer.addEventListener("submit", (event) => {
     event.preventDefault();
+    if (document.getElementById("oyiSend").disabled) return;
     const message = input.value;
     input.value = "";
     autoGrowOyiInput();
@@ -9701,9 +10055,11 @@ async function wireOyiControl() {
   // Phase 6 — expanding textarea; Shift+Enter/newline is the default
   // textarea behaviour above and is left untouched.
   input.addEventListener("input", autoGrowOyiInput);
+  updateOyiSendState();
 
-  // Phase 7 — the compact "+" context menu (camera today; nothing here
-  // advertises a capability that isn't wired up).
+  // Oyi Office Intelligence Interaction Repositioning — the "+"
+  // capability menu (Share file / Send photo-video / Voice chat).
+  // Nothing here advertises a capability that isn't genuinely wired up.
   const plusBtn = document.getElementById("oyiPlusBtn");
   const plusMenu = document.getElementById("oyiPlusMenu");
   plusBtn.addEventListener("click", (event) => {
@@ -9714,6 +10070,14 @@ async function wireOyiControl() {
     closeOyiPlusMenu();
     openOyiCameraSheet();
   });
+  document.getElementById("oyiFileOption").addEventListener("click", () => {
+    closeOyiPlusMenu();
+    document.getElementById("oyiShareFileInput").click();
+  });
+  document.getElementById("oyiVoiceChatOption").addEventListener("click", () => {
+    closeOyiPlusMenu();
+    openOyiVoiceChat();
+  });
   document.addEventListener("click", (event) => {
     if (plusMenu.classList.contains("open") && !plusMenu.contains(event.target) && event.target !== plusBtn) {
       closeOyiPlusMenu();
@@ -9723,6 +10087,7 @@ async function wireOyiControl() {
     if (event.key !== "Escape") return;
     if (plusMenu.classList.contains("open")) closeOyiPlusMenu();
     if (document.getElementById("oyiCameraBackdrop").classList.contains("open")) closeOyiCameraSheet();
+    if (document.getElementById("oyiVoiceChatBackdrop").classList.contains("open")) closeOyiVoiceChat();
   });
 
   // Phase 8 — camera/visual-context sheet.
@@ -9744,6 +10109,27 @@ async function wireOyiControl() {
     cameraFileInput.value = "";
   });
   document.getElementById("oyiCameraSend").addEventListener("click", sendOyiCameraCapture);
+
+  // "Share file" — plain hidden file input, no sheet needed (unlike the
+  // camera, there's no live preview to manage).
+  const shareFileInput = document.getElementById("oyiShareFileInput");
+  shareFileInput.addEventListener("change", () => {
+    const file = shareFileInput.files && shareFileInput.files[0];
+    handleOyiShareFileChosen(file);
+    shareFileInput.value = "";
+  });
+
+  // Voice Chat.
+  document.getElementById("oyiVoiceChatMic").addEventListener("click", () => {
+    if (state.oyiVoiceCallState === "listening") stopOyiVoiceChatAndSend();
+    else if (state.oyiVoiceCallState === "idle" || state.oyiVoiceCallState === "error") startOyiVoiceChatListening();
+  });
+  document.getElementById("oyiVoiceChatCancel").addEventListener("click", cancelOyiVoiceChatTurn);
+  document.getElementById("oyiVoiceChatEnd").addEventListener("click", closeOyiVoiceChat);
+  document.getElementById("oyiVoiceChatClose").addEventListener("click", closeOyiVoiceChat);
+  document.getElementById("oyiVoiceChatBackdrop").addEventListener("click", (event) => {
+    if (event.target.id === "oyiVoiceChatBackdrop") closeOyiVoiceChat();
+  });
 
   // Phase 9 — voice recording.
   document.getElementById("oyiMicBtn").addEventListener("click", () => {
@@ -9767,6 +10153,7 @@ async function wireOyiControl() {
   window.addEventListener("beforeunload", () => {
     stopOyiCameraStream();
     cleanupOyiRecordingMedia();
+    cleanupOyiVoiceChatMedia();
   });
 }
 
