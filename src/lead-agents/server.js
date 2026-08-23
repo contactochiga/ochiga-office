@@ -4969,6 +4969,57 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
         return;
       }
 
+      // Oyi Office Conversational Interaction programme, Phase 9 — voice
+      // input. Reuses the SAME canonical transcription capability the
+      // public widget's voice input already calls
+      // (openaiClient.createTranscription(), Whisper via
+      // config.openaiTranscriptionModel) rather than a second speech
+      // path -- this route only adds staff authentication/audit
+      // attribution on top, mirroring the public /transcribe handler's
+      // own validation exactly. The transcript itself re-enters the
+      // SAME office/intelligence/chat pipeline as typed text -- Oyi
+      // never has a separate "voice conversation" runtime.
+      if (pathname === "/api/lead-agents/admin/office/intelligence/transcribe") {
+        if (req.method !== "POST") {
+          methodNotAllowed(res, "POST");
+          return;
+        }
+        authorizePermission(authContext, "office.intelligence");
+        const body = await readJsonBody(req, 30 * 1024 * 1024);
+        const audio = parseDataUrl(body.audio_data_url || "");
+        if (!audio || !audio.buffer.length) {
+          json(res, 400, { error: "audio_data_url is required" }, { "x-request-id": ctx.requestId });
+          return;
+        }
+        if (audio.buffer.length > 25 * 1024 * 1024) {
+          json(res, 413, { error: "audio_too_large", max_bytes: 25 * 1024 * 1024 }, { "x-request-id": ctx.requestId });
+          return;
+        }
+        const mimeType = body.mime_type || audio.mimeType || "audio/webm";
+        const filename = body.file_name || `oyi-office-voice${extensionForAudioMime(mimeType)}`;
+        const durationMs = Number(body.duration_ms || 0);
+        if (durationMs && durationMs > 120000) {
+          json(res, 413, { error: "audio_too_long", max_duration_ms: 120000 }, { "x-request-id": ctx.requestId });
+          return;
+        }
+        try {
+          const transcription = await openaiClient.createTranscription({
+            buffer: audio.buffer,
+            filename,
+            mimeType,
+            language: body.language || "en",
+            prompt: "Ochiga Office -- CRM, tasks, meetings, automations, portfolio, partnerships, support, and internal staff operations.",
+          });
+          const transcriptText = String(transcription.text || "").trim();
+          await appendAudit(store, authContext, "ai.voice.transcribed", "office_internal_voice", "", { model: config.openaiTranscriptionModel, bytes: audio.buffer.length, mime_type: mimeType, text_length: transcriptText.length }, req);
+          json(res, 200, { text: transcriptText, model: config.openaiTranscriptionModel }, { "x-request-id": ctx.requestId });
+        } catch (err) {
+          log("error", "office_intelligence_transcribe_failed", { request_id: ctx.requestId, error: err?.stack || err?.message || String(err) });
+          json(res, err.statusCode && err.statusCode >= 400 ? err.statusCode : 502, { error: "transcription_failed", message: "Unable to transcribe this recording right now." }, { "x-request-id": ctx.requestId });
+        }
+        return;
+      }
+
       if (pathname === "/api/lead-agents/admin/office/overview") {
         if (req.method !== "GET") {
           methodNotAllowed(res, "GET");
