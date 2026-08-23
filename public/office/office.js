@@ -8485,40 +8485,36 @@ function oyiActivityIconClass(iconKey) {
 function oyiActivityIcon(iconKey) {
   return OYI_ACTIVITY_ICONS[iconKey] || OYI_ACTIVITY_ICONS.thinking;
 }
-// Compact scanning card — an honest, small abstraction of the real
-// search-evidence / build-answer pipeline (never fabricated per-domain
-// theatre; see initialOyiActivity() for how steps are actually chosen).
-function showOyiActivity(label, iconKey, steps) {
-  hideOyiActivity();
+// One canonical processing surface. The row remains mounted while a
+// request is active; real lifecycle events replace its contents in place.
+function showOyiActivity(label, iconKey) {
+  if (document.getElementById("oyiActivityRow")) {
+    updateOyiActivity(label, iconKey);
+    return;
+  }
   const thread = document.getElementById("oyiThread");
-  const stepsList = Array.isArray(steps) ? steps : [];
-  const cls = stepsList.length ? "oyi-msg assistant oyi-activity-row oyi-activity-card" : "oyi-msg assistant oyi-activity-row";
-  const stepsHtml = stepsList.length
-    ? `<div class="oyi-activity-steps">${stepsList
-        .map((step) => `<div class="oyi-activity-step">${oyiActivityIcon(step.icon)}<span>${escapeHtml(step.text)}</span></div>`)
-        .join("")}</div>`
-    : "";
   const row = el(
-    `<div class="${cls}" id="oyiActivityRow" role="status" aria-live="polite">` +
-      `<div class="oyi-activity-card-head"><span class="oyi-activity-icon ${oyiActivityIconClass(iconKey)}">${oyiActivityIcon(iconKey)}</span>` +
-      `<span class="oyi-activity-text">${escapeHtml(label)}</span></div>${stepsHtml}</div>`
+    `<div class="oyi-msg assistant oyi-activity-row" id="oyiActivityRow" role="status" aria-live="polite" aria-atomic="true">` +
+      `<span class="oyi-activity-content"><span class="oyi-activity-icon ${oyiActivityIconClass(iconKey)}">${oyiActivityIcon(iconKey)}</span>` +
+      `<span class="oyi-activity-text">${escapeHtml(label)}</span></span></div>`
   );
   thread.appendChild(row);
   thread.scrollTop = thread.scrollHeight;
 }
 function updateOyiActivity(label, iconKey) {
   const row = document.getElementById("oyiActivityRow");
-  if (!row || row.classList.contains("oyi-activity-card")) {
-    // Network-boundary updates (confirming/executing/verifying) are
-    // always single-line — rebuild fresh rather than trying to patch a
-    // multi-step card back down to one line.
+  if (!row) {
     showOyiActivity(label, iconKey);
     return;
   }
+  const content = row.querySelector(".oyi-activity-content");
   const iconEl = row.querySelector(".oyi-activity-icon");
   iconEl.className = `oyi-activity-icon ${oyiActivityIconClass(iconKey)}`;
   iconEl.innerHTML = oyiActivityIcon(iconKey);
   row.querySelector(".oyi-activity-text").textContent = label;
+  content.classList.remove("is-changing");
+  void content.offsetWidth;
+  content.classList.add("is-changing");
   const thread = document.getElementById("oyiThread");
   thread.scrollTop = thread.scrollHeight;
 }
@@ -8546,18 +8542,20 @@ const OYI_CONTEXT_ACTIVITY_LABEL = {
   document: "Reviewing the document…",
   content: "Reviewing content…",
 };
-// Keyword -> real capability domain the message is actually about.
-// Only ever surfaces a step when the outgoing message genuinely
-// mentions that domain -- never fixed theatre unrelated to the query.
-const OYI_MESSAGE_STEP_KEYWORDS = [
-  { re: /\blead|opportunit|crm|customer|client\b/i, icon: "leads", text: "Reviewing leads" },
-  { re: /\btask|follow[- ]?up|to-?do\b/i, icon: "tasks", text: "Checking tasks" },
-  { re: /\bmessag|inbox|whatsapp|email|communicat/i, icon: "communications", text: "Checking communications" },
-  { re: /\bmeeting|calendar|schedul/i, icon: "scheduling", text: "Checking the calendar" },
-  { re: /\bautomation\b/i, icon: "creating", text: "Checking automations" },
-  { re: /\bsupport|case|issue|complaint\b/i, icon: "reviewing", text: "Reviewing support" },
-  { re: /\bportfolio|estate|propert|project\b/i, icon: "documents", text: "Reviewing the portfolio" },
-  { re: /\bdocument|report|proposal\b/i, icon: "documents", text: "Reviewing documents" },
+// The gateway currently exposes one request boundary rather than a
+// streamed list of internal tool stages. Choose one honest domain-level
+// label from the outgoing request; later governed-action network events
+// call updateOyiActivity() with their precise real stage.
+const OYI_MESSAGE_ACTIVITY = [
+  { re: /\b(create|add|make)\b[\s\S]{0,40}\btask\b|\btask\b[\s\S]{0,40}\b(create|add|make)\b/i, icon: "tasks", label: "Preparing task…" },
+  { re: /\b(email|message|whatsapp|communicat|inbox)\b/i, icon: "communications", label: "Checking communications…" },
+  { re: /\bmeeting|calendar|appointment\b/i, icon: "scheduling", label: "Checking meetings…" },
+  { re: /\btask|to-?do|deadline|due\b/i, icon: "tasks", label: "Reviewing tasks…" },
+  { re: /\blead|opportunit|crm|customer|client|follow[- ]?up\b/i, icon: "leads", label: "Reviewing lead activity…" },
+  { re: /\bautomation\b/i, icon: "creating", label: "Checking automations…" },
+  { re: /\bsupport|case|issue|complaint\b/i, icon: "reviewing", label: "Reviewing support…" },
+  { re: /\bportfolio|estate|propert|project\b/i, icon: "documents", label: "Reviewing project records…" },
+  { re: /\bdocument|file|report|proposal\b/i, icon: "documents", label: "Looking through documents…" },
 ];
 // The real attention/office-snapshot capability genuinely does
 // aggregate leads + tasks + communications together -- this phrasing
@@ -8567,30 +8565,18 @@ function initialOyiActivity(message) {
   const selected = state.selectedObject;
   if (selected) {
     const label = OYI_CONTEXT_ACTIVITY_LABEL[selected.type];
-    if (label) return { label, icon: "reviewing", steps: [] };
+    if (label) return { label, icon: "reviewing" };
   }
   message = String(message || "");
+  const matched = OYI_MESSAGE_ACTIVITY.find((entry) => entry.re.test(message));
+  if (matched) return { label: matched.label, icon: matched.icon };
   if (OYI_ATTENTION_PHRASING.test(message)) {
     return {
       label: "Scanning across Office…",
       icon: "searching",
-      steps: [
-        { icon: "leads", text: "Reviewing leads" },
-        { icon: "tasks", text: "Checking tasks" },
-        { icon: "communications", text: "Checking communications" },
-        { icon: "reasoning", text: "Preparing summary" },
-      ],
     };
   }
-  const matched = OYI_MESSAGE_STEP_KEYWORDS.filter((entry) => entry.re.test(message)).slice(0, 3);
-  if (matched.length) {
-    return {
-      label: "Scanning across Office…",
-      icon: "searching",
-      steps: [...matched.map((entry) => ({ icon: entry.icon, text: entry.text })), { icon: "reasoning", text: "Preparing summary" }],
-    };
-  }
-  return { label: "Thinking…", icon: "thinking", steps: [] };
+  return { label: "Working on that…", icon: "thinking" };
 }
 
 // Rich response rendering (Universal Interaction Shell) — renders a
@@ -9153,11 +9139,11 @@ async function sendOyiMessage(message, options = {}) {
   updateOyiSendState();
   setOyiPresence("thinking");
   const initial = options.extraBody?.image_data_url
-    ? { label: "Analysing your image…", icon: "visual", steps: [] }
+    ? { label: "Analysing your image…", icon: "visual" }
     : options.extraBody?.document_data_url
-    ? { label: "Analysing your file…", icon: "documents", steps: [] }
+    ? { label: "Analysing your file…", icon: "documents" }
     : initialOyiActivity(message);
-  showOyiActivity(initial.label, initial.icon, initial.steps);
+  showOyiActivity(initial.label, initial.icon);
 
   try {
     const { data, normalized } = await callOyiChat(message, options.extraBody);
