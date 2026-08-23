@@ -278,6 +278,18 @@ async function apiMarkConversationRead(conversationId) {
 async function apiUploadAttachment(dataUrl, filename, mimeType) {
   return api("/api/lead-agents/admin/storage", { method: "POST", body: { data_url: dataUrl, purpose: "message_attachment", filename, mime_type: mimeType } });
 }
+// Oyi Office Conversational Interaction programme, Phase 9 — reuses the
+// SAME canonical transcription capability the public widget's voice
+// input already calls (openaiClient.createTranscription() in Office's
+// own openai.js, Whisper via config.openaiTranscriptionModel), through a
+// new staff-authenticated route rather than pointing an internal Office
+// surface at the public/unauthenticated endpoint.
+async function apiTranscribeOyiVoice(audioDataUrl, mimeType, fileName, durationMs) {
+  return api("/api/lead-agents/admin/office/intelligence/transcribe", {
+    method: "POST",
+    body: { audio_data_url: audioDataUrl, mime_type: mimeType, file_name: fileName, duration_ms: durationMs, language: "en" },
+  });
+}
 async function apiUploadContentImage(dataUrl, filename, mimeType) {
   return api("/api/lead-agents/admin/storage", { method: "POST", body: { data_url: dataUrl, purpose: "content_featured_image", filename, mime_type: mimeType } });
 }
@@ -8390,6 +8402,88 @@ function appendOyiMessage(role, contentNodeOrText) {
   thread.scrollTop = thread.scrollHeight;
 }
 
+// ---------------------------------------------------------------------
+// Oyi Office Conversational Interaction programme, Phase 2 — real
+// processing/activity states. A compact, single-line indicator (icon +
+// short label) shown as the last row of the thread while a request is
+// in flight, removed the instant a real response or a real failure
+// arrives. Every label below is grounded in something genuinely true at
+// the moment it's shown: either the REQUEST CONTEXT already being sent
+// (e.g. a CRM record is attached, so Oyi will genuinely read it) or a
+// REAL client-side network call already in flight (executing a
+// confirmed action, verifying its result) — never a guess about backend
+// internals the client cannot actually observe. Falls back to the
+// honest, always-true "Thinking…" whenever no more specific real signal
+// exists. See presence.mjs for the underlying orb state vocabulary this
+// complements (idle/thinking/executing/etc.) — this activity line is a
+// finer-grained label WITHIN that same presence state, not a second
+// state machine.
+// ---------------------------------------------------------------------
+const OYI_ACTIVITY_ICONS = {
+  thinking: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="1.6" fill="currentColor" stroke="none"></circle><path d="M12 3.5v3M12 17.5v3M4.5 12h3M16.5 12h3" opacity="0.6"></path></svg>`,
+  reviewing: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="6.5"></circle><path d="m20 20-3.6-3.6"></path></svg>`,
+  scheduling: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3.5" y="5" width="17" height="16" rx="2"></rect><path d="M8 3v4M16 3v4M3.5 10h17"></path></svg>`,
+  executing: `<svg viewBox="0 0 24 24" fill="currentColor" stroke="none"><path d="M13 2 4 14h6l-1 8 9-12h-6l1-8Z"></path></svg>`,
+  verifying: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"></path></svg>`,
+  creating: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="4" width="16" height="16" rx="3"></rect><path d="m8 12 2.5 2.5L16 9"></path></svg>`,
+};
+function oyiActivityIconClass(iconKey) {
+  return iconKey === "executing" ? "spin" : "pulse";
+}
+function showOyiActivity(label, iconKey) {
+  hideOyiActivity();
+  const thread = document.getElementById("oyiThread");
+  const row = el(
+    `<div class="oyi-msg assistant oyi-activity-row" id="oyiActivityRow" role="status" aria-live="polite">` +
+      `<span class="oyi-activity-icon ${oyiActivityIconClass(iconKey)}">${OYI_ACTIVITY_ICONS[iconKey] || OYI_ACTIVITY_ICONS.thinking}</span>` +
+      `<span class="oyi-activity-text">${escapeHtml(label)}</span></div>`
+  );
+  thread.appendChild(row);
+  thread.scrollTop = thread.scrollHeight;
+}
+function updateOyiActivity(label, iconKey) {
+  const row = document.getElementById("oyiActivityRow");
+  if (!row) {
+    showOyiActivity(label, iconKey);
+    return;
+  }
+  const iconEl = row.querySelector(".oyi-activity-icon");
+  iconEl.className = `oyi-activity-icon ${oyiActivityIconClass(iconKey)}`;
+  iconEl.innerHTML = OYI_ACTIVITY_ICONS[iconKey] || OYI_ACTIVITY_ICONS.thinking;
+  row.querySelector(".oyi-activity-text").textContent = label;
+  const thread = document.getElementById("oyiThread");
+  thread.scrollTop = thread.scrollHeight;
+}
+function hideOyiActivity() {
+  const row = document.getElementById("oyiActivityRow");
+  if (row) row.remove();
+}
+
+// Honest context-derived initial label — grounded in the SAME
+// *_context slot currentSelectedObjectContext() is about to attach to
+// this exact request (currentSelectedObjectContext() is called from
+// callOyiChat() itself), so "Reviewing CRM…" is only ever shown when a
+// CRM record genuinely is part of the outgoing request.
+const OYI_CONTEXT_ACTIVITY_LABEL = {
+  lead: "Reviewing CRM…",
+  contact: "Reviewing CRM…",
+  organization: "Reviewing CRM…",
+  opportunity: "Reviewing CRM…",
+  task: "Checking tasks…",
+  meeting: "Checking the calendar…",
+  automation: "Checking automations…",
+  support_case: "Reviewing the support case…",
+  portfolio: "Reviewing the portfolio…",
+  partnership_relationship: "Reviewing the partnership…",
+  document: "Reviewing the document…",
+  content: "Reviewing content…",
+};
+function initialOyiActivity() {
+  const selected = state.selectedObject;
+  const label = selected ? OYI_CONTEXT_ACTIVITY_LABEL[selected.type] : null;
+  return label ? { label, icon: "reviewing" } : { label: "Thinking…", icon: "thinking" };
+}
+
 // Rich response rendering (Universal Interaction Shell) — renders a
 // NormalizedInteractionResponse (see shared/oyi-core/responseNormalizer.mjs)
 // rather than sniffing Ochiga Backend's raw response shape by hand.
@@ -8771,6 +8865,7 @@ async function confirmBatchActionProposal(confirmed) {
   const children = confirmed.child_operations;
   const batchContextEntries = [];
   let failedCount = 0;
+  updateOyiActivity(`Executing ${children.length} change${children.length === 1 ? "" : "s"}…`, "executing");
   for (const child of children) {
     const directive = child.execute_directive;
     if (!directive) {
@@ -8790,6 +8885,7 @@ async function confirmBatchActionProposal(confirmed) {
     }
   }
   if (!batchContextEntries.length) {
+    hideOyiActivity();
     appendOyiMessage("system", "Could not make any of those changes — please try again.");
     // Phase 4, PR 5 — reports the failure so Oyi closes the proposal out
     // immediately instead of leaving it "confirmed" until its 10-minute
@@ -8797,7 +8893,9 @@ async function confirmBatchActionProposal(confirmed) {
     await callOyiChat("The change could not be made.", { execution_failed: true, execution_failure_reason: "All batch updates failed" }).catch(() => {});
     return;
   }
+  updateOyiActivity("Verifying result…", "verifying");
   const verifyTurn = await callOyiChat("Yes, do it.", { task_batch_context: batchContextEntries });
+  hideOyiActivity();
   appendOyiMessage("assistant", renderOyiResponse(verifyTurn.normalized));
   if (failedCount) {
     appendOyiMessage("system", `${failedCount} of ${children.length} change${children.length === 1 ? "" : "s"} could not be sent — please check ${failedCount === 1 ? "it" : "them"} directly.`);
@@ -8808,10 +8906,12 @@ async function confirmOyiActionProposal(pendingAction) {
   appendOyiMessage("user", "Yes, do it.");
   state.oyiBusy = true;
   setOyiPresence("thinking");
+  showOyiActivity("Confirming…", "thinking");
   try {
     const confirmedTurn = await callOyiChat("Yes, do it.");
     const confirmed = confirmedTurn.data.oyi_core?.pending_action;
     if (confirmed?.status !== "confirmed") {
+      hideOyiActivity();
       appendOyiMessage("system", confirmedTurn.normalized.answer || "Oyi couldn't confirm that action — please try again.");
       return;
     }
@@ -8821,13 +8921,17 @@ async function confirmOyiActionProposal(pendingAction) {
     }
     const directive = confirmed.execute_directive;
     if (!directive) {
+      hideOyiActivity();
       appendOyiMessage("system", confirmedTurn.normalized.answer || "Oyi couldn't confirm that action — please try again.");
       return;
     }
+    setOyiPresence("executing");
+    updateOyiActivity("Executing action…", "executing");
     let patched;
     try {
       patched = await patchProposalTarget(directive);
     } catch (err) {
+      hideOyiActivity();
       appendOyiMessage("system", `Could not make that change: ${err.message || "the request failed"}.`);
       // Phase 4, PR 5 — reports the failure so Oyi closes the proposal
       // out immediately instead of leaving it "confirmed" until its
@@ -8841,11 +8945,15 @@ async function confirmOyiActionProposal(pendingAction) {
       setSelectedObject(selectedType, patched.record.id, patched.record.title || (state.selectedObject && state.selectedObject.label) || "", builder(patched.record));
     }
     invalidate(directive.collection);
+    updateOyiActivity("Verifying result…", "verifying");
     const verifyTurn = await callOyiChat("Yes, do it.");
+    hideOyiActivity();
     appendOyiMessage("assistant", renderOyiResponse(verifyTurn.normalized));
   } catch (err) {
+    hideOyiActivity();
     appendOyiMessage("system", "Could not confirm that action. Please try again.");
   } finally {
+    hideOyiActivity();
     state.oyiBusy = false;
     setOyiPresence("idle");
   }
@@ -8855,12 +8963,16 @@ async function cancelOyiActionProposal() {
   appendOyiMessage("user", "No.");
   state.oyiBusy = true;
   setOyiPresence("thinking");
+  showOyiActivity("Thinking…", "thinking");
   try {
     const turn = await callOyiChat("No.");
+    hideOyiActivity();
     appendOyiMessage("assistant", renderOyiResponse(turn.normalized));
   } catch (err) {
+    hideOyiActivity();
     appendOyiMessage("system", "Could not reach Oyi. Please try again.");
   } finally {
+    hideOyiActivity();
     state.oyiBusy = false;
     setOyiPresence("idle");
   }
@@ -8869,14 +8981,16 @@ async function cancelOyiActionProposal() {
 // Presence (Universal Interaction Shell) — drives the orb's glow/pulse
 // from the shared vocabulary in shared/oyi-core/presence.mjs rather
 // than an ad-hoc busy flag, so Office and Website's orbs read the same
-// state the same way. Only idle/thinking are reachable from Office's
-// text-only composer today; listening/speaking/executing are real
-// states the vocabulary already supports for when voice/action-
-// execution UI lands here.
+// state the same way. idle/thinking/executing are reachable from
+// Office's composer today (Phase 2); listening/speaking are wired for
+// voice recording (Phase 9) — see setOyiVoiceCallState() for the
+// separate live-voice-call state boundary (Phase 10), which does NOT
+// drive this orb (no live call capability exists yet).
+const OYI_PRESENCE_STATES = ["idle", "listening", "thinking", "speaking", "attention", "executing", "offline"];
 function setOyiPresence(nextState) {
   const orb = document.getElementById("oyiBar");
   if (!orb) return;
-  orb.classList.remove("presence-idle", "presence-thinking");
+  orb.classList.remove(...OYI_PRESENCE_STATES.map((s) => `presence-${s}`));
   orb.classList.add(`presence-${nextState}`);
 }
 
@@ -8919,15 +9033,22 @@ async function callOyiChat(message, extraBody) {
   return { data, normalized };
 }
 
-async function sendOyiMessage(message) {
+async function sendOyiMessage(message, options = {}) {
   if (!message.trim() || state.oyiBusy) return;
-  appendOyiMessage("user", message);
+  // Phase 8/9 — a voice/photo turn sends a fuller message (transcript,
+  // or a note plus an attachment reference) than what's shown in the
+  // user's own chat bubble; displayText keeps the bubble clean while
+  // Oyi still receives the real content.
+  appendOyiMessage("user", options.displayText || message);
   state.oyiBusy = true;
   document.getElementById("oyiSend").disabled = true;
   setOyiPresence("thinking");
+  const initial = initialOyiActivity();
+  showOyiActivity(initial.label, initial.icon);
 
   try {
     const { data, normalized } = await callOyiChat(message);
+    hideOyiActivity();
     appendOyiMessage("assistant", renderOyiResponse(normalized));
     if (normalized.toolProposals.length) {
       appendOyiMessage("system", renderApprovalSurface(normalized.toolProposals));
@@ -8937,10 +9058,12 @@ async function sendOyiMessage(message) {
       appendOyiMessage("system", renderActionProposalCard(pendingAction));
     }
   } catch (err) {
+    hideOyiActivity();
     if (err.status === 503) appendOyiMessage("system", "Oyi Core is unavailable right now. Nothing was answered from a separate reasoning path — please try again shortly.");
     else if (err.status === 403) appendOyiMessage("system", "You don't have permission to use Office intelligence.");
     else appendOyiMessage("system", "Could not reach Oyi. Please try again.");
   } finally {
+    hideOyiActivity();
     state.oyiBusy = false;
     document.getElementById("oyiSend").disabled = false;
     setOyiPresence("idle");
@@ -8976,6 +9099,12 @@ function closeOyiPanel() {
   const control = document.getElementById("oyiControl");
   control.classList.remove("open", "minimized");
   document.getElementById("oyiBar").setAttribute("aria-expanded", "false");
+  // Phase 9's explicit cleanup requirement — never leave a mic/camera
+  // stream running once the panel is genuinely closed (minimizing does
+  // NOT close it, so a recording started before minimizing is left
+  // running, matching "minimize must never equal close").
+  cancelOyiVoiceRecording();
+  closeOyiCameraSheet();
 }
 
 // Edge-docked Universal Interaction Shell orb (Consumer's visual
@@ -9053,6 +9182,392 @@ function positionOyiSurfaces(orbX, orbY, openDirection) {
       surface.style.top = "auto";
     }
   });
+}
+
+// ---------------------------------------------------------------------
+// Oyi Office Conversational Interaction programme, Phase 6/7 — composer
+// auto-grow + the compact "+" context menu.
+// ---------------------------------------------------------------------
+function autoGrowOyiInput() {
+  const input = document.getElementById("oyiInput");
+  input.style.height = "auto";
+  input.style.height = `${Math.min(input.scrollHeight, 96)}px`;
+}
+function closeOyiPlusMenu() {
+  document.getElementById("oyiPlusMenu").classList.remove("open");
+  document.getElementById("oyiPlusBtn").setAttribute("aria-expanded", "false");
+}
+function toggleOyiPlusMenu() {
+  const menu = document.getElementById("oyiPlusMenu");
+  const open = !menu.classList.contains("open");
+  menu.classList.toggle("open", open);
+  document.getElementById("oyiPlusBtn").setAttribute("aria-expanded", String(open));
+}
+
+// ---------------------------------------------------------------------
+// Phase 8 — camera/visual-context capture. A compact sheet, not a
+// full-screen takeover. Reuses the EXISTING generic upload endpoint
+// (apiUploadAttachment -> /api/lead-agents/admin/storage,
+// purpose:"message_attachment", already used by the staff-conversation
+// inbox's own attachment flow) rather than a new upload path.
+//
+// HONEST LIMIT (audited before building this): Oyi Core has no
+// vision/image-understanding pipeline today — the shared engagement-
+// mode vocabulary (PublicIntelligenceMode in Ochiga-backend) has no
+// image/vision mode, and office_internal's own request contract carries
+// no image field. The photo is genuinely uploaded and referenced in
+// Oyi's context so it's on record and reachable, but Oyi answers from
+// the optional note text, not from the photo's actual pixel content —
+// the sheet says so plainly (oyi-camera-limitation) rather than
+// implying a capability that isn't real.
+// ---------------------------------------------------------------------
+let oyiCameraStream = null;
+let oyiCameraCapturedDataUrl = null;
+
+function stopOyiCameraStream() {
+  if (oyiCameraStream) {
+    oyiCameraStream.getTracks().forEach((track) => track.stop());
+    oyiCameraStream = null;
+  }
+}
+function resetOyiCameraSheet() {
+  stopOyiCameraStream();
+  oyiCameraCapturedDataUrl = null;
+  document.getElementById("oyiCameraNote").value = "";
+  document.getElementById("oyiCameraSend").disabled = true;
+  document.getElementById("oyiCameraPreview").innerHTML = `<div class="oyi-camera-empty">Take a photo or choose one from your device.</div>`;
+  const captureBtn = document.getElementById("oyiCameraCapture");
+  captureBtn.textContent = "Take Photo";
+  captureBtn.onclick = startOyiCameraCapture;
+}
+function openOyiCameraSheet() {
+  closeOyiPlusMenu();
+  document.getElementById("oyiCameraBackdrop").classList.add("open");
+  resetOyiCameraSheet();
+}
+function closeOyiCameraSheet() {
+  stopOyiCameraStream();
+  document.getElementById("oyiCameraBackdrop").classList.remove("open");
+}
+function showOyiCameraPreviewImage(dataUrl) {
+  const preview = document.getElementById("oyiCameraPreview");
+  preview.innerHTML = "";
+  const img = document.createElement("img");
+  img.src = dataUrl;
+  img.alt = "Captured photo";
+  preview.appendChild(img);
+  document.getElementById("oyiCameraSend").disabled = false;
+}
+function capturePhotoFromVideo(video) {
+  const canvas = document.createElement("canvas");
+  canvas.width = video.videoWidth || 640;
+  canvas.height = video.videoHeight || 480;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return;
+  ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+  oyiCameraCapturedDataUrl = canvas.toDataURL("image/jpeg", 0.85);
+  stopOyiCameraStream();
+  showOyiCameraPreviewImage(oyiCameraCapturedDataUrl);
+  const captureBtn = document.getElementById("oyiCameraCapture");
+  captureBtn.textContent = "Retake";
+  captureBtn.onclick = startOyiCameraCapture;
+}
+async function startOyiCameraCapture() {
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    document.getElementById("oyiCameraFileInput").click();
+    return;
+  }
+  try {
+    stopOyiCameraStream();
+    oyiCameraStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } });
+    const preview = document.getElementById("oyiCameraPreview");
+    preview.innerHTML = "";
+    const video = document.createElement("video");
+    video.autoplay = true;
+    video.muted = true;
+    video.playsInline = true;
+    video.srcObject = oyiCameraStream;
+    preview.appendChild(video);
+    const captureBtn = document.getElementById("oyiCameraCapture");
+    captureBtn.textContent = "Capture";
+    captureBtn.onclick = () => capturePhotoFromVideo(video);
+  } catch (err) {
+    // Permission denied or no camera available — fall back to the file
+    // picker (which on mobile still opens the native camera via the
+    // capture="environment" attribute) rather than dead-ending.
+    document.getElementById("oyiCameraFileInput").click();
+  }
+}
+async function handleOyiCameraFileChosen(file) {
+  if (!file) return;
+  try {
+    const dataUrl = await readFileAsDataUrl(file);
+    oyiCameraCapturedDataUrl = dataUrl;
+    showOyiCameraPreviewImage(dataUrl);
+  } catch (err) {
+    toast("Could not read that photo. Please try another.", "error");
+  }
+}
+async function sendOyiCameraCapture() {
+  if (!oyiCameraCapturedDataUrl || state.oyiBusy) return;
+  const note = document.getElementById("oyiCameraNote").value.trim();
+  const dataUrl = oyiCameraCapturedDataUrl;
+  closeOyiCameraSheet();
+  try {
+    const uploaded = await apiUploadAttachment(dataUrl, `oyi-photo-${Date.now()}.jpg`, "image/jpeg");
+    const url = uploaded?.file?.url || "";
+    const displayText = note ? `📷 ${note}` : "📷 Photo";
+    const fullMessage = `${note || "I've attached a photo for the record."}${url ? `\n\n[Photo attached: ${url}]` : ""}`;
+    await sendOyiMessage(fullMessage, { displayText });
+  } catch (err) {
+    appendOyiMessage("system", "Could not attach that photo. Please try again.");
+  }
+}
+
+// ---------------------------------------------------------------------
+// Phase 9 — voice recording. MediaRecorder + a real Web Audio level
+// meter (same technique as the public widget's own voice input,
+// public/widget/oma-widget.js) driving a compact waveform, transcribed
+// through the canonical speech path (apiTranscribeOyiVoice ->
+// openaiClient.createTranscription, the SAME Whisper call the public
+// widget's /transcribe endpoint already makes) — the transcript then
+// enters sendOyiMessage() exactly like typed text; there is no separate
+// voice conversation runtime.
+// ---------------------------------------------------------------------
+const OYI_RECORDING_METER_BARS = 28;
+let oyiMediaRecorder = null;
+let oyiMediaChunks = [];
+let oyiMediaStream = null;
+let oyiRecordingStartedAt = 0;
+let oyiRecordingTimer = null;
+let oyiAudioContext = null;
+let oyiAudioAnalyser = null;
+let oyiAudioMeterFrame = null;
+let oyiAudioMeterData = null;
+
+function oyiSupportsMediaRecorder() {
+  return Boolean(navigator.mediaDevices && navigator.mediaDevices.getUserMedia && window.MediaRecorder);
+}
+function oyiPreferredAudioMime() {
+  const types = ["audio/webm;codecs=opus", "audio/webm", "audio/mp4", "audio/ogg;codecs=opus"];
+  if (!window.MediaRecorder || !window.MediaRecorder.isTypeSupported) return "";
+  return types.find((type) => window.MediaRecorder.isTypeSupported(type)) || "";
+}
+function oyiAudioExtension(mimeType) {
+  if (/mp4|m4a/i.test(mimeType)) return ".m4a";
+  if (/ogg/i.test(mimeType)) return ".ogg";
+  if (/wav/i.test(mimeType)) return ".wav";
+  return ".webm";
+}
+function buildOyiRecordingMeterBars() {
+  const meter = document.getElementById("oyiRecordingMeter");
+  meter.innerHTML = "";
+  for (let i = 0; i < OYI_RECORDING_METER_BARS; i += 1) {
+    meter.appendChild(el(`<span class="oyi-recording-meter-bar" style="height:3px"></span>`));
+  }
+}
+function setOyiRecordingMeterLevel(level) {
+  const bars = document.querySelectorAll("#oyiRecordingMeter .oyi-recording-meter-bar");
+  if (!bars.length) return;
+  // A gentle left-to-right falloff around the current level, rather than
+  // every bar jumping identically — reads as a real waveform, not a
+  // single flashing block, while still driven entirely by the real mic
+  // input level (no fabricated animation).
+  bars.forEach((bar, i) => {
+    const jitter = 0.55 + Math.abs(Math.sin(i * 1.3 + Date.now() / 180)) * 0.45;
+    const height = Math.max(3, Math.min(22, Math.round(level * 22 * jitter)));
+    bar.style.height = `${height}px`;
+    bar.style.backgroundColor = level > 0.55 ? "var(--red-bright)" : "var(--red-muted)";
+  });
+}
+function stopOyiAudioMeter() {
+  if (oyiAudioMeterFrame) {
+    window.cancelAnimationFrame(oyiAudioMeterFrame);
+    oyiAudioMeterFrame = null;
+  }
+  if (oyiAudioContext) {
+    oyiAudioContext.close().catch(() => {});
+    oyiAudioContext = null;
+  }
+  oyiAudioAnalyser = null;
+  oyiAudioMeterData = null;
+}
+function startOyiAudioMeter(stream) {
+  const AudioContext = window.AudioContext || window.webkitAudioContext;
+  if (!AudioContext) return;
+  try {
+    oyiAudioContext = new AudioContext();
+    const source = oyiAudioContext.createMediaStreamSource(stream);
+    oyiAudioAnalyser = oyiAudioContext.createAnalyser();
+    oyiAudioAnalyser.fftSize = 512;
+    oyiAudioMeterData = new Uint8Array(oyiAudioAnalyser.fftSize);
+    source.connect(oyiAudioAnalyser);
+    const tick = () => {
+      if (!oyiAudioAnalyser || !oyiAudioMeterData) return;
+      oyiAudioAnalyser.getByteTimeDomainData(oyiAudioMeterData);
+      let sum = 0;
+      for (let i = 0; i < oyiAudioMeterData.length; i += 1) {
+        const centered = (oyiAudioMeterData[i] - 128) / 128;
+        sum += centered * centered;
+      }
+      const rms = Math.sqrt(sum / oyiAudioMeterData.length);
+      setOyiRecordingMeterLevel(Math.min(1, rms * 7));
+      oyiAudioMeterFrame = window.requestAnimationFrame(tick);
+    };
+    tick();
+  } catch {
+    // No audio meter — recording itself still works, just silent bars.
+  }
+}
+function formatOyiRecordingTime(ms) {
+  const totalSeconds = Math.max(0, Math.floor(ms / 1000));
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `${minutes}:${String(seconds).padStart(2, "0")}`;
+}
+function stopOyiRecordingTimer() {
+  if (oyiRecordingTimer) {
+    window.clearInterval(oyiRecordingTimer);
+    oyiRecordingTimer = null;
+  }
+}
+function cleanupOyiRecordingMedia() {
+  stopOyiAudioMeter();
+  stopOyiRecordingTimer();
+  if (oyiMediaStream) {
+    oyiMediaStream.getTracks().forEach((track) => track.stop());
+    oyiMediaStream = null;
+  }
+  oyiMediaRecorder = null;
+  oyiMediaChunks = [];
+}
+function exitOyiRecordingUi() {
+  document.getElementById("oyiComposer").classList.remove("voice-recording");
+  document.getElementById("oyiMicBtn").classList.remove("recording");
+  document.getElementById("oyiRecordingTime").textContent = "0:00";
+}
+async function startOyiVoiceRecording() {
+  if (state.oyiBusy) return;
+  if (!oyiSupportsMediaRecorder()) {
+    toast("Voice input isn't supported in this browser — you can still type your message.", "error");
+    return;
+  }
+  closeOyiPlusMenu();
+  try {
+    oyiMediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  } catch (err) {
+    toast("Microphone permission was denied, or no microphone is available.", "error");
+    return;
+  }
+  document.getElementById("oyiComposer").classList.add("voice-recording");
+  document.getElementById("oyiMicBtn").classList.add("recording");
+  buildOyiRecordingMeterBars();
+  startOyiAudioMeter(oyiMediaStream);
+  oyiRecordingStartedAt = Date.now();
+  oyiRecordingTimer = window.setInterval(() => {
+    document.getElementById("oyiRecordingTime").textContent = formatOyiRecordingTime(Date.now() - oyiRecordingStartedAt);
+  }, 250);
+
+  oyiMediaChunks = [];
+  const mimeType = oyiPreferredAudioMime();
+  try {
+    oyiMediaRecorder = new MediaRecorder(oyiMediaStream, mimeType ? { mimeType } : undefined);
+  } catch (err) {
+    cleanupOyiRecordingMedia();
+    exitOyiRecordingUi();
+    toast("Could not start recording in this browser.", "error");
+    return;
+  }
+  oyiMediaRecorder.ondataavailable = (event) => {
+    if (event.data && event.data.size > 0) oyiMediaChunks.push(event.data);
+  };
+  oyiMediaRecorder.onerror = () => {
+    cleanupOyiRecordingMedia();
+    exitOyiRecordingUi();
+    toast("Voice recording failed. Please try again.", "error");
+  };
+  oyiMediaRecorder.start(500);
+}
+function cancelOyiVoiceRecording() {
+  if (oyiMediaRecorder && oyiMediaRecorder.state !== "inactive") {
+    oyiMediaRecorder.onstop = null;
+    try {
+      oyiMediaRecorder.stop();
+    } catch {}
+  }
+  cleanupOyiRecordingMedia();
+  exitOyiRecordingUi();
+}
+async function finishOyiVoiceRecording() {
+  if (!oyiMediaRecorder || oyiMediaRecorder.state === "inactive") return;
+  const recorder = oyiMediaRecorder;
+  const durationMs = Date.now() - oyiRecordingStartedAt;
+  const mimeType = recorder.mimeType || "audio/webm";
+  const stopped = new Promise((resolve) => {
+    recorder.onstop = resolve;
+  });
+  try {
+    recorder.stop();
+  } catch {
+    cleanupOyiRecordingMedia();
+    exitOyiRecordingUi();
+    return;
+  }
+  await stopped;
+  const chunks = oyiMediaChunks;
+  cleanupOyiRecordingMedia();
+  exitOyiRecordingUi();
+
+  if (!chunks.length) {
+    toast("No audio was captured — please try again.", "error");
+    return;
+  }
+  const blob = new Blob(chunks, { type: mimeType });
+  if (blob.size < 800) {
+    toast("Recording was too short — please try again.", "error");
+    return;
+  }
+  let transcriptText = "";
+  state.oyiBusy = true;
+  setOyiPresence("thinking");
+  showOyiActivity("Transcribing your recording…", "thinking");
+  try {
+    const dataUrl = await readFileAsDataUrl(new File([blob], `oyi-voice${oyiAudioExtension(mimeType)}`, { type: mimeType }));
+    const result = await apiTranscribeOyiVoice(dataUrl, mimeType, `oyi-voice${oyiAudioExtension(mimeType)}`, durationMs);
+    transcriptText = String(result?.text || "").trim();
+  } catch (err) {
+    hideOyiActivity();
+    state.oyiBusy = false;
+    setOyiPresence("idle");
+    appendOyiMessage("system", "Could not transcribe that recording. Please try again or type your message.");
+    return;
+  }
+  hideOyiActivity();
+  state.oyiBusy = false;
+  setOyiPresence("idle");
+  if (!transcriptText) {
+    appendOyiMessage("system", "I didn't catch that — please try recording again.");
+    return;
+  }
+  await sendOyiMessage(transcriptText);
+}
+
+// ---------------------------------------------------------------------
+// Phase 10 — live voice/call state boundary. This is ONLY a clean seam
+// for a FUTURE live-voice/telephony integration to land in — no
+// continuous voice call capability exists yet (that would require a
+// real media-streaming/STT/TTS pipeline, see the production report's
+// design section), and nothing here fabricates one. Deliberately not
+// wired to any UI control today; kept as a documented, importable
+// vocabulary so a later integration doesn't have to invent one under
+// time pressure, and doesn't touch CommunicationRuntime/telephony in any
+// way.
+// ---------------------------------------------------------------------
+const OYI_VOICE_CALL_STATES = ["idle", "connecting", "listening", "user_speaking", "processing", "oyi_speaking", "muted", "ending", "ended", "error"];
+state.oyiVoiceCallState = "idle";
+function setOyiVoiceCallState(nextState) {
+  if (!OYI_VOICE_CALL_STATES.includes(nextState)) return;
+  state.oyiVoiceCallState = nextState;
 }
 
 async function wireOyiControl() {
@@ -9173,6 +9688,7 @@ async function wireOyiControl() {
     event.preventDefault();
     const message = input.value;
     input.value = "";
+    autoGrowOyiInput();
     sendOyiMessage(message);
   });
   input.addEventListener("keydown", (event) => {
@@ -9180,6 +9696,74 @@ async function wireOyiControl() {
       event.preventDefault();
       composer.requestSubmit();
     }
+  });
+  // Phase 6 — expanding textarea; Shift+Enter/newline is the default
+  // textarea behaviour above and is left untouched.
+  input.addEventListener("input", autoGrowOyiInput);
+
+  // Phase 7 — the compact "+" context menu (camera today; nothing here
+  // advertises a capability that isn't wired up).
+  const plusBtn = document.getElementById("oyiPlusBtn");
+  const plusMenu = document.getElementById("oyiPlusMenu");
+  plusBtn.addEventListener("click", (event) => {
+    event.stopPropagation();
+    toggleOyiPlusMenu();
+  });
+  document.getElementById("oyiCameraOption").addEventListener("click", () => {
+    closeOyiPlusMenu();
+    openOyiCameraSheet();
+  });
+  document.addEventListener("click", (event) => {
+    if (plusMenu.classList.contains("open") && !plusMenu.contains(event.target) && event.target !== plusBtn) {
+      closeOyiPlusMenu();
+    }
+  });
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && plusMenu.classList.contains("open")) closeOyiPlusMenu();
+  });
+
+  // Phase 8 — camera/visual-context sheet.
+  document.getElementById("oyiCameraClose").addEventListener("click", closeOyiCameraSheet);
+  document.getElementById("oyiCameraCancel").addEventListener("click", closeOyiCameraSheet);
+  document.getElementById("oyiCameraBackdrop").addEventListener("click", (event) => {
+    if (event.target.id === "oyiCameraBackdrop") closeOyiCameraSheet();
+  });
+  // oyiCameraCapture's click handler is intentionally NOT bound here —
+  // resetOyiCameraSheet()/capturePhotoFromVideo() manage it via a single
+  // reassigned .onclick (take photo -> capture -> retake), never a
+  // second addEventListener, so a click can never double-fire into both
+  // "start the camera" and "capture the frame" at once.
+  const cameraFileInput = document.getElementById("oyiCameraFileInput");
+  document.getElementById("oyiCameraChoose").addEventListener("click", () => cameraFileInput.click());
+  cameraFileInput.addEventListener("change", () => {
+    const file = cameraFileInput.files && cameraFileInput.files[0];
+    handleOyiCameraFileChosen(file);
+    cameraFileInput.value = "";
+  });
+  document.getElementById("oyiCameraSend").addEventListener("click", sendOyiCameraCapture);
+
+  // Phase 9 — voice recording.
+  document.getElementById("oyiMicBtn").addEventListener("click", () => {
+    if (document.getElementById("oyiComposer").classList.contains("voice-recording")) return;
+    startOyiVoiceRecording();
+  });
+  document.getElementById("oyiRecordingCancel").addEventListener("click", cancelOyiVoiceRecording);
+  // The send button doubles as "finish recording" while the composer is
+  // in voice-recording mode (the static plus/textarea/mic row is hidden
+  // then, so there's no ambiguity about what it does).
+  document.getElementById("oyiSend").addEventListener("click", (event) => {
+    if (document.getElementById("oyiComposer").classList.contains("voice-recording")) {
+      event.preventDefault();
+      finishOyiVoiceRecording();
+    }
+  });
+
+  // Cleanup — never leave a mic/camera stream running if the page goes
+  // away mid-capture (Phase 9's explicit cleanup requirement; the panel-
+  // close case itself is handled inside closeOyiPanel()).
+  window.addEventListener("beforeunload", () => {
+    stopOyiCameraStream();
+    cleanupOyiRecordingMedia();
   });
 }
 

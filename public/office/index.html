@@ -418,7 +418,9 @@
   /* Presence (shared/oyi-core/presence.mjs) — restrained, not
      decorative: a slow pulse on the core dot is the only signal while
      Oyi is thinking, no motion at all at idle. */
-  .oyi-orb.presence-thinking .oyi-orb-core {
+  .oyi-orb.presence-thinking .oyi-orb-core,
+  .oyi-orb.presence-executing .oyi-orb-core,
+  .oyi-orb.presence-listening .oyi-orb-core {
     animation: oyi-presence-pulse 1.4s ease-in-out infinite;
   }
   @keyframes oyi-presence-pulse {
@@ -426,7 +428,9 @@
     50% { box-shadow: 0 0 16px 5px rgba(179,36,27,0.85); opacity: 0.75; }
   }
   @media (prefers-reduced-motion: reduce) {
-    .oyi-orb.presence-thinking .oyi-orb-core { animation: none; }
+    .oyi-orb.presence-thinking .oyi-orb-core,
+    .oyi-orb.presence-executing .oyi-orb-core,
+    .oyi-orb.presence-listening .oyi-orb-core { animation: none; }
   }
   .oyi-avatar-dot {
     width: 22px; height: 22px; border-radius: 50%; flex-shrink: 0;
@@ -511,6 +515,120 @@
     transition: border-color var(--duration-fast) var(--ease), color var(--duration-fast) var(--ease);
   }
   .quick-prompt:hover { border-color: var(--red-muted); color: var(--white); }
+
+  /* -----------------------------------------------------------------
+     Oyi Office Conversational Interaction programme
+     Phase 3 — response arrival animation. A restrained one-shot reveal
+     on insertion (CSS keyframe animations run once when an element is
+     added to the DOM, never replay on scroll) — never a scroll-triggered
+     re-animation, never applied to the whole panel. The global
+     prefers-reduced-motion rule at the bottom of this stylesheet already
+     zeroes every animation-duration, so this needs no separate guard.
+  ----------------------------------------------------------------- */
+  @keyframes oyi-reveal {
+    from { opacity: 0; transform: translateY(4px); }
+    to { opacity: 1; transform: none; }
+  }
+  .oyi-msg { animation: oyi-reveal 220ms ease-out; }
+  .oyi-structured > .oyi-blocks,
+  .oyi-structured > .oyi-record-list,
+  .oyi-structured > .oyi-kv,
+  .oyi-structured > .oyi-action-proposal,
+  .oyi-structured > .oyi-proposal { animation: oyi-reveal 220ms ease-out 60ms both; }
+
+  /* Phase 2 — real processing/activity states. One compact line, a
+     small icon and short honest label, rendered as the last row in the
+     thread (removed the moment a real response — or a real failure —
+     arrives). Never a large loader, never more than one line. */
+  .oyi-activity-row { display: flex !important; align-items: center; gap: 7px; background: none !important; border: none !important; padding: 4px 2px !important; }
+  .oyi-activity-icon { width: 14px; height: 14px; flex-shrink: 0; display: flex; color: var(--red-bright); opacity: 0.9; }
+  .oyi-activity-icon svg { width: 100%; height: 100%; }
+  .oyi-activity-text { font-size: 11.5px; color: var(--text-tertiary); }
+  .oyi-activity-icon.spin svg { animation: oyi-spin 1.1s linear infinite; }
+  @keyframes oyi-spin { to { transform: rotate(360deg); } }
+  .oyi-activity-icon.pulse { animation: oyi-presence-pulse 1.4s ease-in-out infinite; }
+
+  /* Phase 6/7 — composer upgrade: compact "+" context control and mic,
+     auto-growing textarea, same restrained visual language as the
+     existing send button (no new prominence pattern introduced). */
+  .oyi-composer { position: relative; }
+  .oyi-composer-static { display: flex; align-items: flex-end; gap: 8px; flex: 1; min-width: 0; }
+  .oyi-composer-static textarea { min-height: 32px; }
+  .oyi-composer-btn {
+    background: none; border: 1px solid var(--line-strong); color: var(--text-secondary); border-radius: var(--radius-sm);
+    width: 32px; height: 32px; flex-shrink: 0; cursor: pointer; display: flex; align-items: center; justify-content: center;
+    transition: border-color var(--duration-fast) var(--ease), color var(--duration-fast) var(--ease), background var(--duration-fast) var(--ease);
+  }
+  .oyi-composer-btn svg { width: 16px; height: 16px; }
+  .oyi-composer-btn:hover { border-color: var(--red-muted); color: var(--white); background: rgba(255,255,255,0.03); }
+  .oyi-composer-btn:disabled { opacity: 0.4; cursor: default; }
+  .oyi-composer-btn.active { border-color: var(--red-bright); color: var(--red-bright); background: rgba(179,36,27,0.1); }
+  .oyi-composer-btn.recording { border-color: var(--red-bright); color: var(--red-bright); }
+  .oyi-composer-btn.recording svg { animation: oyi-presence-pulse 1.2s ease-in-out infinite; }
+
+  .oyi-plus-menu {
+    position: absolute; bottom: calc(100% + 6px); left: 12px;
+    background: var(--charcoal); border: 1px solid var(--line-strong); border-radius: var(--radius);
+    box-shadow: 0 12px 30px rgba(0,0,0,0.5); padding: 4px; display: none; flex-direction: column; min-width: 168px; z-index: 2;
+  }
+  .oyi-plus-menu.open { display: flex; }
+  .oyi-plus-menu button {
+    display: flex; align-items: center; gap: 8px; background: none; border: none; color: var(--text-secondary);
+    font-size: 12px; padding: 8px 9px; border-radius: var(--radius-sm); cursor: pointer; text-align: left;
+  }
+  .oyi-plus-menu button:hover { background: rgba(255,255,255,0.05); color: var(--white); }
+  .oyi-plus-menu button svg { width: 15px; height: 15px; flex-shrink: 0; color: var(--red-bright); }
+
+  /* Voice recording state — replaces the plus/mic row with a level
+     meter + elapsed time + cancel/finish, restrained (one bar, no chrome
+     borrowed from any other product). */
+  .oyi-composer.voice-recording .oyi-composer-static { display: none; }
+  .oyi-recording-bar { display: none; align-items: center; gap: 8px; flex: 1; min-width: 0; }
+  .oyi-composer.voice-recording .oyi-recording-bar { display: flex; }
+  .oyi-recording-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--red-bright); flex-shrink: 0; animation: oyi-presence-pulse 1.1s ease-in-out infinite; }
+  .oyi-recording-meter { flex: 1; height: 22px; display: flex; align-items: center; gap: 2px; min-width: 0; overflow: hidden; }
+  .oyi-recording-meter-bar { width: 2.5px; min-height: 3px; border-radius: 2px; background: var(--red-muted); transition: height 90ms ease-out, background-color 90ms; flex-shrink: 0; }
+  .oyi-recording-time { font-size: 11px; color: var(--text-tertiary); font-variant-numeric: tabular-nums; flex-shrink: 0; }
+  .oyi-recording-cancel {
+    background: none; border: none; color: var(--text-tertiary); cursor: pointer; width: 28px; height: 28px; flex-shrink: 0;
+    display: flex; align-items: center; justify-content: center; border-radius: 50%;
+  }
+  .oyi-recording-cancel:hover { color: var(--white); background: rgba(255,255,255,0.06); }
+
+  /* Compact camera/visual-context sheet — a modal appropriate to
+     Office's own scale, not a full-screen takeover. */
+  .oyi-camera-sheet-backdrop {
+    position: fixed; inset: 0; background: rgba(0,0,0,0.6); z-index: 60; display: none; align-items: flex-end; justify-content: center;
+  }
+  .oyi-camera-sheet-backdrop.open { display: flex; }
+  @media (min-width: 640px) { .oyi-camera-sheet-backdrop { align-items: center; } }
+  .oyi-camera-sheet {
+    width: min(380px, 100%); max-height: min(560px, 90vh); background: var(--charcoal); border: 1px solid var(--line-strong);
+    border-radius: var(--radius) var(--radius) 0 0; box-shadow: 0 20px 60px rgba(0,0,0,0.55);
+    display: flex; flex-direction: column; overflow: hidden;
+  }
+  @media (min-width: 640px) { .oyi-camera-sheet { border-radius: var(--radius); } }
+  .oyi-camera-sheet-head { display: flex; align-items: center; justify-content: space-between; padding: 12px 14px; border-bottom: 1px solid var(--line); }
+  .oyi-camera-sheet-head .title { font-size: 12.5px; font-weight: 600; color: var(--white); }
+  .oyi-camera-sheet-close { background: none; border: none; color: var(--text-tertiary); cursor: pointer; width: 26px; height: 26px; border-radius: 6px; }
+  .oyi-camera-sheet-close:hover { color: var(--white); background: rgba(255,255,255,0.06); }
+  .oyi-camera-sheet-body { padding: 14px; display: flex; flex-direction: column; gap: 10px; overflow-y: auto; }
+  .oyi-camera-preview {
+    width: 100%; aspect-ratio: 4/3; background: var(--black); border-radius: var(--radius-sm); border: 1px solid var(--line-strong);
+    display: flex; align-items: center; justify-content: center; overflow: hidden; position: relative;
+  }
+  .oyi-camera-preview video, .oyi-camera-preview img { width: 100%; height: 100%; object-fit: cover; }
+  .oyi-camera-empty { color: var(--text-tertiary); font-size: 12px; text-align: center; padding: 20px; }
+  .oyi-camera-actions { display: flex; gap: 8px; }
+  .oyi-camera-actions .btn { flex: 1; }
+  .oyi-camera-note-field {
+    width: 100%; resize: none; border: 1px solid var(--line-strong); background: rgba(255,255,255,0.02);
+    color: var(--white); border-radius: var(--radius-sm); padding: 8px 10px; font-size: 12.5px; font-family: inherit; outline: none;
+  }
+  .oyi-camera-note-field:focus { border-color: var(--red); }
+  .oyi-camera-limitation { font-size: 10.5px; color: var(--text-tertiary); line-height: 1.4; }
+  .oyi-camera-sheet-foot { display: flex; gap: 8px; padding: 12px 14px; border-top: 1px solid var(--line); }
+  .oyi-camera-sheet-foot .btn { flex: 1; }
 
   .oyi-structured p { margin: 0 0 8px; }
   .oyi-structured p:last-child { margin-bottom: 0; }
@@ -1194,8 +1312,30 @@
         <div class="oyi-thread" id="oyiThread"></div>
         <div class="oyi-quick-prompts" id="oyiQuickPrompts"></div>
         <form class="oyi-composer" id="oyiComposer">
-          <textarea id="oyiInput" rows="1" placeholder="Ask Oyi about what you're looking at…"></textarea>
+          <div class="oyi-composer-static">
+            <button type="button" class="oyi-composer-btn" id="oyiPlusBtn" aria-haspopup="true" aria-expanded="false" aria-label="Add context" title="Add context">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"></path></svg>
+            </button>
+            <textarea id="oyiInput" rows="1" placeholder="Ask Oyi anything…"></textarea>
+            <button type="button" class="oyi-composer-btn" id="oyiMicBtn" aria-label="Record a voice message" title="Record a voice message">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 15a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3Z"></path><path d="M19 11a7 7 0 0 1-14 0"></path><path d="M12 18v3"></path></svg>
+            </button>
+          </div>
+          <div class="oyi-recording-bar" id="oyiRecordingBar">
+            <button type="button" class="oyi-recording-cancel" id="oyiRecordingCancel" aria-label="Cancel recording" title="Cancel recording">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"></path></svg>
+            </button>
+            <span class="oyi-recording-dot" aria-hidden="true"></span>
+            <div class="oyi-recording-meter" id="oyiRecordingMeter" aria-hidden="true"></div>
+            <span class="oyi-recording-time" id="oyiRecordingTime">0:00</span>
+          </div>
           <button type="submit" id="oyiSend" aria-label="Send">→</button>
+          <div class="oyi-plus-menu" id="oyiPlusMenu" role="menu">
+            <button type="button" id="oyiCameraOption" role="menuitem">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 8h3l2-2h6l2 2h3v11H4z"></path><circle cx="12" cy="14" r="3.2"></circle></svg>
+              Add a photo
+            </button>
+          </div>
         </form>
       </div>
       <div class="oyi-minimized-bar" id="oyiMinimizedBar">
@@ -1210,6 +1350,31 @@
       <button type="button" class="oyi-orb presence-idle" id="oyiBar" aria-expanded="false" aria-label="Ask Oyi" title="Ask Oyi">
         <span class="oyi-orb-core"></span>
       </button>
+    </div>
+
+    <div class="oyi-camera-sheet-backdrop" id="oyiCameraBackdrop">
+      <div class="oyi-camera-sheet" role="dialog" aria-modal="true" aria-labelledby="oyiCameraTitle">
+        <div class="oyi-camera-sheet-head">
+          <span class="title" id="oyiCameraTitle">Add a photo</span>
+          <button type="button" class="oyi-camera-sheet-close" id="oyiCameraClose" aria-label="Close">×</button>
+        </div>
+        <div class="oyi-camera-sheet-body">
+          <div class="oyi-camera-preview" id="oyiCameraPreview">
+            <div class="oyi-camera-empty" id="oyiCameraEmpty">Take a photo or choose one from your device.</div>
+          </div>
+          <div class="oyi-camera-actions" id="oyiCameraActions">
+            <button type="button" class="btn btn-ghost btn-sm" id="oyiCameraCapture">Take Photo</button>
+            <button type="button" class="btn btn-ghost btn-sm" id="oyiCameraChoose">Choose File</button>
+          </div>
+          <input type="file" accept="image/*" capture="environment" id="oyiCameraFileInput" hidden />
+          <textarea class="oyi-camera-note-field" id="oyiCameraNote" rows="2" placeholder="Optional note for Oyi (e.g. what to look for)…"></textarea>
+          <div class="oyi-camera-limitation" id="oyiCameraLimitation" hidden>Oyi can't yet see the contents of a photo — it will be attached for the record, and your note (if any) is what Oyi actually reads.</div>
+        </div>
+        <div class="oyi-camera-sheet-foot">
+          <button type="button" class="btn btn-ghost btn-sm" id="oyiCameraCancel">Cancel</button>
+          <button type="button" class="btn btn-primary btn-sm" id="oyiCameraSend" disabled>Send</button>
+        </div>
+      </div>
     </div>
   </div>
 
