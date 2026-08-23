@@ -550,30 +550,19 @@
      small icon and short honest label, rendered as the last row in the
      thread (removed the moment a real response — or a real failure —
      arrives). Never a large loader, never more than one line. */
-  .oyi-activity-row { display: flex !important; align-items: center; gap: 7px; background: none !important; border: none !important; padding: 4px 2px !important; }
+  .oyi-activity-row { display: flex !important; align-items: center; min-height: 22px; background: none !important; border: none !important; padding: 4px 2px !important; }
+  .oyi-activity-content { display: inline-flex; align-items: center; gap: 7px; min-width: 0; max-width: 100%; }
+  .oyi-activity-content.is-changing { animation: oyi-activity-change 180ms var(--ease); }
   .oyi-activity-icon { width: 14px; height: 14px; flex-shrink: 0; display: flex; color: var(--red-bright); opacity: 0.9; }
   .oyi-activity-icon svg { width: 100%; height: 100%; }
-  .oyi-activity-text { font-size: 11.5px; color: var(--text-tertiary); }
+  .oyi-activity-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11.5px; color: var(--text-tertiary); }
   .oyi-activity-icon.spin svg { animation: oyi-spin 1.1s linear infinite; }
   @keyframes oyi-spin { to { transform: rotate(360deg); } }
   .oyi-activity-icon.pulse { animation: oyi-presence-pulse 1.4s ease-in-out infinite; }
-
-  /* Compact scanning card — an honest, small abstraction of the real
-     search-evidence / build-answer pipeline stages (never fabricated
-     per-domain theatre). Used only for the initial "thinking about the
-     message" state; confirm/execute/verify keep the plain single-line
-     .oyi-activity-row above since those already ARE precise real-time
-     labels for one specific network call. */
-  .oyi-activity-card {
-    display: flex !important; flex-direction: column; gap: 7px;
-    background: rgba(255,255,255,0.025) !important; border: 1px solid var(--line) !important;
-    border-radius: var(--radius-sm); padding: 10px 11px !important; max-width: 88%;
+  @keyframes oyi-activity-change {
+    from { opacity: 0.35; transform: translateY(2px); }
+    to { opacity: 1; transform: none; }
   }
-  .oyi-activity-card-head { display: flex; align-items: center; gap: 7px; font-size: 12px; color: var(--white); font-weight: 500; }
-  .oyi-activity-card-head .oyi-activity-icon { color: var(--red-bright); }
-  .oyi-activity-steps { display: flex; flex-direction: column; gap: 4px; margin-left: 21px; }
-  .oyi-activity-step { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--text-tertiary); }
-  .oyi-activity-step svg { width: 12px; height: 12px; flex-shrink: 0; opacity: 0.75; }
 
   /* Phase 6/7 — composer upgrade: compact "+" context control and mic,
      auto-growing textarea, same restrained visual language as the

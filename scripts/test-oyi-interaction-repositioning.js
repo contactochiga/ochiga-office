@@ -27,6 +27,14 @@ assert(client.includes("page_context: currentPageContext()"), "internal Oyi page
 assert(client.includes('event.key === "ArrowDown" || event.key === "ArrowUp"'), "menu arrow-key navigation is missing");
 assert(client.includes("closeOyiPlusMenu({ restoreFocus: true })"), "Escape must restore focus to the menu trigger");
 assert(client.includes("initialOyiActivity(message)"), "honest processing-state selection is missing");
+assert(!html.includes("oyi-activity-steps") && !html.includes("oyi-activity-step"), "processing UI must not render a stacked checklist");
+assert(!client.includes("initial.steps"), "processing UI must not pass multiple simultaneous stages");
+assert(client.includes('class="oyi-activity-content"'), "canonical single processing surface is missing");
+assert(client.includes('aria-atomic="true"'), "processing replacement must be announced as one atomic status");
+assert(client.includes('const matched = OYI_MESSAGE_ACTIVITY.find'), "processing must select one honest request-domain label");
+assert(client.includes('label: "Reviewing tasks…"') && client.includes('label: "Checking meetings…"'), "task and meeting processing mappings are missing");
+assert(client.includes('label: "Reviewing lead activity…"'), "CRM processing mapping is missing");
+assert(client.includes('return { label: "Working on that…", icon: "thinking" }'), "honest generic processing fallback is missing");
 assert(client.includes("renderResponseBlocks(normalized.cards)"), "canonical structured block renderer is not connected");
 assert(client.includes("renderApprovalSurface(normalized.toolProposals)"), "governed proposal renderer is not connected");
 assert(client.includes("apiTranscribeOyiVoice") && client.includes("openOyiVoiceChat"), "dictation and voice chat paths must remain distinct and real");
