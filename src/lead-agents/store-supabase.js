@@ -451,6 +451,16 @@ class SupabaseLeadAgentsStore {
     return this.safeGet("/facility_workspaces?order=created_at.desc");
   }
 
+  async updateFacilityWorkspace(workspaceId, patch) {
+    const payload = Object.fromEntries(
+      Object.entries(patch || {}).filter(([, value]) => value !== undefined)
+    );
+    const response = await this.client.patch(`/facility_workspaces?id=eq.${workspaceId}`, payload, {
+      headers: this.selectHeaders(),
+    });
+    return response.data[0] || null;
+  }
+
   async getLeadChannelState(leadId, channel) {
     const response = await this.client.get(
       `/lead_channel_states?lead_id=eq.${leadId}&channel=eq.${channel}&limit=1`

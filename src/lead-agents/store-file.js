@@ -603,6 +603,14 @@ class FileLeadAgentsStore {
     );
   }
 
+  async updateFacilityWorkspace(workspaceId, patch) {
+    const workspace = this.state.facility_workspaces.find((item) => item.id === workspaceId);
+    if (!workspace) return null;
+    Object.assign(workspace, patch, { updated_at: this.nowIso() });
+    await this.persist();
+    return workspace;
+  }
+
   async getLeadChannelState(leadId, channel) {
     return (
       this.state.lead_channel_states.find(
