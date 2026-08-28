@@ -51,6 +51,24 @@ function staffInviteEmail({ displayName, inviteUrl, role }) {
   };
 }
 
+function facilityOwnerInviteEmail({ estateName, inviteUrl, expiresAt }) {
+  const name = estateName || "your new Oyi Facility deployment";
+  const expiry = expiresAt ? new Date(expiresAt).toUTCString() : "the expiry shown in your setup link";
+  return {
+    subject: `Activate ${name} on Oyi Facility`,
+    text: [
+      `Hello,`,
+      "",
+      `Ochiga has provisioned "${name}" as a new Oyi Facility deployment and needs you to activate it as the facility owner/administrator.`,
+      `Open this link to set up your account and take ownership: ${inviteUrl}`,
+      `This link expires ${expiry}.`,
+      "",
+      "If you were not expecting this, ignore this message.",
+    ].join("\n"),
+    html: `<p>Hello,</p><p>Ochiga has provisioned <strong>${name}</strong> as a new Oyi Facility deployment and needs you to activate it as the facility owner/administrator.</p><p><a href="${inviteUrl}">Activate your Facility</a></p><p style="color:#64748b;font-size:12px;">This link expires ${expiry}. If you were not expecting this, ignore this message.</p>`,
+  };
+}
+
 function passwordResetEmail({ displayName, resetUrl }) {
   const name = displayName || "there";
   return {
@@ -67,6 +85,7 @@ function passwordResetEmail({ displayName, resetUrl }) {
 }
 
 module.exports = {
+  facilityOwnerInviteEmail,
   passwordResetEmail,
   sendOfficeEmail,
   staffInviteEmail,

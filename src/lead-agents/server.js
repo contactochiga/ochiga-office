@@ -96,10 +96,12 @@ const { PERMISSION_KEYS, ROLE_PERMISSIONS, hasPermission } = require("./permissi
 const { createRealtimeHub } = require("./realtime");
 const { createStorageService } = require("./storage");
 const {
+  facilityOwnerInviteEmail,
   passwordResetEmail,
   sendOfficeEmail,
   staffInviteEmail,
 } = require("./email");
+const { provisionBackendFacility } = require("./backend-facility-provisioning-gateway");
 const { credentialPayloadForUser, qrSvg } = require("./qr");
 const {
   createRequestContext,
@@ -3987,6 +3989,8 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
         }
         const body = await readJsonBody(req);
         requireObject(body, "body");
+        const facilityAdminEmail = String(body.facility_admin_email || lead.email || "").trim().toLowerCase();
+        const estateName = body.estate_name || body.property_name || lead.company;
         const [deployment, workspace] = await Promise.all([
           store.createDeploymentProject({
             lead_id: lead.id,
@@ -3996,9 +4000,9 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           }),
           store.createFacilityWorkspace({
             lead_id: lead.id,
-            facility_admin_email: body.facility_admin_email || lead.email,
+            facility_admin_email: facilityAdminEmail,
             customer_organization: body.customer_organization || lead.company,
-            estate_name: body.estate_name || body.property_name || lead.company,
+            estate_name: estateName,
             actor: authContext?.email || "office",
           }),
         ]);
@@ -4006,7 +4010,66 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           deployment_id: deployment.id,
           workspace_id: workspace.id,
         });
-        json(res, 201, { deployment, workspace }, { "x-request-id": ctx.requestId });
+
+        // Commercial production-hardening -- this staff action IS the
+        // authorization to actually provision the deployment (Backend's own
+        // public signup can no longer self-provision an estate). Reuses the
+        // exact staff-invite pattern already proven in this file: create,
+        // send via Resend, gracefully degrade to a copyable link if email
+        // isn't configured, never fail the whole request just because
+        // delivery failed.
+        let provisioning = { ok: false, reason: "not_attempted" };
+        let workspaceUpdate = null;
+        if (facilityAdminEmail) {
+          provisioning = await provisionBackendFacility(config, {
+            name: estateName,
+            address: body.address || "",
+            type: body.facility_type || "estate",
+            admin_email: facilityAdminEmail,
+            requested_by: authContext?.email || "office",
+          });
+          if (provisioning.ok) {
+            // Facility's (auth) directory is a Next.js route GROUP, not a
+            // real URL segment -- its pages resolve at the bare path
+            // (e.g. /login, /signup), so the activation page is genuinely
+            // at /facility-invite, not /auth/facility-invite.
+            const activationLink = `${String(config.officeFacilityBaseUrl || "").replace(/\/+$/, "")}/facility-invite?token=${encodeURIComponent(provisioning.activation_token)}`;
+            const emailResult = await sendOfficeEmail(
+              config,
+              facilityOwnerInviteEmail({ estateName, inviteUrl: activationLink, expiresAt: provisioning.invite?.expires_at })
+            ).catch((err) => ({ delivered: false, skipped: true, reason: err?.message || "email_send_failed" }));
+            workspaceUpdate = await store.updateFacilityWorkspace(workspace.id, {
+              status: "invitation_sent",
+              activation_link: activationLink,
+              checklist: {
+                ...(workspace.checklist || {}),
+                customer_organization: "created",
+                estate_or_building_record: "created",
+                facility_admin_invite: emailResult.delivered ? "sent" : "ready_to_send",
+                deployment_project: "linked",
+                onboarding_email: emailResult.delivered ? "sent" : "not_delivered",
+              },
+            });
+            await appendAudit(store, authContext, "facility_provisioned", "lead", lead.id, {
+              deployment_id: deployment.id,
+              workspace_id: workspace.id,
+              backend_estate_id: provisioning.estate?.id,
+              email_delivered: Boolean(emailResult.delivered),
+            });
+          } else {
+            await appendAudit(store, authContext, "facility_provisioning_failed", "lead", lead.id, {
+              deployment_id: deployment.id,
+              workspace_id: workspace.id,
+              reason: provisioning.reason,
+            });
+          }
+        }
+        json(
+          res,
+          201,
+          { deployment, workspace: workspaceUpdate || workspace, provisioning },
+          { "x-request-id": ctx.requestId }
+        );
         return;
       }
 
