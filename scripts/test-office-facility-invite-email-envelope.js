@@ -101,7 +101,14 @@ async function main() {
     allowedOrigins: [],
     officeBackendBaseUrl: `http://127.0.0.1:${backendPort}`,
     officeBackendApiKey: "backend-envelope-test-key",
-    officeFacilityBaseUrl: "https://facility.example.oyi",
+    // Deliberately distinct from facilityAppUrl below -- proves the
+    // activation link generation must not fall back to this field.
+    // officeFacilityBaseUrl is Office->Backend's own "facility export"
+    // API surface, a completely different, unrelated origin that only
+    // happens to share the word "facility" (production incident: the
+    // activation email sent owners to this host instead).
+    officeFacilityBaseUrl: "https://wrong-host-office-to-backend-export-api.example",
+    facilityAppUrl: "https://facility.example.oyi",
     // Deliberately real-provider-shaped, unlike the plain provisioning
     // test -- this test exists specifically to prove the send envelope
     // reaches Resend's request correctly, so the provider path must
@@ -180,6 +187,17 @@ async function main() {
     assert.equal(provisionBody.provisioning.ok, true);
     assert.equal(provisionBody.workspace.status, "invitation_sent", "a real, accepted send must produce the delivered status, not invitation_undelivered");
     assert.equal(provisionBody.workspace.checklist.onboarding_email, "sent");
+    // Production incident: the activation link previously pointed at
+    // officeFacilityBaseUrl (Office->Backend's own facility-export API
+    // surface), sending owners to a raw API host with no matching route.
+    // It must be built from facilityAppUrl (the real facility-oyi
+    // frontend) instead, and the token must survive URL construction
+    // intact (exact match, not truncated/mangled by encoding).
+    assert.equal(
+      provisionBody.workspace.activation_link,
+      "https://facility.example.oyi/facility-invite?token=raw-activation-token-envelope",
+      "the activation link must point at facilityAppUrl, never officeFacilityBaseUrl, with the token surviving URL construction exactly"
+    );
     console.log("A. Provisioning threads the persisted invited email into the real send envelope, Resend accepts, status is honestly delivered — PASS");
 
     // B. Resend Invite on the same record: the second call site must
@@ -195,6 +213,13 @@ async function main() {
     assert.equal(resendCalls.length, 2, "Resend Invite must also actually call Resend");
     assert.equal(resendCalls[1].body.to, "owner@example.com", "the resend call site must thread Backend's persisted invited_email into the recipient, matching the original");
     assert.equal(resendInviteBody.email_delivered, true);
+    const afterResendList = await (await fetch(`${base}/api/lead-agents/admin/office/portfolio`, { headers: { cookie } })).json();
+    const afterResendWorkspace = afterResendList.collection.find((p) => p.id === portfolioId).facility_workspace;
+    assert.equal(
+      afterResendWorkspace.activation_link,
+      "https://facility.example.oyi/facility-invite?token=raw-rotated-token-envelope",
+      "the resend call site's activation link must also use facilityAppUrl with the rotated token intact"
+    );
     console.log("B. Resend Invite also threads the persisted invited email into the real send envelope — PASS");
 
     // C. A genuinely absent recipient (Backend's resend response with no

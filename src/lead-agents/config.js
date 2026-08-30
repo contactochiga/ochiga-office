@@ -48,6 +48,24 @@ function createConfig() {
       process.env.OFFICE_APP_URL ||
       (process.env.NODE_ENV === "production" ? "https://office.ochiga.com.ng" : "")
     ).replace(/\/$/, ""),
+    // The Facility owner-activation email must send the invited owner to
+    // the actual facility-oyi Next.js frontend, not any Backend/API
+    // host. FACILITY_APP_URL is Backend's own established name for this
+    // exact origin (already referenced in Ochiga-backend's CORS
+    // allowlist, src/config/originPolicy.ts) -- reusing it here rather
+    // than inventing a new name. Production incident: the activation
+    // link previously used officeFacilityBaseUrl, which is a genuinely
+    // different, pre-existing config group (Office -> Backend's own
+    // "facility export" API surface, see office-sync.js) that happens to
+    // share the word "facility" -- not a frontend URL at all. The
+    // fallback below is the real, empirically-confirmed live production
+    // domain (facility.oyi.com does not resolve; facility-oyi.vercel.app
+    // 404s on real routes; facility.getoyi.com serves /login and
+    // /facility-invite with 200), not a guess.
+    facilityAppUrl: String(
+      process.env.FACILITY_APP_URL ||
+      (process.env.NODE_ENV === "production" ? "https://facility.getoyi.com" : "")
+    ).replace(/\/$/, ""),
     defaultLeadSource: process.env.LEAD_AGENTS_DEFAULT_SOURCE || "website_chat",
     environment: process.env.NODE_ENV || "development",
     toolsPath: path.join(cwd, "config", "openai", "lead-agent-tools.json"),

@@ -110,7 +110,11 @@ async function main() {
     allowedOrigins: [],
     officeBackendBaseUrl: `http://127.0.0.1:${backendPort}`,
     officeBackendApiKey: "backend-provisioning-test-key",
-    officeFacilityBaseUrl: "https://facility.example.oyi",
+    // Office->Backend's own facility-export API surface -- unrelated to
+    // the activation link, kept here only to prove it's never consulted
+    // for that purpose (facilityAppUrl below is the real frontend).
+    officeFacilityBaseUrl: "https://wrong-host-office-to-backend-export-api.example",
+    facilityAppUrl: "https://facility.example.oyi",
     // Deterministic, not ambient-env-dependent: no real email provider
     // configured, so sendOfficeEmail always resolves to
     // "not delivered, not configured" -- exactly the honest
@@ -201,7 +205,11 @@ async function main() {
     assert.equal(provisionBody.workspace.status, "invitation_undelivered", "an undelivered email must produce a distinct, honest status from a delivered one");
     assert.equal(provisionBody.workspace.checklist.onboarding_email, "not_delivered");
     assert.match(provisionBody.workspace.notes || "", /email was not delivered/i, "the real, non-secret failure reason must be recorded, not silently dropped");
-    assert.ok(provisionBody.workspace.activation_link.includes("raw-activation-token-abc"), "activation link must carry the token Backend returned -- token/invite creation succeeded even though email did not");
+    assert.equal(
+      provisionBody.workspace.activation_link,
+      "https://facility.example.oyi/facility-invite?token=raw-activation-token-abc",
+      "activation link must point at facilityAppUrl (never officeFacilityBaseUrl) and carry the exact token, even though email delivery is unconfigured in this test"
+    );
 
     const provisionCall = calls.find((c) => c.url === "/office/facility/provision");
     assert.equal(provisionCall.headers["x-office-api-key"], "backend-provisioning-test-key", "provisioning must authenticate with x-office-api-key");
