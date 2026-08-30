@@ -90,9 +90,45 @@ async function revokeBackendFacilityOwnerInvite(config, estateId, options) {
   return callOwnerInviteAction(config, estateId, "revoke", options);
 }
 
+// Governed Portfolio delete -- Backend is the sole authority on whether an
+// estate is safe to remove (it alone can see Buildings/Homes/members/
+// transactions/maintenance/automation/incidents). Office only ever asks;
+// it never deletes an estate's operational data itself.
+function estateUrl(config = {}, estateId) {
+  const base = String(config.officeBackendBaseUrl || "").replace(/\/+$/g, "");
+  if (!base || !estateId) return "";
+  return `${base}/office/facility/estates/${encodeURIComponent(estateId)}`;
+}
+
+async function deleteBackendFacilityEstate(config = {}, estateId, options = {}) {
+  const url = estateUrl(config, estateId);
+  if (!url) return { ok: false, reason: "not_configured" };
+
+  const headers = { "content-type": "application/json" };
+  if (config.officeBackendApiKey) headers["x-office-api-key"] = config.officeBackendApiKey;
+  if (config.officeBackendBearerToken) headers.authorization = `Bearer ${config.officeBackendBearerToken}`;
+
+  const del = options.httpDelete || ((targetUrl, requestConfig) => axios.delete(targetUrl, requestConfig));
+  try {
+    const response = await del(url, {
+      timeout: config.officeBackendEventTimeoutMs || 10_000,
+      headers,
+      validateStatus: () => true,
+    });
+    const body = response.data || {};
+    if (response.status >= 200 && response.status < 300 && body.ok !== false) {
+      return { ok: true, deleted: Boolean(body.deleted), already_deleted: Boolean(body.already_deleted) };
+    }
+    return { ok: false, reason: body.error || `backend_http_${response.status}`, blocking: body.blocking || [], status: response.status };
+  } catch (error) {
+    return { ok: false, reason: error && error.code === "ECONNABORTED" ? "backend_timeout" : "backend_unreachable" };
+  }
+}
+
 module.exports = {
   provisionBackendFacility,
   provisionUrl,
   resendBackendFacilityOwnerInvite,
   revokeBackendFacilityOwnerInvite,
+  deleteBackendFacilityEstate,
 };

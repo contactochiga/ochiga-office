@@ -288,6 +288,29 @@ async function persistCorporateRecord(store, collection, record) {
   return record;
 }
 
+// Governed Portfolio delete -- the first hard-delete this codebase
+// performs on a corporate record. Deliberately scoped: callers must gate
+// which collections are allowed to reach this (Portfolio only, today),
+// not a generic "delete any corporate collection" capability.
+async function deleteCorporateRecord(store, collection, id) {
+  const config = CORPORATE_COLLECTIONS[collection];
+  if (store?.state) {
+    if (!Array.isArray(store.state[config.state])) store.state[config.state] = [];
+    const index = store.state[config.state].findIndex((item) => String(item.id) === String(id));
+    if (index < 0) return false;
+    store.state[config.state].splice(index, 1);
+    if (store.persist) await store.persist();
+    return true;
+  }
+  if (store?.client) {
+    await store.client.delete(`/${config.table}?id=eq.${encodeURIComponent(id)}`, {
+      headers: store.selectHeaders ? store.selectHeaders() : undefined,
+    });
+    return true;
+  }
+  return false;
+}
+
 function activityForMutation(collection, before, after, patch, actorEmail) {
   const statusChanged = before.status !== after.status || before.review_status !== after.review_status;
   const assignmentChanged = (before.assignee || before.assigned_staff || before.relationship_manager || before.owner || "") !== (after.assignee || after.assigned_staff || after.relationship_manager || after.owner || "");
@@ -507,6 +530,7 @@ module.exports = {
   canCreateActivityForRelatedObject,
   createOrUpdateHandoff,
   createRelatedActivity,
+  deleteCorporateRecord,
   findCorporateRecord,
   listHandoffQueue,
   listRelatedActivities,

@@ -474,6 +474,15 @@ class SupabaseLeadAgentsStore {
     return response.data[0] || null;
   }
 
+  // Governed Portfolio delete -- removes Office's own bookkeeping row for
+  // an abandoned/failed provisioning attempt. Never called until Backend
+  // has already confirmed (or the attempt never reached Backend at all)
+  // that no real Facility operational state exists.
+  async deleteFacilityWorkspace(workspaceId) {
+    await this.client.delete(`/facility_workspaces?id=eq.${workspaceId}`);
+    return true;
+  }
+
   async getLeadChannelState(leadId, channel) {
     const response = await this.client.get(
       `/lead_channel_states?lead_id=eq.${leadId}&channel=eq.${channel}&limit=1`

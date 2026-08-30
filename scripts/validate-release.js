@@ -23,6 +23,7 @@ const commands = [
   "npm run office:normalize-lead-timestamps:test",
   "npm run office:oyi-internal-context:test",
   "npm run office:oyi-interaction:test",
+  "npm run office:dialog-submit-guard:test",
 ];
 
 for (const command of commands) {

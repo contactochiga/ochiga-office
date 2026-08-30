@@ -144,6 +144,12 @@ async function apiResendFacilityInvite(portfolioId) {
 async function apiRevokeFacilityInvite(portfolioId) {
   return api(`/api/lead-agents/admin/office/portfolio/${encodeURIComponent(portfolioId)}/facility-invite/revoke`, { method: "POST", body: {} });
 }
+// Governed Portfolio delete -- server enforces deletion eligibility
+// (never activated, no operational dependencies); this call can be
+// rejected with a 409 and a reason, which the confirm modal surfaces.
+async function apiDeletePortfolio(portfolioId) {
+  return api(`/api/lead-agents/admin/office/portfolio/${encodeURIComponent(portfolioId)}`, { method: "DELETE" });
+}
 async function apiGetRelatedActivities(relatedType, relatedId) {
   return api(`/api/lead-agents/admin/office/activities/${encodeURIComponent(relatedType)}/${encodeURIComponent(relatedId)}`);
 }
@@ -808,7 +814,7 @@ function renderTimeline(events, { onAddNote, canAddNote } = {}) {
 // (main content + a compact related-records rail) and wires the
 // persistent Oyi control's context to this object.
 // ---------------------------------------------------------------
-function renderDetailShell(outlet, { type, id, label, typeLine, badges, backLabel, onBack, mainSections, railSections, oyiContext }) {
+function renderDetailShell(outlet, { type, id, label, typeLine, badges, backLabel, onBack, mainSections, railSections, oyiContext, headerActions }) {
   setSelectedObject(type, id, label, oyiContext);
   outlet.innerHTML = "";
 
@@ -825,6 +831,11 @@ function renderDetailShell(outlet, { type, id, label, typeLine, badges, backLabe
       </div>
     </div>
   `);
+  if (headerActions && headerActions.length) {
+    const actionsHost = el(`<div class="detail-header-actions"></div>`);
+    headerActions.forEach((node) => actionsHost.appendChild(node));
+    header.appendChild(actionsHost);
+  }
   outlet.appendChild(header);
 
   const body = el(`<div class="detail-body"></div>`);
@@ -3293,15 +3304,76 @@ function openDialog(title, fields, onSubmit) {
   card.addEventListener("submit", async (event) => {
     event.preventDefault();
     const errorLabel = card.querySelector(".dialog-error");
+    const submitButton = card.querySelector('button[type="submit"]');
+    // Disabling the button alone doesn't stop a second submit fired via
+    // Enter in a text field (that goes through the form's submit event,
+    // not the button's click), so this flag is the real single-flight
+    // guard; the disabled state is just the visible feedback for it.
+    if (submitButton.dataset.submitting === "true") return;
+    submitButton.dataset.submitting = "true";
+    submitButton.disabled = true;
+    const originalLabel = submitButton.textContent;
+    submitButton.textContent = "Saving...";
     const data = Object.fromEntries(new FormData(card).entries());
     try {
       await onSubmit(data);
       close();
     } catch (err) {
       errorLabel.textContent = err.message || "Could not save.";
+      submitButton.disabled = false;
+      submitButton.textContent = originalLabel;
+      submitButton.dataset.submitting = "false";
     }
   });
   fieldsHost.querySelector("input,textarea")?.focus();
+}
+
+// Governed Portfolio delete -- explicit destructive confirmation naming
+// the Facility/deployment record, disabled-while-in-flight, and honest
+// about what eligibility server-side actually decided (a 409 with a
+// reason surfaces here verbatim, not a generic failure).
+function openDeleteConfirmModal(recordLabel, warningText, onConfirm) {
+  const overlay = el(`<div class="dialog-overlay"></div>`);
+  const card = el(`
+    <div class="dialog-card">
+      <h3>Delete "${escapeHtml(recordLabel)}"?</h3>
+      <p class="dialog-warning">${escapeHtml(warningText)}</p>
+      <div class="dialog-actions">
+        <button type="button" class="btn btn-ghost btn-sm" data-cancel>Cancel</button>
+        <button type="button" class="btn btn-danger btn-sm" data-confirm>Delete Permanently</button>
+      </div>
+      <p class="dialog-error" data-error></p>
+    </div>
+  `);
+  overlay.appendChild(card);
+  document.body.appendChild(overlay);
+
+  function close() {
+    overlay.remove();
+  }
+  card.querySelector("[data-cancel]").addEventListener("click", close);
+  overlay.addEventListener("click", (event) => {
+    if (event.target === overlay) close();
+  });
+
+  const confirmButton = card.querySelector("[data-confirm]");
+  const errorLabel = card.querySelector("[data-error]");
+  confirmButton.addEventListener("click", async () => {
+    if (confirmButton.dataset.submitting === "true") return;
+    confirmButton.dataset.submitting = "true";
+    confirmButton.disabled = true;
+    const originalLabel = confirmButton.textContent;
+    confirmButton.textContent = "Deleting...";
+    try {
+      await onConfirm();
+      close();
+    } catch (err) {
+      errorLabel.textContent = err.message || "Could not delete this record.";
+      confirmButton.disabled = false;
+      confirmButton.textContent = originalLabel;
+      confirmButton.dataset.submitting = "false";
+    }
+  });
 }
 
 function openCreateDialog(collectionKey) {
@@ -4045,6 +4117,33 @@ async function renderPortfolioDetail(outlet, id, token) {
   }
   if (record.backend_estate_id) railSections.push(railCard("Reference", `<p class="rail-sub">Backend estate ID: ${escapeHtml(record.backend_estate_id)}</p>`));
 
+  const headerActions = [];
+  if (canManage && hasPermission("crm.manage")) {
+    const deleteButton = el(`<button type="button" class="btn btn-ghost btn-sm btn-danger">Delete</button>`);
+    deleteButton.addEventListener("click", () => {
+      const warningText = record.backend_estate_id
+        ? "This will permanently delete this Portfolio record. It is linked to a Facility deployment that has not been activated -- that deployment and its outstanding owner invitation will also be removed. If the Facility has already been activated or has any operational data, this will be blocked instead. This cannot be undone."
+        : "This will permanently delete this Portfolio record and any linked, never-activated Facility provisioning attempt. This cannot be undone.";
+      openDeleteConfirmModal(record.name || "this record", warningText, async () => {
+        let result;
+        try {
+          result = await apiDeletePortfolio(id);
+        } catch (err) {
+          const blocking = err?.data?.blocking;
+          if (Array.isArray(blocking) && blocking.length) {
+            throw new Error(`This Facility cannot be deleted: ${blocking.join("; ")}.`);
+          }
+          throw err;
+        }
+        invalidate("portfolio");
+        if (result?.already_deleted || result?.deleted) {
+          navigate("portfolio");
+        }
+      });
+    });
+    headerActions.push(deleteButton);
+  }
+
   renderDetailShell(outlet, {
     type: "portfolio",
     id,
@@ -4059,6 +4158,7 @@ async function renderPortfolioDetail(outlet, id, token) {
     mainSections,
     railSections,
     oyiContext: portfolioOyiContext(record),
+    headerActions,
   });
 }
 

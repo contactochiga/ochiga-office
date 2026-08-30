@@ -36,6 +36,10 @@ function close(server) {
 function startFakeOchigaBackend() {
   const calls = [];
   let ownerActivated = false;
+  // Deletion eligibility for each fake estate -- controllable per test
+  // section so both the "safe to delete" and "blocked" paths are proven
+  // against the real Office delete route, not just assumed.
+  const deletable = new Set(["estate_new_1"]);
   const server = http.createServer(async (req, res) => {
     const chunks = [];
     for await (const chunk of req) chunks.push(chunk);
@@ -48,11 +52,12 @@ function startFakeOchigaBackend() {
         res.end(JSON.stringify({ ok: false, error: "name_and_admin_email_required" }));
         return;
       }
+      const estateId = body.name === "Blocked Facility" ? "estate_blocked_1" : "estate_new_1";
       res.writeHead(200, { "content-type": "application/json" });
       res.end(JSON.stringify({
         ok: true,
-        estate: { id: "estate_new_1", name: body.name },
-        invite: { id: "invite_1", expires_at: "2026-09-15T00:00:00.000Z" },
+        estate: { id: estateId, name: body.name },
+        invite: { id: `invite_${estateId}`, expires_at: "2026-09-15T00:00:00.000Z" },
         activation_token: "raw-activation-token-abc",
       }));
       return;
@@ -65,6 +70,19 @@ function startFakeOchigaBackend() {
     if (req.url === "/office/facility/estates/estate_new_1/owner-invite/revoke" && req.method === "POST") {
       res.writeHead(200, { "content-type": "application/json" });
       res.end(JSON.stringify({ ok: true, invite: { id: "invite_1" } }));
+      return;
+    }
+    const deleteMatch = req.url.match(/^\/office\/facility\/estates\/([^/]+)$/);
+    if (deleteMatch && req.method === "DELETE") {
+      const estateId = deleteMatch[1];
+      if (deletable.has(estateId)) {
+        deletable.delete(estateId);
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify({ ok: true, deleted: true, estate_id: estateId, invites_removed: 1 }));
+        return;
+      }
+      res.writeHead(409, { "content-type": "application/json" });
+      res.end(JSON.stringify({ ok: false, error: "facility_has_operational_dependencies", blocking: ["Facility has Homes"] }));
       return;
     }
     if (req.url.startsWith("/office/portfolio/projection")) {
@@ -225,6 +243,85 @@ async function main() {
     const bareRecord = finalList.collection.find((p) => p.id === bareId);
     assert.equal(bareRecord.facility_workspace, null, "an un-provisioned Portfolio record must not have a fabricated workspace");
     console.log("E. Un-provisioned Portfolio record reports honestly, no fabricated workspace — PASS");
+
+    // F. Cross-tenant/unauthorized Office caller cannot delete a Portfolio
+    // record -- same crm.manage gate as provisioning, checked before
+    // anything is touched.
+    const deleteDenyRes = await fetch(`${base}/api/lead-agents/admin/office/portfolio/${bareId}`, {
+      method: "DELETE",
+      headers: { cookie: readerCookie },
+    });
+    assert.equal(deleteDenyRes.status, 403, "ochiga_staff lacks crm.manage and must be denied at delete");
+    const stillThereRes = await fetch(`${base}/api/lead-agents/admin/office/portfolio`, { headers: { cookie } });
+    assert.ok((await stillThereRes.json()).collection.some((p) => p.id === bareId), "an unauthorized delete attempt must not remove anything");
+    console.log("F. Non-authorized Office role cannot delete a Portfolio record — PASS");
+
+    // G. Deleting a never-provisioned Portfolio record (no linked Facility
+    // at all) succeeds immediately -- no Backend call needed or made.
+    const callsBeforeBareDelete = calls.length;
+    const deleteBareRes = await fetch(`${base}/api/lead-agents/admin/office/portfolio/${bareId}`, {
+      method: "DELETE",
+      headers: { cookie },
+    });
+    assert.equal(deleteBareRes.status, 200);
+    const deleteBareBody = await deleteBareRes.json();
+    assert.equal(deleteBareBody.deleted, true);
+    assert.equal(calls.length, callsBeforeBareDelete, "deleting a Portfolio record with no linked Facility must never call Backend");
+    const afterBareDeleteList = await (await fetch(`${base}/api/lead-agents/admin/office/portfolio`, { headers: { cookie } })).json();
+    assert.ok(!afterBareDeleteList.collection.some((p) => p.id === bareId), "the deleted Portfolio record must actually be gone");
+    console.log("G. Un-provisioned Portfolio record deletes immediately, no Backend call — PASS");
+
+    // H. Deleting a Portfolio record linked to a real (eligible-for-
+    // deletion) Facility calls Backend's delete, and removes both the
+    // Portfolio record and its local facility_workspace bookkeeping.
+    const deleteLinkedRes = await fetch(`${base}/api/lead-agents/admin/office/portfolio/${portfolioId}`, {
+      method: "DELETE",
+      headers: { cookie },
+    });
+    assert.equal(deleteLinkedRes.status, 200);
+    assert.equal((await deleteLinkedRes.json()).deleted, true);
+    const deleteCall = calls.find((c) => c.method === "DELETE" && c.url === "/office/facility/estates/estate_new_1");
+    assert.ok(deleteCall, "delete must call Backend's DELETE /office/facility/estates/:estateId, scoped by the linked estate_id");
+    const afterLinkedDeleteList = await (await fetch(`${base}/api/lead-agents/admin/office/portfolio`, { headers: { cookie } })).json();
+    assert.ok(!afterLinkedDeleteList.collection.some((p) => p.id === portfolioId), "the Portfolio record must be removed once Backend confirms the Facility is safe to delete");
+    console.log("H. Portfolio record linked to an eligible Facility deletes via Backend, both records removed — PASS");
+
+    // I. Repeated delete on the now-gone Portfolio record is idempotent --
+    // not an error, not a dangerous re-attempt.
+    const repeatDeleteRes = await fetch(`${base}/api/lead-agents/admin/office/portfolio/${portfolioId}`, {
+      method: "DELETE",
+      headers: { cookie },
+    });
+    assert.equal(repeatDeleteRes.status, 200);
+    assert.equal((await repeatDeleteRes.json()).already_deleted, true);
+    console.log("I. Repeated delete on an already-gone Portfolio record is safe and idempotent — PASS");
+
+    // J. A Facility with real operational dependencies blocks the whole
+    // delete -- the Portfolio record and its workspace both survive, and
+    // the blocking reason from Backend is surfaced, not swallowed.
+    const blockedPortfolioRes = await fetch(`${base}/api/lead-agents/admin/office/portfolio`, {
+      method: "POST",
+      headers: { "content-type": "application/json", cookie },
+      body: JSON.stringify({ name: "Blocked Facility" }),
+    });
+    const blockedPortfolioId = (await blockedPortfolioRes.json()).record.id;
+    await fetch(`${base}/api/lead-agents/admin/office/portfolio/${blockedPortfolioId}/provision-facility`, {
+      method: "POST",
+      headers: { "content-type": "application/json", cookie },
+      body: JSON.stringify({ estate_name: "Blocked Facility", facility_admin_email: "blocked-owner@example.com" }),
+    });
+    const deleteBlockedRes = await fetch(`${base}/api/lead-agents/admin/office/portfolio/${blockedPortfolioId}`, {
+      method: "DELETE",
+      headers: { cookie },
+    });
+    assert.equal(deleteBlockedRes.status, 409, "a Facility with operational dependencies must block the delete");
+    const deleteBlockedBody = await deleteBlockedRes.json();
+    assert.ok(Array.isArray(deleteBlockedBody.blocking) && deleteBlockedBody.blocking.length, "the block response must surface Backend's real blocking reasons");
+    const afterBlockedList = await (await fetch(`${base}/api/lead-agents/admin/office/portfolio`, { headers: { cookie } })).json();
+    const blockedRecord = afterBlockedList.collection.find((p) => p.id === blockedPortfolioId);
+    assert.ok(blockedRecord, "a blocked delete must never remove the Portfolio record");
+    assert.ok(blockedRecord.facility_workspace, "a blocked delete must never remove the linked facility_workspace either");
+    console.log("J. Facility with operational dependencies blocks delete, nothing removed — PASS");
   } finally {
     await close(server);
     await close(fakeBackend);
