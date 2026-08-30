@@ -555,6 +555,10 @@ function buildPortfolioOperationalProjection(entry, backendProjection) {
   return {
     linked: true,
     available: true,
+    // Office->Facility provisioning lifecycle -- the one signal Office
+    // needs to know a just-invited owner actually activated. Only present
+    // on the estate-level match (buildings don't carry membership state).
+    owner_activated: building ? null : matched.owner_activated ?? null,
     homes_total: matched.homes_total ?? null,
     homes_active: matched.homes_active ?? null,
     devices_total: matched.devices_total ?? null,
@@ -565,10 +569,17 @@ function buildPortfolioOperationalProjection(entry, backendProjection) {
   };
 }
 
-async function attachPortfolioOperationalProjections(records, backendProjection) {
+async function attachPortfolioOperationalProjections(records, backendProjection, facilityWorkspaces = []) {
+  const workspaceByPortfolioId = new Map((facilityWorkspaces || []).filter((w) => w.portfolio_id).map((w) => [String(w.portfolio_id), w]));
   return records.map((entry) => ({
     ...entry,
     operational_projection: buildPortfolioOperationalProjection(entry, backendProjection),
+    // Office->Facility provisioning lifecycle -- what Office itself DID
+    // (facility_workspaces.status/checklist/activation_link), alongside
+    // operational_projection above (what's ACTUALLY true in Backend right
+    // now). Both signals, one section, requirement #14's resend/revoke/
+    // status controls read from here.
+    facility_workspace: workspaceByPortfolioId.get(String(entry.id)) || null,
   }));
 }
 

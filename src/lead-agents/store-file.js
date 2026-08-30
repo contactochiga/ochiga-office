@@ -561,9 +561,12 @@ class FileLeadAgentsStore {
     const workspace = {
       id: crypto.randomUUID(),
       lead_id: input.lead_id || null,
+      portfolio_id: input.portfolio_id || null,
       customer_organization: input.customer_organization || lead?.company || lead?.name || "",
       estate_name: input.estate_name || input.property_name || lead?.company || "",
       facility_admin_email: input.facility_admin_email || lead?.email || "",
+      facility_admin_full_name: input.facility_admin_full_name || "",
+      facility_admin_phone: input.facility_admin_phone || "",
       status: "pending_manual_provisioning",
       activation_link: input.activation_link || "",
       checklist: {
@@ -601,6 +604,14 @@ class FileLeadAgentsStore {
     return [...(this.state.facility_workspaces || [])].sort((a, b) =>
       String(b.created_at).localeCompare(String(a.created_at))
     );
+  }
+
+  // Office->Facility provisioning lifecycle -- Portfolio detail needs the
+  // linked workspace's status/checklist/activation state alongside the
+  // live Backend projection (requirement #14's resend/revoke/status UI).
+  async listFacilityWorkspacesByPortfolioIds(portfolioIds) {
+    const ids = new Set((portfolioIds || []).map((id) => String(id)));
+    return (this.state.facility_workspaces || []).filter((w) => w.portfolio_id && ids.has(String(w.portfolio_id)));
   }
 
   async updateFacilityWorkspace(workspaceId, patch) {

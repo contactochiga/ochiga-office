@@ -418,8 +418,22 @@ create table if not exists facility_workspaces (
   updated_at timestamptz not null default now()
 );
 
+-- Office->Facility provisioning lifecycle. facility_workspaces already
+-- exists in production, so new columns are added additively rather than
+-- edited into the CREATE TABLE above (which is a no-op against an
+-- already-existing table). portfolio_id mirrors the exact existing
+-- office_support_cases.portfolio_id pattern -- same nullable text FK to
+-- office_portfolio_entries(id), same on delete set null. full_name/phone
+-- are for email personalization and staff visibility only -- never sent
+-- to Backend; the owner types their own profile during their own
+-- activation wizard (every user owns their own credentials/profile).
+alter table facility_workspaces add column if not exists portfolio_id text references office_portfolio_entries(id) on delete set null;
+alter table facility_workspaces add column if not exists facility_admin_full_name text;
+alter table facility_workspaces add column if not exists facility_admin_phone text;
+
 create index if not exists facility_workspaces_status_idx on facility_workspaces (status);
 create index if not exists facility_workspaces_lead_id_idx on facility_workspaces (lead_id);
+create index if not exists facility_workspaces_portfolio_id_idx on facility_workspaces (portfolio_id);
 
 drop trigger if exists facility_workspaces_set_updated_at on facility_workspaces;
 create trigger facility_workspaces_set_updated_at

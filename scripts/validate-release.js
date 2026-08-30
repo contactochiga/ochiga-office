@@ -19,6 +19,7 @@ const commands = [
   "npm run office:operating-system:test",
   "npm run office:team-settings-audit:test",
   "npm run office:portfolio-projection:test",
+  "npm run office:facility-provisioning:test",
   "npm run office:normalize-lead-timestamps:test",
   "npm run office:oyi-internal-context:test",
   "npm run office:oyi-interaction:test",

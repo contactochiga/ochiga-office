@@ -411,9 +411,12 @@ class SupabaseLeadAgentsStore {
     const lead = input.lead_id ? await this.getLead(input.lead_id) : null;
     const payload = {
       lead_id: input.lead_id || null,
+      portfolio_id: input.portfolio_id || null,
       customer_organization: input.customer_organization || lead?.company || lead?.name || "",
       estate_name: input.estate_name || input.property_name || lead?.company || "",
       facility_admin_email: input.facility_admin_email || lead?.email || "",
+      facility_admin_full_name: input.facility_admin_full_name || "",
+      facility_admin_phone: input.facility_admin_phone || "",
       status: "pending_manual_provisioning",
       activation_link: input.activation_link || "",
       checklist: {
@@ -449,6 +452,16 @@ class SupabaseLeadAgentsStore {
 
   async listFacilityWorkspaces() {
     return this.safeGet("/facility_workspaces?order=created_at.desc");
+  }
+
+  // Office->Facility provisioning lifecycle -- Portfolio detail needs the
+  // linked workspace's status/checklist/activation state alongside the
+  // live Backend projection (requirement #14's resend/revoke/status UI).
+  async listFacilityWorkspacesByPortfolioIds(portfolioIds) {
+    const ids = (portfolioIds || []).map((id) => String(id)).filter(Boolean);
+    if (!ids.length) return [];
+    const inList = ids.map((id) => `"${id}"`).join(",");
+    return this.safeGet(`/facility_workspaces?portfolio_id=in.(${inList})`);
   }
 
   async updateFacilityWorkspace(workspaceId, patch) {
