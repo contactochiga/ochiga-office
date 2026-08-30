@@ -111,6 +111,14 @@ async function main() {
     officeBackendBaseUrl: `http://127.0.0.1:${backendPort}`,
     officeBackendApiKey: "backend-provisioning-test-key",
     officeFacilityBaseUrl: "https://facility.example.oyi",
+    // Deterministic, not ambient-env-dependent: no real email provider
+    // configured, so sendOfficeEmail always resolves to
+    // "not delivered, not configured" -- exactly the honest
+    // invitation_undelivered path this test proves, not the real Resend
+    // API (that integration is Resend's/Backend's concern, not this
+    // provisioning-logic test's).
+    officeEmailProvider: "",
+    resendApiKey: "",
   };
   const { store } = await createTempStore();
   await store.ensureAdminUser({ email: "super@ochiga.local", password_hash: hashPassword("super-pass-123"), role: "super_admin", display_name: "Super Test", status: "active" });
@@ -184,9 +192,16 @@ async function main() {
     });
     assert.equal(provisionRes.status, 201);
     const provisionBody = await provisionRes.json();
-    assert.equal(provisionBody.provisioning.ok, true);
-    assert.equal(provisionBody.workspace.status, "invitation_sent");
-    assert.ok(provisionBody.workspace.activation_link.includes("raw-activation-token-abc"), "activation link must carry the token Backend returned");
+    assert.equal(provisionBody.provisioning.ok, true, "Backend estate/invite creation must succeed independent of email delivery");
+    // No email provider is configured in this test -- the invite/token
+    // was genuinely created and is valid, but must not be labeled the
+    // same as an actually-delivered invitation (production incident:
+    // "Invitation Sent" was shown even when the owner email never
+    // arrived).
+    assert.equal(provisionBody.workspace.status, "invitation_undelivered", "an undelivered email must produce a distinct, honest status from a delivered one");
+    assert.equal(provisionBody.workspace.checklist.onboarding_email, "not_delivered");
+    assert.match(provisionBody.workspace.notes || "", /email was not delivered/i, "the real, non-secret failure reason must be recorded, not silently dropped");
+    assert.ok(provisionBody.workspace.activation_link.includes("raw-activation-token-abc"), "activation link must carry the token Backend returned -- token/invite creation succeeded even though email did not");
 
     const provisionCall = calls.find((c) => c.url === "/office/facility/provision");
     assert.equal(provisionCall.headers["x-office-api-key"], "backend-provisioning-test-key", "provisioning must authenticate with x-office-api-key");
@@ -204,18 +219,23 @@ async function main() {
     const linkedRecord = listBody.collection.find((p) => p.id === portfolioId);
     assert.equal(linkedRecord.backend_estate_id, "estate_new_1");
     assert.equal(linkedRecord.operational_projection.owner_activated, false, "owner has not activated yet -- must not be fabricated as true");
-    assert.equal(linkedRecord.facility_workspace.status, "invitation_sent");
+    assert.equal(linkedRecord.facility_workspace.status, "invitation_undelivered", "the list projection must not misreport an undelivered invitation as sent");
     console.log("C. Portfolio record reflects real linkage + honest owner_activated status — PASS");
 
     // D. Resend rotates the token via Backend and updates the workspace;
     // revoke marks it revoked. Neither duplicates Backend's own SQL --
     // both are thin proxies, proven by the fake Backend receiving the
-    // exact estate-scoped call.
+    // exact estate-scoped call. The response must also honestly report
+    // that the (still undelivered, no provider configured) email failed
+    // again, with a real reason -- not silently claim success.
     const resendRes = await fetch(`${base}/api/lead-agents/admin/office/portfolio/${portfolioId}/facility-invite/resend`, {
       method: "POST",
       headers: { "content-type": "application/json", cookie },
     });
     assert.equal(resendRes.status, 200);
+    const resendBody = await resendRes.json();
+    assert.equal(resendBody.email_delivered, false);
+    assert.ok(resendBody.email_delivery_reason, "a resend response must carry the real reason when email delivery fails, not just a bare false");
     const resendCall = calls.find((c) => c.url === "/office/facility/estates/estate_new_1/owner-invite/resend");
     assert.ok(resendCall, "resend must call Backend scoped to the linked estate_id, never a raw invite id");
 

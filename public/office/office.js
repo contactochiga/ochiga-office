@@ -3895,6 +3895,15 @@ function renderFacilityProvisioningSection(record) {
     .map(([key, value]) => factRow(titleCase(key), titleCase(value)))
     .join("");
 
+  // A rotated/created invite and an actually-delivered email are two
+  // different facts -- "invitation_sent" must never be shown for one
+  // when only the other is true. workspace.status already carries this
+  // distinction (invitation_sent vs invitation_undelivered) from the
+  // server, so the plain titleCase label is honest without extra logic
+  // here; this note surfaces the real, non-secret failure reason kept in
+  // workspace.notes so staff can act on it instead of guessing.
+  const undelivered = workspace.status === "invitation_undelivered";
+
   const section = el(`
     <div class="detail-section">
       <h3>Facility Provisioning</h3>
@@ -3903,10 +3912,11 @@ function renderFacilityProvisioningSection(record) {
         ${factRow("Owner Activated", ownerActivated === null || ownerActivated === undefined ? "Unknown" : ownerActivated ? "Yes" : "Not yet")}
       </div>
       <div class="fact-grid">${checklistRows}</div>
+      ${undelivered && workspace.notes ? `<p class="detail-note" style="color: var(--red-bright);">${escapeHtml(workspace.notes)}</p>` : ""}
     </div>
   `);
 
-  if (workspace.status === "invitation_sent" && canManage) {
+  if ((workspace.status === "invitation_sent" || workspace.status === "invitation_undelivered") && canManage) {
     const actions = el(`<div class="detail-actions"></div>`);
     const resendBtn = el(`<button type="button" class="btn btn-ghost btn-sm">Resend Invite</button>`);
     const revokeBtn = el(`<button type="button" class="btn btn-ghost btn-sm">Revoke Invite</button>`);
@@ -3914,7 +3924,12 @@ function renderFacilityProvisioningSection(record) {
       resendBtn.disabled = true;
       try {
         const result = await apiResendFacilityInvite(record.id);
-        toast(result.email_delivered ? "Invitation resent." : "Invitation rotated, but email delivery failed — check email configuration.", result.email_delivered ? "default" : "warning");
+        toast(
+          result.email_delivered
+            ? "Invitation resent."
+            : `Invitation rotated, but email delivery failed${result.email_delivery_reason ? ` (${result.email_delivery_reason})` : ""} — check email configuration.`,
+          result.email_delivered ? "default" : "warning"
+        );
         invalidate("portfolio");
         navigate(`portfolio/${record.id}`);
       } catch (err) {

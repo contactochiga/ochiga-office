@@ -220,8 +220,17 @@ async function provisionFacilityWorkspaceCore(store, config, authContext, input)
         config,
         facilityOwnerInviteEmail({ estateName: input.estateName, inviteUrl: activationLink, expiresAt: provisioning.invite?.expires_at })
       ).catch((err) => ({ delivered: false, skipped: true, reason: err?.message || "email_send_failed" }));
+      // Token/invite creation and actual email delivery are two different
+      // facts -- a rotated, valid, activatable invite must never be
+      // labeled the same as one that was actually emailed. Distinct
+      // status values so the UI's plain status label is honest without
+      // extra rendering logic, and the real, non-secret failure reason
+      // (a short code like "email_provider_not_configured", or the
+      // provider's own error text -- never a key/credential value) is
+      // kept on the workspace so a delivery failure is diagnosable from
+      // data instead of guesswork.
       workspaceUpdate = await store.updateFacilityWorkspace(workspace.id, {
-        status: "invitation_sent",
+        status: emailResult.delivered ? "invitation_sent" : "invitation_undelivered",
         activation_link: activationLink,
         checklist: {
           ...(workspace.checklist || {}),
@@ -231,6 +240,9 @@ async function provisionFacilityWorkspaceCore(store, config, authContext, input)
           deployment_project: input.leadId ? "linked" : "not_applicable",
           onboarding_email: emailResult.delivered ? "sent" : "not_delivered",
         },
+        notes: emailResult.delivered
+          ? workspace.notes
+          : `Invitation created and valid, but the owner email was not delivered (${emailResult.reason || "unknown reason"}, provider: ${emailResult.provider || config.officeEmailProvider || "none"}). Fix delivery, then use Resend Invite -- do not re-provision.`,
       });
     }
   }
@@ -2155,6 +2167,17 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
             database: {
               store_driver: config.storeDriver,
               connected: true,
+            },
+            // Presence-only diagnostic for the outbound transactional email
+            // path (staff invites, Facility owner invites, password
+            // resets all share this one config) -- never the key value
+            // itself, only whether it's set, so a "delivery failed" report
+            // can be triaged as configuration vs. provider vs. code
+            // without needing dashboard access.
+            email: {
+              provider: config.officeEmailProvider || "none",
+              resend_api_key_configured: Boolean(config.resendApiKey),
+              from_address: config.officeEmailFrom || null,
             },
           },
         });
@@ -4230,16 +4253,37 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           ).catch((err) => ({ delivered: false, skipped: true, reason: err?.message || "email_send_failed" }));
           if (workspace) {
             await store.updateFacilityWorkspace(workspace.id, {
-              status: "invitation_sent",
+              // Same truthful distinction as initial provisioning -- a
+              // rotated, valid invite is not the same fact as an emailed
+              // one.
+              status: emailResult.delivered ? "invitation_sent" : "invitation_undelivered",
               activation_link: activationLink,
-              checklist: { ...(workspace.checklist || {}), facility_admin_invite: emailResult.delivered ? "sent" : "ready_to_send" },
+              checklist: {
+                ...(workspace.checklist || {}),
+                facility_admin_invite: emailResult.delivered ? "sent" : "ready_to_send",
+                onboarding_email: emailResult.delivered ? "sent" : "not_delivered",
+              },
+              notes: emailResult.delivered
+                ? workspace.notes
+                : `Invitation rotated and valid, but the owner email was not delivered (${emailResult.reason || "unknown reason"}, provider: ${emailResult.provider || config.officeEmailProvider || "none"}). Fix delivery, then use Resend Invite again -- do not re-provision.`,
             });
           }
           await appendAudit(store, authContext, "facility_invitation_resent", "portfolio", portfolioRecord.id, {
             backend_estate_id: estateId,
             email_delivered: Boolean(emailResult.delivered),
+            email_delivery_reason: emailResult.delivered ? undefined : emailResult.reason || "unknown",
+            email_provider: emailResult.provider || config.officeEmailProvider || "none",
           });
-          json(res, 200, { ok: true, email_delivered: Boolean(emailResult.delivered) }, { "x-request-id": ctx.requestId });
+          json(
+            res,
+            200,
+            {
+              ok: true,
+              email_delivered: Boolean(emailResult.delivered),
+              email_delivery_reason: emailResult.delivered ? undefined : emailResult.reason || "unknown",
+            },
+            { "x-request-id": ctx.requestId }
+          );
           return;
         }
         await appendAudit(store, authContext, "facility_invitation_resend_failed", "portfolio", portfolioRecord.id, {
