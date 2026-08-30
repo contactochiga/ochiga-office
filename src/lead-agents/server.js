@@ -76,6 +76,7 @@ const {
   canCreateActivityForRelatedObject,
   createOrUpdateHandoff,
   createRelatedActivity,
+  deleteCorporateRecord,
   findCorporateRecord,
   listHandoffQueue,
   listRelatedActivities,
@@ -103,7 +104,7 @@ const {
   sendOfficeEmail,
   staffInviteEmail,
 } = require("./email");
-const { provisionBackendFacility, resendBackendFacilityOwnerInvite, revokeBackendFacilityOwnerInvite } = require("./backend-facility-provisioning-gateway");
+const { provisionBackendFacility, resendBackendFacilityOwnerInvite, revokeBackendFacilityOwnerInvite, deleteBackendFacilityEstate } = require("./backend-facility-provisioning-gateway");
 const { credentialPayloadForUser, qrSvg } = require("./qr");
 const {
   createRequestContext,
@@ -4115,6 +4116,24 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           notFound(res);
           return;
         }
+        // Smallest safe idempotency guard for the double-submit bug: a
+        // Portfolio record that's already linked to a real Backend estate
+        // must never be provisioned a second time (e.g. two rapid clicks
+        // on the New Facility dialog before its submit button disabled,
+        // or a duplicate "Retry provisioning" click). The client-side fix
+        // in openDialog's submit handler is the primary guard; this is
+        // the server-side backstop for the one case that matters --
+        // re-provisioning the SAME already-linked Portfolio record.
+        if (portfolioRecord.backend_estate_id) {
+          const existingWorkspaces = await store.listFacilityWorkspacesByPortfolioIds([portfolioId]);
+          json(
+            res,
+            200,
+            { workspace: existingWorkspaces[0] || null, provisioning: { ok: true, already_provisioned: true, estate: { id: portfolioRecord.backend_estate_id } } },
+            { "x-request-id": ctx.requestId }
+          );
+          return;
+        }
         const body = await readJsonBody(req);
         requireObject(body, "body");
         const facilityAdminEmail = String(body.facility_admin_email || "").trim().toLowerCase();
@@ -5087,7 +5106,52 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           json(res, 200, result, { "x-request-id": ctx.requestId });
           return;
         }
-        methodNotAllowed(res, "PATCH");
+        // Office->Facility provisioning lifecycle -- governed Portfolio
+        // delete. Deliberately scoped to "portfolio" only, not a generic
+        // delete for every collection this route already handles PATCH
+        // for. Backend is the sole authority on whether the linked
+        // estate (if any) is safe to remove -- Office never deletes real
+        // Facility operational data itself, it only asks and then cleans
+        // up its own bookkeeping once Backend confirms it's safe.
+        if (req.method === "DELETE" && collection === "portfolio") {
+          authorizePermission(authContext, "portfolio.manage");
+          authorizePermission(authContext, "crm.manage");
+          const portfolioId = decodeURIComponent(id);
+          const portfolioRecord = await findCorporateRecord(store, "portfolio", portfolioId);
+          if (!portfolioRecord) {
+            json(res, 200, { ok: true, already_deleted: true, id: portfolioId }, { "x-request-id": ctx.requestId });
+            return;
+          }
+          if (portfolioRecord.backend_estate_id) {
+            const result = await deleteBackendFacilityEstate(config, portfolioRecord.backend_estate_id);
+            if (!result.ok) {
+              await appendAudit(store, authContext, "office_portfolio_delete_blocked", "portfolio", portfolioId, {
+                backend_estate_id: portfolioRecord.backend_estate_id,
+                reason: result.reason,
+                blocking: result.blocking || [],
+              });
+              json(
+                res,
+                409,
+                { ok: false, error: result.reason || "facility_has_operational_dependencies", blocking: result.blocking || [] },
+                { "x-request-id": ctx.requestId }
+              );
+              return;
+            }
+          }
+          const linkedWorkspaces = await store.listFacilityWorkspacesByPortfolioIds([portfolioId]);
+          for (const workspace of linkedWorkspaces) {
+            await store.deleteFacilityWorkspace(workspace.id);
+          }
+          await deleteCorporateRecord(store, "portfolio", portfolioId);
+          await appendAudit(store, authContext, "office_portfolio_deleted", "portfolio", portfolioId, {
+            name: portfolioRecord.name,
+            backend_estate_id: portfolioRecord.backend_estate_id || null,
+          });
+          json(res, 200, { ok: true, deleted: true, id: portfolioId }, { "x-request-id": ctx.requestId });
+          return;
+        }
+        methodNotAllowed(res, collection === "portfolio" ? "PATCH,DELETE" : "PATCH");
         return;
       }
 

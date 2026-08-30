@@ -33,6 +33,7 @@
     "office:normalize-lead-timestamps:test": "node scripts/test-normalize-lead-timestamps.js",
     "office:oyi-internal-context:test": "node scripts/test-office-oyi-internal-context.js",
     "office:oyi-interaction:test": "node scripts/test-oyi-interaction-repositioning.js",
+    "office:dialog-submit-guard:test": "node scripts/test-office-dialog-submit-guard.js",
     "office:eval": "node scripts/run-lead-agents-evals.js"
   },
   "dependencies": {

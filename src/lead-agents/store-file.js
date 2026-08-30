@@ -622,6 +622,18 @@ class FileLeadAgentsStore {
     return workspace;
   }
 
+  // Governed Portfolio delete -- removes Office's own bookkeeping row for
+  // an abandoned/failed provisioning attempt. Never called until Backend
+  // has already confirmed (or the attempt never reached Backend at all)
+  // that no real Facility operational state exists.
+  async deleteFacilityWorkspace(workspaceId) {
+    const index = this.state.facility_workspaces.findIndex((item) => item.id === workspaceId);
+    if (index < 0) return false;
+    this.state.facility_workspaces.splice(index, 1);
+    await this.persist();
+    return true;
+  }
+
   async getLeadChannelState(leadId, channel) {
     return (
       this.state.lead_channel_states.find(
