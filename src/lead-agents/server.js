@@ -76,8 +76,10 @@ const {
   canCreateActivityForRelatedObject,
   createOrUpdateHandoff,
   createRelatedActivity,
+  findCorporateRecord,
   listHandoffQueue,
   listRelatedActivities,
+  persistCorporateRecord,
   updateHandoff,
   updateOperationalRecord,
   validateOperationalRelationships,
@@ -101,7 +103,7 @@ const {
   sendOfficeEmail,
   staffInviteEmail,
 } = require("./email");
-const { provisionBackendFacility } = require("./backend-facility-provisioning-gateway");
+const { provisionBackendFacility, resendBackendFacilityOwnerInvite, revokeBackendFacilityOwnerInvite } = require("./backend-facility-provisioning-gateway");
 const { credentialPayloadForUser, qrSvg } = require("./qr");
 const {
   createRequestContext,
@@ -171,6 +173,67 @@ function requireObject(body, name) {
     error.statusCode = 400;
     throw error;
   }
+}
+
+// Office->Facility provisioning lifecycle. The one shared implementation
+// of "create a facility_workspaces row, call Backend's /office/facility/
+// provision intake, and (only on success) build + send the owner-
+// activation email" -- both the existing lead-anchored route and the new
+// Portfolio-anchored route (requirement #1) call this, so there is exactly
+// one place that does the real provisioning work, not two. Reuses the
+// exact staff-invite pattern already proven in this file: create, send via
+// Resend, gracefully degrade to a copyable link if email isn't
+// configured, never fail the whole request just because delivery failed.
+// Backend never sends this email itself (see officeExport.ts's own
+// comment) -- Office always owns and sends its own branded copy.
+async function provisionFacilityWorkspaceCore(store, config, authContext, input) {
+  const workspace = await store.createFacilityWorkspace({
+    lead_id: input.leadId || null,
+    portfolio_id: input.portfolioId || null,
+    facility_admin_email: input.facilityAdminEmail,
+    facility_admin_full_name: input.facilityAdminFullName || "",
+    facility_admin_phone: input.facilityAdminPhone || "",
+    customer_organization: input.customerOrganization,
+    estate_name: input.estateName,
+    actor: authContext?.email || "office",
+  });
+
+  let provisioning = { ok: false, reason: "not_attempted" };
+  let workspaceUpdate = null;
+  if (input.facilityAdminEmail) {
+    provisioning = await provisionBackendFacility(config, {
+      name: input.estateName,
+      address: input.address || "",
+      type: input.facilityType || "estate",
+      timezone: input.timezone || "",
+      admin_email: input.facilityAdminEmail,
+      requested_by: authContext?.email || "office",
+    });
+    if (provisioning.ok) {
+      // Facility's (auth) directory is a Next.js route GROUP, not a real
+      // URL segment -- its pages resolve at the bare path (e.g. /login,
+      // /signup), so the activation page is genuinely at /facility-invite,
+      // not /auth/facility-invite.
+      const activationLink = `${String(config.officeFacilityBaseUrl || "").replace(/\/+$/, "")}/facility-invite?token=${encodeURIComponent(provisioning.activation_token)}`;
+      const emailResult = await sendOfficeEmail(
+        config,
+        facilityOwnerInviteEmail({ estateName: input.estateName, inviteUrl: activationLink, expiresAt: provisioning.invite?.expires_at })
+      ).catch((err) => ({ delivered: false, skipped: true, reason: err?.message || "email_send_failed" }));
+      workspaceUpdate = await store.updateFacilityWorkspace(workspace.id, {
+        status: "invitation_sent",
+        activation_link: activationLink,
+        checklist: {
+          ...(workspace.checklist || {}),
+          customer_organization: "created",
+          estate_or_building_record: "created",
+          facility_admin_invite: emailResult.delivered ? "sent" : "ready_to_send",
+          deployment_project: input.leadId ? "linked" : "not_applicable",
+          onboarding_email: emailResult.delivered ? "sent" : "not_delivered",
+        },
+      });
+    }
+  }
+  return { workspace: workspaceUpdate || workspace, provisioning, workspaceCreatedId: workspace.id };
 }
 
 // store.listAdminUsers()/updateAdminUser() return the raw admin_users row,
@@ -3991,85 +4054,180 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
         requireObject(body, "body");
         const facilityAdminEmail = String(body.facility_admin_email || lead.email || "").trim().toLowerCase();
         const estateName = body.estate_name || body.property_name || lead.company;
-        const [deployment, workspace] = await Promise.all([
+        const [deployment, provisionResult] = await Promise.all([
           store.createDeploymentProject({
             lead_id: lead.id,
             package_name: body.package_name || lead.interest_package,
             property_name: body.property_name || lead.company,
             actor: authContext?.email || "office",
           }),
-          store.createFacilityWorkspace({
-            lead_id: lead.id,
-            facility_admin_email: facilityAdminEmail,
-            customer_organization: body.customer_organization || lead.company,
-            estate_name: estateName,
-            actor: authContext?.email || "office",
+          provisionFacilityWorkspaceCore(store, config, authContext, {
+            leadId: lead.id,
+            facilityAdminEmail,
+            customerOrganization: body.customer_organization || lead.company,
+            estateName,
+            address: body.address,
+            timezone: body.timezone,
+            facilityType: body.facility_type,
           }),
         ]);
+        const { workspace, provisioning, workspaceCreatedId } = provisionResult;
         await appendAudit(store, authContext, "facility_workspace_requested", "lead", lead.id, {
           deployment_id: deployment.id,
-          workspace_id: workspace.id,
+          workspace_id: workspaceCreatedId,
         });
-
-        // Commercial production-hardening -- this staff action IS the
-        // authorization to actually provision the deployment (Backend's own
-        // public signup can no longer self-provision an estate). Reuses the
-        // exact staff-invite pattern already proven in this file: create,
-        // send via Resend, gracefully degrade to a copyable link if email
-        // isn't configured, never fail the whole request just because
-        // delivery failed.
-        let provisioning = { ok: false, reason: "not_attempted" };
-        let workspaceUpdate = null;
-        if (facilityAdminEmail) {
-          provisioning = await provisionBackendFacility(config, {
-            name: estateName,
-            address: body.address || "",
-            type: body.facility_type || "estate",
-            admin_email: facilityAdminEmail,
-            requested_by: authContext?.email || "office",
+        if (provisioning.ok) {
+          await appendAudit(store, authContext, "facility_provisioned", "lead", lead.id, {
+            deployment_id: deployment.id,
+            workspace_id: workspaceCreatedId,
+            backend_estate_id: provisioning.estate?.id,
           });
-          if (provisioning.ok) {
-            // Facility's (auth) directory is a Next.js route GROUP, not a
-            // real URL segment -- its pages resolve at the bare path
-            // (e.g. /login, /signup), so the activation page is genuinely
-            // at /facility-invite, not /auth/facility-invite.
-            const activationLink = `${String(config.officeFacilityBaseUrl || "").replace(/\/+$/, "")}/facility-invite?token=${encodeURIComponent(provisioning.activation_token)}`;
-            const emailResult = await sendOfficeEmail(
-              config,
-              facilityOwnerInviteEmail({ estateName, inviteUrl: activationLink, expiresAt: provisioning.invite?.expires_at })
-            ).catch((err) => ({ delivered: false, skipped: true, reason: err?.message || "email_send_failed" }));
-            workspaceUpdate = await store.updateFacilityWorkspace(workspace.id, {
-              status: "invitation_sent",
-              activation_link: activationLink,
-              checklist: {
-                ...(workspace.checklist || {}),
-                customer_organization: "created",
-                estate_or_building_record: "created",
-                facility_admin_invite: emailResult.delivered ? "sent" : "ready_to_send",
-                deployment_project: "linked",
-                onboarding_email: emailResult.delivered ? "sent" : "not_delivered",
-              },
-            });
-            await appendAudit(store, authContext, "facility_provisioned", "lead", lead.id, {
-              deployment_id: deployment.id,
-              workspace_id: workspace.id,
-              backend_estate_id: provisioning.estate?.id,
-              email_delivered: Boolean(emailResult.delivered),
-            });
-          } else {
-            await appendAudit(store, authContext, "facility_provisioning_failed", "lead", lead.id, {
-              deployment_id: deployment.id,
-              workspace_id: workspace.id,
-              reason: provisioning.reason,
+        } else if (facilityAdminEmail) {
+          await appendAudit(store, authContext, "facility_provisioning_failed", "lead", lead.id, {
+            deployment_id: deployment.id,
+            workspace_id: workspaceCreatedId,
+            reason: provisioning.reason,
+          });
+        }
+        json(res, 201, { deployment, workspace, provisioning }, { "x-request-id": ctx.requestId });
+        return;
+      }
+
+      // Office->Facility provisioning lifecycle -- the "Portfolio -> New"
+      // entry point (requirement #1). Same core provisioning as the
+      // lead-anchored route above (shared, not duplicated), anchored to a
+      // Portfolio record instead of a Lead -- no deployment_project or
+      // lead-stage concept applies here. On success, links the Portfolio
+      // record to the new estate via backend_estate_id (the same field
+      // /office/portfolio/projection already matches operational data
+      // against), so the Portfolio detail view's existing live-status
+      // machinery picks it up with no further wiring.
+      const portfolioProvisionMatch = pathname.match(/^\/api\/lead-agents\/admin\/office\/portfolio\/([^/]+)\/provision-facility$/);
+      if (portfolioProvisionMatch) {
+        if (req.method !== "POST") {
+          methodNotAllowed(res, "POST");
+          return;
+        }
+        authorizePermission(authContext, "manage_commercial");
+        const portfolioId = decodeURIComponent(portfolioProvisionMatch[1]);
+        const portfolioRecord = await findCorporateRecord(store, "portfolio", portfolioId);
+        if (!portfolioRecord) {
+          notFound(res);
+          return;
+        }
+        const body = await readJsonBody(req);
+        requireObject(body, "body");
+        const facilityAdminEmail = String(body.facility_admin_email || "").trim().toLowerCase();
+        if (!facilityAdminEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(facilityAdminEmail)) {
+          const error = new Error("A valid facility_admin_email is required");
+          error.statusCode = 400;
+          throw error;
+        }
+        const estateName = body.estate_name || portfolioRecord.name;
+        const { workspace, provisioning, workspaceCreatedId } = await provisionFacilityWorkspaceCore(store, config, authContext, {
+          portfolioId,
+          facilityAdminEmail,
+          facilityAdminFullName: body.facility_admin_full_name,
+          facilityAdminPhone: body.facility_admin_phone,
+          customerOrganization: body.customer_organization || portfolioRecord.client_account,
+          estateName,
+          address: body.address,
+          timezone: body.timezone,
+          facilityType: body.facility_type,
+        });
+        await appendAudit(store, authContext, "facility_workspace_requested", "portfolio", portfolioRecord.id, {
+          workspace_id: workspaceCreatedId,
+        });
+        if (provisioning.ok && provisioning.estate?.id) {
+          const nextPortfolioRecord = { ...portfolioRecord, backend_estate_id: provisioning.estate.id, updated_at: new Date().toISOString() };
+          await persistCorporateRecord(store, "portfolio", nextPortfolioRecord);
+          await appendAudit(store, authContext, "facility_provisioned", "portfolio", portfolioRecord.id, {
+            workspace_id: workspaceCreatedId,
+            backend_estate_id: provisioning.estate.id,
+          });
+        } else {
+          await appendAudit(store, authContext, "facility_provisioning_failed", "portfolio", portfolioRecord.id, {
+            workspace_id: workspaceCreatedId,
+            reason: provisioning.reason,
+          });
+        }
+        json(res, 201, { workspace, provisioning }, { "x-request-id": ctx.requestId });
+        return;
+      }
+
+      // Office->Facility provisioning lifecycle -- resend/revoke controls
+      // on the Portfolio record (requirement #14). Both proxy onto
+      // Backend's new Office-gated owner-invite routes, scoped by the
+      // estate Office already linked at provisioning time
+      // (portfolioRecord.backend_estate_id) -- never a client-submitted
+      // invite id. Backend never sends the resend email itself (same
+      // boundary as provisioning); Office builds/sends its own branded
+      // copy from the rotated token it gets back.
+      const portfolioInviteActionMatch = pathname.match(/^\/api\/lead-agents\/admin\/office\/portfolio\/([^/]+)\/facility-invite\/(resend|revoke)$/);
+      if (portfolioInviteActionMatch) {
+        if (req.method !== "POST") {
+          methodNotAllowed(res, "POST");
+          return;
+        }
+        authorizePermission(authContext, "manage_commercial");
+        const portfolioId = decodeURIComponent(portfolioInviteActionMatch[1]);
+        const action = portfolioInviteActionMatch[2];
+        const portfolioRecord = await findCorporateRecord(store, "portfolio", portfolioId);
+        if (!portfolioRecord) {
+          notFound(res);
+          return;
+        }
+        const estateId = portfolioRecord.backend_estate_id;
+        if (!estateId) {
+          const error = new Error("This Portfolio record has no linked Facility deployment yet");
+          error.statusCode = 400;
+          throw error;
+        }
+        const [workspace] = await store.listFacilityWorkspacesByPortfolioIds([portfolioId]);
+
+        if (action === "revoke") {
+          const result = await revokeBackendFacilityOwnerInvite(config, estateId);
+          if (result.ok && workspace) {
+            await store.updateFacilityWorkspace(workspace.id, {
+              status: "invite_revoked",
+              checklist: { ...(workspace.checklist || {}), facility_admin_invite: "revoked" },
             });
           }
+          await appendAudit(store, authContext, result.ok ? "facility_invitation_revoked" : "facility_invitation_revoke_failed", "portfolio", portfolioRecord.id, {
+            backend_estate_id: estateId,
+            reason: result.ok ? undefined : result.reason,
+          });
+          json(res, result.ok ? 200 : 502, result, { "x-request-id": ctx.requestId });
+          return;
         }
-        json(
-          res,
-          201,
-          { deployment, workspace: workspaceUpdate || workspace, provisioning },
-          { "x-request-id": ctx.requestId }
-        );
+
+        const result = await resendBackendFacilityOwnerInvite(config, estateId);
+        if (result.ok && result.activation_token) {
+          const estateName = portfolioRecord.name || "";
+          const activationLink = `${String(config.officeFacilityBaseUrl || "").replace(/\/+$/, "")}/facility-invite?token=${encodeURIComponent(result.activation_token)}`;
+          const emailResult = await sendOfficeEmail(
+            config,
+            facilityOwnerInviteEmail({ estateName, inviteUrl: activationLink, expiresAt: result.invite?.expires_at })
+          ).catch((err) => ({ delivered: false, skipped: true, reason: err?.message || "email_send_failed" }));
+          if (workspace) {
+            await store.updateFacilityWorkspace(workspace.id, {
+              status: "invitation_sent",
+              activation_link: activationLink,
+              checklist: { ...(workspace.checklist || {}), facility_admin_invite: emailResult.delivered ? "sent" : "ready_to_send" },
+            });
+          }
+          await appendAudit(store, authContext, "facility_invitation_resent", "portfolio", portfolioRecord.id, {
+            backend_estate_id: estateId,
+            email_delivered: Boolean(emailResult.delivered),
+          });
+          json(res, 200, { ok: true, email_delivered: Boolean(emailResult.delivered) }, { "x-request-id": ctx.requestId });
+          return;
+        }
+        await appendAudit(store, authContext, "facility_invitation_resend_failed", "portfolio", portfolioRecord.id, {
+          backend_estate_id: estateId,
+          reason: result.reason,
+        });
+        json(res, 502, result, { "x-request-id": ctx.requestId });
         return;
       }
 
@@ -4847,8 +5005,11 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           const records = await listCorporateRecords(store, collection);
           let collectionOut = records;
           if (collection === "portfolio") {
-            const backendProjection = await fetchBackendPortfolioProjection(config);
-            collectionOut = await attachPortfolioOperationalProjections(records, backendProjection);
+            const [backendProjection, facilityWorkspaces] = await Promise.all([
+              fetchBackendPortfolioProjection(config),
+              store.listFacilityWorkspacesByPortfolioIds(records.map((r) => r.id)).catch(() => []),
+            ]);
+            collectionOut = await attachPortfolioOperationalProjections(records, backendProjection, facilityWorkspaces);
           }
           json(res, 200, { collection: collectionOut }, { "x-request-id": ctx.requestId });
           return;

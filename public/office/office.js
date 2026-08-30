@@ -134,6 +134,16 @@ async function apiCreateOffice(collection, body) {
 async function apiPatchOperational(namespace, collection, id, patch) {
   return api(`/api/lead-agents/admin/${namespace}/${collection}/${encodeURIComponent(id)}`, { method: "PATCH", body: patch });
 }
+// Office->Facility provisioning lifecycle (Portfolio -> New).
+async function apiProvisionFacility(portfolioId, body) {
+  return api(`/api/lead-agents/admin/office/portfolio/${encodeURIComponent(portfolioId)}/provision-facility`, { method: "POST", body });
+}
+async function apiResendFacilityInvite(portfolioId) {
+  return api(`/api/lead-agents/admin/office/portfolio/${encodeURIComponent(portfolioId)}/facility-invite/resend`, { method: "POST", body: {} });
+}
+async function apiRevokeFacilityInvite(portfolioId) {
+  return api(`/api/lead-agents/admin/office/portfolio/${encodeURIComponent(portfolioId)}/facility-invite/revoke`, { method: "POST", body: {} });
+}
 async function apiGetRelatedActivities(relatedType, relatedId) {
   return api(`/api/lead-agents/admin/office/activities/${encodeURIComponent(relatedType)}/${encodeURIComponent(relatedId)}`);
 }
@@ -3377,17 +3387,58 @@ function openCreateProjectDialog(prefill = {}) {
   });
 }
 
-function openCreatePortfolioDialog(prefill = {}) {
-  openDialog("New Portfolio Entry", [
-    { name: "name", label: "Building / Deployment Name" },
-    { name: "client_account", label: "Client / Account", value: prefill.client_account || "" },
-    { name: "location", label: "Location" },
+// Office->Facility provisioning lifecycle -- "Portfolio -> New" IS the
+// Facility provisioning workflow now (requirement #1). Creates the
+// Portfolio customer/deployment record exactly as before (My Records stays
+// the deployment/customer workspace), then immediately provisions the real
+// Facility deployment + owner invite in one guided step. Office never
+// collects or sets a password anywhere in this form (requirement #3) --
+// only what's needed to invite the owner, who sets their own credentials
+// during their own activation wizard.
+function openNewFacilityDialog(prefill = {}) {
+  openDialog("New Facility", [
+    { name: "name", label: "Facility / Deployment Name" },
+    { name: "client_account", label: "Client / Company", value: prefill.client_account || "" },
+    { name: "facility_type", label: "Facility Type", type: "select", value: "estate", options: ["estate", "building", "community"] },
+    { name: "address", label: "Address" },
+    { name: "timezone", label: "Timezone", value: "Africa/Lagos" },
+    { name: "owner_full_name", label: "Primary Owner -- Full Name" },
+    { name: "owner_email", label: "Primary Owner -- Email", type: "email" },
+    { name: "owner_phone", label: "Primary Owner -- Phone" },
     { name: "relationship_type", label: "Relationship Type", value: "customer_building" },
     { name: "business_unit", label: "Business Unit", value: prefill.business_unit || "" },
   ], async (data) => {
-    await apiCreateOffice("portfolio", { ...data, project_id: prefill.project_id });
+    const portfolio = await apiCreateOffice("portfolio", {
+      name: data.name,
+      client_account: data.client_account,
+      location: data.address,
+      relationship_type: data.relationship_type,
+      business_unit: data.business_unit,
+      project_id: prefill.project_id,
+    });
+    const portfolioId = portfolio?.record?.id;
+    if (!portfolioId) throw new Error("Portfolio record could not be created.");
+    // The Portfolio record already exists at this point regardless of what
+    // happens next -- a provisioning failure (e.g. Backend temporarily
+    // unreachable) must not look like the whole action failed and must
+    // not lose the record. Surface it as a toast (same pattern already
+    // used for staff-invite email-delivery failures) and let staff retry
+    // provisioning from the detail view instead.
+    try {
+      await apiProvisionFacility(portfolioId, {
+        estate_name: data.name,
+        facility_type: data.facility_type,
+        address: data.address,
+        timezone: data.timezone,
+        facility_admin_email: data.owner_email,
+        facility_admin_full_name: data.owner_full_name,
+        facility_admin_phone: data.owner_phone,
+      });
+    } catch (provisionErr) {
+      toast(`Portfolio record created, but Facility provisioning failed: ${provisionErr.message || "unknown error"}. Retry from the Portfolio detail view.`, "warning");
+    }
     invalidate("portfolio");
-    navigate("portfolio");
+    navigate(`portfolio/${portfolioId}`);
   });
 }
 
@@ -3689,7 +3740,7 @@ async function renderProjectDetail(outlet, id, token) {
   } else if (hasPermission("portfolio.manage")) {
     railSections.push(railCard("Portfolio Entry", `<p class="rail-empty">No portfolio entry linked yet.</p>`, {
       label: "Add Entry",
-      onClick: () => openCreatePortfolioDialog({ project_id: id, business_unit: record.business_unit, client_account: org ? org.name : "" }),
+      onClick: () => openNewFacilityDialog({ project_id: id, business_unit: record.business_unit, client_account: org ? org.name : "" }),
     }));
   }
   if (hasPermission("tasks.read")) railSections.push(railCard("Tasks", railList(relatedTasks, (t) => `${escapeHtml(t.title)} <span class="rail-sub">${escapeHtml(titleCase(t.status))}</span>`)));
@@ -3747,6 +3798,79 @@ function portfolioOperationalSummaryText(entry) {
   const devices = projection.devices_total ?? "—";
   const online = projection.devices_online != null ? ` (${projection.devices_online} online)` : "";
   return `${homes} homes · ${devices} devices${online}`;
+}
+
+// Office->Facility provisioning lifecycle (requirement #14) -- status,
+// checklist, and resend/revoke controls for the owner invite this Portfolio
+// record's Facility provisioning created. Two complementary signals: what
+// Office DID (facility_workspace.status/checklist) and what's ACTUALLY
+// true in Backend right now (operational_projection.owner_activated).
+function renderFacilityProvisioningSection(record) {
+  const workspace = record.facility_workspace;
+  const ownerActivated = record.operational_projection?.owner_activated;
+  const canManage = hasPermission("crm.manage");
+
+  if (!workspace) {
+    return el(`
+      <div class="detail-section">
+        <h3>Facility Provisioning</h3>
+        <p class="detail-note">No Facility provisioning has been initiated for this record yet.</p>
+      </div>
+    `);
+  }
+
+  const checklistRows = Object.entries(workspace.checklist || {})
+    .map(([key, value]) => factRow(titleCase(key), titleCase(value)))
+    .join("");
+
+  const section = el(`
+    <div class="detail-section">
+      <h3>Facility Provisioning</h3>
+      <div class="fact-grid">
+        ${factRow("Workspace Status", titleCase(workspace.status))}
+        ${factRow("Owner Activated", ownerActivated === null || ownerActivated === undefined ? "Unknown" : ownerActivated ? "Yes" : "Not yet")}
+      </div>
+      <div class="fact-grid">${checklistRows}</div>
+    </div>
+  `);
+
+  if (workspace.status === "invitation_sent" && canManage) {
+    const actions = el(`<div class="detail-actions"></div>`);
+    const resendBtn = el(`<button type="button" class="btn btn-ghost btn-sm">Resend Invite</button>`);
+    const revokeBtn = el(`<button type="button" class="btn btn-ghost btn-sm">Revoke Invite</button>`);
+    resendBtn.addEventListener("click", async () => {
+      resendBtn.disabled = true;
+      try {
+        const result = await apiResendFacilityInvite(record.id);
+        toast(result.email_delivered ? "Invitation resent." : "Invitation rotated, but email delivery failed — check email configuration.", result.email_delivered ? "default" : "warning");
+        invalidate("portfolio");
+        navigate(`portfolio/${record.id}`);
+      } catch (err) {
+        toast(err.message || "Could not resend invitation.", "warning");
+      } finally {
+        resendBtn.disabled = false;
+      }
+    });
+    revokeBtn.addEventListener("click", async () => {
+      if (!confirm("Revoke this Facility owner invitation? The link will stop working immediately and cannot be undone.")) return;
+      revokeBtn.disabled = true;
+      try {
+        await apiRevokeFacilityInvite(record.id);
+        toast("Invitation revoked.");
+        invalidate("portfolio");
+        navigate(`portfolio/${record.id}`);
+      } catch (err) {
+        toast(err.message || "Could not revoke invitation.", "warning");
+      } finally {
+        revokeBtn.disabled = false;
+      }
+    });
+    actions.appendChild(resendBtn);
+    actions.appendChild(revokeBtn);
+    section.appendChild(actions);
+  }
+
+  return section;
 }
 
 function renderPortfolioOperationalSection(entry) {
@@ -3808,8 +3932,15 @@ async function renderPortfolioList(outlet, token) {
     ],
     searchFields: ["name", "client_account", "location"],
     filters: [{ key: "business_unit", label: "Business Unit" }, { key: "relationship_type", label: "Relationship" }],
-    canManage: hasPermission("portfolio.manage"),
-    onCreate: () => openCreatePortfolioDialog(),
+    // "New" is now Facility provisioning (requirement #1), which Backend
+    // gates on the legacy alias manage_commercial -> canonical crm.manage
+    // (the frontend only ever checks canonical keys, matching every other
+    // hasPermission("crm.manage") call in this file) -- require it here
+    // too, not just the broader portfolio.manage every other Portfolio
+    // action uses, so a staffer who could edit existing records doesn't
+    // see a button that would just 403.
+    canManage: hasPermission("portfolio.manage") && hasPermission("crm.manage"),
+    onCreate: () => openNewFacilityDialog(),
     onRowClick: (p) => navigate(`portfolio/${p.id}`),
     emptyMessage: "No portfolio entries yet.",
   });
@@ -3869,6 +4000,7 @@ async function renderPortfolioDetail(outlet, id, token) {
         <p class="detail-note">${record.health_summary ? escapeHtml(record.health_summary) : "No health summary recorded for this entry yet."}</p>
       </div>
     `),
+    renderFacilityProvisioningSection(record),
     el(`
       <div class="detail-section">
         <h3>Linked Operational Environment</h3>

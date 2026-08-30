@@ -29,6 +29,7 @@
     "office:team-settings-audit:test": "node scripts/test-office-team-settings-audit.js",
     "office:staff-onboarding:test": "node scripts/test-staff-onboarding.js",
     "office:portfolio-projection:test": "node scripts/test-office-portfolio-projection.js",
+    "office:facility-provisioning:test": "node scripts/test-office-facility-provisioning.js",
     "office:normalize-lead-timestamps:test": "node scripts/test-normalize-lead-timestamps.js",
     "office:oyi-internal-context:test": "node scripts/test-office-oyi-internal-context.js",
     "office:oyi-interaction:test": "node scripts/test-oyi-interaction-repositioning.js",
