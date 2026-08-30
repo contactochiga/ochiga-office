@@ -214,8 +214,11 @@ async function provisionFacilityWorkspaceCore(store, config, authContext, input)
       // Facility's (auth) directory is a Next.js route GROUP, not a real
       // URL segment -- its pages resolve at the bare path (e.g. /login,
       // /signup), so the activation page is genuinely at /facility-invite,
-      // not /auth/facility-invite.
-      const activationLink = `${String(config.officeFacilityBaseUrl || "").replace(/\/+$/, "")}/facility-invite?token=${encodeURIComponent(provisioning.activation_token)}`;
+      // not /auth/facility-invite. Must use facilityAppUrl (the actual
+      // facility-oyi frontend) -- officeFacilityBaseUrl is a different,
+      // pre-existing config group for Office->Backend's own facility-
+      // export API surface, not a user-facing origin at all.
+      const activationLink = `${config.facilityAppUrl}/facility-invite?token=${encodeURIComponent(provisioning.activation_token)}`;
       // facilityOwnerInviteEmail (like staffInviteEmail) only builds
       // content (subject/text/html) -- it never sets `to`. The caller
       // must attach the persisted invited email to the send envelope
@@ -4254,7 +4257,10 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
         const result = await resendBackendFacilityOwnerInvite(config, estateId);
         if (result.ok && result.activation_token) {
           const estateName = portfolioRecord.name || "";
-          const activationLink = `${String(config.officeFacilityBaseUrl || "").replace(/\/+$/, "")}/facility-invite?token=${encodeURIComponent(result.activation_token)}`;
+          // Same host fix as initial provisioning -- facilityAppUrl (the
+          // real facility-oyi frontend), never officeFacilityBaseUrl
+          // (Office->Backend's own facility-export API surface).
+          const activationLink = `${config.facilityAppUrl}/facility-invite?token=${encodeURIComponent(result.activation_token)}`;
           // Same missing-envelope bug as initial provisioning: the
           // template's return value has no `to`, so it must be attached
           // by the caller. Backend's resend response already returns the
