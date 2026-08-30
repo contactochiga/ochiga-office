@@ -216,10 +216,18 @@ async function provisionFacilityWorkspaceCore(store, config, authContext, input)
       // /signup), so the activation page is genuinely at /facility-invite,
       // not /auth/facility-invite.
       const activationLink = `${String(config.officeFacilityBaseUrl || "").replace(/\/+$/, "")}/facility-invite?token=${encodeURIComponent(provisioning.activation_token)}`;
-      const emailResult = await sendOfficeEmail(
-        config,
-        facilityOwnerInviteEmail({ estateName: input.estateName, inviteUrl: activationLink, expiresAt: provisioning.invite?.expires_at })
-      ).catch((err) => ({ delivered: false, skipped: true, reason: err?.message || "email_send_failed" }));
+      // facilityOwnerInviteEmail (like staffInviteEmail) only builds
+      // content (subject/text/html) -- it never sets `to`. The caller
+      // must attach the persisted invited email to the send envelope
+      // itself, exactly like the staff-invite path already does
+      // ({ to: invite.email, ...inviteMessage }). This call previously
+      // passed the template's return value straight through with no `to`
+      // at all, so sendOfficeEmail always saw an empty recipient and
+      // failed every Facility owner invitation with missing_recipient.
+      const emailResult = await sendOfficeEmail(config, {
+        to: input.facilityAdminEmail,
+        ...facilityOwnerInviteEmail({ estateName: input.estateName, inviteUrl: activationLink, expiresAt: provisioning.invite?.expires_at }),
+      }).catch((err) => ({ delivered: false, skipped: true, reason: err?.message || "email_send_failed" }));
       // Token/invite creation and actual email delivery are two different
       // facts -- a rotated, valid, activatable invite must never be
       // labeled the same as one that was actually emailed. Distinct
@@ -4247,10 +4255,16 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
         if (result.ok && result.activation_token) {
           const estateName = portfolioRecord.name || "";
           const activationLink = `${String(config.officeFacilityBaseUrl || "").replace(/\/+$/, "")}/facility-invite?token=${encodeURIComponent(result.activation_token)}`;
-          const emailResult = await sendOfficeEmail(
-            config,
-            facilityOwnerInviteEmail({ estateName, inviteUrl: activationLink, expiresAt: result.invite?.expires_at })
-          ).catch((err) => ({ delivered: false, skipped: true, reason: err?.message || "email_send_failed" }));
+          // Same missing-envelope bug as initial provisioning: the
+          // template's return value has no `to`, so it must be attached
+          // by the caller. Backend's resend response already returns the
+          // invite's own persisted invited_email (invites.invited_email)
+          // -- the authoritative source, not a copy -- so use that
+          // directly rather than Office's own bookkeeping field.
+          const emailResult = await sendOfficeEmail(config, {
+            to: result.invite?.invited_email,
+            ...facilityOwnerInviteEmail({ estateName, inviteUrl: activationLink, expiresAt: result.invite?.expires_at }),
+          }).catch((err) => ({ delivered: false, skipped: true, reason: err?.message || "email_send_failed" }));
           if (workspace) {
             await store.updateFacilityWorkspace(workspace.id, {
               // Same truthful distinction as initial provisioning -- a
