@@ -1140,6 +1140,61 @@
   .rail-list a:hover { color: var(--red-bright); }
   .rail-sub { color: var(--text-tertiary); font-size: 11px; margin-left: 4px; }
 
+  /* Portfolio UI rebuild — scoped classes only, .detail-header/
+     .detail-section/etc. (shared by every other module's detail page)
+     are deliberately left untouched. Reuses the same color tokens every
+     badge/KPI already uses — no new palette. */
+  .portfolio-tile {
+    flex-shrink: 0; display: flex; align-items: center; justify-content: center;
+    border-radius: var(--radius); font-weight: 700; color: var(--white); letter-spacing: 0.02em;
+  }
+  .portfolio-tile-xs { width: 32px; height: 32px; font-size: 12px; border-radius: var(--radius-sm); }
+  .portfolio-tile-lg { width: 64px; height: 64px; font-size: 20px; }
+  .portfolio-tile-blue { background: linear-gradient(155deg, rgba(79,127,209,0.35), rgba(79,127,209,0.12)); }
+  .portfolio-tile-green { background: linear-gradient(155deg, rgba(63,143,95,0.35), rgba(63,143,95,0.12)); }
+  .portfolio-tile-amber { background: linear-gradient(155deg, rgba(201,134,43,0.35), rgba(201,134,43,0.12)); }
+  .portfolio-tile-violet { background: linear-gradient(155deg, rgba(132,103,214,0.35), rgba(132,103,214,0.12)); }
+  .portfolio-tile-red { background: linear-gradient(155deg, rgba(211,55,44,0.35), rgba(211,55,44,0.12)); }
+
+  .portfolio-row-entity { display: flex; align-items: center; gap: 10px; min-width: 0; }
+  .portfolio-row-entity-text { min-width: 0; }
+  .portfolio-row-entity-name { color: var(--white); font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .portfolio-row-entity-location { color: var(--text-tertiary); font-size: 11px; margin-top: 1px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+  .portfolio-header { display: flex; gap: 18px; align-items: flex-start; margin-bottom: 24px; }
+  .portfolio-header-main { flex: 1; min-width: 0; }
+  .portfolio-header-main h1 { font-size: 21px; font-weight: 600; color: var(--white); margin: 0 0 8px; }
+  .portfolio-header-facts { grid-template-columns: repeat(3, 1fr); margin-top: 16px; }
+  .portfolio-header-actions { display: flex; align-items: flex-start; gap: 8px; flex-shrink: 0; position: relative; }
+  .portfolio-header-actions .btn { width: auto; margin-top: 0; }
+
+  .portfolio-overflow { position: relative; }
+  .portfolio-overflow-trigger { font-size: 16px; line-height: 1; padding-left: 10px; padding-right: 10px; }
+  .portfolio-overflow-menu {
+    position: absolute; top: calc(100% + 4px); right: 0; z-index: 20; min-width: 140px;
+    border: 1px solid var(--line-strong); border-radius: var(--radius-sm); background: var(--charcoal);
+    box-shadow: 0 12px 32px rgba(0,0,0,0.45); padding: 4px; display: flex; flex-direction: column;
+  }
+  .portfolio-overflow-item {
+    background: none; border: none; text-align: left; padding: 8px 10px; font-size: 12.5px;
+    color: var(--text-secondary); border-radius: var(--radius-sm); cursor: pointer;
+  }
+  .portfolio-overflow-item:hover { background: rgba(255,255,255,0.05); color: var(--white); }
+  .portfolio-overflow-danger { color: var(--red-bright); }
+  .portfolio-overflow-danger:hover { background: rgba(179,36,27,0.1); }
+
+  .portfolio-panel {
+    border: 1px solid var(--line); border-radius: var(--radius); background: rgba(255,255,255,0.015); padding: 16px;
+  }
+  .portfolio-overview-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; align-items: start; }
+
+  @media (max-width: 860px) {
+    .portfolio-header { flex-direction: column; }
+    .portfolio-header-actions { width: 100%; }
+    .portfolio-header-facts { grid-template-columns: 1fr 1fr; }
+    .portfolio-overview-grid { grid-template-columns: 1fr; }
+  }
+
   /* Tasks Domain — split list+panel layout (Automations, and reused by
      Tasks/Schedule per the same reference standard). Distinct from
      .detail-rail (full-page nav shell): the list stays visible next

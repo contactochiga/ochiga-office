@@ -3514,6 +3514,29 @@ function openNewFacilityDialog(prefill = {}) {
   });
 }
 
+// Portfolio UI rebuild -- "Edit Facility" header action. Deliberately
+// scoped to the same identity/relationship fields the create dialog
+// already collects (name/client_account/location/business_unit/
+// relationship_type) -- NOT the Facility-provisioning-specific fields
+// (facility_type/timezone/owner invite details), which only make sense
+// once, at provisioning time, and are not office_portfolio_entries
+// columns at all. name/client_account/location required a one-line
+// FIELD_POLICY.portfolio addition server-side (office-operational-
+// workflows.js) since PATCH never allowed correcting them before.
+function openEditFacilityDialog(record) {
+  openDialog("Edit Facility", [
+    { name: "name", label: "Facility / Deployment Name", value: record.name || "" },
+    { name: "client_account", label: "Client / Company", value: record.client_account || "" },
+    { name: "location", label: "Location", value: record.location || "" },
+    { name: "relationship_type", label: "Relationship Type", value: record.relationship_type || "customer_building" },
+    { name: "business_unit", label: "Business Unit", value: record.business_unit || "" },
+  ], async (data) => {
+    await apiPatchOperational("office", "portfolio", record.id, data);
+    invalidate("portfolio");
+    navigate(`portfolio/${record.id}`);
+  });
+}
+
 function openCreateSupportDialog(prefill = {}) {
   openDialog("New Support Case", [
     { name: "title", label: "Title" },
@@ -3987,21 +4010,125 @@ function renderPortfolioOperationalSection(entry) {
   return section;
 }
 
+// ---------------------------------------------------------------
+// Portfolio UI rebuild (visual reference: Portfolio Overview /
+// Duncan City Estate mockups). Everything below is presentation only --
+// no new data source, no schema change. One real finding drove a
+// deliberate, disclosed judgment call: facility_os_status/
+// consumer_os_status are stored columns that default to "unknown" at
+// creation and have NO write path anywhere in this codebase (verified —
+// no route, dialog, or workflow ever sets them to anything else), so
+// showing them directly would mean every single row is permanently
+// "Unknown" forever, which defeats the actual question Portfolio exists
+// to answer ("is Facility/Consumer OS operational?"). The genuine, live
+// answer is operational_projection (already fetched server-to-server
+// from Ochiga Backend on every record) -- derivePortfolioOsStatus below
+// prefers a real stored value if one is ever actually set, and only
+// falls back to the live projection otherwise. Still honestly "Unknown"
+// when Backend is unreachable, still "Not Connected" when there is no
+// real link -- never invented.
+function derivePortfolioOsStatus(record, storedField) {
+  const stored = String(record?.[storedField] || "").toLowerCase().trim();
+  if (stored && stored !== "unknown") return stored;
+  const projection = record?.operational_projection;
+  if (!projection || projection.available === false) return "unknown";
+  if (projection.linked) return "operational";
+  const workspace = record?.facility_workspace;
+  if (workspace && ["invitation_sent", "invitation_undelivered"].includes(workspace.status)) return "provisioning";
+  return "not_connected";
+}
+const OS_STATUS_TONE = { operational: "green", provisioning: "amber", not_connected: "default", unknown: "default" };
+function osStatusLabel(status) {
+  return status === "not_connected" ? "Not Connected" : titleCase(status);
+}
+function osStatusTone(status) {
+  return OS_STATUS_TONE[status] || toneForStatus(status);
+}
+
+// No image/thumbnail/logo column exists anywhere on
+// office_portfolio_entries (verified against db/lead-agents-schema.sql) --
+// a real photograph must never be fabricated for a production property.
+// This is the honest alternative: a stable color (hashed from the
+// record id, so it never changes on reload) plus initials, same
+// deterministic-placeholder discipline as the nav avatar.
+const PORTFOLIO_TILE_TONES = ["blue", "green", "amber", "violet", "red"];
+function portfolioInitials(name) {
+  const words = String(name || "").trim().split(/\s+/).filter(Boolean);
+  if (!words.length) return "?";
+  if (words.length === 1) return words[0].slice(0, 2).toUpperCase();
+  return (words[0][0] + words[1][0]).toUpperCase();
+}
+function portfolioTileTone(seed) {
+  let hash = 0;
+  const str = String(seed || "");
+  for (let i = 0; i < str.length; i += 1) hash = (hash * 31 + str.charCodeAt(i)) >>> 0;
+  return PORTFOLIO_TILE_TONES[hash % PORTFOLIO_TILE_TONES.length];
+}
+function portfolioTileHtml(record, size) {
+  const tone = portfolioTileTone(record.id || record.name);
+  return `<div class="portfolio-tile portfolio-tile-${size} portfolio-tile-${tone}" aria-hidden="true">${escapeHtml(portfolioInitials(record.name))}</div>`;
+}
+function portfolioBuildingCell(p) {
+  return `
+    <div class="portfolio-row-entity">
+      ${portfolioTileHtml(p, "xs")}
+      <div class="portfolio-row-entity-text">
+        <div class="portfolio-row-entity-name">${escapeHtml(p.name)}</div>
+        ${p.location ? `<div class="portfolio-row-entity-location">${escapeHtml(p.location)}</div>` : ""}
+      </div>
+    </div>
+  `;
+}
+
+// Real, non-fabricated export -- a client-side CSV built directly from
+// the same already-loaded, truthful records the table renders (no new
+// endpoint, nothing invented).
+function exportPortfolioCsv(records) {
+  const columns = [
+    ["name", "Building / Deployment"], ["client_account", "Client / Account"], ["location", "Location"],
+    ["business_unit", "Business Unit"], ["relationship_type", "Relationship"], ["status", "Status"], ["updated_at", "Updated"],
+  ];
+  const csvCell = (value) => `"${String(value ?? "").replace(/"/g, '""')}"`;
+  const csv = [columns.map(([, label]) => csvCell(label)).join(",")]
+    .concat(records.map((r) => columns.map(([key]) => csvCell(r[key])).join(",")))
+    .join("\n");
+  const url = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8;" }));
+  const link = el(`<a href="${url}" download="portfolio-export-${new Date().toISOString().slice(0, 10)}.csv"></a>`);
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+}
+
 async function renderPortfolioList(outlet, token) {
   setSelectedObject(null);
   const portfolioEntries = await fetchPortfolio();
   if (token !== state.renderToken) return;
   outlet.innerHTML = "";
 
+  // Precomputed, in-memory-only derived fields so the existing generic
+  // filter mechanism (exact-match on a record field) can filter by the
+  // real derived OS status rather than the always-"unknown" stored
+  // column -- never sent back to the server, purely a display-layer
+  // convenience for renderStandardList's existing filter contract.
+  portfolioEntries.forEach((p) => {
+    p._facility_os_label = osStatusLabel(derivePortfolioOsStatus(p, "facility_os_status"));
+    p._consumer_os_label = osStatusLabel(derivePortfolioOsStatus(p, "consumer_os_status"));
+  });
+
   const linked = portfolioEntries.filter((p) => p.operational_projection?.linked);
+  const activeFacilities = portfolioEntries.filter((p) => derivePortfolioOsStatus(p, "facility_os_status") === "operational");
   const openEscalations = portfolioEntries.reduce((sum, p) => sum + (p.operational_projection?.major_open_escalations || 0), 0);
   const kpiGroup = KPIGroup([
-    { label: "Portfolio Entries", value: portfolioEntries.length, icon: iconSvg("portfolio", "kpi-icon") },
-    { label: "Linked to Oyi", value: linked.length, icon: iconSvg("portfolio", "kpi-icon") },
-    { label: "Open Escalations", value: openEscalations, icon: iconSvg("attention", "kpi-icon"), alert: openEscalations > 0 },
+    { label: "Portfolio Entries", value: portfolioEntries.length, icon: iconSvg("portfolio", "kpi-icon"), tone: "blue" },
+    { label: "Active Facilities", value: activeFacilities.length, icon: iconSvg("trend", "kpi-icon"), tone: "green" },
+    { label: "Linked to Oyi", value: linked.length, icon: iconSvg("partnerships", "kpi-icon"), tone: "amber" },
+    { label: "Open Escalations", value: openEscalations, icon: iconSvg("attention", "kpi-icon"), tone: "violet", alert: openEscalations > 0 },
   ]);
   kpiGroup.style.marginBottom = "var(--space-5)";
   outlet.appendChild(kpiGroup);
+
+  outlet.appendChild(el(`<div class="overview-section"><h3>Portfolio Overview</h3></div>`));
 
   const listBody = el(`<div></div>`);
   outlet.appendChild(listBody);
@@ -4009,16 +4136,21 @@ async function renderPortfolioList(outlet, token) {
     title: "Portfolio",
     records: portfolioEntries,
     columns: [
-      { label: "Building / Deployment", width: "1.6fr", render: (p) => escapeHtml(p.name) },
+      { label: "Building / Deployment", width: "1.8fr", render: (p) => portfolioBuildingCell(p) },
       { label: "Client / Account", render: (p) => escapeHtml(p.client_account || "—") },
       { label: "Relationship", render: (p) => escapeHtml(titleCase(p.relationship_type)) },
-      { label: "Facility OS", render: (p) => badge(titleCase(p.facility_os_status), toneForStatus(p.facility_os_status)) },
-      { label: "Consumer OS", render: (p) => badge(titleCase(p.consumer_os_status), toneForStatus(p.consumer_os_status)) },
+      { label: "Facility OS", render: (p) => badge(p._facility_os_label, osStatusTone(derivePortfolioOsStatus(p, "facility_os_status"))) },
+      { label: "Consumer OS", render: (p) => badge(p._consumer_os_label, osStatusTone(derivePortfolioOsStatus(p, "consumer_os_status"))) },
       { label: "Homes / Devices", render: (p) => escapeHtml(portfolioOperationalSummaryText(p)) },
       { label: "Updated", render: (p) => escapeHtml(fmtRelative(p.updated_at)) },
     ],
     searchFields: ["name", "client_account", "location"],
-    filters: [{ key: "business_unit", label: "Business Unit" }, { key: "relationship_type", label: "Relationship" }],
+    filters: [
+      { key: "business_unit", label: "Business Unit" },
+      { key: "relationship_type", label: "Relationship" },
+      { key: "_facility_os_label", label: "Facility OS" },
+      { key: "_consumer_os_label", label: "Consumer OS" },
+    ],
     // "New" is now Facility provisioning (requirement #1), which Backend
     // gates on the legacy alias manage_commercial -> canonical crm.manage
     // (the frontend only ever checks canonical keys, matching every other
@@ -4030,7 +4162,239 @@ async function renderPortfolioList(outlet, token) {
     onCreate: () => openNewFacilityDialog(),
     onRowClick: (p) => navigate(`portfolio/${p.id}`),
     emptyMessage: "No portfolio entries yet.",
+    secondaryActions: [{ label: "Export", onClick: () => exportPortfolioCsv(portfolioEntries) }],
   });
+}
+
+// Overview tab's "Facility / Portfolio Information" panel -- real,
+// already-existing fields only (mirrors the old "Relationship" +
+// "Ochiga / Oyi Status" sections' field set exactly, just consolidated
+// into one panel per the reference layout).
+function renderFacilityInformationPanel(record) {
+  const workspace = record.facility_workspace;
+  const facilityOs = derivePortfolioOsStatus(record, "facility_os_status");
+  const consumerOs = derivePortfolioOsStatus(record, "consumer_os_status");
+  const reference = record.backend_estate_id || record.backend_building_id || null;
+  return el(`
+    <div class="detail-section portfolio-panel">
+      <h3>Facility / Portfolio Information</h3>
+      <div class="fact-grid">
+        ${factRow("Relationship Type", titleCase(record.relationship_type))}
+        ${factRow("Client / Account", record.client_account)}
+        ${factRowHtml("Facility OS Status", badge(osStatusLabel(facilityOs), osStatusTone(facilityOs)))}
+        ${factRowHtml("Consumer OS Status", badge(osStatusLabel(consumerOs), osStatusTone(consumerOs)))}
+        ${factRow("Oyi Deployment", titleCase(record.oyi_deployment_status))}
+        ${factRow("Support Status", titleCase(record.support_status))}
+        ${factRow("Provisioning State", workspace ? titleCase(workspace.status) : "Not initiated")}
+        ${reference ? factRow("Reference ID", reference) : ""}
+      </div>
+      ${record.health_summary ? `<p class="detail-note">${escapeHtml(record.health_summary)}</p>` : ""}
+    </div>
+  `);
+}
+
+// Overview tab's "Operational Summary" panel -- corporate-level
+// aggregates only (Part 7 is explicit: never camera feeds, resident
+// records, meter controls, or device commands here). Support-case/task
+// counts are computed from the SAME already-fetched, portfolio-scoped
+// lists the rail cards use -- not a new data source.
+function renderOperationalSummaryPanel(record, { relatedSupport, relatedTasks, linkedProject, timelineEvents }) {
+  const projection = record.operational_projection;
+  const linked = Boolean(projection?.linked);
+  const devicesTotal = linked ? projection.devices_total : null;
+  const devicesOnline = linked ? projection.devices_online : null;
+  const devicesOffline = Number.isFinite(devicesTotal) && Number.isFinite(devicesOnline) ? devicesTotal - devicesOnline : null;
+  const openSupport = relatedSupport.filter((s) => !["resolved", "closed"].includes(String(s.status || "").toLowerCase())).length;
+  const lastActivity = projection?.last_activity_at
+    ? `${projection.last_activity_label || "Activity recorded"} · ${fmtRelative(projection.last_activity_at)}`
+    : timelineEvents.length
+      ? fmtRelative([...timelineEvents].sort((a, b) => String(b.occurred_at || "").localeCompare(String(a.occurred_at || "")))[0].occurred_at)
+      : "No recent activity";
+  return el(`
+    <div class="detail-section portfolio-panel">
+      <h3>Operational Summary</h3>
+      <div class="fact-grid">
+        ${factRow("Total Homes", linked ? projection.homes_total ?? "—" : "Not linked")}
+        ${factRow("Active Homes", linked ? projection.homes_active ?? "—" : "Not linked")}
+        ${factRow("Total Devices", linked ? devicesTotal ?? "—" : "Not linked")}
+        ${factRow("Online Devices", linked && devicesOnline != null ? devicesOnline : "Not reported")}
+        ${factRow("Offline Devices", linked && devicesOffline != null ? devicesOffline : "Not reported")}
+        ${factRow("Open Escalations", linked ? projection.major_open_escalations ?? "—" : "Not linked")}
+        ${factRow("Open Support Cases", openSupport)}
+        ${factRow("Related Projects", linkedProject ? 1 : 0)}
+        ${factRow("Last Activity", lastActivity)}
+      </div>
+    </div>
+  `);
+}
+
+// Overview tab's "Recent Activity" panel -- the SAME real activity feed
+// the Activity Timeline tab uses (crm_activities via
+// fetchRelatedActivities, plus the same task/meeting synthesis), just
+// condensed to the 5 most recent with a link to the full tab -- never a
+// second, different, or synthetic activity source.
+function renderRecentActivityPanel(timelineEvents, onViewAll) {
+  const sorted = [...timelineEvents].sort((a, b) => String(b.occurred_at || b.created_at || "").localeCompare(String(a.occurred_at || a.created_at || "")));
+  const section = el(`
+    <div class="detail-section portfolio-panel">
+      <div class="section-head"><h3>Recent Activity</h3></div>
+    </div>
+  `);
+  if (!sorted.length) {
+    section.appendChild(el(`<p class="detail-note">No activity recorded for this entry yet.</p>`));
+    return section;
+  }
+  const viewAllBtn = el(`<button type="button" class="btn btn-ghost btn-sm">View all</button>`);
+  viewAllBtn.addEventListener("click", onViewAll);
+  section.querySelector(".section-head").appendChild(viewAllBtn);
+  const list = el(`<div class="timeline-list portfolio-activity-list"></div>`);
+  sorted.slice(0, 5).forEach((event) => {
+    const type = event.event_type || event.activity_type || "default";
+    list.appendChild(el(`
+      <div class="timeline-item">
+        <span class="timeline-icon">${timelineIcon(type)}</span>
+        <div class="timeline-content">
+          <div class="timeline-title">${escapeHtml(event.title || titleCase(type))}</div>
+          <div class="timeline-meta">${escapeHtml(event.actor || event.owner || "")} · ${escapeHtml(fmtRelative(event.occurred_at || event.created_at))}</div>
+        </div>
+      </div>
+    `));
+  });
+  section.appendChild(list);
+  return section;
+}
+
+// "Operational Environment" tab -- the reference shows domain-level
+// capability chips (Power, Water, Security, HVAC, ...); no such data
+// exists anywhere in Office's or Backend's schema (verified) -- Portfolio
+// only ever knows whether Facility OS is linked at all, never physical
+// per-system state Facility hasn't supplied. Showing fabricated domain
+// chips here would be exactly the kind of invented operational data Part
+// 9/12 explicitly forbid, so this stays honest about the real boundary
+// instead.
+function renderOperationalEnvironmentTab(record) {
+  const facilityOs = derivePortfolioOsStatus(record, "facility_os_status");
+  return el(`
+    <div class="detail-section portfolio-panel">
+      <h3>Linked Operational Environment</h3>
+      <div class="fact-grid">
+        ${factRowHtml("Facility OS", badge(osStatusLabel(facilityOs), osStatusTone(facilityOs)))}
+        ${record.facility_deep_link ? factRowHtml("Facility Deep Link", `<a href="${escapeHtml(record.facility_deep_link)}" target="_blank" rel="noopener">Open in Facility →</a>`) : factRow("Facility Deep Link", "Not set")}
+        ${record.backend_building_id ? factRow("Backend Building Reference", record.backend_building_id) : ""}
+        ${record.backend_estate_id ? factRow("Backend Estate Reference", record.backend_estate_id) : ""}
+      </div>
+      <p class="detail-note">
+        Office does not yet receive domain-level operational data (per-system status for power, water, security, access, network, HVAC, etc.) from Facility OS --
+        only whether this deployment is linked at all. This section will only ever show real, Facility-supplied capability data, never an assumed one.
+      </p>
+    </div>
+  `);
+}
+
+// "Escalations" tab -- Office has no dedicated escalations table; the
+// only real signal is the live aggregate count from Backend's Portfolio
+// projection (same field the KPI row and list already use). This is a
+// legitimate, honest summary state, not a fabricated list.
+function renderEscalationsTab(record) {
+  const projection = record.operational_projection;
+  const linked = Boolean(projection?.linked);
+  const count = linked ? Number(projection.major_open_escalations ?? 0) : null;
+  const section = el(`<div class="detail-section portfolio-panel"><h3>Escalations</h3></div>`);
+  if (count == null) {
+    section.appendChild(el(`<p class="detail-note">${escapeHtml(
+      projection?.available === false
+        ? "Escalation data is temporarily unavailable from Facility OS."
+        : "This entry is not linked to a live Oyi deployment yet, so no escalation data is available."
+    )}</p>`));
+    return section;
+  }
+  section.appendChild(KPIGroup([
+    { label: "Open Escalations", value: count, icon: iconSvg("attention", "kpi-icon"), tone: "violet", alert: count > 0 },
+  ]));
+  section.appendChild(el(`<p class="detail-note">${count === 0 ? "No open escalations reported by Facility OS." : "Individual escalation records are not yet surfaced in Office -- this is the live aggregate reported by Facility OS."} Open Facility for case-level detail.</p>`));
+  return section;
+}
+
+// "Documents" tab -- same portfolio-scoped document set the old rail
+// card showed, promoted to a full list view; the rail card is retired
+// (not duplicated) now that this tab exists.
+function renderDocumentsTab(relatedDocuments) {
+  if (!hasPermission("documents.generate")) {
+    return el(`<div class="detail-section portfolio-panel"><h3>Documents</h3><p class="detail-note">You do not have permission to view documents.</p></div>`);
+  }
+  const section = el(`<div class="detail-section portfolio-panel"><h3>Documents</h3></div>`);
+  if (!relatedDocuments.length) {
+    section.appendChild(el(`<p class="detail-note">No documents linked to this Portfolio entry yet.</p>`));
+  } else {
+    section.insertAdjacentHTML("beforeend", railList(relatedDocuments, (d) => `<a href="#/documents/${d.id}">${escapeHtml(d.title)}</a> <span class="rail-sub">${escapeHtml(fmtRelative(d.created_at))}</span>`));
+  }
+  return section;
+}
+
+const PORTFOLIO_TABS = [
+  { key: "overview", label: "Overview" },
+  { key: "homes-devices", label: "Homes & Devices" },
+  { key: "operational-environment", label: "Operational Environment" },
+  { key: "relationships", label: "Relationships" },
+  { key: "documents", label: "Documents" },
+  { key: "escalations", label: "Escalations" },
+  { key: "activity", label: "Activity Timeline" },
+];
+
+function renderPortfolioHeader(record, { canEdit, canDelete, onEdit, onDelete }) {
+  const escalationCount = Number(record.operational_projection?.linked ? record.operational_projection.major_open_escalations ?? 0 : record.major_escalations || 0);
+  const header = el(`
+    <div class="portfolio-header">
+      ${portfolioTileHtml(record, "lg")}
+      <div class="portfolio-header-main">
+        <h1>${escapeHtml(record.name)}</h1>
+        <div class="detail-badges">
+          ${badge(titleCase(record.relationship_type))}
+          ${escalationCount > 0 ? badge(`${escalationCount} Escalation${escalationCount === 1 ? "" : "s"}`, "red") : badge("No Escalations", "green")}
+        </div>
+        <div class="fact-grid portfolio-header-facts">
+          ${factRow("Location", record.location)}
+          ${factRow("Business Unit", titleCase(record.business_unit))}
+          ${factRowHtml("Facility OS", badge(osStatusLabel(derivePortfolioOsStatus(record, "facility_os_status")), osStatusTone(derivePortfolioOsStatus(record, "facility_os_status"))))}
+          ${factRowHtml("Consumer OS", badge(osStatusLabel(derivePortfolioOsStatus(record, "consumer_os_status")), osStatusTone(derivePortfolioOsStatus(record, "consumer_os_status"))))}
+          ${factRow("Homes / Devices", portfolioOperationalSummaryText(record))}
+          ${factRow("Updated", fmtRelative(record.updated_at))}
+        </div>
+      </div>
+    </div>
+  `);
+  if (canEdit || canDelete) {
+    const actions = el(`<div class="portfolio-header-actions"></div>`);
+    if (canEdit) {
+      const editBtn = el(`<button type="button" class="btn btn-ghost btn-sm">Edit Facility</button>`);
+      editBtn.addEventListener("click", onEdit);
+      actions.appendChild(editBtn);
+    }
+    if (canDelete) {
+      const menuWrap = el(`<div class="portfolio-overflow"></div>`);
+      const menuBtn = el(`<button type="button" class="btn btn-ghost btn-sm portfolio-overflow-trigger" aria-label="More actions">⋯</button>`);
+      const menu = el(`<div class="portfolio-overflow-menu" hidden><button type="button" class="portfolio-overflow-item portfolio-overflow-danger">Delete</button></div>`);
+      menuBtn.addEventListener("click", (event) => {
+        event.stopPropagation();
+        const opening = menu.hidden;
+        menu.hidden = false;
+        if (opening) {
+          document.addEventListener("click", () => { menu.hidden = true; }, { once: true });
+        } else {
+          menu.hidden = true;
+        }
+      });
+      menu.querySelector(".portfolio-overflow-danger").addEventListener("click", () => {
+        menu.hidden = true;
+        onDelete();
+      });
+      menuWrap.appendChild(menuBtn);
+      menuWrap.appendChild(menu);
+      actions.appendChild(menuWrap);
+    }
+    header.appendChild(actions);
+  }
+  return header;
 }
 
 async function renderPortfolioDetail(outlet, id, token) {
@@ -4062,80 +4426,19 @@ async function renderPortfolioDetail(outlet, id, token) {
     ...relatedMeetings.map((m) => ({ event_type: "meeting", title: m.title, body: m.notes, actor: m.owner, occurred_at: m.scheduled_at || m.created_at })),
   ];
 
-  const mainSections = [
-    el(`
-      <div class="detail-section">
-        <h3>Relationship</h3>
-        <div class="fact-grid">
-          ${factRow("Client / Account", record.client_account)}
-          ${factRow("Location", record.location)}
-          ${factRow("Relationship Type", titleCase(record.relationship_type))}
-          ${factRow("Business Unit", titleCase(record.business_unit))}
-        </div>
-      </div>
-    `),
-    el(`
-      <div class="detail-section">
-        <h3>Ochiga / Oyi Status</h3>
-        <div class="fact-grid">
-          ${factRow("Status", titleCase(record.status))}
-          ${factRow("Oyi Deployment", titleCase(record.oyi_deployment_status))}
-          ${factRow("Facility OS", titleCase(record.facility_os_status))}
-          ${factRow("Consumer OS", titleCase(record.consumer_os_status))}
-          ${factRow("Support Status", titleCase(record.support_status))}
-        </div>
-        <p class="detail-note">${record.health_summary ? escapeHtml(record.health_summary) : "No health summary recorded for this entry yet."}</p>
-      </div>
-    `),
-    renderFacilityProvisioningSection(record),
-    el(`
-      <div class="detail-section">
-        <h3>Linked Operational Environment</h3>
-        ${record.facility_deep_link
-          ? `<p><a href="${escapeHtml(record.facility_deep_link)}" target="_blank" rel="noopener">Open in Facility →</a></p>`
-          : `<p class="detail-note">No authorized Facility deep link is set for this entry yet. Portfolio here is corporate oversight of the relationship — it is not a substitute for Facility's operational tools.</p>`}
-        ${record.backend_building_id ? `<p class="detail-note">Backend building reference: ${escapeHtml(record.backend_building_id)}</p>` : ""}
-      </div>
-    `),
-    renderPortfolioOperationalSection(record),
-  ];
-  if (canManage) {
-    const actions = renderStatusActions("office", "portfolio", record, () => navigate(`portfolio/${id}`));
-    if (actions) {
-      const section = el(`<div class="detail-section"><h3>Update Status</h3></div>`);
-      section.appendChild(actions);
-      mainSections.push(section);
-    }
-  }
-  mainSections.push(renderTimeline(timelineEvents, {
-    canAddNote: canManage,
-    onAddNote: () => promptAddRelatedNote("portfolio", id),
-  }));
+  outlet.innerHTML = "";
+  setSelectedObject("portfolio", id, record.name, portfolioOyiContext(record));
 
-  const railSections = [];
-  if (linkedProject) railSections.push(railCard("Project", `<a href="#/projects/${linkedProject.id}">${escapeHtml(linkedProject.name)}</a>`));
-  if (hasPermission("support.read")) {
-    railSections.push(railCard("Support Cases", railList(relatedSupport, (s) => `<a href="#/support/${s.id}">${escapeHtml(s.title)}</a> <span class="rail-sub">${escapeHtml(titleCase(s.status))}</span>`), hasPermission("support.assign") ? {
-      label: "New Case",
-      onClick: () => openCreateSupportDialog({ portfolio_id: id, business_unit: record.business_unit }),
-    } : null));
-  }
-  if (hasPermission("tasks.read")) railSections.push(railCard("Tasks", railList(relatedTasks, (t) => `${escapeHtml(t.title)} <span class="rail-sub">${escapeHtml(titleCase(t.status))}</span>`)));
-  if (hasPermission("meetings.read")) {
-    railSections.push(railCard("Meetings", railList(relatedMeetings, (m) => escapeHtml(m.title)), hasPermission("meetings.manage") ? {
-      label: "Schedule",
-      onClick: () => openCreateMeetingDialog({ related_type: "portfolio", related_id: id }),
-    } : null));
-  }
-  if (hasPermission("documents.generate")) {
-    railSections.push(railCard("Documents", railList(relatedDocuments, (d) => `<a href="#/documents/${d.id}">${escapeHtml(d.title)}</a>`)));
-  }
-  if (record.backend_estate_id) railSections.push(railCard("Reference", `<p class="rail-sub">Backend estate ID: ${escapeHtml(record.backend_estate_id)}</p>`));
+  const back = el(`<button type="button" class="detail-back">← Portfolio</button>`);
+  back.addEventListener("click", () => navigate("portfolio"));
+  outlet.appendChild(back);
 
-  const headerActions = [];
-  if (canManage && hasPermission("crm.manage")) {
-    const deleteButton = el(`<button type="button" class="btn btn-ghost btn-sm btn-danger">Delete</button>`);
-    deleteButton.addEventListener("click", () => {
+  const canDelete = canManage && hasPermission("crm.manage");
+  outlet.appendChild(renderPortfolioHeader(record, {
+    canEdit: canManage,
+    canDelete,
+    onEdit: () => openEditFacilityDialog(record),
+    onDelete: () => {
       const warningText = record.backend_estate_id
         ? "This will permanently delete this Portfolio record. It is linked to a Facility deployment that has not been activated -- that deployment and its outstanding owner invitation will also be removed. If the Facility has already been activated or has any operational data, this will be blocked instead. This cannot be undone."
         : "This will permanently delete this Portfolio record and any linked, never-activated Facility provisioning attempt. This cannot be undone.";
@@ -4155,26 +4458,109 @@ async function renderPortfolioDetail(outlet, id, token) {
           navigate("portfolio");
         }
       });
-    });
-    headerActions.push(deleteButton);
+    },
+  }));
+
+  let activeTab = "overview";
+  const tabsBar = el(`<div class="crm-tabs"></div>`);
+  const bodyHost = el(`<div></div>`);
+
+  function renderTabBody() {
+    bodyHost.innerHTML = "";
+    const body = el(`<div class="detail-body"></div>`);
+    const main = el(`<div class="detail-main"></div>`);
+
+    let mainSections = [];
+    if (activeTab === "overview") {
+      mainSections = [
+        KPIGroup([
+          { label: "Homes", value: record.operational_projection?.linked ? record.operational_projection.homes_total ?? "—" : "—", icon: iconSvg("home", "kpi-icon"), tone: "blue" },
+          { label: "Devices", value: record.operational_projection?.linked ? record.operational_projection.devices_total ?? "—" : "—", icon: iconSvg("observatory", "kpi-icon"), tone: "green" },
+          { label: "Facility OS", value: osStatusLabel(derivePortfolioOsStatus(record, "facility_os_status")), icon: iconSvg("trend", "kpi-icon"), tone: "amber" },
+          { label: "Open Escalations", value: record.operational_projection?.linked ? record.operational_projection.major_open_escalations ?? "—" : "—", icon: iconSvg("attention", "kpi-icon"), tone: "violet", alert: (record.operational_projection?.major_open_escalations || 0) > 0 },
+        ]),
+      ];
+      if (record.facility_workspace) mainSections.push(renderFacilityProvisioningSection(record));
+      const grid = el(`<div class="portfolio-overview-grid"></div>`);
+      grid.appendChild(renderFacilityInformationPanel(record));
+      grid.appendChild(renderOperationalSummaryPanel(record, { relatedSupport, relatedTasks, linkedProject, timelineEvents }));
+      grid.appendChild(renderRecentActivityPanel(timelineEvents, () => {
+        activeTab = "activity";
+        tabsBar.querySelectorAll(".crm-tab").forEach((b) => b.classList.toggle("active", b.dataset.tabKey === activeTab));
+        renderTabBody();
+      }));
+      mainSections.push(grid);
+    } else if (activeTab === "homes-devices") {
+      mainSections = [renderPortfolioOperationalSection(record)];
+    } else if (activeTab === "operational-environment") {
+      mainSections = [renderOperationalEnvironmentTab(record)];
+    } else if (activeTab === "relationships") {
+      mainSections = [el(`
+        <div class="detail-section portfolio-panel">
+          <h3>Relationship</h3>
+          <div class="fact-grid">
+            ${factRow("Client / Account", record.client_account)}
+            ${factRow("Location", record.location)}
+            ${factRow("Relationship Type", titleCase(record.relationship_type))}
+            ${factRow("Business Unit", titleCase(record.business_unit))}
+            ${factRow("Owner", record.owner)}
+          </div>
+        </div>
+      `)];
+      if (canManage) {
+        const actions = renderStatusActions("office", "portfolio", record, () => navigate(`portfolio/${id}`));
+        if (actions) {
+          const section = el(`<div class="detail-section portfolio-panel"><h3>Update Status</h3></div>`);
+          section.appendChild(actions);
+          mainSections.push(section);
+        }
+      }
+    } else if (activeTab === "documents") {
+      mainSections = [renderDocumentsTab(relatedDocuments)];
+    } else if (activeTab === "escalations") {
+      mainSections = [renderEscalationsTab(record)];
+    } else if (activeTab === "activity") {
+      mainSections = [renderTimeline(timelineEvents, { canAddNote: canManage, onAddNote: () => promptAddRelatedNote("portfolio", id) })];
+    }
+    mainSections.forEach((section) => main.appendChild(section));
+    body.appendChild(main);
+
+    const railSections = [];
+    if (linkedProject) railSections.push(railCard("Project", `<a href="#/projects/${linkedProject.id}">${escapeHtml(linkedProject.name)}</a>`));
+    if (hasPermission("support.read")) {
+      railSections.push(railCard("Support Cases", railList(relatedSupport, (s) => `<a href="#/support/${s.id}">${escapeHtml(s.title)}</a> <span class="rail-sub">${escapeHtml(titleCase(s.status))}</span>`), hasPermission("support.assign") ? {
+        label: "New Case",
+        onClick: () => openCreateSupportDialog({ portfolio_id: id, business_unit: record.business_unit }),
+      } : null));
+    }
+    if (hasPermission("tasks.read")) railSections.push(railCard("Tasks", railList(relatedTasks, (t) => `${escapeHtml(t.title)} <span class="rail-sub">${escapeHtml(titleCase(t.status))}</span>`)));
+    if (hasPermission("meetings.read")) {
+      railSections.push(railCard("Meetings", railList(relatedMeetings, (m) => escapeHtml(m.title)), hasPermission("meetings.manage") ? {
+        label: "Schedule",
+        onClick: () => openCreateMeetingDialog({ related_type: "portfolio", related_id: id }),
+      } : null));
+    }
+    if (record.backend_estate_id) railSections.push(railCard("Reference", `<p class="rail-sub">Backend estate ID: ${escapeHtml(record.backend_estate_id)}</p>`));
+    if (railSections.length) {
+      const rail = el(`<div class="detail-rail"></div>`);
+      railSections.forEach((section) => rail.appendChild(section));
+      body.appendChild(rail);
+    }
+    bodyHost.appendChild(body);
   }
 
-  renderDetailShell(outlet, {
-    type: "portfolio",
-    id,
-    label: record.name,
-    typeLine: `Portfolio · ${titleCase(record.business_unit)}`,
-    badges: [
-      badge(titleCase(record.relationship_type)),
-      Number(record.major_escalations || 0) > 0 ? badge(`${record.major_escalations} Escalations`, "red") : badge("No Escalations", "green"),
-    ],
-    backLabel: "Portfolio",
-    onBack: () => navigate("portfolio"),
-    mainSections,
-    railSections,
-    oyiContext: portfolioOyiContext(record),
-    headerActions,
+  PORTFOLIO_TABS.forEach((tab) => {
+    const tabBtn = el(`<button type="button" class="crm-tab ${tab.key === activeTab ? "active" : ""}" data-tab-key="${tab.key}">${escapeHtml(tab.label)}</button>`);
+    tabBtn.addEventListener("click", () => {
+      activeTab = tab.key;
+      tabsBar.querySelectorAll(".crm-tab").forEach((b) => b.classList.toggle("active", b === tabBtn));
+      renderTabBody();
+    });
+    tabsBar.appendChild(tabBtn);
   });
+  outlet.appendChild(tabsBar);
+  outlet.appendChild(bodyHost);
+  renderTabBody();
 }
 
 // Built ONLY from fields already rendered on the Portfolio detail page —
