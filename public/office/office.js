@@ -4233,7 +4233,15 @@ function renderOperationalSummaryPanel(record, { relatedSupport, relatedTasks, l
 // fetchRelatedActivities, plus the same task/meeting synthesis), just
 // condensed to the 5 most recent with a link to the full tab -- never a
 // second, different, or synthetic activity source.
-function renderRecentActivityPanel(timelineEvents, onViewAll) {
+// Named distinctly from the pre-existing Home-page renderRecentActivityPanel
+// (different signature: activities[] there vs timelineEvents+onViewAll
+// here) -- a same-name top-level function redeclaration is what broke
+// Safari/WebKit parsing of this file in production (Safari enforces the
+// spec-mandated SyntaxError for a duplicate lexical/function declaration
+// at module top level; Chrome's V8 tolerated it, masking the bug there).
+// Never reuse a generic name like this without grepping for an existing
+// declaration first.
+function renderPortfolioRecentActivityPanel(timelineEvents, onViewAll) {
   const sorted = [...timelineEvents].sort((a, b) => String(b.occurred_at || b.created_at || "").localeCompare(String(a.occurred_at || a.created_at || "")));
   const section = el(`
     <div class="detail-section portfolio-panel">
@@ -4484,7 +4492,7 @@ async function renderPortfolioDetail(outlet, id, token) {
       const grid = el(`<div class="portfolio-overview-grid"></div>`);
       grid.appendChild(renderFacilityInformationPanel(record));
       grid.appendChild(renderOperationalSummaryPanel(record, { relatedSupport, relatedTasks, linkedProject, timelineEvents }));
-      grid.appendChild(renderRecentActivityPanel(timelineEvents, () => {
+      grid.appendChild(renderPortfolioRecentActivityPanel(timelineEvents, () => {
         activeTab = "activity";
         tabsBar.querySelectorAll(".crm-tab").forEach((b) => b.classList.toggle("active", b.dataset.tabKey === activeTab));
         renderTabBody();
