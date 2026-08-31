@@ -8,7 +8,12 @@ const FIELD_POLICY = Object.freeze({
   tasks: ["title", "description", "owner", "assignee", "priority", "due_at", "status", "lead_id", "opportunity_id", "project_id", "portfolio_id", "support_case_id", "private_relationship_id", "partnership_relationship_id", "business_unit"],
   support: ["title", "owner", "assigned_staff", "priority", "severity", "category", "status", "resolution_notes", "portfolio_id", "backend_incident_ref", "business_unit"],
   projects: ["name", "owner", "business_unit", "stage", "status", "location", "metadata", "linked_opportunity_id", "lead_id", "organization_id", "contact_id", "portfolio_id", "oyi_deployment_status"],
-  portfolio: ["owner", "relationship_type", "status", "support_status", "oyi_deployment_status", "health_summary", "project_id", "business_unit", "metadata"],
+  // name/client_account/location added for the Portfolio "Edit Facility"
+  // action (UI rebuild) -- these already existed as columns and were
+  // already collected at creation time, but PATCH never allowed
+  // correcting them afterward. Mirrors the exact same fields "projects"
+  // already allows editing (name/location).
+  portfolio: ["name", "client_account", "location", "owner", "relationship_type", "status", "support_status", "oyi_deployment_status", "health_summary", "project_id", "business_unit", "metadata"],
   meetings: ["title", "scheduled_at", "owner", "participants", "notes", "outcome", "status", "follow_up_task_id", "related_type", "related_id", "business_unit"],
   private: ["relationship_type", "relationship_manager", "owner", "status", "review_status", "notes", "business_unit", "contact_id", "organization_id", "opportunity_id"],
   partnerships: ["relationship_type", "relationship_manager", "owner", "status", "review_status", "notes", "business_unit", "contact_id", "organization_id", "opportunity_id"],
