@@ -601,11 +601,6 @@ const PRIMARY_NAV = [
   { key: "documents", label: "Documents", permission: "documents.generate", phase: null },
   { key: "content", label: "Content", permission: "content.write", phase: null },
   { key: "development-projects", label: "Development", permission: "development.manage", phase: null },
-  // Messages workspace — a normal Operating Area with a real unread
-  // badge (navButton()/updateNavBadge()), superseding the old topbar-
-  // icon-only Inbox affordance (see INBOX_NAV_ITEM below: the "inbox"
-  // key still resolves and redirects here, so old links keep working).
-  { key: "messages", label: "Messages", permission: "messages.read", phase: null },
 ];
 
 const ADMIN_NAV = [
@@ -658,22 +653,29 @@ function navIconSvg(key) {
   return iconSvg(key, "nav-icon");
 }
 
-// "inbox" was the old topbar-icon-only key before Messages became a
-// full sidebar Operating Area — kept registered (not in PRIMARY_NAV) so
-// findNavItem() still resolves it and any old #/inbox bookmark redirects
-// cleanly to #/messages (see the topKey === "inbox" branch in renderRoute()).
+// "inbox" is the old pre-Messages key — kept registered (not in
+// PRIMARY_NAV) so findNavItem() still resolves it and any old #/inbox
+// bookmark redirects cleanly to #/messages (see the topKey === "inbox"
+// branch in renderRoute()).
 const INBOX_NAV_ITEM = { key: "inbox", label: "Inbox", permission: "messages.read", phase: null };
 
-// Same pattern as INBOX_NAV_ITEM — removed from the visible sidebar
-// (PRIMARY_NAV above), but still registered here so findNavItem() keeps
-// resolving the correct permission for direct navigation: Portfolio's
-// existing "Project" rail-card deep link (#/projects/:id), any old
-// #/projects bookmark, and the #/reports redirect above.
+// Messages lives in the topbar beside Notifications (messagesBell),
+// not the sidebar — registered here (not in PRIMARY_NAV) purely so
+// findNavItem() resolves its permission/topbar-title the same way
+// every routed view does. Real unread badge: #messagesBadge, kept in
+// sync by refreshMessagesBadge().
+const MESSAGES_NAV_ITEM = { key: "messages", label: "Messages", permission: "messages.read", phase: null };
+
+// Same pattern — removed from the visible sidebar (PRIMARY_NAV above),
+// but still registered here so findNavItem() keeps resolving the
+// correct permission for direct navigation: Portfolio's existing
+// "Project" rail-card deep link (#/projects/:id), any old #/projects
+// bookmark, and the #/reports redirect above.
 const PROJECTS_NAV_ITEM = { key: "projects", label: "Projects", permission: "projects.read", phase: null };
 const REPORTS_NAV_ITEM = { key: "reports", label: "Reports", permission: "reports.write", phase: null };
 
 function allNavItems() {
-  return [...PRIMARY_NAV, ...ADMIN_NAV, INBOX_NAV_ITEM, PROJECTS_NAV_ITEM, REPORTS_NAV_ITEM];
+  return [...PRIMARY_NAV, ...ADMIN_NAV, INBOX_NAV_ITEM, MESSAGES_NAV_ITEM, PROJECTS_NAV_ITEM, REPORTS_NAV_ITEM];
 }
 function findNavItem(key) {
   return allNavItems().find((item) => item.key === key);
@@ -12654,10 +12656,13 @@ function setMessagesConnectionState(connected) {
 }
 
 async function refreshMessagesBadge() {
+  const badge_ = document.getElementById("messagesBadge");
+  if (!badge_) return;
   try {
     const data = await apiListConversations();
     const total = (data.conversations || []).reduce((sum, c) => sum + (c.archived_at ? 0 : (c.unread_count || 0)), 0);
-    updateNavBadge("messages", total);
+    badge_.textContent = total > 99 ? "99+" : String(total);
+    badge_.hidden = !total;
   } catch {
     // Quiet failure, same convention as the notification badge.
   }
@@ -13567,32 +13572,33 @@ function renderMessagesDetailsPane(detailsPane, conversation) {
   const other = messagesOtherParticipant(conversation);
   const presence = !isGroup && other ? messagesPresenceLabel(other) : null;
 
+  // Identity only -- avatar, name, truthful presence/status. Call/Video
+  // live exactly once, in the active-conversation header (see
+  // renderMessagesThread) -- not duplicated here. This panel is a
+  // read-only information/resource panel; profile editing belongs to
+  // Team/Profile, not Messages (see the About section's Profile-less
+  // fields below).
   const head = el(`
     <div class="messages-details-head">
       ${isGroup ? messagesGroupAvatarHtml("lg") : messagesAvatarHtml(other || { email: "" }, { size: "lg", presence: presence ? presence.online : null })}
       <div class="messages-details-name">${escapeHtml(messagesConversationLabel(conversation))}</div>
       ${!isGroup ? `<div class="messages-details-status${presence?.online ? " online" : ""}">${escapeHtml(presence?.text || "")}</div>` : `<div class="messages-details-status">${(conversation.participants || []).length} members</div>`}
-      <div class="messages-details-actions">
-        <div class="messages-details-action"><button type="button" class="messages-icon-btn" id="messagesDetailsCall"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3.5 2.5c1 0 2 2 2 3s-1 1.2-1 2c0 1.5 2.5 4 4 4 .8 0 1-1 2-1s3 1 3 2-1.5 2.5-2.5 2.5C7.5 15 1 8.5 1 5 1 4 2.5 2.5 3.5 2.5z"/></svg></button><span>Call</span></div>
-        <div class="messages-details-action"><button type="button" class="messages-icon-btn" id="messagesDetailsVideo"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="1.5" y="4" width="9" height="8" rx="1"/><path d="M10.5 7l4-2.5v7L10.5 9"/></svg></button><span>Video</span></div>
-        ${!isGroup ? `<div class="messages-details-action"><button type="button" class="messages-icon-btn" id="messagesDetailsProfile"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="5.5" r="2.5"/><path d="M3 14c0-2.8 2.2-5 5-5s5 2.2 5 5"/></svg></button><span>Profile</span></div>` : ""}
-      </div>
     </div>
   `);
   detailsPane.appendChild(head);
-  head.querySelector("#messagesDetailsCall").addEventListener("click", () => messagesShowUnavailableCall("Call"));
-  head.querySelector("#messagesDetailsVideo").addEventListener("click", () => messagesShowUnavailableCall("Video"));
-  head.querySelector("#messagesDetailsProfile")?.addEventListener("click", () => {
-    if (hasPermission("staff.manage")) navigate("team");
-    else toast(`${other?.display_name || "This person"}'s full profile is managed under Team.`);
-  });
 
+  // About -- the person's real canonical Office/Team profile fields
+  // (messagesPersonInfo reads straight from the staff directory, which
+  // is itself sourced from admin_users -- never a messaging-specific
+  // duplicate). Each field is independently omitted when genuinely
+  // empty; email is always present (it's the account's real identity)
+  // so this section always renders for a direct conversation.
   if (!isGroup && other) {
     const about = el(`<div class="messages-details-section"><h4>About</h4></div>`);
     if (other.office_position) about.appendChild(el(`<div class="messages-details-row">${escapeHtml(other.office_position)}</div>`));
     if (other.phone) about.appendChild(el(`<div class="messages-details-row"><a href="tel:${escapeHtml(other.phone)}">${escapeHtml(other.phone)}</a></div>`));
     about.appendChild(el(`<div class="messages-details-row"><a href="mailto:${escapeHtml(other.email)}">${escapeHtml(other.email)}</a></div>`));
-    if (about.children.length > 1) detailsPane.appendChild(about);
+    detailsPane.appendChild(about);
   }
 
   if (isGroup) {
@@ -13884,6 +13890,10 @@ function showShell() {
   if (bell) {
     bell.style.display = hasPermission("notifications.read") ? "" : "none";
   }
+  const messagesBell = document.getElementById("messagesBell");
+  if (messagesBell) {
+    messagesBell.style.display = hasPermission("messages.read") ? "" : "none";
+  }
   if (hasPermission("messages.read")) refreshMessagesBadge();
   if (hasPermission("notifications.read")) refreshNotifications();
   if (hasPermission("notifications.read") || hasPermission("messages.read")) connectRealtimeStream();
@@ -14023,6 +14033,7 @@ function wireShellChrome() {
   document.getElementById("navToggle").addEventListener("click", openNav);
   document.getElementById("navScrim").addEventListener("click", closeNav);
   wireNotifBell();
+  document.getElementById("messagesBell").addEventListener("click", () => navigate("messages"));
 }
 
 // PWA (Programme 14) — app-shell caching only, never API responses; see
