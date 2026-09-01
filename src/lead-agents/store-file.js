@@ -43,6 +43,7 @@ class FileLeadAgentsStore {
       office_analytics: [],
       office_documents: [],
       office_document_folders: [],
+      office_letterhead_config: null,
       office_support_mappings: [],
       office_handoffs: [],
       office_files: [],
@@ -115,6 +116,7 @@ class FileLeadAgentsStore {
         office_analytics: Array.isArray(parsed.office_analytics) ? parsed.office_analytics : [],
         office_documents: Array.isArray(parsed.office_documents) ? parsed.office_documents : [],
         office_document_folders: Array.isArray(parsed.office_document_folders) ? parsed.office_document_folders : [],
+        office_letterhead_config: parsed.office_letterhead_config && typeof parsed.office_letterhead_config === "object" ? parsed.office_letterhead_config : null,
         office_support_mappings: Array.isArray(parsed.office_support_mappings)
           ? parsed.office_support_mappings
           : [],
@@ -1475,6 +1477,22 @@ class FileLeadAgentsStore {
     this.state.office_document_folders.splice(index, 1);
     await this.persist();
     return true;
+  }
+
+  async getLetterheadConfig() {
+    return this.state.office_letterhead_config;
+  }
+
+  async upsertLetterheadConfig(patch) {
+    const nowIso = this.nowIso();
+    this.state.office_letterhead_config = {
+      ...(this.state.office_letterhead_config || {}),
+      id: "default",
+      ...patch,
+      updated_at: nowIso,
+    };
+    await this.persist();
+    return this.state.office_letterhead_config;
   }
 
   async upsertOfficeCollections(input) {

@@ -198,6 +198,15 @@ async function apiRegenerateDocumentShareLink(id) {
 async function apiDocumentStorageSummary() {
   return api("/api/lead-agents/admin/documents/storage-summary");
 }
+async function apiGetLetterheadConfig() {
+  return api("/api/lead-agents/admin/letterhead-config");
+}
+async function apiPatchLetterheadConfig(patch) {
+  return api("/api/lead-agents/admin/letterhead-config", { method: "PATCH", body: patch });
+}
+async function apiCreateLetterheadDocument(body) {
+  return api("/api/lead-agents/admin/documents/letterhead", { method: "POST", body });
+}
 async function apiListContent(status) {
   return api(`/api/lead-agents/admin/content${status ? `?status=${encodeURIComponent(status)}` : ""}`);
 }
@@ -456,6 +465,10 @@ async function fetchDocuments(force) {
 async function fetchDocumentFolders(force) {
   const data = await cached("documentFolders", apiListDocumentFolders, force);
   return data.folders || [];
+}
+async function fetchLetterheadConfig(force) {
+  const data = await cached("letterheadConfig", apiGetLetterheadConfig, force);
+  return data.config || {};
 }
 async function fetchProposals(force) {
   const data = await cached("proposals", apiListProposals, force);
@@ -2763,7 +2776,7 @@ function renderPaginationControls(page, totalPages, onChange) {
   return wrap;
 }
 
-function renderStandardList(body, { title, records, columns, searchFields, filters, canManage, onCreate, onRowClick, emptyMessage, secondaryAction, secondaryActions, ownerField, preFilter, pageSize = LIST_PAGE_SIZE }) {
+function renderStandardList(body, { title, records, columns, searchFields, filters, canManage, onCreate, onRowClick, emptyMessage, secondaryAction, secondaryActions, ownerField, preFilter, pageSize = LIST_PAGE_SIZE, extraSearchRecords }) {
   const listState = { query: "", filters: {}, mineOnly: false, page: 1 };
 
   function draw() {
@@ -2773,6 +2786,13 @@ function renderStandardList(body, { title, records, columns, searchFields, filte
       if (value) rows = rows.filter((r) => String(r[field] || "") === value);
     });
     if (listState.query) {
+      // extraSearchRecords (e.g. Documents' filed-away records, hidden
+      // from the default root listing) are only ever unioned in while
+      // actively searching -- the untouched default view stays exactly
+      // what `records` describes, but a search can still surface a
+      // filed record; its own columns (e.g. a Folder column) identify
+      // where it actually lives.
+      if (extraSearchRecords && extraSearchRecords.length) rows = [...rows, ...extraSearchRecords];
       const q = listState.query.toLowerCase();
       rows = rows.filter((r) => searchFields.some((field) => String(r[field] || "").toLowerCase().includes(q)));
     }
@@ -7819,6 +7839,185 @@ function documentMarkdownLiteToHtml(text) {
   }).join("");
 }
 
+// ---------------------------------------------------------------
+// Corporate Letterhead — the default native "New Document" template
+// (Documents → New Document → Ochiga Letterhead). A real, editable
+// document, not a flattened image: the logo/contact block is generated
+// from office_letterhead_config (Settings, settings.manage), snapshotted
+// into each document's metadata.letterhead_snapshot at creation time so
+// later master-config edits never rewrite an already-issued letter.
+// Only the body is ever contenteditable — the header/footer are always
+// built as plain, non-editable markup, structurally, not just visually.
+// ---------------------------------------------------------------
+function letterheadFooterIconSvg(key) {
+  const icons = {
+    globe: `<circle cx="8" cy="8" r="6.5"/><path d="M1.5 8h13M8 1.5c2.2 2 2.2 11 0 13M8 1.5c-2.2 2-2.2 11 0 13"/>`,
+    mail: `<rect x="1.5" y="3" width="13" height="10" rx="1.2"/><path d="M2 4l6 5 6-5"/>`,
+    whatsapp: `<path d="M8 1.5a6.5 6.5 0 0 0-5.6 9.8L1.5 14.5l3.3-.9A6.5 6.5 0 1 0 8 1.5Z"/><path d="M5.6 5.6c.2-.5.5-.5.8-.5h.4c.2 0 .4 0 .5.4.2.4.6 1.4.6 1.5.1.1.1.3 0 .4-.1.2-.2.3-.3.4-.2.2-.3.3-.1.6.2.3.7 1 1.5 1.6.9.7 1.2.8 1.4.7.2-.1.4-.4.6-.6.1-.2.3-.2.5-.1.2.1 1.2.6 1.4.7.2.1.3.1.4.2 0 .2 0 .8-.3 1.1-.3.4-1.2.8-1.7.8-.5 0-1.6-.2-3-1.3-1.8-1.4-2.6-2.9-2.7-3.2-.1-.3-.6-1-.6-1.9 0-.9.5-1.3.6-1.5Z" fill="currentColor" stroke="none"/>`,
+    instagram: `<rect x="1.5" y="1.5" width="13" height="13" rx="3.5"/><circle cx="8" cy="8" r="3"/><circle cx="11.6" cy="4.4" r="0.7" fill="currentColor" stroke="none"/>`,
+    facebook: `<circle cx="8" cy="8" r="6.5"/><path d="M9.6 14.3V8.6h1.7l.3-2.1H9.6V5.2c0-.6.2-1 1-1h1.1V2.3c-.2 0-.9-.1-1.6-.1-1.6 0-2.7 1-2.7 2.8v1.5H5.7v2.1h1.7v5.7"/>`,
+    x: `<path d="M2 2l12 12M14 2 2 14"/>`,
+    linkedin: `<rect x="1.5" y="1.5" width="13" height="13" rx="2"/><path d="M5 6.5v5M5 4.3v.1M8 11.5v-3c0-1.2.9-2 2-2s1.8.8 1.8 2v3"/>`,
+    pin: `<path d="M8 14.5s5-4.4 5-8.2A5 5 0 0 0 3 6.3c0 3.8 5 8.2 5 8.2Z"/><circle cx="8" cy="6.2" r="1.7"/>`,
+  };
+  return `<svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${icons[key] || ""}</svg>`;
+}
+
+function sanitizeLetterheadHtml(html) {
+  return String(html || "")
+    .replace(/<script[\s\S]*?<\/script>/gi, "")
+    .replace(/<style[\s\S]*?<\/style>/gi, "")
+    .replace(/\son\w+\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)/gi, "")
+    .replace(/(href|src)\s*=\s*("javascript:[^"]*"|'javascript:[^']*')/gi, '$1="#"');
+}
+
+function letterheadContactRowHtml(snapshot) {
+  const items = [
+    snapshot.website ? { icon: "globe", text: snapshot.website } : null,
+    snapshot.email ? { icon: "mail", text: snapshot.email } : null,
+    snapshot.whatsapp ? { icon: "whatsapp", text: snapshot.whatsapp } : null,
+  ].filter(Boolean);
+  const contactHtml = items.map((item) => `<span class="letterhead-contact-item">${letterheadFooterIconSvg(item.icon)}<span>${escapeHtml(item.text)}</span></span>`).join("");
+  const socialHtml = snapshot.social_handle
+    ? `<span class="letterhead-social">${["instagram", "facebook", "x", "linkedin"].map((k) => letterheadFooterIconSvg(k)).join("")}<span>${escapeHtml(snapshot.social_handle)}</span></span>`
+    : "";
+  return `<div class="letterhead-contact-row">${contactHtml}${socialHtml ? `<span class="letterhead-divider">|</span>${socialHtml}` : ""}</div>`;
+}
+
+// Builds the whole "paper" page. `editable` gates ONLY the body wrapper
+// — header and footer are always plain markup, never contenteditable,
+// regardless of mode, so the fixed corporate letterhead genuinely
+// cannot be edited by a staff member composing a letter.
+function renderLetterheadPage(record, snapshot, { editable }) {
+  const page = el(`
+    <div class="letterhead-page">
+      <header class="letterhead-header">
+        <img class="letterhead-logo" src="${escapeHtml(snapshot.logo_url || "/office/brand/ochiga-logo-light.png")}" alt="Ochiga" />
+        ${snapshot.tagline ? `<p class="letterhead-tagline">${escapeHtml(snapshot.tagline)}</p>` : ""}
+      </header>
+      <div class="letterhead-body-wrap"></div>
+      <footer class="letterhead-footer">
+        ${letterheadContactRowHtml(snapshot)}
+        ${snapshot.address ? `<div class="letterhead-address">${letterheadFooterIconSvg("pin")}<span>${escapeHtml(snapshot.address)}</span></div>` : ""}
+      </footer>
+    </div>
+  `);
+  const bodyWrap = page.querySelector(".letterhead-body-wrap");
+  const bodyEl = el(`<div class="letterhead-body"></div>`);
+  bodyEl.innerHTML = sanitizeLetterheadHtml(record.body || "");
+  if (editable) {
+    bodyEl.setAttribute("contenteditable", "true");
+    bodyEl.setAttribute("spellcheck", "true");
+  }
+  bodyWrap.appendChild(bodyEl);
+  return { page, bodyEl };
+}
+
+// Compact execCommand-based toolbar — bold/italic/underline/heading/
+// paragraph/lists/alignment/link/undo/redo, plus Cmd/Ctrl+B/I/U on the
+// body element itself. Deliberately no page-layout/drawing/slide
+// functionality — this is a letter editor, not Canva.
+function wireLetterheadToolbar(toolbar, bodyEl) {
+  function exec(command, value) {
+    bodyEl.focus();
+    document.execCommand(command, false, value);
+  }
+  const blockSelect = el(`
+    <select class="letterhead-block-select">
+      <option value="p">Paragraph</option>
+      <option value="h2">Heading</option>
+    </select>
+  `);
+  blockSelect.addEventListener("change", () => exec("formatBlock", blockSelect.value === "h2" ? "h2" : "p"));
+  toolbar.appendChild(blockSelect);
+
+  const buttons = [
+    { label: "B", title: "Bold (Ctrl/Cmd+B)", command: "bold" },
+    { label: "I", title: "Italic (Ctrl/Cmd+I)", command: "italic" },
+    { label: "U", title: "Underline (Ctrl/Cmd+U)", command: "underline" },
+    { label: "•", title: "Bullet list", command: "insertUnorderedList" },
+    { label: "1.", title: "Numbered list", command: "insertOrderedList" },
+    { label: "⟵", title: "Align left", command: "justifyLeft" },
+    { label: "⟷", title: "Align center", command: "justifyCenter" },
+    { label: "⟶", title: "Align right", command: "justifyRight" },
+    {
+      label: "🔗", title: "Link", onClick: () => {
+        const url = window.prompt("Link URL");
+        if (url) exec("createLink", url);
+      },
+    },
+    { label: "↺", title: "Undo (Ctrl/Cmd+Z)", command: "undo" },
+    { label: "↻", title: "Redo", command: "redo" },
+  ];
+  buttons.forEach(({ label, title, command, onClick }) => {
+    const btn = el(`<button type="button" class="btn btn-ghost btn-sm" style="padding:2px 8px;" title="${escapeHtml(title)}">${escapeHtml(label)}</button>`);
+    btn.addEventListener("mousedown", (event) => event.preventDefault());
+    btn.addEventListener("click", () => (onClick ? onClick() : exec(command)));
+    toolbar.appendChild(btn);
+  });
+
+  bodyEl.addEventListener("keydown", (event) => {
+    const mod = event.metaKey || event.ctrlKey;
+    if (!mod) return;
+    const key = event.key.toLowerCase();
+    if (key === "b") { event.preventDefault(); exec("bold"); }
+    else if (key === "i") { event.preventDefault(); exec("italic"); }
+    else if (key === "u") { event.preventDefault(); exec("underline"); }
+  });
+}
+
+// Real, standalone, honestly-labeled export — the safest existing
+// mechanism (no PDF/DOCX generation library exists anywhere in this
+// codebase, and none is claimed here): a self-contained HTML file via
+// Blob download, and a print-ready view for the browser's own
+// Print → Save as PDF. Mirrors (not shares — this project has no
+// browser/Node shared bundler) the server's renderLetterheadHtml used
+// for the public share link, so both paths look the same.
+function buildLetterheadStandaloneHtml(record, snapshot) {
+  const contactRow = [snapshot.website, snapshot.email, snapshot.whatsapp, snapshot.social_handle].filter(Boolean).map(escapeHtml).join(" &nbsp;·&nbsp; ");
+  return `<!doctype html><html><head><meta charset="utf-8"><title>${escapeHtml(record.title || "Letter")}</title>
+<style>
+body{font-family:Georgia,'Times New Roman',serif;margin:0;background:#e8eaee;color:#1a1a1a}
+.page{max-width:800px;margin:24px auto;background:#fff;padding:56px 64px;box-shadow:0 1px 4px rgba(0,0,0,.15);min-height:1050px}
+.logo{height:44px;display:block}
+.tagline{font-family:Arial,sans-serif;font-size:12px;color:#555;margin:6px 0 0}
+.body{margin:48px 0 64px;font-size:15px;line-height:1.7}
+.footer{border-top:2px solid #e2453a;padding-top:14px;font-family:Arial,sans-serif;font-size:11px;color:#333}
+.address{color:#666;margin-top:4px}
+@media print{body{background:#fff}.page{box-shadow:none;margin:0}}
+</style></head><body><div class="page">
+<img class="logo" src="${escapeHtml(snapshot.logo_url || "/office/brand/ochiga-logo-light.png")}" alt="Ochiga">
+${snapshot.tagline ? `<p class="tagline">${escapeHtml(snapshot.tagline)}</p>` : ""}
+<div class="body">${sanitizeLetterheadHtml(record.body || "") || "<p>&nbsp;</p>"}</div>
+<div class="footer">${contactRow}${snapshot.address ? `<div class="address">${escapeHtml(snapshot.address)}</div>` : ""}</div>
+</div></body></html>`;
+}
+
+function downloadLetterheadHtml(record) {
+  const snapshot = record.metadata?.letterhead_snapshot || {};
+  const html = buildLetterheadStandaloneHtml(record, snapshot);
+  const url = URL.createObjectURL(new Blob([html], { type: "text/html;charset=utf-8;" }));
+  const safeName = String(record.title || "letter").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "");
+  const link = el(`<a href="${url}" download="${safeName || "letter"}.html"></a>`);
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+}
+
+function printLetterheadDocument(record) {
+  const snapshot = record.metadata?.letterhead_snapshot || {};
+  const html = buildLetterheadStandaloneHtml(record, snapshot);
+  const win = window.open("", "_blank");
+  if (!win) {
+    toast("Allow pop-ups to print this document.");
+    return;
+  }
+  win.document.write(html);
+  win.document.close();
+  win.addEventListener("load", () => win.print());
+}
+
 function renderContentPreviewHtml(item) {
   return `
     <div style="border:1px solid var(--line);border-radius:var(--radius);padding:16px;background:var(--charcoal);">
@@ -7929,6 +8128,24 @@ async function renderDocumentsRoute(outlet, rest, token) {
   }
 }
 
+// "Documents -> New Document -> Ochiga Letterhead" -- Letterhead is now
+// the default native template, so "New Document" creates and opens one
+// directly (no intermediate dialog). The prior template-picker dialog
+// (structured document_type generation, e.g. invoices) is preserved,
+// not deleted -- just demoted to a secondary "New from Template" item,
+// since it's still real, working, and unrelated to the Letterhead product
+// decision.
+async function createLetterheadDocument({ folderId } = {}) {
+  try {
+    const result = await apiCreateLetterheadDocument({ folder_id: folderId || null });
+    invalidate("documents");
+    invalidate("documentFolders");
+    navigate(`documents/library/${result.document.id}`);
+  } catch (err) {
+    toast(err.message || "Could not create a new document.");
+  }
+}
+
 function documentQuickActionsMenu(anchorBtn, { folderId } = {}) {
   const canManage = hasPermission("documents.generate");
   if (!canManage) return null;
@@ -7936,7 +8153,8 @@ function documentQuickActionsMenu(anchorBtn, { folderId } = {}) {
     ariaLabel: "New Document",
     trigger: anchorBtn,
     items: [
-      { label: "New Document", onClick: () => openCreateDocumentDialog({ folder_id: folderId }) },
+      { label: "New Document", onClick: () => createLetterheadDocument({ folderId }) },
+      { label: "New from Template", onClick: () => openCreateDocumentDialog({ folder_id: folderId }) },
       { label: "New Folder", onClick: () => openNewDocumentFolderDialog() },
       { label: "Upload Document", onClick: () => openUploadDocumentDialog({ folder_id: folderId }) },
       { label: "New Proposal / Quotation", onClick: () => navigate("documents/proposals"), hidden: !hasPermission("crm.manage") },
@@ -8016,13 +8234,24 @@ async function renderDocumentsList(body, token, folderId) {
     updated_at: f.updated_at,
     document_count: activeDocuments.filter((d) => d.folder_id === f.id).length,
   }));
-  const scopedDocuments = currentFolder ? activeDocuments.filter((d) => d.folder_id === folderId) : activeDocuments;
+  // Root = folders + unfiled documents only (folder_id null) -- a filed
+  // document is not duplicated, it just moves to living only inside its
+  // folder's own view. Filed documents are still reachable from root
+  // through search (extraSearchRecords below), each identified by its
+  // real folder name via the Folder column, rather than being always
+  // listed at root regardless of where they've been filed.
+  const scopedDocuments = currentFolder ? activeDocuments.filter((d) => d.folder_id === folderId) : activeDocuments.filter((d) => !d.folder_id);
   const documentRows = scopedDocuments.map((d) => ({ ...d, __type: "document" }));
   const rows = [...folderRows, ...documentRows];
+  const folderNameById = new Map(folders.map((f) => [f.id, f.name]));
+  const filedSearchRows = currentFolder
+    ? []
+    : activeDocuments.filter((d) => d.folder_id).map((d) => ({ ...d, __type: "document" }));
 
   renderStandardList(main, {
     title: currentFolder ? currentFolder.name : "All Documents",
     records: rows,
+    extraSearchRecords: filedSearchRows,
     columns: [
       {
         label: "Name", width: "1.8fr", render: (r) => r.__type === "folder"
@@ -8031,6 +8260,7 @@ async function renderDocumentsList(body, token, folderId) {
       },
       { label: "Type", render: (r) => r.__type === "folder" ? "—" : escapeHtml(titleCase(r.document_type)) },
       { label: "Status", render: (r) => r.__type === "folder" ? "—" : badge(titleCase(r.status), toneForStatus(r.status)) },
+      ...(currentFolder ? [] : [{ label: "Folder", render: (r) => r.__type === "folder" || !r.folder_id ? "—" : escapeHtml(folderNameById.get(r.folder_id) || "—") }]),
       { label: "Related To", render: (r) => r.__type === "folder" ? "—" : (r.related_type ? escapeHtml(titleCase(r.related_type)) : "—") },
       { label: "Owner", render: (r) => escapeHtml(r.__type === "folder" ? (r.created_by || "—") : (r.owner || "—")) },
       { label: "Updated", render: (r) => escapeHtml(fmtRelative(r.updated_at)) },
@@ -8144,10 +8374,25 @@ function folderOverflowItems(folder, { canManage }) {
 function documentOverflowItems(record, { canManage, folders }) {
   const fileUrl = record.html_url || record.file_url;
   const isTrashed = Boolean(record.trashed_at);
+  const isLetterhead = record.metadata?.template === "ochiga_letterhead";
   return [
     { label: "Open", hidden: !fileUrl, onClick: () => window.open(fileUrl, "_blank", "noopener") },
     { label: "Preview", onClick: () => navigate(`documents/library/${record.id}`) },
-    { label: "Download", hidden: !fileUrl, onClick: () => { const a = document.createElement("a"); a.href = fileUrl; a.download = `${(record.title || "document").replace(/[^a-z0-9]+/gi, "-")}`; a.click(); } },
+    {
+      label: "Download",
+      hidden: !fileUrl && !isLetterhead,
+      onClick: () => {
+        if (isLetterhead) { downloadLetterheadHtml(record); return; }
+        const a = document.createElement("a");
+        a.href = fileUrl;
+        a.download = `${(record.title || "document").replace(/[^a-z0-9]+/gi, "-")}`;
+        a.click();
+      },
+    },
+    // Honestly labeled: this is the browser's own Print -> Save as PDF,
+    // not a fabricated one-click server-generated PDF (no such
+    // generator exists anywhere in this codebase).
+    { label: "Print / Save as PDF", hidden: !isLetterhead, onClick: () => printLetterheadDocument(record) },
     {
       label: "Copy Share Link", hidden: !record.share_token, onClick: async () => {
         const shareUrl = `${window.location.origin}/api/lead-agents/documents/shared/${encodeURIComponent(record.id)}/${encodeURIComponent(record.share_token)}`;
@@ -8390,9 +8635,15 @@ async function renderDocumentDetail(body, id, token) {
     return true;
   });
 
+  const isLetterhead = record.metadata?.template === "ochiga_letterhead";
+
   async function renderTabBody() {
     bodyHost.innerHTML = "";
     if (activeTab === "preview") {
+      if (isLetterhead) {
+        bodyHost.appendChild(renderLetterheadPreview(record));
+        return;
+      }
       const previewHost = el(`<div class="detail-section portfolio-panel"></div>`);
       previewHost.appendChild(el(`<p class="hint">Loading preview…</p>`));
       bodyHost.appendChild(previewHost);
@@ -8402,7 +8653,7 @@ async function renderDocumentDetail(body, id, token) {
         previewHost.appendChild(content);
       }
     } else if (activeTab === "edit") {
-      bodyHost.appendChild(renderDocumentEditor(record));
+      bodyHost.appendChild(isLetterhead ? renderLetterheadEditor(record) : renderDocumentEditor(record));
     } else if (activeTab === "details") {
       bodyHost.appendChild(el(`
         <div class="detail-section portfolio-panel">
@@ -8526,6 +8777,74 @@ function renderDocumentEditor(record) {
     save();
   });
   return section;
+}
+
+// Corporate Letterhead editor — the default "New Document" template.
+// The letterhead snapshot came from the document itself
+// (metadata.letterhead_snapshot), never the live master config, so
+// admin edits to Settings -> Corporate Letterhead never alter this or
+// any other already-created document. Only .letterhead-body is
+// contenteditable; header/footer are always plain markup (see
+// renderLetterheadPage) — structurally, not just visually, un-editable.
+function renderLetterheadEditor(record) {
+  const snapshot = record.metadata?.letterhead_snapshot || {};
+  const section = el(`
+    <div class="detail-section portfolio-panel document-editor letterhead-editor">
+      <div class="body-toolbar letterhead-toolbar"></div>
+      <div class="letterhead-page-wrap"></div>
+      <div class="document-editor-status">
+        <span class="document-editor-save-state"></span>
+        <button type="button" class="btn btn-primary btn-sm document-editor-save">Save</button>
+      </div>
+    </div>
+  `);
+  const { page, bodyEl } = renderLetterheadPage(record, snapshot, { editable: true });
+  section.querySelector(".letterhead-page-wrap").appendChild(page);
+  wireLetterheadToolbar(section.querySelector(".letterhead-toolbar"), bodyEl);
+
+  const saveState = section.querySelector(".document-editor-save-state");
+  const saveBtn = section.querySelector(".document-editor-save");
+  let lastSavedValue = record.body || "";
+  let saveTimer = null;
+  let inFlight = false;
+
+  async function save() {
+    const current = sanitizeLetterheadHtml(bodyEl.innerHTML);
+    if (current === lastSavedValue) return;
+    if (inFlight) return;
+    inFlight = true;
+    saveState.textContent = "Saving…";
+    try {
+      await apiPatchDocument(record.id, { body: current });
+      lastSavedValue = current;
+      record.body = current;
+      invalidate("documents");
+      saveState.textContent = `Saved — ${fmtDateTime(new Date().toISOString())}`;
+    } catch (err) {
+      saveState.textContent = err.message || "Could not save — your changes are still on this page, try again.";
+    } finally {
+      inFlight = false;
+    }
+  }
+
+  bodyEl.addEventListener("input", () => {
+    saveState.textContent = "Unsaved changes…";
+    if (saveTimer) clearTimeout(saveTimer);
+    saveTimer = setTimeout(save, 1500);
+  });
+  saveBtn.addEventListener("click", () => {
+    if (saveTimer) clearTimeout(saveTimer);
+    save();
+  });
+  return section;
+}
+
+function renderLetterheadPreview(record) {
+  const snapshot = record.metadata?.letterhead_snapshot || {};
+  const wrap = el(`<div class="letterhead-page-wrap"></div>`);
+  const { page } = renderLetterheadPage(record, snapshot, { editable: false });
+  wrap.appendChild(page);
+  return wrap;
 }
 
 // Built ONLY from document metadata already rendered on this page — never
@@ -9003,9 +9322,11 @@ async function renderSettingsView(outlet, token) {
   outlet.appendChild(skeletonPanel(4));
 
   let integrations;
+  let letterheadConfig = {};
   try {
     const data = await apiListIntegrations();
     integrations = data.integrations || {};
+    letterheadConfig = await fetchLetterheadConfig().catch(() => ({}));
   } catch (err) {
     if (token !== state.renderToken) return;
     outlet.innerHTML = "";
@@ -9062,6 +9383,44 @@ async function renderSettingsView(outlet, token) {
     syncSection.appendChild(btnRow);
     syncSection.appendChild(statusLabel);
     outlet.appendChild(syncSection);
+  }
+
+  // Corporate Letterhead master config -- keeping it very small on
+  // purpose (this is the entire "template management" surface, not a
+  // platform): logo/tagline/contact fields only, PATCHed as one row.
+  // Editing here only ever affects documents created AFTER the save —
+  // every existing Letterhead document already carries its own
+  // snapshot and is untouched by this form.
+  if (hasPermission("settings.manage")) {
+    const letterheadSection = el(`<div class="overview-section" style="margin-top:24px;"><h3>Corporate Letterhead</h3></div>`);
+    const letterheadNote = el(`<p class="hint">Used as the default header/footer for new "Documents → New Document" letters. Changing these values only affects documents created from now on — existing letters keep the letterhead that was in place when they were written.</p>`);
+    const form = el(`
+      <form class="inline-form" style="flex-direction:column;align-items:stretch;gap:12px;max-width:520px;">
+        <label>Logo URL<input name="logo_url" value="${escapeHtml(letterheadConfig.logo_url || "/office/brand/ochiga-logo-light.png")}" /></label>
+        <label>Tagline (optional)<input name="tagline" value="${escapeHtml(letterheadConfig.tagline || "")}" /></label>
+        <label>Email<input name="email" value="${escapeHtml(letterheadConfig.email || "")}" /></label>
+        <label>Website<input name="website" value="${escapeHtml(letterheadConfig.website || "")}" /></label>
+        <label>WhatsApp / Phone<input name="whatsapp" value="${escapeHtml(letterheadConfig.whatsapp || "")}" /></label>
+        <label>Office Address<input name="address" value="${escapeHtml(letterheadConfig.address || "")}" /></label>
+        <label>Social Handle<input name="social_handle" value="${escapeHtml(letterheadConfig.social_handle || "")}" /></label>
+        <div><button type="submit" class="btn btn-primary btn-sm">Save Letterhead</button> <span class="form-status"></span></div>
+      </form>
+    `);
+    form.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const statusEl = form.querySelector(".form-status");
+      const formData = Object.fromEntries(new FormData(form).entries());
+      try {
+        await apiPatchLetterheadConfig(formData);
+        invalidate("letterheadConfig");
+        statusEl.textContent = "Saved.";
+      } catch (err) {
+        statusEl.textContent = err.message || "Could not save.";
+      }
+    });
+    letterheadSection.appendChild(letterheadNote);
+    letterheadSection.appendChild(form);
+    outlet.appendChild(letterheadSection);
   }
 
   const notOwned = el(`

@@ -165,6 +165,18 @@ function sanitizePatch(collection, input = {}, current = {}) {
     }
     patch.metadata = { ...(current.metadata || {}), ...patch.metadata };
   }
+  // Corporate Letterhead (and any future HTML-bodied native document)
+  // persists real HTML, not markdown-lite text -- sanitize server-side
+  // regardless of what the client already stripped, since this is a
+  // document other staff (and external share-link recipients) view in
+  // their own browser, not something the server should trust blindly.
+  if (collection === "documents" && Object.prototype.hasOwnProperty.call(patch, "body") && current.metadata?.body_format === "html") {
+    patch.body = String(patch.body || "")
+      .replace(/<script[\s\S]*?<\/script>/gi, "")
+      .replace(/<style[\s\S]*?<\/style>/gi, "")
+      .replace(/\son\w+\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)/gi, "")
+      .replace(/(href|src)\s*=\s*("javascript:[^"]*"|'javascript:[^']*')/gi, '$1="#"');
+  }
   for (const field of ["title", "description", "owner", "assignee", "priority", "due_at", "name", "stage", "status", "review_status", "location", "notes", "outcome", "resolution_notes", "assigned_staff", "category", "severity", "relationship_type", "relationship_manager", "support_status", "oyi_deployment_status", "health_summary"]) {
     if (Object.prototype.hasOwnProperty.call(patch, field)) patch[field] = text(patch[field]);
   }

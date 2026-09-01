@@ -717,6 +717,46 @@ alter table office_documents add column if not exists trashed_by text;
 create index if not exists office_documents_folder_id_idx
 on office_documents (folder_id);
 
+-- Corporate Letterhead — one small, admin-editable master config row
+-- (Settings page, settings.manage-gated). Every native Letterhead
+-- document snapshots this into its own office_documents.metadata at
+-- creation time -- this table is only ever read at creation time or by
+-- the admin editor, never joined at document-render time, so editing it
+-- later can never silently change a document that already exists.
+create table if not exists office_letterhead_config (
+  id text primary key default 'default',
+  logo_url text,
+  tagline text,
+  email text,
+  website text,
+  whatsapp text,
+  address text,
+  social_handle text,
+  updated_by text,
+  updated_at timestamptz not null default now()
+);
+
+drop trigger if exists office_letterhead_config_set_updated_at on office_letterhead_config;
+create trigger office_letterhead_config_set_updated_at
+before update on office_letterhead_config
+for each row
+execute function set_updated_at();
+
+-- Seeded once with the real, currently-authoritative corporate details.
+-- No tagline seeded -- none exists anywhere in project config today, so
+-- none is fabricated here; an admin can add one later via Settings.
+insert into office_letterhead_config (id, logo_url, email, website, whatsapp, address, social_handle)
+values (
+  'default',
+  '/office/brand/ochiga-logo-light.png',
+  'office@ochiga.com.ng',
+  'www.ochiga.com.ng',
+  '+2349164738454',
+  'Plot 45, Oyibo Adjarho Street, Off Admiralty Way, Lekki Phase 1, Lagos',
+  '@OchigaGlobal'
+)
+on conflict (id) do nothing;
+
 drop trigger if exists office_documents_set_updated_at on office_documents;
 create trigger office_documents_set_updated_at
 before update on office_documents

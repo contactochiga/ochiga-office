@@ -999,6 +999,71 @@ function documentHtml(config, input) {
 </html>`;
 }
 
+// Corporate Letterhead body sanitizer — defense in depth. The editor is
+// staff-only and already strips the same patterns client-side before
+// saving, but this is a corporate document other staff (and, via a
+// share link, external recipients) view in their own browser, so the
+// server never trusts client-side sanitization alone.
+function sanitizeLetterheadBodyHtml(html) {
+  return String(html || "")
+    .replace(/<script[\s\S]*?<\/script>/gi, "")
+    .replace(/<style[\s\S]*?<\/style>/gi, "")
+    .replace(/\son\w+\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)/gi, "")
+    .replace(/(href|src)\s*=\s*("javascript:[^"]*"|'javascript:[^']*')/gi, '$1="#"');
+}
+
+// Server-side mirror of the client renderer (public/office/office.js
+// renderLetterheadPage) — this project has no shared bundler between
+// the browser and Node, so this small, self-contained duplicate is the
+// established pattern (see documentHtml above) rather than new build
+// tooling. Used for the public share route and print/export, so a
+// document without a stored file still has a real, working share link
+// and a real downloadable page.
+function renderLetterheadHtml(doc, req) {
+  const snapshot = doc.metadata?.letterhead_snapshot || {};
+  const logoUrl = absoluteUrl(req, snapshot.logo_url || "/office/brand/ochiga-logo-light.png");
+  const bodyHtml = sanitizeLetterheadBodyHtml(doc.body || "");
+  const contactRow = [
+    snapshot.website ? `<span>${escapeHtmlText(snapshot.website)}</span>` : "",
+    snapshot.email ? `<span>${escapeHtmlText(snapshot.email)}</span>` : "",
+    snapshot.whatsapp ? `<span>${escapeHtmlText(snapshot.whatsapp)}</span>` : "",
+    snapshot.social_handle ? `<span>${escapeHtmlText(snapshot.social_handle)}</span>` : "",
+  ].filter(Boolean).join(" &nbsp;·&nbsp; ");
+  return `<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>${escapeHtmlText(doc.title || "Letter")}</title>
+  <style>
+    body{font-family:Georgia,'Times New Roman',serif;margin:0;background:#e8eaee;color:#1a1a1a}
+    .page{max-width:800px;margin:24px auto;background:#ffffff;padding:56px 64px;box-shadow:0 1px 4px rgba(0,0,0,0.15);position:relative;overflow:hidden;min-height:1050px}
+    .page::before{content:"";position:absolute;top:-40px;right:-60px;width:340px;height:180px;background:linear-gradient(135deg,rgba(240,90,60,0.12),rgba(240,90,60,0.04));border-radius:50%;pointer-events:none}
+    .letter-logo{height:44px;display:block}
+    .letter-tagline{font-family:Arial,sans-serif;font-size:12px;color:#555;margin:6px 0 0}
+    .letter-body{margin:48px 0 64px;font-size:15px;line-height:1.7}
+    .letter-body p{margin:0 0 14px}
+    .letter-footer{border-top:2px solid #e2453a;padding-top:14px;font-family:Arial,sans-serif;font-size:11px;color:#333;margin-top:auto}
+    .letter-footer .contact-row{margin-bottom:4px}
+    .letter-footer .address-row{color:#666}
+    @media print { body{background:#fff} .page{box-shadow:none;margin:0} }
+  </style>
+</head>
+<body>
+  <main class="page">
+    <header>
+      <img class="letter-logo" src="${escapeHtmlText(logoUrl)}" alt="Ochiga" />
+      ${snapshot.tagline ? `<p class="letter-tagline">${escapeHtmlText(snapshot.tagline)}</p>` : ""}
+    </header>
+    <section class="letter-body">${bodyHtml || "<p>&nbsp;</p>"}</section>
+    <footer class="letter-footer">
+      <div class="contact-row">${contactRow}</div>
+      ${snapshot.address ? `<div class="address-row">${escapeHtmlText(snapshot.address)}</div>` : ""}
+    </footer>
+  </main>
+</body>
+</html>`;
+}
+
 function assetPatchForAction(kind, action, body) {
   const now = new Date().toISOString();
   const normalized = String(action || "").toLowerCase();
@@ -5220,6 +5285,44 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
       }
 
       // ---------------------------------------------------------------
+      // Corporate Letterhead -- one small, admin-editable master config
+      // row. GET is office.read (any staff creating a Letterhead
+      // document needs to read it to snapshot it); PATCH is
+      // settings.manage, the exact permission already gating the whole
+      // Settings page this editor lives on. No create/delete/versioning
+      // surface -- deliberately kept to "one row, one PATCH."
+      // ---------------------------------------------------------------
+      if (pathname === "/api/lead-agents/admin/letterhead-config") {
+        if (req.method === "GET") {
+          authorizePermission(authContext, "office.read");
+          const config = (await store.getLetterheadConfig()) || { id: "default" };
+          json(res, 200, { config }, { "x-request-id": ctx.requestId });
+          return;
+        }
+        if (req.method === "PATCH") {
+          authorizePermission(authContext, "settings.manage");
+          const body = await readJsonBody(req);
+          requireObject(body, "body");
+          const allowed = ["logo_url", "tagline", "email", "website", "whatsapp", "address", "social_handle"];
+          const patch = {};
+          for (const key of allowed) {
+            if (Object.prototype.hasOwnProperty.call(body, key)) patch[key] = String(body[key] || "").trim();
+          }
+          patch.updated_by = authContext?.email || "office";
+          const config = await store.upsertLetterheadConfig(patch);
+          if (config.sync_status === "schema_pending") {
+            json(res, 503, { error: "letterhead_schema_pending", message: config.sync_warning }, { "x-request-id": ctx.requestId });
+            return;
+          }
+          await appendAudit(store, authContext, "office_letterhead_config_updated", "letterhead_config", "default", { fields: Object.keys(patch) });
+          json(res, 200, { config }, { "x-request-id": ctx.requestId });
+          return;
+        }
+        methodNotAllowed(res, "GET,PATCH");
+        return;
+      }
+
+      // ---------------------------------------------------------------
       // Documents Workspace -- Folders. A real, persisted first-level
       // organizational entity (Documents rebuild) -- not a frontend-only
       // filter. Deliberately bespoke rather than routed through
@@ -6083,6 +6186,56 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
       }
 
       // ---------------------------------------------------------------
+      // Corporate Letterhead -- "Documents -> New Document" default
+      // native template. Creates a real office_documents row with an
+      // empty, genuinely editable HTML body and a snapshot of the
+      // CURRENT master Letterhead config baked into metadata at creation
+      // time only -- later admin edits to office_letterhead_config never
+      // touch this record (no join at render time), so historical
+      // letters keep the letterhead that existed when they were issued.
+      // ---------------------------------------------------------------
+      if (pathname === "/api/lead-agents/admin/documents/letterhead") {
+        if (req.method !== "POST") {
+          methodNotAllowed(res, "POST");
+          return;
+        }
+        authorizePermission(authContext, "documents.generate");
+        const body = await readJsonBody(req);
+        requireObject(body, "body");
+        const masterConfig = (await store.getLetterheadConfig()) || {};
+        const snapshot = {
+          logo_url: masterConfig.logo_url || "/office/brand/ochiga-logo-light.png",
+          tagline: masterConfig.tagline || "",
+          email: masterConfig.email || "",
+          website: masterConfig.website || "",
+          whatsapp: masterConfig.whatsapp || "",
+          address: masterConfig.address || "",
+          social_handle: masterConfig.social_handle || "",
+          snapshotted_at: new Date().toISOString(),
+        };
+        const id = `doc_${Date.now().toString(36)}_${crypto.randomBytes(5).toString("hex")}`;
+        const shareToken = crypto.randomBytes(16).toString("hex");
+        const documentRecord = await store.createOfficeDocument({
+          id,
+          title: body.title || "Untitled Letter",
+          document_type: "letter",
+          status: "draft",
+          owner: authContext?.email || "Office",
+          related_type: body.related_type || "",
+          related_id: body.related_id || "",
+          folder_id: body.folder_id || null,
+          body: "",
+          share_token: shareToken,
+          metadata: { template: "ochiga_letterhead", body_format: "html", letterhead_snapshot: snapshot },
+        });
+        documentRecord.share_url = absoluteUrl(req, `/api/lead-agents/documents/shared/${id}/${shareToken}`);
+        await appendAudit(store, authContext, "office_document_letterhead_created", "office_document", id, { title: documentRecord.title });
+        eventBus.publish("office.document", { actor: authContext?.email || "", document: documentRecord });
+        json(res, 201, { document: documentRecord }, { "x-request-id": ctx.requestId });
+        return;
+      }
+
+      // ---------------------------------------------------------------
       // Documents Workspace -- Trash / Restore / Permanent delete.
       // trashed_at is a separate lifecycle flag from the business
       // `status` column (draft/sent/accepted, per document_type) --
@@ -6890,6 +7043,15 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
         const doc = typeof store.getOfficeDocumentById === "function" ? await store.getOfficeDocumentById(sharedDocId) : null;
         if (!doc || !doc.share_token || !secureCompare(doc.share_token, providedToken)) {
           notFound(res);
+          return;
+        }
+        // A Letterhead (or any future HTML-bodied native) document has
+        // no stored file to look up -- render it server-side on the
+        // fly, reusing this exact same token-gated route/permission
+        // model rather than a second sharing mechanism.
+        if (!doc.html_url && !doc.file_url && doc.metadata?.body_format === "html") {
+          const html = renderLetterheadHtml(doc, req);
+          serveBuffer(res, Buffer.from(html, "utf8"), "text/html; charset=utf-8", `${sharedDocId}.html`);
           return;
         }
         const servedUrl = doc.html_url || doc.file_url || "";
