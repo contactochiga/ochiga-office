@@ -1164,7 +1164,8 @@
   .portfolio-header { display: flex; gap: 18px; align-items: flex-start; margin-bottom: 24px; }
   .portfolio-header-main { flex: 1; min-width: 0; }
   .portfolio-header-main h1 { font-size: 21px; font-weight: 600; color: var(--white); margin: 0 0 8px; }
-  .portfolio-header-facts { grid-template-columns: repeat(3, 1fr); margin-top: 16px; }
+  .portfolio-header-facts { grid-template-columns: repeat(4, 1fr); margin-top: 16px; }
+  .portfolio-header-updated { color: var(--text-tertiary); font-size: 11.5px; margin: 10px 0 0; }
   .portfolio-header-actions { display: flex; align-items: flex-start; gap: 8px; flex-shrink: 0; position: relative; }
   .portfolio-header-actions .btn { width: auto; margin-top: 0; }
 
@@ -1186,7 +1187,7 @@
   .portfolio-panel {
     border: 1px solid var(--line); border-radius: var(--radius); background: rgba(255,255,255,0.015); padding: 16px;
   }
-  .portfolio-overview-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; align-items: start; }
+  .portfolio-overview-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 16px; align-items: start; }
 
   @media (max-width: 860px) {
     .portfolio-header { flex-direction: column; }
@@ -1265,6 +1266,14 @@
   .dialog-overlay { position: fixed; inset: 0; z-index: 80; background: rgba(0,0,0,0.6); display: flex; align-items: center; justify-content: center; padding: 20px; }
   .dialog-card { width: min(420px, 100%); background: var(--charcoal); border: 1px solid var(--line-strong); border-radius: var(--radius); padding: 22px; }
   .dialog-card h3 { font-size: 14.5px; font-weight: 600; color: var(--white); margin: 0 0 4px; }
+
+  /* Needs Attention "View all" overlay (Home closure pass) — reuses
+     .dialog-overlay/.dialog-card but wider (the row language needs more
+     horizontal room than a form dialog) and scrollable (up to ~20 real
+     items, never truncated). */
+  .attention-overlay-card { width: min(640px, 100%); max-height: min(72vh, 640px); display: flex; flex-direction: column; }
+  .attention-overlay-count { color: var(--text-tertiary); font-weight: 400; }
+  .attention-overlay-list { overflow-y: auto; margin: 14px 0; padding-right: 2px; }
   .wizard-step-label { font-size: 11px; color: var(--text-tertiary); text-transform: uppercase; letter-spacing: 0.04em; margin: 0 0 16px; }
   .dialog-fields { display: flex; flex-direction: column; gap: 12px; margin-bottom: 18px; }
   .dialog-fields label { display: flex; flex-direction: column; gap: 5px; font-size: 11px; color: var(--text-tertiary); text-transform: uppercase; letter-spacing: 0.03em; }
