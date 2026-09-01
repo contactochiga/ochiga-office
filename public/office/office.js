@@ -3624,7 +3624,13 @@ function buildOverflowMenu({ ariaLabel = "More actions", triggerLabel = "⋯", i
     btn.addEventListener("click", (event) => {
       event.stopPropagation();
       closeMenu();
-      item.onClick();
+      // item.onClick is frequently an async action (an API call) —
+      // without this, a rejected promise here was a silent no-op: no
+      // toast, no error, the row just sat there looking unchanged even
+      // though the action genuinely failed server-side.
+      Promise.resolve()
+        .then(() => item.onClick())
+        .catch((err) => toast(err?.message || "That action failed. Please try again."));
     });
     menu.appendChild(btn);
   });
