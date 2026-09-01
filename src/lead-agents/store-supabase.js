@@ -692,6 +692,7 @@ class SupabaseLeadAgentsStore {
           filename: att.filename || null,
           mime_type: att.mime_type || null,
           size_bytes: att.size_bytes || null,
+          duration_seconds: att.duration_seconds || null,
         })),
         { headers: this.selectHeaders() }
       );
@@ -712,10 +713,19 @@ class SupabaseLeadAgentsStore {
     const messages = response.data;
     if (!messages.length) return [];
     const ids = messages.map((m) => m.id);
-    const attachmentsResponse = await this.client.get(`/staff_message_attachments?message_id=in.(${ids.join(",")})`);
+    const [attachmentsResponse, reactions, readsResponse] = await Promise.all([
+      this.client.get(`/staff_message_attachments?message_id=in.(${ids.join(",")})`),
+      this.listStaffMessageReactions(ids),
+      this.client.get(`/staff_message_reads?message_id=in.(${ids.join(",")})&select=message_id,staff_email`),
+    ]);
     return messages.map((message) => ({
       ...message,
       attachments: attachmentsResponse.data.filter((att) => att.message_id === message.id),
+      reactions: reactions.filter((r) => r.message_id === message.id),
+      // Real per-recipient read receipts (Part 6/18 — "delivery/read
+      // state where genuinely supported") — who besides the sender has
+      // actually read this specific message, never a fabricated tick.
+      read_by: readsResponse.data.filter((r) => r.message_id === message.id).map((r) => r.staff_email),
     }));
   }
 
@@ -746,6 +756,93 @@ class SupabaseLeadAgentsStore {
     );
     const readIds = new Set(readResponse.data.map((r) => r.message_id));
     return ids.filter((id) => !readIds.has(id)).length;
+  }
+
+  // ---------------------------------------------------------------
+  // Messages workspace additions (additive to Phase 5 staff messaging
+  // above) — group management, per-participant archive/mute/pin,
+  // reactions, soft-delete, search.
+  // ---------------------------------------------------------------
+  async updateStaffConversation(conversationId, patch) {
+    const response = await this.client.patch(`/staff_conversations?id=eq.${conversationId}`, patch, { headers: this.selectHeaders() });
+    return response.data[0] || null;
+  }
+
+  async addStaffConversationParticipants(conversationId, emails) {
+    const existing = await this.listStaffConversationParticipants(conversationId);
+    const existingEmails = new Set(existing.map((p) => p.staff_email));
+    const toInsert = Array.from(new Set(emails.map(normalizeEmail).filter(Boolean))).filter((e) => !existingEmails.has(e));
+    if (!toInsert.length) return [];
+    const response = await this.client.post(
+      "/staff_conversation_participants",
+      toInsert.map((email) => ({ conversation_id: conversationId, staff_email: email })),
+      { headers: this.selectHeaders() }
+    );
+    return response.data;
+  }
+
+  async removeStaffConversationParticipant(conversationId, email) {
+    await this.client.delete(
+      `/staff_conversation_participants?conversation_id=eq.${conversationId}&staff_email=eq.${encodeURIComponent(normalizeEmail(email))}`
+    );
+    return true;
+  }
+
+  async setStaffConversationParticipantState(conversationId, email, patch) {
+    const response = await this.client.patch(
+      `/staff_conversation_participants?conversation_id=eq.${conversationId}&staff_email=eq.${encodeURIComponent(normalizeEmail(email))}`,
+      patch,
+      { headers: this.selectHeaders() }
+    );
+    return response.data[0] || null;
+  }
+
+  async toggleStaffMessageReaction(messageId, email, emoji) {
+    const normalized = normalizeEmail(email);
+    const existingResponse = await this.client.get(
+      `/staff_message_reactions?message_id=eq.${messageId}&staff_email=eq.${encodeURIComponent(normalized)}&emoji=eq.${encodeURIComponent(emoji)}&limit=1`
+    );
+    if (existingResponse.data.length) {
+      await this.client.delete(
+        `/staff_message_reactions?message_id=eq.${messageId}&staff_email=eq.${encodeURIComponent(normalized)}&emoji=eq.${encodeURIComponent(emoji)}`
+      );
+      return { action: "removed", emoji };
+    }
+    const response = await this.client.post(
+      "/staff_message_reactions",
+      { message_id: messageId, staff_email: normalized, emoji },
+      { headers: this.selectHeaders() }
+    );
+    return { action: "added", reaction: response.data[0] };
+  }
+
+  async listStaffMessageReactions(messageIds) {
+    if (!messageIds.length) return [];
+    const response = await this.client.get(`/staff_message_reactions?message_id=in.(${messageIds.join(",")})`);
+    return response.data;
+  }
+
+  async getStaffMessageById(messageId) {
+    const response = await this.client.get(`/staff_messages?id=eq.${messageId}&limit=1`);
+    return response.data[0] || null;
+  }
+
+  async softDeleteStaffMessage(messageId, deletedBy) {
+    const response = await this.client.patch(
+      `/staff_messages?id=eq.${messageId}`,
+      { deleted_at: new Date().toISOString(), deleted_by: normalizeEmail(deletedBy) },
+      { headers: this.selectHeaders() }
+    );
+    return response.data[0] || null;
+  }
+
+  async searchStaffMessages(conversationIds, query, limit = 40) {
+    if (!conversationIds.length || !query) return [];
+    const escaped = query.replace(/[%_]/g, (m) => `\\${m}`);
+    const response = await this.client.get(
+      `/staff_messages?conversation_id=in.(${conversationIds.join(",")})&deleted_at=is.null&body=ilike.*${encodeURIComponent(escaped)}*&order=created_at.desc&limit=${limit}`
+    );
+    return response.data;
   }
 
   // ---------------------------------------------------------------

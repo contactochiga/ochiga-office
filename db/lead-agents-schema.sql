@@ -1173,6 +1173,36 @@ create table if not exists staff_message_attachments (
 create index if not exists staff_message_attachments_message_idx
 on staff_message_attachments (message_id);
 
+-- Messages workspace — additive extension of the staff-messaging model
+-- above (see db/20260901_messages_workspace.sql for the standalone
+-- migration record). Per-participant archive/mute/pin state lives on
+-- the membership row itself (always 1:1 with a participant, always
+-- per-user — never affects what any other participant sees). Message
+-- deletion is a soft tombstone, never a hard delete, so one sender's
+-- own-message removal never destroys another participant's history.
+alter table staff_conversation_participants add column if not exists archived_at timestamptz;
+alter table staff_conversation_participants add column if not exists muted_at timestamptz;
+alter table staff_conversation_participants add column if not exists pinned_at timestamptz;
+
+alter table staff_messages add column if not exists deleted_at timestamptz;
+alter table staff_messages add column if not exists deleted_by text;
+
+alter table staff_message_attachments add column if not exists duration_seconds integer;
+
+create table if not exists staff_message_reactions (
+  id uuid primary key default gen_random_uuid(),
+  message_id uuid not null references staff_messages(id) on delete cascade,
+  staff_email text not null,
+  emoji text not null,
+  created_at timestamptz not null default now()
+);
+
+create unique index if not exists staff_message_reactions_unique_idx
+on staff_message_reactions (message_id, staff_email, emoji);
+
+create index if not exists staff_message_reactions_message_idx
+on staff_message_reactions (message_id);
+
 -- ---------------------------------------------------------------
 -- Content / Publishing (Phase 8, Office v2). Sanity remains the
 -- canonical public content source of truth (project ap1ku6sf, dataset

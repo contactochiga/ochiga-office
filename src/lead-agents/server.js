@@ -6526,7 +6526,18 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
         const users = await store.listAdminUsers();
         const directory = users
           .filter((u) => u.status === "active" && normalizeEmail(u.email) !== normalizeEmail(authContext?.email || ""))
-          .map((u) => ({ email: u.email, display_name: u.display_name || u.email, office_position: u.office_position || "" }));
+          .map((u) => ({
+            email: u.email,
+            display_name: u.display_name || u.email,
+            office_position: u.office_position || "",
+            // "Appropriate Office contact information" for the Messages
+            // details panel (Part 2 of the brief) — still deliberately
+            // NOT role/status/permission_scopes/admin fields, same
+            // restraint as this route's original comment.
+            phone: u.phone || "",
+            passport_photo_url: u.passport_photo_url || "",
+            last_login_at: u.last_login_at || null,
+          }));
         json(res, 200, { staff: directory }, { "x-request-id": ctx.requestId });
         return;
       }
@@ -6541,11 +6552,18 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
               const participants = await store.listStaffConversationParticipants(conversation.id);
               const messages = await store.listStaffMessages(conversation.id, 1);
               const unread = await store.countUnreadStaffMessages(conversation.id, email);
+              const mine = participants.find((p) => p.staff_email === email);
               return {
                 ...conversation,
                 participants: participants.map((p) => p.staff_email),
                 last_message: messages[messages.length - 1] || null,
                 unread_count: unread,
+                // Per-participant state — mine only, never another
+                // participant's (archiving/muting/pinning is always a
+                // personal view preference, never shared).
+                archived_at: mine?.archived_at || null,
+                muted_at: mine?.muted_at || null,
+                pinned_at: mine?.pinned_at || null,
               };
             })
           );
@@ -6562,7 +6580,25 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
             json(res, 400, { error: "participant_emails is required" }, { "x-request-id": ctx.requestId });
             return;
           }
+          // Suspended/deactivated/removed users must not remain
+          // reachable as new-message recipients, even if a client
+          // somehow submits their email directly — this is the real
+          // server-side boundary, the staff directory's own active-only
+          // filter is only the client-side convenience on top of it.
+          const activeUsers = await store.listAdminUsers();
+          const activeEmails = new Set(
+            activeUsers.filter((u) => u.status === "active").map((u) => normalizeEmail(u.email))
+          );
+          const invalidRecipients = participantEmails.filter((e) => !activeEmails.has(e));
+          if (invalidRecipients.length) {
+            json(res, 400, { error: "inactive_recipients", message: "One or more recipients are not active Office users.", recipients: invalidRecipients }, { "x-request-id": ctx.requestId });
+            return;
+          }
           const type = participantEmails.length === 1 && body.type !== "group" ? "direct" : "group";
+          if (type === "group" && !String(body.title || "").trim()) {
+            json(res, 400, { error: "title_required", message: "Give the group a name." }, { "x-request-id": ctx.requestId });
+            return;
+          }
           let conversation = null;
           if (type === "direct") {
             conversation = await store.findDirectStaffConversation(createdBy, participantEmails[0]);
@@ -6570,7 +6606,7 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           if (!conversation) {
             conversation = await store.createStaffConversation({
               type,
-              title: type === "group" ? body.title || null : null,
+              title: type === "group" ? body.title.trim() : null,
               createdBy,
               participantEmails,
             });
@@ -6583,6 +6619,163 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           return;
         }
         methodNotAllowed(res, "GET,POST");
+        return;
+      }
+
+      // Rename a group (title only). Creator-only — the single truthful
+      // "admin" concept this model has (see the additive migration's
+      // comment: deliberately no separate role column). Direct
+      // conversations have no title to rename.
+      const staffConversationRenameMatch = pathname.match(/^\/api\/lead-agents\/admin\/staff\/conversations\/([^/]+)$/);
+      if (staffConversationRenameMatch) {
+        if (req.method !== "PATCH") {
+          methodNotAllowed(res, "PATCH");
+          return;
+        }
+        authorizePermission(authContext, "messages.send");
+        const conversationId = staffConversationRenameMatch[1];
+        const email = normalizeEmail(authContext?.email || "");
+        const conversation = await store.getStaffConversationById(conversationId);
+        if (!conversation) {
+          notFound(res);
+          return;
+        }
+        if (conversation.type !== "group") {
+          json(res, 400, { error: "not_a_group" }, { "x-request-id": ctx.requestId });
+          return;
+        }
+        if (normalizeEmail(conversation.created_by) !== email) {
+          json(res, 403, { error: "forbidden", message: "Only the group creator can rename it." }, { "x-request-id": ctx.requestId });
+          return;
+        }
+        const body = await readJsonBody(req);
+        requireObject(body, "body");
+        const title = String(body.title || "").trim();
+        if (!title) {
+          json(res, 400, { error: "title_required" }, { "x-request-id": ctx.requestId });
+          return;
+        }
+        const updated = await store.updateStaffConversation(conversationId, { title });
+        const participants = await store.listStaffConversationParticipants(conversationId);
+        const otherEmails = participants.map((p) => p.staff_email).filter((e) => e !== email);
+        eventBus.publish("office.conversation.updated", { conversation: updated }, otherEmails.length ? { recipients: otherEmails } : undefined);
+        await appendAudit(store, authContext, "staff_conversation_renamed", "staff_conversation", conversationId, { title });
+        json(res, 200, { conversation: updated }, { "x-request-id": ctx.requestId });
+        return;
+      }
+
+      // Add / remove group members. Add is creator-only (the same
+      // "ordinary users cannot arbitrarily add themselves to private
+      // groups" boundary the brief asks to prove). Remove allows either
+      // the creator removing someone else, or a member removing
+      // themselves (leave) — direct conversations reject both, they
+      // have no membership to manage.
+      const staffConversationMembersMatch = pathname.match(/^\/api\/lead-agents\/admin\/staff\/conversations\/([^/]+)\/members$/);
+      if (staffConversationMembersMatch) {
+        if (req.method !== "POST") {
+          methodNotAllowed(res, "POST");
+          return;
+        }
+        authorizePermission(authContext, "messages.send");
+        const conversationId = staffConversationMembersMatch[1];
+        const email = normalizeEmail(authContext?.email || "");
+        const conversation = await store.getStaffConversationById(conversationId);
+        if (!conversation) {
+          notFound(res);
+          return;
+        }
+        if (conversation.type !== "group") {
+          json(res, 400, { error: "not_a_group" }, { "x-request-id": ctx.requestId });
+          return;
+        }
+        if (normalizeEmail(conversation.created_by) !== email) {
+          json(res, 403, { error: "forbidden", message: "Only the group creator can add members." }, { "x-request-id": ctx.requestId });
+          return;
+        }
+        const body = await readJsonBody(req);
+        requireObject(body, "body");
+        const newEmails = Array.isArray(body.participant_emails) ? body.participant_emails.map(normalizeEmail).filter(Boolean) : [];
+        if (!newEmails.length) {
+          json(res, 400, { error: "participant_emails is required" }, { "x-request-id": ctx.requestId });
+          return;
+        }
+        const activeUsers = await store.listAdminUsers();
+        const activeEmails = new Set(activeUsers.filter((u) => u.status === "active").map((u) => normalizeEmail(u.email)));
+        const invalidRecipients = newEmails.filter((e) => !activeEmails.has(e));
+        if (invalidRecipients.length) {
+          json(res, 400, { error: "inactive_recipients", recipients: invalidRecipients }, { "x-request-id": ctx.requestId });
+          return;
+        }
+        const added = await store.addStaffConversationParticipants(conversationId, newEmails);
+        const participants = await store.listStaffConversationParticipants(conversationId);
+        const otherEmails = participants.map((p) => p.staff_email).filter((e) => e !== email);
+        eventBus.publish("office.conversation.updated", { conversation }, otherEmails.length ? { recipients: otherEmails } : undefined);
+        await appendAudit(store, authContext, "staff_conversation_members_added", "staff_conversation", conversationId, { added: newEmails });
+        json(res, 200, { added: added.length, participants: participants.map((p) => p.staff_email) }, { "x-request-id": ctx.requestId });
+        return;
+      }
+
+      const staffConversationMemberMatch = pathname.match(/^\/api\/lead-agents\/admin\/staff\/conversations\/([^/]+)\/members\/([^/]+)$/);
+      if (staffConversationMemberMatch) {
+        if (req.method !== "DELETE") {
+          methodNotAllowed(res, "DELETE");
+          return;
+        }
+        authorizePermission(authContext, "messages.send");
+        const conversationId = staffConversationMemberMatch[1];
+        const targetEmail = normalizeEmail(decodeURIComponent(staffConversationMemberMatch[2]));
+        const email = normalizeEmail(authContext?.email || "");
+        const conversation = await store.getStaffConversationById(conversationId);
+        if (!conversation) {
+          notFound(res);
+          return;
+        }
+        if (conversation.type !== "group") {
+          json(res, 400, { error: "not_a_group" }, { "x-request-id": ctx.requestId });
+          return;
+        }
+        const isSelf = targetEmail === email;
+        const isCreator = normalizeEmail(conversation.created_by) === email;
+        if (!isSelf && !isCreator) {
+          json(res, 403, { error: "forbidden", message: "Only the group creator can remove other members." }, { "x-request-id": ctx.requestId });
+          return;
+        }
+        await store.removeStaffConversationParticipant(conversationId, targetEmail);
+        const participants = await store.listStaffConversationParticipants(conversationId);
+        const otherEmails = participants.map((p) => p.staff_email);
+        eventBus.publish("office.conversation.updated", { conversation }, otherEmails.length ? { recipients: [...otherEmails, targetEmail] } : { recipients: [targetEmail] });
+        await appendAudit(store, authContext, isSelf ? "staff_conversation_left" : "staff_conversation_member_removed", "staff_conversation", conversationId, { email: targetEmail });
+        json(res, 200, { ok: true }, { "x-request-id": ctx.requestId });
+        return;
+      }
+
+      // Per-participant state: archive/mute/pin. Always self-only (no
+      // creator override) — these are personal view preferences, never
+      // something one coworker can impose on another's inbox.
+      const staffConversationStateMatch = pathname.match(/^\/api\/lead-agents\/admin\/staff\/conversations\/([^/]+)\/(archive|unarchive|mute|unmute|pin|unpin)$/);
+      if (staffConversationStateMatch) {
+        if (req.method !== "POST") {
+          methodNotAllowed(res, "POST");
+          return;
+        }
+        authorizePermission(authContext, "messages.read");
+        const conversationId = staffConversationStateMatch[1];
+        const action = staffConversationStateMatch[2];
+        const email = normalizeEmail(authContext?.email || "");
+        if (!(await store.isStaffConversationParticipant(conversationId, email))) {
+          json(res, 403, { error: "forbidden" }, { "x-request-id": ctx.requestId });
+          return;
+        }
+        const patch = {
+          archive: { archived_at: new Date().toISOString() },
+          unarchive: { archived_at: null },
+          mute: { muted_at: new Date().toISOString() },
+          unmute: { muted_at: null },
+          pin: { pinned_at: new Date().toISOString() },
+          unpin: { pinned_at: null },
+        }[action];
+        const participant = await store.setStaffConversationParticipantState(conversationId, email, patch);
+        json(res, 200, { participant }, { "x-request-id": ctx.requestId });
         return;
       }
 
@@ -6663,6 +6856,142 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
         }
         const marked = await store.markStaffMessagesRead(conversationId, email);
         json(res, 200, { marked_read: marked }, { "x-request-id": ctx.requestId });
+        return;
+      }
+
+      // Toggle (add/remove) the caller's own reaction on a message —
+      // participant-of-the-conversation gated, same as reading/sending.
+      const staffMessageReactionMatch = pathname.match(/^\/api\/lead-agents\/admin\/staff\/messages\/([^/]+)\/reactions$/);
+      if (staffMessageReactionMatch) {
+        if (req.method !== "POST") {
+          methodNotAllowed(res, "POST");
+          return;
+        }
+        authorizePermission(authContext, "messages.send");
+        const messageId = staffMessageReactionMatch[1];
+        const email = normalizeEmail(authContext?.email || "");
+        const message = await store.getStaffMessageById(messageId);
+        if (!message) {
+          notFound(res);
+          return;
+        }
+        if (!(await store.isStaffConversationParticipant(message.conversation_id, email))) {
+          json(res, 403, { error: "forbidden" }, { "x-request-id": ctx.requestId });
+          return;
+        }
+        const body = await readJsonBody(req);
+        requireObject(body, "body");
+        const emoji = String(body.emoji || "").trim();
+        if (!emoji) {
+          json(res, 400, { error: "emoji_required" }, { "x-request-id": ctx.requestId });
+          return;
+        }
+        const result = await store.toggleStaffMessageReaction(messageId, email, emoji);
+        const participants = await store.listStaffConversationParticipants(message.conversation_id);
+        const otherEmails = participants.map((p) => p.staff_email).filter((e) => e !== email);
+        eventBus.publish(
+          "office.message.reaction",
+          { conversation_id: message.conversation_id, message_id: messageId, staff_email: email, emoji, action: result.action },
+          otherEmails.length ? { recipients: otherEmails } : undefined
+        );
+        json(res, 200, result, { "x-request-id": ctx.requestId });
+        return;
+      }
+
+      // Soft-delete (tombstone) a message — own message only. Never a
+      // hard delete: every other participant's copy of the conversation
+      // must keep an honest "message deleted" marker, not a silent gap
+      // and never a version another participant can't account for.
+      // Message-content search — scoped server-side to conversations the
+      // caller actually belongs to. This is the real boundary (Part 12/
+      // 16 of the brief: "a user must never discover private
+      // conversation content they are not a participant in merely
+      // through search") — never a client-side filter over a broader
+      // fetch. Checked BEFORE the /messages/:id delete route below,
+      // since that route's [^/]+ id-matcher would otherwise swallow
+      // the literal "search" path segment.
+      if (pathname === "/api/lead-agents/admin/staff/messages/search") {
+        if (req.method !== "GET") {
+          methodNotAllowed(res, "GET");
+          return;
+        }
+        authorizePermission(authContext, "messages.read");
+        const email = normalizeEmail(authContext?.email || "");
+        const requestUrl = new URL(req.url, "http://localhost");
+        const query = (requestUrl.searchParams.get("q") || "").trim();
+        if (!query) {
+          json(res, 200, { results: [] }, { "x-request-id": ctx.requestId });
+          return;
+        }
+        const conversations = await store.listStaffConversationsForStaff(email);
+        const conversationIds = conversations.map((c) => c.id);
+        const matches = await store.searchStaffMessages(conversationIds, query, 40);
+        const conversationById = new Map(conversations.map((c) => [c.id, c]));
+        const results = matches.map((message) => ({
+          message,
+          conversation_id: message.conversation_id,
+          conversation_title: conversationById.get(message.conversation_id)?.title || null,
+          conversation_type: conversationById.get(message.conversation_id)?.type || "direct",
+        }));
+        json(res, 200, { results }, { "x-request-id": ctx.requestId });
+        return;
+      }
+
+      // Soft-delete (tombstone) a message — own message only. Never a
+      // hard delete: every other participant's copy of the conversation
+      // must keep an honest "message deleted" marker, not a silent gap
+      // and never a version another participant can't account for.
+      const staffMessageDeleteMatch = pathname.match(/^\/api\/lead-agents\/admin\/staff\/messages\/([^/]+)$/);
+      if (staffMessageDeleteMatch) {
+        if (req.method !== "DELETE") {
+          methodNotAllowed(res, "DELETE");
+          return;
+        }
+        authorizePermission(authContext, "messages.send");
+        const messageId = staffMessageDeleteMatch[1];
+        const email = normalizeEmail(authContext?.email || "");
+        const message = await store.getStaffMessageById(messageId);
+        if (!message) {
+          notFound(res);
+          return;
+        }
+        if (normalizeEmail(message.sender_email) !== email) {
+          json(res, 403, { error: "forbidden", message: "You can only delete your own messages." }, { "x-request-id": ctx.requestId });
+          return;
+        }
+        const updated = await store.softDeleteStaffMessage(messageId, email);
+        const participants = await store.listStaffConversationParticipants(message.conversation_id);
+        const otherEmails = participants.map((p) => p.staff_email).filter((e) => e !== email);
+        eventBus.publish(
+          "office.message.deleted",
+          { conversation_id: message.conversation_id, message_id: messageId },
+          otherEmails.length ? { recipients: otherEmails } : undefined
+        );
+        await appendAudit(store, authContext, "staff_message_deleted", "staff_message", messageId, { conversation_id: message.conversation_id });
+        json(res, 200, { message: updated }, { "x-request-id": ctx.requestId });
+        return;
+      }
+
+      // Presence — genuinely derived from who currently holds an open
+      // SSE connection to /admin/events (the same realtime hub every
+      // other live-update feature already uses), never a fabricated
+      // "everyone is online" default. A connected client is a truthful,
+      // if imperfect, "has Office open right now" signal; the frontend
+      // falls back to admin_users.last_login_at ("last active") for
+      // anyone not currently connected.
+      if (pathname === "/api/lead-agents/admin/staff/presence") {
+        if (req.method !== "GET") {
+          methodNotAllowed(res, "GET");
+          return;
+        }
+        authorizePermission(authContext, "messages.read");
+        const requestUrl = new URL(req.url, "http://localhost");
+        const emails = (requestUrl.searchParams.get("emails") || "").split(",").map(normalizeEmail).filter(Boolean);
+        const presence = {};
+        emails.forEach((e) => {
+          presence[e] = eventBus.isOnline(e);
+        });
+        json(res, 200, { presence }, { "x-request-id": ctx.requestId });
         return;
       }
 

@@ -37,6 +37,7 @@
     "office:facility-invite-email-envelope:test": "node scripts/test-office-facility-invite-email-envelope.js",
     "office:documents-workspace:test": "node scripts/test-office-documents-workspace.js",
     "office:team-lifecycle-meetings-trash:test": "node scripts/test-office-team-lifecycle-meetings-trash.js",
+    "office:messages-workspace:test": "node scripts/test-office-messages-workspace.js",
     "office:eval": "node scripts/run-lead-agents-evals.js"
   },
   "dependencies": {

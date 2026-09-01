@@ -361,6 +361,30 @@ async function apiMarkConversationRead(conversationId) {
 async function apiUploadAttachment(dataUrl, filename, mimeType) {
   return api("/api/lead-agents/admin/storage", { method: "POST", body: { data_url: dataUrl, purpose: "message_attachment", filename, mime_type: mimeType } });
 }
+async function apiRenameConversation(conversationId, title) {
+  return api(`/api/lead-agents/admin/staff/conversations/${encodeURIComponent(conversationId)}`, { method: "PATCH", body: { title } });
+}
+async function apiAddConversationMembers(conversationId, participantEmails) {
+  return api(`/api/lead-agents/admin/staff/conversations/${encodeURIComponent(conversationId)}/members`, { method: "POST", body: { participant_emails: participantEmails } });
+}
+async function apiRemoveConversationMember(conversationId, email) {
+  return api(`/api/lead-agents/admin/staff/conversations/${encodeURIComponent(conversationId)}/members/${encodeURIComponent(email)}`, { method: "DELETE" });
+}
+async function apiSetConversationState(conversationId, action) {
+  return api(`/api/lead-agents/admin/staff/conversations/${encodeURIComponent(conversationId)}/${action}`, { method: "POST" });
+}
+async function apiToggleMessageReaction(messageId, emoji) {
+  return api(`/api/lead-agents/admin/staff/messages/${encodeURIComponent(messageId)}/reactions`, { method: "POST", body: { emoji } });
+}
+async function apiDeleteMessage(messageId) {
+  return api(`/api/lead-agents/admin/staff/messages/${encodeURIComponent(messageId)}`, { method: "DELETE" });
+}
+async function apiSearchMessages(query) {
+  return api(`/api/lead-agents/admin/staff/messages/search?q=${encodeURIComponent(query)}`);
+}
+async function apiStaffPresence(emails) {
+  return api(`/api/lead-agents/admin/staff/presence?emails=${encodeURIComponent(emails.join(","))}`);
+}
 // Oyi Office Conversational Interaction programme, Phase 9 — reuses the
 // SAME canonical transcription capability the public widget's voice
 // input already calls (openaiClient.createTranscription() in Office's
@@ -577,6 +601,11 @@ const PRIMARY_NAV = [
   { key: "documents", label: "Documents", permission: "documents.generate", phase: null },
   { key: "content", label: "Content", permission: "content.write", phase: null },
   { key: "development-projects", label: "Development", permission: "development.manage", phase: null },
+  // Messages workspace — a normal Operating Area with a real unread
+  // badge (navButton()/updateNavBadge()), superseding the old topbar-
+  // icon-only Inbox affordance (see INBOX_NAV_ITEM below: the "inbox"
+  // key still resolves and redirects here, so old links keep working).
+  { key: "messages", label: "Messages", permission: "messages.read", phase: null },
 ];
 
 const ADMIN_NAV = [
@@ -613,6 +642,7 @@ const NAV_ICONS = {
   audit: '<path d="M8 2 3 4v4c0 3.3 2.1 5.4 5 6 2.9-.6 5-2.7 5-6V4z"/><path d="M6 8l1.5 1.5L10.5 6"/>',
   observatory: '<rect x="5.5" y="5.5" width="5" height="5" rx="0.5"/><path d="M8 2.5V4M8 12v1.5M2.5 8H4M12 8h1.5M5 5.5l-.9-.9M11.9 5.5l.9-.9M5 10.5l-.9.9M11.9 10.5l.9.9"/><circle cx="8" cy="8" r="1"/>',
   inbox: '<path d="M2.5 4.5h11v7h-11z"/><path d="M2.5 4.5 8 9l5.5-4.5"/>',
+  messages: '<path d="M2.5 3.5h11v7.5h-6.5L4 13.5v-2.5h-1.5z"/>',
   attention: '<path d="M8 1.8 14.5 13H1.5z"/><path d="M8 6.5v3.2"/><circle cx="8" cy="11.6" r="0.4" fill="currentColor" stroke="none"/>',
   briefing: '<circle cx="8" cy="8" r="6"/><path d="M8 5.2v3.3l2.2 1.3"/>',
   trend: '<path d="M2.5 11 6 7.5l2.5 2L13.5 4"/><path d="M10.5 4h3v3"/>',
@@ -628,9 +658,10 @@ function navIconSvg(key) {
   return iconSvg(key, "nav-icon");
 }
 
-// Inbox lives as a topbar icon (next to the notification bell), not a
-// sidebar item — still registered here so findNavItem() resolves its
-// permission gate and topbar title the same way every routed view does.
+// "inbox" was the old topbar-icon-only key before Messages became a
+// full sidebar Operating Area — kept registered (not in PRIMARY_NAV) so
+// findNavItem() still resolves it and any old #/inbox bookmark redirects
+// cleanly to #/messages (see the topKey === "inbox" branch in renderRoute()).
 const INBOX_NAV_ITEM = { key: "inbox", label: "Inbox", permission: "messages.read", phase: null };
 
 // Same pattern as INBOX_NAV_ITEM — removed from the visible sidebar
@@ -1388,9 +1419,13 @@ async function renderRoute() {
     outlet.appendChild(skeletonPanel(4));
     await renderDevelopmentProjectsRoute(outlet, rest, token);
   } else if (topKey === "inbox") {
+    // Old topbar-icon-only key — redirect to the real Messages
+    // workspace, same "don't break existing links" pattern as Reports.
+    navigate(`messages${rest.length ? `/${rest.join("/")}` : ""}`);
+  } else if (topKey === "messages") {
     outlet.innerHTML = "";
     outlet.appendChild(skeletonPanel(4));
-    await renderInboxRoute(outlet, rest, token);
+    await renderMessagesRoute(outlet, rest, token);
   } else if (topKey === "team") {
     outlet.innerHTML = "";
     outlet.appendChild(skeletonPanel(4));
@@ -10377,9 +10412,18 @@ function renderNav() {
   }
 }
 function navButton(item) {
-  const button = el(`<button class="nav-item" data-nav-key="${item.key}" type="button">${navIconSvg(item.key)}<span>${escapeHtml(item.label)}</span></button>`);
+  const button = el(`<button class="nav-item" data-nav-key="${item.key}" type="button">${navIconSvg(item.key)}<span>${escapeHtml(item.label)}</span><span class="nav-item-badge" data-nav-badge="${item.key}" hidden>0</span></button>`);
   button.addEventListener("click", () => navigate(item.key));
   return button;
+}
+// Real unread-count badges on sidebar Operating Area items (currently
+// only Messages uses this) — a no-op for any key with no matching
+// element, so this is safe to call before renderNav() has run.
+function updateNavBadge(key, count) {
+  const el_ = document.querySelector(`[data-nav-badge="${key}"]`);
+  if (!el_) return;
+  el_.textContent = count > 99 ? "99+" : String(count);
+  el_.hidden = !count;
 }
 function syncNavActiveState() {
   const topKey = state.segments[0];
@@ -12534,21 +12578,47 @@ function connectRealtimeStream() {
       refreshNotifications();
     });
     notifStream.addEventListener("office.message", (event) => {
-      refreshInboxBadge();
+      refreshMessagesBadge();
       let payload = null;
       try {
         payload = JSON.parse(event.data);
       } catch {
         payload = null;
       }
-      // Live-append if the thread this message belongs to is open right now.
-      if (payload && state.segments[0] === "inbox" && state.segments[1] === payload.conversation_id) {
+      if (!payload) return;
+      if (state.segments[0] === "messages" && state.segments[1] === payload.conversation_id) {
         appendMessageToOpenThread(payload.conversation_id, payload.message);
+      } else if (state.segments[0] === "messages" && !state.segments[1]) {
+        // List pane is open (no thread selected) — refresh so the
+        // preview/unread badge on that row updates live too.
+        refreshMessagesListIfOpen();
       }
     });
+    notifStream.addEventListener("office.message.reaction", (event) => {
+      let payload = null;
+      try { payload = JSON.parse(event.data); } catch { payload = null; }
+      if (payload && state.segments[0] === "messages" && state.segments[1] === payload.conversation_id) {
+        updateMessageReactionInOpenThread(payload);
+      }
+    });
+    notifStream.addEventListener("office.message.deleted", (event) => {
+      let payload = null;
+      try { payload = JSON.parse(event.data); } catch { payload = null; }
+      if (payload && state.segments[0] === "messages" && state.segments[1] === payload.conversation_id) {
+        markMessageDeletedInOpenThread(payload.message_id);
+      }
+    });
+    notifStream.addEventListener("office.conversation.updated", () => {
+      if (state.segments[0] === "messages") refreshMessagesListIfOpen();
+    });
+    notifStream.addEventListener("heartbeat", () => {
+      setMessagesConnectionState(true);
+    });
     notifStream.onerror = () => {
-      // EventSource retries on its own; nothing to do here besides not
-      // crash the tab if the connection drops.
+      // EventSource retries on its own — surface an honest, temporary
+      // "reconnecting" banner in Messages rather than pretending the
+      // live connection is still healthy.
+      setMessagesConnectionState(false);
     };
   } catch {
     notifStream = null;
@@ -12556,221 +12626,1252 @@ function connectRealtimeStream() {
 }
 
 // ---------------------------------------------------------------
-// Inbox — staff-to-staff messaging (Phase 5). Deliberately separate
-// data model from CRM lead conversations and from Notifications;
-// reuses RBAC (messages.read/messages.send), the same realtime hub as
-// Notifications (one EventSource, two event types), and the existing
-// storage service for attachments.
+// Messages workspace (reproduces the approved 3-pane reference design).
+// Reuses the existing Phase 5 staff-to-staff conversation model
+// end-to-end (staff_conversations/participants/messages/reads/
+// attachments, extended additively for group management, reactions,
+// per-participant archive/mute/pin, and soft-delete — see server.js's
+// "Messages workspace additions" comment block). No parallel identity
+// or messaging backend.
 // ---------------------------------------------------------------
-async function refreshInboxBadge() {
-  const badge_ = document.getElementById("inboxBadge");
-  if (!badge_) return;
+const messagesState = {
+  directory: [],
+  conversations: [],
+  activeId: null,
+  filter: "all",
+  query: "",
+  showingArchived: false,
+  pendingAttachments: [],
+  presence: {},
+  recording: null,
+  connected: true,
+};
+
+function setMessagesConnectionState(connected) {
+  messagesState.connected = connected;
+  const banner = document.getElementById("messagesConnectionBanner");
+  if (banner) banner.hidden = connected;
+}
+
+async function refreshMessagesBadge() {
   try {
     const data = await apiListConversations();
-    const totalUnread = (data.conversations || []).reduce((sum, c) => sum + (c.unread_count || 0), 0);
-    if (totalUnread > 0) {
-      badge_.textContent = totalUnread > 99 ? "99+" : String(totalUnread);
-      badge_.hidden = false;
-    } else {
-      badge_.hidden = true;
-    }
+    const total = (data.conversations || []).reduce((sum, c) => sum + (c.archived_at ? 0 : (c.unread_count || 0)), 0);
+    updateNavBadge("messages", total);
   } catch {
-    // Quiet failure, same as the notification badge.
+    // Quiet failure, same convention as the notification badge.
   }
 }
 
-function conversationLabel(conversation) {
-  if (conversation.title) return conversation.title;
-  const others = (conversation.participants || []).filter((email) => email !== state.admin?.email);
-  return others.join(", ") || "Conversation";
-}
-
-async function renderInboxRoute(outlet, rest, token) {
-  const conversationId = rest[0];
-  if (conversationId) {
-    await renderInboxThread(outlet, conversationId, token);
-  } else {
-    await renderInboxList(outlet, token);
-  }
-}
-
-async function renderInboxList(outlet, token) {
-  setTopbar("Inbox", "");
-  setSelectedObject(null);
-  let conversations;
+// Re-fetches and redraws the list pane in place if Messages is the
+// currently open route with no thread selected — used for live
+// updates (new message preview, conversation renamed) that shouldn't
+// force a full page rebuild.
+async function refreshMessagesListIfOpen() {
+  const listPane = document.querySelector(".messages-list-pane");
+  if (!listPane) return;
   try {
     const data = await apiListConversations();
-    conversations = data.conversations || [];
+    messagesState.conversations = data.conversations || [];
+    renderMessagesListPane(listPane);
+  } catch {
+    // Quiet — the pane just keeps its last known state.
+  }
+}
+
+function messagesPersonInfo(email) {
+  if (email === state.admin?.email) {
+    return {
+      email,
+      display_name: state.admin.display_name || state.admin.email,
+      office_position: state.admin.office_position || "",
+      phone: state.admin.phone || "",
+      passport_photo_url: state.admin.passport_photo_url || "",
+      last_login_at: null,
+    };
+  }
+  return messagesState.directory.find((s) => s.email === email) || { email, display_name: email };
+}
+
+function messagesInitials(person) {
+  return (person.display_name || person.email || "?").trim().split(/\s+/).map((p) => p[0]).slice(0, 2).join("").toUpperCase() || "?";
+}
+
+function messagesAvatarHtml(person, { size = "", presence = null } = {}) {
+  const sizeClass = size ? ` ${size}` : "";
+  const inner = person.passport_photo_url
+    ? `<img src="${escapeHtml(person.passport_photo_url)}" alt="" />`
+    : `<span>${escapeHtml(messagesInitials(person))}</span>`;
+  const dot = presence !== null ? `<span class="messages-presence-dot${presence ? " online" : ""}"></span>` : "";
+  return `<div class="messages-avatar${sizeClass}">${inner}${dot}</div>`;
+}
+
+function messagesGroupAvatarHtml(size = "") {
+  const sizeClass = size ? ` ${size}` : "";
+  return `<div class="messages-avatar-group${sizeClass}"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="5.5" cy="5.5" r="2"/><circle cx="11" cy="6" r="1.6"/><path d="M2 13c0-2.1 1.6-3.7 3.5-3.7S9 10.9 9 13"/><path d="M9.7 10c1.4.2 2.5 1.5 2.6 3"/></svg></div>`;
+}
+
+function messagesOtherParticipant(conversation) {
+  if (conversation.type !== "direct") return null;
+  const other = (conversation.participants || []).find((e) => e !== state.admin?.email);
+  return other ? messagesPersonInfo(other) : null;
+}
+
+function messagesConversationLabel(conversation) {
+  if (conversation.type === "group") return conversation.title || "Group";
+  const other = messagesOtherParticipant(conversation);
+  return other ? (other.display_name || other.email) : "Conversation";
+}
+
+function messagesPresenceLabel(person) {
+  if (!person || person.email === state.admin?.email) return null;
+  const online = messagesState.presence[person.email];
+  if (online) return { text: "Online", online: true };
+  if (person.last_login_at) return { text: `Last active ${fmtRelative(person.last_login_at)}`, online: false };
+  return { text: "Offline", online: false };
+}
+
+function messagesFilteredConversations() {
+  let list = messagesState.conversations.filter((c) => (messagesState.showingArchived ? Boolean(c.archived_at) : !c.archived_at));
+  if (messagesState.filter === "unread") list = list.filter((c) => c.unread_count > 0);
+  else if (messagesState.filter === "direct") list = list.filter((c) => c.type === "direct");
+  else if (messagesState.filter === "groups") list = list.filter((c) => c.type === "group");
+  const q = messagesState.query.trim().toLowerCase();
+  if (q) {
+    list = list.filter((c) => {
+      if (messagesConversationLabel(c).toLowerCase().includes(q)) return true;
+      return (c.participants || []).some((email) => messagesPersonInfo(email).display_name?.toLowerCase().includes(q) || email.toLowerCase().includes(q));
+    });
+  }
+  return [...list].sort((a, b) => {
+    const ap = a.pinned_at ? 1 : 0;
+    const bp = b.pinned_at ? 1 : 0;
+    if (ap !== bp) return bp - ap;
+    return String(b.last_message_at || b.created_at).localeCompare(String(a.last_message_at || a.created_at));
+  });
+}
+
+async function renderMessagesRoute(outlet, rest, token) {
+  setTopbar("Messages", "");
+  setSelectedObject(null);
+  const showingArchivedRoute = rest[0] === "archived";
+  const conversationId = !showingArchivedRoute && rest[0] ? rest[0] : null;
+
+  let conversations, directory;
+  try {
+    [conversations, directory] = await Promise.all([
+      apiListConversations().then((d) => d.conversations || []),
+      apiListStaffDirectory().then((d) => d.staff || []),
+    ]);
   } catch (err) {
     if (token !== state.renderToken) return;
     outlet.innerHTML = "";
-    outlet.appendChild(el(`<div class="view-heading"><h1>Inbox</h1></div>`));
-    outlet.appendChild(errorPanel(err.message || "Could not load your messages."));
+    outlet.appendChild(el(`<div class="view-heading"><h1>Messages</h1></div>`));
+    outlet.appendChild(errorPanel(err.message || "Could not load Messages."));
     return;
   }
   if (token !== state.renderToken) return;
 
+  messagesState.conversations = conversations;
+  messagesState.directory = directory;
+  messagesState.showingArchived = showingArchivedRoute;
+  messagesState.activeId = conversationId;
+
   outlet.innerHTML = "";
-  const heading = el(`
-    <div class="view-heading">
-      <h1>Inbox</h1>
-      <p>Direct and group messages with Office staff.</p>
+  const page = el(`<div class="messages-page${conversationId ? " messages-thread-open" : ""}"></div>`);
+  const listPane = el(`<div class="messages-list-pane"></div>`);
+  const threadPane = el(`<div class="messages-thread-pane"></div>`);
+  const detailsPane = el(`<div class="messages-details-pane"></div>`);
+  page.appendChild(listPane);
+  page.appendChild(threadPane);
+  page.appendChild(detailsPane);
+  outlet.appendChild(page);
+
+  renderMessagesListPane(listPane);
+
+  if (conversationId) {
+    const conversation = conversations.find((c) => c.id === conversationId);
+    if (!conversation) {
+      threadPane.appendChild(messagesEmptyThreadState("This conversation could not be found, or you're not part of it."));
+      return;
+    }
+    await renderMessagesThread(threadPane, conversation, token);
+    if (token !== state.renderToken) return;
+    renderMessagesDetailsPane(detailsPane, conversation);
+    apiMarkConversationRead(conversationId).then(refreshMessagesBadge).catch(() => null);
+  } else {
+    threadPane.appendChild(messagesEmptyThreadState());
+  }
+}
+
+function messagesEmptyThreadState(message) {
+  return el(`
+    <div class="messages-empty-state">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M4 5h16v11H9l-5 4V5z"/></svg>
+      <h3>${message ? "Conversation unavailable" : "Select a conversation"}</h3>
+      <p>${escapeHtml(message || "Choose a conversation from the list, or start a New Message.")}</p>
     </div>
   `);
-  outlet.appendChild(heading);
+}
 
-  const newBtn = el(`<button type="button" class="btn btn-primary btn-sm" style="margin-bottom:14px;">New Message</button>`);
-  newBtn.addEventListener("click", () => openNewConversationDialog());
-  outlet.appendChild(newBtn);
+function renderMessagesListPane(listPane) {
+  listPane.innerHTML = "";
+  const head = el(`
+    <div class="messages-list-head">
+      <div class="messages-search-row">
+        <div class="messages-search-box">
+          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="7" cy="7" r="4.5"/><path d="M13.5 13.5 10.3 10.3"/></svg>
+          <input type="text" id="messagesSearchInput" placeholder="Search messages…" value="${escapeHtml(messagesState.query)}" />
+        </div>
+        <button type="button" class="messages-new-btn" id="messagesNewBtn" title="New Message" aria-label="New Message">
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M11 2.5 13.5 5 5.5 13 2.5 13.5 3 10.5z"/></svg>
+        </button>
+      </div>
+      <div class="messages-tabs" id="messagesTabs"></div>
+    </div>
+  `);
+  listPane.appendChild(head);
 
-  if (!conversations.length) {
-    outlet.appendChild(emptyPanel({ kicker: "Inbox", title: "No conversations yet", body: "Start a conversation with a colleague using New Message." }));
-    return;
-  }
+  const scroll = el(`<div class="messages-list-scroll" id="messagesListScroll"></div>`);
+  listPane.appendChild(scroll);
 
-  const list = el(`<div class="attention-list"></div>`);
-  conversations.forEach((conversation) => {
-    const preview = conversation.last_message?.body || (conversation.last_message?.attachments?.length ? "Attachment" : "No messages yet");
-    const row = el(`
-      <div class="attention-row clickable" style="grid-template-columns: 1fr auto 140px;">
-        <span class="attention-title">
-          <strong>${escapeHtml(conversationLabel(conversation))}</strong>
-          <span style="color:var(--text-tertiary);"> — ${escapeHtml(preview.slice(0, 60))}</span>
-        </span>
-        ${conversation.unread_count ? badge(String(conversation.unread_count), "red") : ""}
-        <span class="attention-owner">${escapeHtml(fmtRelative(conversation.last_message_at || conversation.created_at))}</span>
+  if (!messagesState.showingArchived) {
+    const archivedCount = messagesState.conversations.filter((c) => c.archived_at).length;
+    const archivedLink = el(`
+      <div class="messages-archived-link" id="messagesArchivedLink">
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="2" y="3.5" width="12" height="3" rx="0.6"/><path d="M3 6.5V12a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1V6.5"/><path d="M6.5 9h3"/></svg>
+        <span>Archived Conversations${archivedCount ? ` (${archivedCount})` : ""}</span>
       </div>
     `);
-    row.addEventListener("click", () => navigate(`inbox/${conversation.id}`));
-    list.appendChild(row);
-  });
-  outlet.appendChild(list);
-}
+    archivedLink.addEventListener("click", () => navigate("messages/archived"));
+    listPane.appendChild(archivedLink);
+  } else {
+    const backLink = el(`
+      <div class="messages-archived-link" id="messagesArchivedLink">
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M10 3 5 8l5 5"/></svg>
+        <span>Back to Messages</span>
+      </div>
+    `);
+    backLink.addEventListener("click", () => navigate("messages"));
+    listPane.appendChild(backLink);
+  }
 
-function openNewConversationDialog() {
-  apiListStaffDirectory().then((data) => {
-    const staff = data.staff || [];
-    openDialog("New Message", [
-      {
-        name: "participant_email", label: "To", type: "select",
-        options: staff.map((s) => ({ value: s.email, label: `${s.display_name}${s.office_position ? ` (${s.office_position})` : ""}` })),
-      },
-      { name: "body", label: "Message", type: "textarea" },
-    ], async (data_) => {
-      if (!data_.participant_email) throw new Error("Choose who to message.");
-      const { conversation } = await apiCreateConversation([data_.participant_email], "direct");
-      if (data_.body && data_.body.trim()) {
-        await apiSendMessage(conversation.id, data_.body.trim(), []);
-      }
-      navigate(`inbox/${conversation.id}`);
+  const tabsHost = head.querySelector("#messagesTabs");
+  const tabs = [
+    { key: "all", label: "All" },
+    { key: "unread", label: "Unread", count: messagesState.conversations.filter((c) => !c.archived_at && c.unread_count > 0).length },
+    { key: "direct", label: "Direct" },
+    { key: "groups", label: "Groups" },
+  ];
+  tabs.forEach((tab) => {
+    const btn = el(`<button type="button" class="messages-tab${messagesState.filter === tab.key ? " active" : ""}">${escapeHtml(tab.label)}${tab.count ? ` <span class="count">${tab.count}</span>` : ""}</button>`);
+    btn.addEventListener("click", () => {
+      messagesState.filter = tab.key;
+      renderMessagesListPane(listPane);
     });
-  }).catch((err) => toast(err.message || "Could not load the staff directory."));
+    tabsHost.appendChild(btn);
+  });
+
+  let messagesSearchDebounce = null;
+  head.querySelector("#messagesSearchInput").addEventListener("input", (event) => {
+    messagesState.query = event.target.value;
+    clearTimeout(messagesSearchDebounce);
+    messagesSearchDebounce = setTimeout(() => drawMessagesRows(scroll), 200);
+  });
+  head.querySelector("#messagesNewBtn").addEventListener("click", () => openNewMessageDialog());
+
+  drawMessagesRows(scroll);
 }
 
-let pendingAttachments = [];
-async function renderInboxThread(outlet, conversationId, token) {
-  setTopbar("Inbox", "");
-  setSelectedObject(null);
-  pendingAttachments = [];
+function drawMessagesRows(scroll) {
+  scroll.innerHTML = "";
+  const rows = messagesFilteredConversations();
+  if (!rows.length) {
+    scroll.appendChild(el(`
+      <div class="messages-empty-state" style="padding:32px 16px;">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.2-3.2"/></svg>
+        <h3>${messagesState.query ? "No matches" : messagesState.showingArchived ? "No archived conversations" : "No conversations yet"}</h3>
+        <p>${messagesState.query ? "Try a different name or search term." : "Start a conversation with a colleague using New Message."}</p>
+      </div>
+    `));
+    if (messagesState.query.trim().length >= 2) drawMessagesContentSearchResults(scroll, messagesState.query.trim());
+    return;
+  }
+  rows.forEach((conversation) => {
+    const isGroup = conversation.type === "group";
+    const other = messagesOtherParticipant(conversation);
+    const presence = other ? messagesState.presence[other.email] : null;
+    const avatar = isGroup ? messagesGroupAvatarHtml() : messagesAvatarHtml(other || { email: "" }, { presence: presence === undefined ? null : presence });
+    const last = conversation.last_message;
+    const mine = last && last.sender_email === state.admin?.email;
+    const preview = last
+      ? (last.deleted_at ? "Message deleted" : (last.body || (last.attachments?.length ? (last.attachments[0].mime_type?.startsWith("audio/") ? "Voice note" : "Attachment") : "")))
+      : "No messages yet";
+    const row = el(`
+      <div class="messages-row${conversation.id === messagesState.activeId ? " active" : ""}" data-conversation-id="${conversation.id}">
+        ${avatar}
+        <div class="messages-row-body">
+          <div class="messages-row-top">
+            <span class="messages-row-name">
+              ${conversation.pinned_at ? `<svg class="messages-pin-icon" viewBox="0 0 16 16" fill="currentColor"><path d="M8 1.5 9.5 6 14 7l-3.5 3 1 4.5L8 12l-3.5 2.5 1-4.5L2 7l4.5-1z"/></svg>` : ""}
+              ${escapeHtml(messagesConversationLabel(conversation))}
+            </span>
+            <span class="messages-row-time">${conversation.last_message_at ? fmtRelative(conversation.last_message_at) : ""}</span>
+          </div>
+          <div class="messages-row-bottom">
+            <span class="messages-row-preview">${mine ? `<span class="mine-prefix">You:</span>` : ""}${escapeHtml(preview.slice(0, 46))}</span>
+            ${conversation.unread_count ? `<span class="messages-unread-badge">${conversation.unread_count > 99 ? "99+" : conversation.unread_count}</span>` : ""}
+          </div>
+        </div>
+      </div>
+    `);
+    row.addEventListener("click", () => navigate(`messages/${conversation.id}`));
+    scroll.appendChild(row);
+  });
+}
+
+// Real message-content search (Part 12 of the brief), scoped
+// server-side to the caller's own conversations — see
+// GET /admin/staff/messages/search. Only reached when the
+// conversation-name filter above found nothing, so it doesn't
+// duplicate results the row list already shows.
+let messagesSearchToken = 0;
+async function drawMessagesContentSearchResults(scroll, query) {
+  const myToken = ++messagesSearchToken;
+  let results;
+  try {
+    const data = await apiSearchMessages(query);
+    results = data.results || [];
+  } catch {
+    return;
+  }
+  if (myToken !== messagesSearchToken || messagesState.query.trim() !== query) return;
+  if (!results.length) return;
+  scroll.appendChild(el(`<div class="messages-list-section-label">Messages matching "${escapeHtml(query)}"</div>`));
+  results.forEach((result) => {
+    const sender = messagesPersonInfo(result.message.sender_email);
+    const label = result.conversation_type === "group" ? (result.conversation_title || "Group") : (sender.display_name || sender.email);
+    const row = el(`
+      <div class="messages-row" data-conversation-id="${result.conversation_id}">
+        ${messagesAvatarHtml(sender)}
+        <div class="messages-row-body">
+          <div class="messages-row-top"><span class="messages-row-name">${escapeHtml(label)}</span><span class="messages-row-time">${escapeHtml(fmtRelative(result.message.created_at))}</span></div>
+          <div class="messages-row-bottom"><span class="messages-row-preview">${escapeHtml((result.message.body || "").slice(0, 60))}</span></div>
+        </div>
+      </div>
+    `);
+    row.addEventListener("click", () => navigate(`messages/${result.conversation_id}`));
+    scroll.appendChild(row);
+  });
+}
+
+// ---------------------------------------------------------------
+// Active conversation (thread) pane
+// ---------------------------------------------------------------
+async function renderMessagesThread(threadPane, conversation, token) {
+  threadPane.innerHTML = "";
+  messagesState.pendingAttachments = [];
   let messages;
   try {
-    const data = await apiListConversationMessages(conversationId);
+    const data = await apiListConversationMessages(conversation.id);
     messages = data.messages || [];
-    await apiMarkConversationRead(conversationId);
-    refreshInboxBadge();
   } catch (err) {
     if (token !== state.renderToken) return;
-    outlet.innerHTML = "";
-    outlet.appendChild(el(`<div class="view-heading"><h1>Inbox</h1></div>`));
-    outlet.appendChild(err.status === 403 ? errorPanel("You're not part of this conversation.") : errorPanel(err.message || "Could not load this conversation."));
+    threadPane.appendChild(messagesEmptyThreadState(err.status === 403 ? "You're not part of this conversation." : (err.message || "Could not load this conversation.")));
     return;
   }
   if (token !== state.renderToken) return;
 
-  outlet.innerHTML = "";
-  const back = el(`<button type="button" class="detail-back">← Inbox</button>`);
-  back.addEventListener("click", () => navigate("inbox"));
-  outlet.appendChild(back);
+  const isGroup = conversation.type === "group";
+  const other = messagesOtherParticipant(conversation);
+  const membersToCheck = isGroup ? (conversation.participants || []).filter((e) => e !== state.admin?.email) : (other ? [other.email] : []);
+  if (membersToCheck.length) {
+    apiStaffPresence(membersToCheck).then((data) => {
+      Object.assign(messagesState.presence, data.presence || {});
+      const statusEl = threadPane.querySelector("#messagesThreadStatus");
+      if (statusEl && !isGroup && other) {
+        const presence = messagesPresenceLabel(other);
+        if (presence) {
+          statusEl.textContent = presence.text;
+          statusEl.classList.toggle("online", presence.online);
+        }
+      }
+    }).catch(() => null);
+  }
 
-  const thread = el(`<div class="oyi-thread" id="inboxThread" style="max-height:60vh;border:1px solid var(--line);border-radius:var(--radius);margin:14px 0;"></div>`);
-  messages.forEach((message) => thread.appendChild(renderInboxMessage(message)));
-  outlet.appendChild(thread);
-  thread.scrollTop = thread.scrollHeight;
+  const presenceNow = !isGroup && other ? messagesPresenceLabel(other) : null;
+  const header = el(`
+    <div class="messages-thread-head">
+      <div class="messages-thread-head-id">
+        <button type="button" class="messages-icon-btn messages-back-btn" id="messagesBackBtn" aria-label="Back to conversations">
+          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M10 3 5 8l5 5"/></svg>
+        </button>
+        ${isGroup ? messagesGroupAvatarHtml() : messagesAvatarHtml(other || { email: "" }, { presence: presenceNow ? presenceNow.online : null })}
+        <div class="messages-thread-head-text">
+          <div class="messages-thread-head-name">${escapeHtml(messagesConversationLabel(conversation))}</div>
+          <div class="messages-thread-head-status${presenceNow?.online ? " online" : ""}" id="messagesThreadStatus">${isGroup ? `${(conversation.participants || []).length} members` : escapeHtml(presenceNow?.text || "")}</div>
+        </div>
+      </div>
+      <div class="messages-thread-actions" id="messagesThreadActions">
+        <button type="button" class="messages-icon-btn" id="messagesCallBtn" title="Call" aria-label="Call">
+          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3.5 2.5c1 0 2 2 2 3s-1 1.2-1 2c0 1.5 2.5 4 4 4 .8 0 1-1 2-1s3 1 3 2-1.5 2.5-2.5 2.5C7.5 15 1 8.5 1 5 1 4 2.5 2.5 3.5 2.5z"/></svg>
+        </button>
+        <button type="button" class="messages-icon-btn" id="messagesVideoBtn" title="Video" aria-label="Video">
+          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="1.5" y="4" width="9" height="8" rx="1"/><path d="M10.5 7l4-2.5v7L10.5 9"/></svg>
+        </button>
+      </div>
+    </div>
+  `);
+  threadPane.appendChild(header);
+  header.querySelector("#messagesBackBtn").addEventListener("click", () => navigate("messages"));
+  header.querySelector("#messagesCallBtn").addEventListener("click", () => messagesShowUnavailableCall("Call"));
+  header.querySelector("#messagesVideoBtn").addEventListener("click", () => messagesShowUnavailableCall("Video"));
 
+  // buildOverflowMenu (the same shared, positioning-safe component used
+  // everywhere else in Office) takes ownership of the trigger button it's
+  // given -- it must be built standalone and handed in BEFORE insertion,
+  // not embedded in a template string and wired up separately afterward.
+  const moreBtn = el(`<button type="button" class="messages-icon-btn" title="More" aria-label="More"><svg viewBox="0 0 16 16" fill="currentColor"><circle cx="3.5" cy="8" r="1.3"/><circle cx="8" cy="8" r="1.3"/><circle cx="12.5" cy="8" r="1.3"/></svg></button>`);
+  const moreMenu = buildOverflowMenu({
+    ariaLabel: "More",
+    trigger: moreBtn,
+    items: [
+      { label: conversation.pinned_at ? "Unpin conversation" : "Pin conversation", onClick: async () => { await apiSetConversationState(conversation.id, conversation.pinned_at ? "unpin" : "pin"); navigate(`messages/${conversation.id}`); } },
+      { label: conversation.muted_at ? "Unmute notifications" : "Mute notifications", onClick: async () => { await apiSetConversationState(conversation.id, conversation.muted_at ? "unmute" : "mute"); navigate(`messages/${conversation.id}`); } },
+      { label: conversation.archived_at ? "Unarchive" : "Archive", onClick: () => messagesToggleArchive(conversation) },
+      { label: "Leave group", danger: true, hidden: conversation.type !== "group", onClick: () => messagesLeaveGroup(conversation) },
+    ],
+  });
+  header.querySelector("#messagesThreadActions").appendChild(moreMenu);
+
+  const banner = el(`<div class="messages-connection-banner" id="messagesConnectionBanner"${messagesState.connected ? " hidden" : ""}>Reconnecting…</div>`);
+  threadPane.appendChild(banner);
+
+  const scroll = el(`<div class="messages-thread-scroll" id="messagesThreadScroll"></div>`);
+  threadPane.appendChild(scroll);
+  renderMessagesThreadMessages(scroll, messages, conversation);
+  scroll.scrollTop = scroll.scrollHeight;
+
+  renderMessagesComposer(threadPane, conversation);
+}
+
+function messagesShowUnavailableCall(kind) {
+  // Section 9 of the brief, verbatim intent: real WebRTC/Twilio/calling
+  // infrastructure was audited and confirmed absent (see the completion
+  // report) — this control is a genuine, honest future-capability
+  // placeholder, never a simulated call.
+  toast(`${kind} is not configured yet.`);
+}
+
+function messagesDateSeparatorLabel(iso) {
+  const date = new Date(iso);
+  const today = new Date();
+  const yesterday = new Date(today);
+  yesterday.setDate(today.getDate() - 1);
+  const sameDay = (a, b) => a.toDateString() === b.toDateString();
+  if (sameDay(date, today)) return "Today";
+  if (sameDay(date, yesterday)) return "Yesterday";
+  return date.toLocaleDateString(undefined, { month: "long", day: "numeric", year: date.getFullYear() !== today.getFullYear() ? "numeric" : undefined });
+}
+
+function renderMessagesThreadMessages(scroll, messages, conversation) {
+  scroll.innerHTML = "";
+  if (!messages.length) {
+    scroll.appendChild(el(`
+      <div class="messages-empty-state">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M4 5h16v11H9l-5 4V5z"/></svg>
+        <h3>No messages yet</h3>
+        <p>Say hello to ${escapeHtml(messagesConversationLabel(conversation))}.</p>
+      </div>
+    `));
+    return;
+  }
+  let lastDay = null;
+  messages.forEach((message) => {
+    const day = new Date(message.created_at).toDateString();
+    if (day !== lastDay) {
+      scroll.appendChild(el(`<div class="messages-date-sep">${escapeHtml(messagesDateSeparatorLabel(message.created_at))}</div>`));
+      lastDay = day;
+    }
+    scroll.appendChild(renderMessagesBubble(message, conversation));
+  });
+}
+
+function messagesReadTickHtml(message, conversation) {
+  const mine = message.sender_email === state.admin?.email;
+  if (!mine) return "";
+  const others = (conversation.participants || []).filter((e) => e !== message.sender_email);
+  const readByAll = others.length > 0 && others.every((e) => (message.read_by || []).includes(e));
+  return `<svg class="messages-read-tick${readByAll ? " read" : ""}" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M2 8.5 5 11.5 10 5"/>${readByAll ? '<path d="M7 8.5 10 11.5 15 5"/>' : ""}</svg>`;
+}
+
+function messagesAttachmentHtml(att) {
+  const mime = att.mime_type || "";
+  if (mime.startsWith("image/")) {
+    return `<a href="${escapeHtml(att.file_url)}" target="_blank" rel="noopener"><img class="messages-attachment-image" src="${escapeHtml(att.file_url)}" alt="${escapeHtml(att.filename || "Image")}" /></a>`;
+  }
+  if (mime.startsWith("audio/")) {
+    const durationLabel = att.duration_seconds ? `${Math.floor(att.duration_seconds / 60)}:${String(att.duration_seconds % 60).padStart(2, "0")}` : "";
+    return `
+      <div class="messages-voice-note" data-voice-url="${escapeHtml(att.file_url)}">
+        <button type="button" class="messages-voice-play" data-voice-toggle aria-label="Play voice note">
+          <svg width="11" height="11" viewBox="0 0 16 16" fill="currentColor"><path d="M4 2.5v11l10-5.5z"/></svg>
+        </button>
+        <div class="messages-voice-bar"><div class="messages-voice-bar-fill"></div></div>
+        <span class="messages-voice-duration">${escapeHtml(durationLabel)}</span>
+        <audio preload="none" src="${escapeHtml(att.file_url)}" style="display:none;"></audio>
+      </div>
+    `;
+  }
+  const ext = (att.filename || "").split(".").pop()?.slice(0, 4).toUpperCase() || "FILE";
+  const sizeLabel = att.size_bytes ? `${(att.size_bytes / 1024).toFixed(0)} KB` : "";
+  return `
+    <a class="messages-attachment-card" href="${escapeHtml(att.file_url)}" target="_blank" rel="noopener">
+      <span class="messages-attachment-icon">${escapeHtml(ext)}</span>
+      <span class="messages-attachment-meta">
+        <div class="messages-attachment-name">${escapeHtml(att.filename || "Attachment")}</div>
+        <div class="messages-attachment-size">${escapeHtml(sizeLabel)}</div>
+      </span>
+    </a>
+  `;
+}
+
+function renderMessagesBubble(message, conversation) {
+  const mine = message.sender_email === state.admin?.email;
+  const sender = messagesPersonInfo(message.sender_email);
+  const isGroup = conversation.type === "group";
+  const wrap = el(`<div class="messages-bubble-row ${mine ? "mine" : "theirs"}" data-message-id="${message.id}"></div>`);
+  if (isGroup && !mine) {
+    wrap.appendChild(el(`<div class="messages-sender-label">${escapeHtml(sender.display_name || sender.email)}</div>`));
+  }
+  const bubbleWrap = el(`<div class="messages-bubble-wrap"></div>`);
+
+  if (message.deleted_at) {
+    bubbleWrap.appendChild(el(`<div class="messages-bubble deleted">Message deleted</div>`));
+  } else {
+    const bubble = el(`<div class="messages-bubble"></div>`);
+    if (message.body) bubble.appendChild(el(`<div>${escapeHtml(message.body).replace(/\n/g, "<br>")}</div>`));
+    (message.attachments || []).forEach((att) => {
+      bubble.insertAdjacentHTML("beforeend", messagesAttachmentHtml(att));
+    });
+    bubbleWrap.appendChild(bubble);
+
+    if (mine || hasPermission("messages.send")) {
+      const hover = el(`<div class="messages-bubble-hover-actions"></div>`);
+      const reactBtn = el(`<button type="button" class="messages-bubble-action-btn" title="React">🙂</button>`);
+      reactBtn.addEventListener("click", (event) => openMessagesEmojiPicker(event, message, bubbleWrap));
+      hover.appendChild(reactBtn);
+      const replyBtn = el(`<button type="button" class="messages-bubble-action-btn" title="Reply">↩</button>`);
+      replyBtn.addEventListener("click", () => messagesQuoteReply(message, sender));
+      hover.appendChild(replyBtn);
+      if (message.body) {
+        const copyBtn = el(`<button type="button" class="messages-bubble-action-btn" title="Copy">⧉</button>`);
+        copyBtn.addEventListener("click", async () => {
+          try { await navigator.clipboard.writeText(message.body); toast("Copied."); } catch { /* clipboard unavailable — no-op */ }
+        });
+        hover.appendChild(copyBtn);
+      }
+      if (mine) {
+        const delBtn = el(`<button type="button" class="messages-bubble-action-btn" title="Delete">🗑</button>`);
+        delBtn.addEventListener("click", () => messagesDeleteOwnMessage(message.id, wrap));
+        hover.appendChild(delBtn);
+      }
+      bubbleWrap.appendChild(hover);
+    }
+  }
+  wrap.appendChild(bubbleWrap);
+
+  const meta = el(`<div class="messages-bubble-meta"><span>${escapeHtml(fmtRelative(message.created_at))}</span></div>`);
+  const tick = messagesReadTickHtml(message, conversation);
+  if (tick) meta.insertAdjacentHTML("beforeend", tick);
+  wrap.appendChild(meta);
+
+  if (!message.deleted_at && (message.reactions || []).length) {
+    const grouped = new Map();
+    message.reactions.forEach((r) => {
+      if (!grouped.has(r.emoji)) grouped.set(r.emoji, []);
+      grouped.get(r.emoji).push(r.staff_email);
+    });
+    const reactionsRow = el(`<div class="messages-reactions"></div>`);
+    grouped.forEach((emails, emoji) => {
+      const mineReacted = emails.includes(state.admin?.email);
+      const chip = el(`<button type="button" class="messages-reaction-chip${mineReacted ? " mine" : ""}">${escapeHtml(emoji)} <span>${emails.length}</span></button>`);
+      chip.addEventListener("click", () => messagesToggleReaction(message.id, emoji, wrap, conversation));
+      reactionsRow.appendChild(chip);
+    });
+    wrap.appendChild(reactionsRow);
+  }
+
+  return wrap;
+}
+
+const MESSAGES_QUICK_EMOJI = ["👍", "❤️", "😂", "🎉", "👏", "🙏"];
+
+function openMessagesEmojiPicker(event, message, anchor) {
+  document.querySelectorAll(".messages-emoji-picker").forEach((el_) => el_.remove());
+  const picker = el(`<div class="messages-emoji-picker"></div>`);
+  MESSAGES_QUICK_EMOJI.forEach((emoji) => {
+    const btn = el(`<button type="button">${emoji}</button>`);
+    btn.addEventListener("click", () => {
+      const conversationId = messagesState.activeId;
+      const conversation = messagesState.conversations.find((c) => c.id === conversationId);
+      messagesToggleReaction(message.id, emoji, anchor.closest(".messages-bubble-row"), conversation);
+      picker.remove();
+    });
+    picker.appendChild(btn);
+  });
+  anchor.appendChild(picker);
+  setTimeout(() => {
+    document.addEventListener("click", function outside(e) {
+      if (!picker.contains(e.target)) { picker.remove(); document.removeEventListener("click", outside); }
+    });
+  }, 0);
+}
+
+async function messagesToggleReaction(messageId, emoji, rowEl, conversation) {
+  try {
+    await apiToggleMessageReaction(messageId, emoji);
+    const data = await apiListConversationMessages(messagesState.activeId);
+    const message = (data.messages || []).find((m) => m.id === messageId);
+    if (message && rowEl) {
+      const fresh = renderMessagesBubble(message, conversation);
+      rowEl.replaceWith(fresh);
+    }
+  } catch (err) {
+    toast(err.message || "Could not react to that message.");
+  }
+}
+
+function messagesQuoteReply(message, sender) {
+  const textarea = document.getElementById("messagesComposerText");
+  if (!textarea) return;
+  const quotedPreview = (message.body || "Attachment").slice(0, 80);
+  textarea.value = `@${sender.display_name || sender.email}: "${quotedPreview}"\n${textarea.value}`;
+  textarea.focus();
+}
+
+async function messagesDeleteOwnMessage(messageId, rowEl) {
+  try {
+    await apiDeleteMessage(messageId);
+    rowEl.querySelector(".messages-bubble-wrap").innerHTML = `<div class="messages-bubble deleted">Message deleted</div>`;
+  } catch (err) {
+    toast(err.message || "Could not delete that message.");
+  }
+}
+
+function appendMessageToOpenThread(conversationId, message) {
+  const scroll = document.getElementById("messagesThreadScroll");
+  if (!scroll || !message) return;
+  const conversation = messagesState.conversations.find((c) => c.id === conversationId);
+  const lastSep = scroll.querySelector(".messages-date-sep:last-of-type");
+  const today = messagesDateSeparatorLabel(message.created_at);
+  if (!lastSep || lastSep.textContent !== today) {
+    scroll.appendChild(el(`<div class="messages-date-sep">${escapeHtml(today)}</div>`));
+  }
+  scroll.appendChild(renderMessagesBubble(message, conversation || { participants: [], type: "direct" }));
+  scroll.scrollTop = scroll.scrollHeight;
+  apiMarkConversationRead(conversationId).then(refreshMessagesBadge).catch(() => null);
+}
+
+function updateMessageReactionInOpenThread(payload) {
+  const row = document.querySelector(`[data-message-id="${payload.message_id}"]`);
+  if (!row) return;
+  apiListConversationMessages(payload.conversation_id).then((data) => {
+    const message = (data.messages || []).find((m) => m.id === payload.message_id);
+    const conversation = messagesState.conversations.find((c) => c.id === payload.conversation_id);
+    if (message) row.replaceWith(renderMessagesBubble(message, conversation || { participants: [], type: "direct" }));
+  }).catch(() => null);
+}
+
+function markMessageDeletedInOpenThread(messageId) {
+  const row = document.querySelector(`[data-message-id="${messageId}"]`);
+  if (!row) return;
+  const wrap = row.querySelector(".messages-bubble-wrap");
+  if (wrap) wrap.innerHTML = `<div class="messages-bubble deleted">Message deleted</div>`;
+}
+
+// ---------------------------------------------------------------
+// Composer — text, emoji, file/image attachment, voice note (browser
+// MediaRecorder), send. Enter sends, Shift+Enter inserts a newline.
+// ---------------------------------------------------------------
+function renderMessagesComposer(threadPane, conversation) {
+  const attachPreview = el(`<div class="messages-attach-preview" id="messagesAttachPreview"></div>`);
+  const wrap = el(`<div class="messages-composer-wrap"></div>`);
+  wrap.appendChild(attachPreview);
   const composer = el(`
-    <form class="oyi-composer" id="inboxComposer" style="border:1px solid var(--line);border-radius:var(--radius);">
-      <input type="file" id="inboxAttachInput" style="display:none;" multiple />
-      <button type="button" class="btn btn-ghost btn-sm" id="inboxAttachBtn" title="Attach file">📎</button>
-      <textarea id="inboxComposerText" placeholder="Write a message…" rows="1"></textarea>
-      <button type="submit">➤</button>
+    <form class="messages-composer" id="messagesComposer">
+      <input type="file" id="messagesFileInput" style="display:none;" multiple />
+      <input type="file" id="messagesImageInput" accept="image/*" style="display:none;" multiple />
+      <button type="button" class="messages-composer-btn" id="messagesEmojiBtn" title="Emoji" aria-label="Emoji">
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="8" r="6.2"/><path d="M5.5 9.5c.7 1 1.5 1.5 2.5 1.5s1.8-.5 2.5-1.5"/><circle cx="6" cy="6.3" r="0.7" fill="currentColor" stroke="none"/><circle cx="10" cy="6.3" r="0.7" fill="currentColor" stroke="none"/></svg>
+      </button>
+      <button type="button" class="messages-composer-btn" id="messagesFileBtn" title="Attach file" aria-label="Attach file">
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M10.5 3.5 4.8 9.2a2.2 2.2 0 0 0 3.1 3.1l5.6-5.6a3.4 3.4 0 0 0-4.8-4.8L3.1 7.5a4.6 4.6 0 0 0 6.5 6.5"/></svg>
+      </button>
+      <button type="button" class="messages-composer-btn" id="messagesImageBtn" title="Attach image" aria-label="Attach image">
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="2" y="3" width="12" height="10" rx="1"/><circle cx="5.5" cy="6.5" r="1"/><path d="M14 10 10.5 7 5 12"/></svg>
+      </button>
+      <button type="button" class="messages-composer-btn" id="messagesDocBtn" title="Share a Document" aria-label="Share a Document">
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M4.5 2h5l2 2v10h-7z"/><path d="M6 6.5h4M6 9h4M6 11.5h2.5"/></svg>
+      </button>
+      <textarea id="messagesComposerText" placeholder="Type a message…" rows="1"></textarea>
+      <button type="button" class="messages-composer-btn" id="messagesVoiceBtn" title="Record voice note" aria-label="Record voice note">
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="6" y="1.5" width="4" height="7" rx="2"/><path d="M4 7.5a4 4 0 0 0 8 0"/><path d="M8 11.5V14"/></svg>
+      </button>
+      <button type="submit" class="messages-send-btn" id="messagesSendBtn" disabled aria-label="Send">
+        <svg viewBox="0 0 16 16" fill="currentColor"><path d="M2 8.2 13.5 3l-3.8 11-2.3-4.4z"/><path d="M7.4 9.6 2 8.2l5.4 1.4z"/></svg>
+      </button>
     </form>
   `);
-  const attachList = el(`<div id="inboxAttachList" style="font-size:11px;color:var(--text-tertiary);"></div>`);
-  outlet.appendChild(attachList);
-  outlet.appendChild(composer);
+  wrap.appendChild(composer);
+  threadPane.appendChild(wrap);
 
-  composer.querySelector("#inboxAttachBtn").addEventListener("click", () => composer.querySelector("#inboxAttachInput").click());
-  composer.querySelector("#inboxAttachInput").addEventListener("change", async (event) => {
-    const files = Array.from(event.target.files || []);
-    for (const file of files) {
-      if (file.size > 6 * 1024 * 1024) {
-        toast(`${file.name} is too large (6MB max).`);
-        continue;
-      }
-      try {
-        const dataUrl = await readFileAsDataUrl(file);
-        const { file: stored } = await apiUploadAttachment(dataUrl, file.name, file.type);
-        pendingAttachments.push({ file_url: stored.url, filename: file.name, mime_type: file.type, size_bytes: file.size });
-        attachList.textContent = `Attached: ${pendingAttachments.map((a) => a.filename).join(", ")}`;
-      } catch (err) {
-        toast(err.message || `Could not attach ${file.name}.`);
-      }
-    }
+  const textarea = composer.querySelector("#messagesComposerText");
+  const sendBtn = composer.querySelector("#messagesSendBtn");
+  const updateSendState = () => {
+    sendBtn.disabled = !textarea.value.trim() && !messagesState.pendingAttachments.length;
+  };
+  textarea.addEventListener("input", () => {
+    textarea.style.height = "auto";
+    textarea.style.height = `${Math.min(textarea.scrollHeight, 96)}px`;
+    updateSendState();
   });
-
-  composer.addEventListener("submit", async (event) => {
-    event.preventDefault();
-    const textarea = composer.querySelector("#inboxComposerText");
-    const text = textarea.value.trim();
-    if (!text && !pendingAttachments.length) return;
-    try {
-      const { message } = await apiSendMessage(conversationId, text, pendingAttachments);
-      thread.appendChild(renderInboxMessage(message));
-      thread.scrollTop = thread.scrollHeight;
-      textarea.value = "";
-      pendingAttachments = [];
-      attachList.textContent = "";
-    } catch (err) {
-      toast(err.message || "Could not send that message.");
-    }
-  });
-  composer.querySelector("#inboxComposerText").addEventListener("keydown", (event) => {
+  textarea.addEventListener("keydown", (event) => {
     if (event.key === "Enter" && !event.shiftKey) {
       event.preventDefault();
       composer.requestSubmit();
     }
   });
+
+  composer.querySelector("#messagesEmojiBtn").addEventListener("click", (event) => {
+    document.querySelectorAll(".messages-emoji-picker").forEach((el_) => el_.remove());
+    const picker = el(`<div class="messages-emoji-picker" style="position:absolute;bottom:44px;left:0;"></div>`);
+    ["😀", "😂", "🙂", "😍", "👍", "🙏", "🎉", "🔥", "✅", "❤️"].forEach((emoji) => {
+      const btn = el(`<button type="button">${emoji}</button>`);
+      btn.addEventListener("click", () => { textarea.value += emoji; updateSendState(); textarea.focus(); picker.remove(); });
+      picker.appendChild(btn);
+    });
+    wrap.style.position = "relative";
+    wrap.appendChild(picker);
+    setTimeout(() => {
+      document.addEventListener("click", function outside(e) {
+        if (!picker.contains(e.target) && e.target !== event.target) { picker.remove(); document.removeEventListener("click", outside); }
+      });
+    }, 0);
+  });
+
+  async function handleFiles(files, kind) {
+    for (const file of Array.from(files)) {
+      if (file.size > 6 * 1024 * 1024) {
+        toast(`${file.name} is too large (6MB max).`);
+        continue;
+      }
+      // A real "uploading" state (Part 19 of the brief) -- the chip
+      // shows before the network round-trip resolves, not only after,
+      // so a slow/large upload doesn't look like nothing happened.
+      const uploadingChip = el(`<div class="messages-attach-chip"><span>Uploading ${escapeHtml(file.name)}…</span></div>`);
+      attachPreview.appendChild(uploadingChip);
+      try {
+        const dataUrl = await readFileAsDataUrl(file);
+        const { file: stored } = await apiUploadAttachment(dataUrl, file.name, file.type);
+        messagesState.pendingAttachments.push({ file_url: stored.url, file_id: stored.id, filename: file.name, mime_type: file.type, size_bytes: file.size });
+        renderMessagesAttachPreview(attachPreview);
+        updateSendState();
+      } catch (err) {
+        uploadingChip.remove();
+        toast(err.message || `Could not attach ${file.name}.`);
+      }
+    }
+  }
+  composer.querySelector("#messagesFileBtn").addEventListener("click", () => composer.querySelector("#messagesFileInput").click());
+  composer.querySelector("#messagesFileInput").addEventListener("change", (event) => handleFiles(event.target.files, "file"));
+  composer.querySelector("#messagesImageBtn").addEventListener("click", () => composer.querySelector("#messagesImageInput").click());
+  composer.querySelector("#messagesImageInput").addEventListener("change", (event) => handleFiles(event.target.files, "image"));
+
+  composer.querySelector("#messagesDocBtn").addEventListener("click", () => openShareDocumentDialog(attachPreview, updateSendState));
+
+  const voiceBtn = composer.querySelector("#messagesVoiceBtn");
+  voiceBtn.addEventListener("click", () => messagesToggleVoiceRecording(voiceBtn, wrap, attachPreview, updateSendState));
+
+  composer.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const text = textarea.value.trim();
+    if (!text && !messagesState.pendingAttachments.length) return;
+    sendBtn.disabled = true;
+    try {
+      const { message } = await apiSendMessage(conversation.id, text, messagesState.pendingAttachments);
+      const scroll = document.getElementById("messagesThreadScroll");
+      if (scroll) {
+        const lastSep = scroll.querySelector(".messages-date-sep:last-of-type");
+        const today = messagesDateSeparatorLabel(message.created_at);
+        if (!lastSep || lastSep.textContent !== today) scroll.appendChild(el(`<div class="messages-date-sep">${escapeHtml(today)}</div>`));
+        scroll.appendChild(renderMessagesBubble(message, conversation));
+        scroll.scrollTop = scroll.scrollHeight;
+      }
+      textarea.value = "";
+      textarea.style.height = "auto";
+      messagesState.pendingAttachments = [];
+      renderMessagesAttachPreview(attachPreview);
+      refreshMessagesListIfOpenAfterSend(conversation.id);
+    } catch (err) {
+      toast(err.message || "Could not send that message. Please try again.");
+    } finally {
+      updateSendState();
+    }
+  });
 }
 
-function renderInboxMessage(message) {
-  const mine = message.sender_email === state.admin?.email;
-  const item = el(`
-    <div class="oyi-msg ${mine ? "user" : "assistant"}">
-      ${message.body ? `<div>${escapeHtml(message.body)}</div>` : ""}
-      ${(message.attachments || []).map((att) => `<div><a href="${escapeHtml(att.file_url)}" target="_blank" rel="noopener" style="color:inherit;text-decoration:underline;">${escapeHtml(att.filename || "Attachment")}</a></div>`).join("")}
-      <div style="font-size:10px;opacity:0.6;margin-top:4px;">${escapeHtml(mine ? "You" : message.sender_email)} · ${escapeHtml(fmtRelative(message.created_at))}</div>
+function refreshMessagesListIfOpenAfterSend(conversationId) {
+  const idx = messagesState.conversations.findIndex((c) => c.id === conversationId);
+  if (idx !== -1) {
+    messagesState.conversations[idx] = { ...messagesState.conversations[idx], last_message_at: new Date().toISOString() };
+  }
+}
+
+function renderMessagesAttachPreview(host) {
+  host.innerHTML = "";
+  messagesState.pendingAttachments.forEach((att, index) => {
+    const chip = el(`<div class="messages-attach-chip"><span>${escapeHtml(att.filename)}</span><button type="button" aria-label="Remove">✕</button></div>`);
+    chip.querySelector("button").addEventListener("click", () => {
+      messagesState.pendingAttachments.splice(index, 1);
+      renderMessagesAttachPreview(host);
+    });
+    host.appendChild(chip);
+  });
+}
+
+// Voice notes — real browser MediaRecorder capture, no fabricated
+// waveform telemetry. A truthful elapsed-time readout while recording;
+// a real <audio> element (with real duration, honestly labeled) for
+// playback once sent. Deferred cleanly (no decorative mic) if the
+// browser genuinely lacks MediaRecorder/getUserMedia support.
+function messagesToggleVoiceRecording(voiceBtn, wrap, attachPreview, updateSendState) {
+  if (messagesState.recording) {
+    messagesStopVoiceRecording(voiceBtn, wrap, attachPreview, updateSendState);
+    return;
+  }
+  if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === "undefined") {
+    toast("Voice notes are not supported in this browser.");
+    return;
+  }
+  navigator.mediaDevices.getUserMedia({ audio: true }).then((stream) => {
+    const chunks = [];
+    const recorder = new MediaRecorder(stream);
+    recorder.ondataavailable = (event) => { if (event.data.size > 0) chunks.push(event.data); };
+    recorder.start();
+    messagesState.recording = { recorder, stream, chunks, startedAt: Date.now() };
+    voiceBtn.classList.add("recording");
+    const row = el(`<div class="messages-recording-row" id="messagesRecordingRow"><span class="messages-recording-dot"></span><span id="messagesRecordingTime">0:00</span><span>Recording…</span></div>`);
+    wrap.insertBefore(row, wrap.firstChild);
+    messagesState.recording.timer = setInterval(() => {
+      const elapsed = Math.floor((Date.now() - messagesState.recording.startedAt) / 1000);
+      const label = document.getElementById("messagesRecordingTime");
+      if (label) label.textContent = `${Math.floor(elapsed / 60)}:${String(elapsed % 60).padStart(2, "0")}`;
+    }, 500);
+  }).catch(() => {
+    toast("Microphone access was denied or is unavailable.");
+  });
+}
+
+function messagesStopVoiceRecording(voiceBtn, wrap, attachPreview, updateSendState) {
+  const rec = messagesState.recording;
+  if (!rec) return;
+  clearInterval(rec.timer);
+  voiceBtn.classList.remove("recording");
+  document.getElementById("messagesRecordingRow")?.remove();
+  const durationSeconds = Math.round((Date.now() - rec.startedAt) / 1000);
+  rec.recorder.addEventListener("stop", async () => {
+    rec.stream.getTracks().forEach((t) => t.stop());
+    messagesState.recording = null;
+    if (durationSeconds < 1) return;
+    const blob = new Blob(rec.chunks, { type: rec.recorder.mimeType || "audio/webm" });
+    const reader = new FileReader();
+    reader.onload = async () => {
+      try {
+        const { file: stored } = await apiUploadAttachment(reader.result, `voice-note-${Date.now()}.webm`, blob.type);
+        messagesState.pendingAttachments.push({ file_url: stored.url, file_id: stored.id, filename: "Voice note", mime_type: blob.type, size_bytes: blob.size, duration_seconds: durationSeconds });
+        renderMessagesAttachPreview(attachPreview);
+        updateSendState();
+      } catch (err) {
+        toast(err.message || "Could not attach the voice note.");
+      }
+    };
+    reader.readAsDataURL(blob);
+  }, { once: true });
+  rec.recorder.stop();
+}
+
+// Playback for voice-note bubbles — event delegation on the thread
+// scroll container so newly appended/live-updated bubbles work too.
+document.addEventListener("click", (event) => {
+  const toggle = event.target.closest("[data-voice-toggle]");
+  if (!toggle) return;
+  const note = toggle.closest(".messages-voice-note");
+  const audio = note?.querySelector("audio");
+  if (!audio) return;
+  const fill = note.querySelector(".messages-voice-bar-fill");
+  if (audio.paused) {
+    document.querySelectorAll(".messages-voice-note audio").forEach((a) => { if (a !== audio) a.pause(); });
+    audio.play();
+    toggle.innerHTML = `<svg width="10" height="10" viewBox="0 0 16 16" fill="currentColor"><rect x="3" y="3" width="4" height="10"/><rect x="9" y="3" width="4" height="10"/></svg>`;
+    audio.ontimeupdate = () => { if (fill && audio.duration) fill.style.width = `${(audio.currentTime / audio.duration) * 100}%`; };
+    audio.onended = () => { toggle.innerHTML = `<svg width="11" height="11" viewBox="0 0 16 16" fill="currentColor"><path d="M4 2.5v11l10-5.5z"/></svg>`; if (fill) fill.style.width = "0%"; };
+  } else {
+    audio.pause();
+    toggle.innerHTML = `<svg width="11" height="11" viewBox="0 0 16 16" fill="currentColor"><path d="M4 2.5v11l10-5.5z"/></svg>`;
+  }
+});
+
+// Share an existing Documents record into the conversation by
+// reference — reuses the exact same office_files row (file_id/file_url)
+// rather than re-uploading/duplicating it (Part 11 of the brief).
+// Gated the same way the Documents workspace itself is (documents.generate).
+async function openShareDocumentDialog(attachPreview, updateSendState) {
+  if (!hasPermission("documents.generate")) {
+    toast("You don't have permission to share Documents.");
+    return;
+  }
+  let documents;
+  try {
+    documents = (await fetchDocuments()).filter((d) => !d.trashed_at);
+  } catch (err) {
+    toast(err.message || "Could not load Documents.");
+    return;
+  }
+  if (!documents.length) {
+    toast("No documents available to share yet.");
+    return;
+  }
+  openDialog("Share a Document", [
+    {
+      name: "document_id", label: "Document", type: "select",
+      options: documents.slice(0, 200).map((d) => ({ value: d.id, label: d.title || "Untitled" })),
+    },
+  ], async (data) => {
+    const doc = documents.find((d) => d.id === data.document_id);
+    if (!doc) throw new Error("Choose a document.");
+    const fileUrl = doc.html_url || doc.file_url;
+    if (!fileUrl) throw new Error("This document has no shareable file yet.");
+    messagesState.pendingAttachments.push({ file_url: fileUrl, filename: doc.title || "Document", mime_type: "application/pdf", size_bytes: null });
+    renderMessagesAttachPreview(attachPreview);
+    updateSendState();
+  });
+}
+
+// ---------------------------------------------------------------
+// Details panel — direct vs group variants.
+// ---------------------------------------------------------------
+function renderMessagesDetailsPane(detailsPane, conversation) {
+  detailsPane.innerHTML = "";
+  const isGroup = conversation.type === "group";
+  const other = messagesOtherParticipant(conversation);
+  const presence = !isGroup && other ? messagesPresenceLabel(other) : null;
+
+  const head = el(`
+    <div class="messages-details-head">
+      ${isGroup ? messagesGroupAvatarHtml("lg") : messagesAvatarHtml(other || { email: "" }, { size: "lg", presence: presence ? presence.online : null })}
+      <div class="messages-details-name">${escapeHtml(messagesConversationLabel(conversation))}</div>
+      ${!isGroup ? `<div class="messages-details-status${presence?.online ? " online" : ""}">${escapeHtml(presence?.text || "")}</div>` : `<div class="messages-details-status">${(conversation.participants || []).length} members</div>`}
+      <div class="messages-details-actions">
+        <div class="messages-details-action"><button type="button" class="messages-icon-btn" id="messagesDetailsCall"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3.5 2.5c1 0 2 2 2 3s-1 1.2-1 2c0 1.5 2.5 4 4 4 .8 0 1-1 2-1s3 1 3 2-1.5 2.5-2.5 2.5C7.5 15 1 8.5 1 5 1 4 2.5 2.5 3.5 2.5z"/></svg></button><span>Call</span></div>
+        <div class="messages-details-action"><button type="button" class="messages-icon-btn" id="messagesDetailsVideo"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="1.5" y="4" width="9" height="8" rx="1"/><path d="M10.5 7l4-2.5v7L10.5 9"/></svg></button><span>Video</span></div>
+        ${!isGroup ? `<div class="messages-details-action"><button type="button" class="messages-icon-btn" id="messagesDetailsProfile"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="5.5" r="2.5"/><path d="M3 14c0-2.8 2.2-5 5-5s5 2.2 5 5"/></svg></button><span>Profile</span></div>` : ""}
+      </div>
     </div>
   `);
-  return item;
+  detailsPane.appendChild(head);
+  head.querySelector("#messagesDetailsCall").addEventListener("click", () => messagesShowUnavailableCall("Call"));
+  head.querySelector("#messagesDetailsVideo").addEventListener("click", () => messagesShowUnavailableCall("Video"));
+  head.querySelector("#messagesDetailsProfile")?.addEventListener("click", () => {
+    if (hasPermission("staff.manage")) navigate("team");
+    else toast(`${other?.display_name || "This person"}'s full profile is managed under Team.`);
+  });
+
+  if (!isGroup && other) {
+    const about = el(`<div class="messages-details-section"><h4>About</h4></div>`);
+    if (other.office_position) about.appendChild(el(`<div class="messages-details-row">${escapeHtml(other.office_position)}</div>`));
+    if (other.phone) about.appendChild(el(`<div class="messages-details-row"><a href="tel:${escapeHtml(other.phone)}">${escapeHtml(other.phone)}</a></div>`));
+    about.appendChild(el(`<div class="messages-details-row"><a href="mailto:${escapeHtml(other.email)}">${escapeHtml(other.email)}</a></div>`));
+    if (about.children.length > 1) detailsPane.appendChild(about);
+  }
+
+  if (isGroup) {
+    const membersSection = el(`<div class="messages-details-section"><h4>Members (${(conversation.participants || []).length})</h4></div>`);
+    const isCreator = normalizeEmailForCompare(conversation.created_by) === normalizeEmailForCompare(state.admin?.email);
+    (conversation.participants || []).forEach((email) => {
+      const person = messagesPersonInfo(email);
+      const row = el(`
+        <div class="messages-member-row">
+          ${messagesAvatarHtml(person)}
+          <span class="messages-member-row-name">${escapeHtml(person.display_name || email)}${normalizeEmailForCompare(conversation.created_by) === normalizeEmailForCompare(email) ? " · Admin" : ""}</span>
+        </div>
+      `);
+      if (isCreator && email !== state.admin?.email) {
+        const removeBtn = el(`<button type="button" class="messages-member-remove" aria-label="Remove member">✕</button>`);
+        removeBtn.addEventListener("click", () => messagesRemoveMember(conversation.id, email));
+        row.appendChild(removeBtn);
+      }
+      membersSection.appendChild(row);
+    });
+    if (isCreator) {
+      const addLink = el(`<div class="messages-details-link">+ Add members</div>`);
+      addLink.addEventListener("click", () => openAddMembersDialog(conversation));
+      membersSection.appendChild(addLink);
+      const renameLink = el(`<div class="messages-details-link">Rename group</div>`);
+      renameLink.addEventListener("click", () => openRenameGroupDialog(conversation));
+      membersSection.appendChild(renameLink);
+    }
+    const leaveLink = el(`<div class="messages-details-link danger">Leave group</div>`);
+    leaveLink.addEventListener("click", () => messagesLeaveGroup(conversation));
+    membersSection.appendChild(leaveLink);
+    detailsPane.appendChild(membersSection);
+  }
+
+  renderMessagesSharedMediaSection(detailsPane, conversation.id);
+
+  const optionsSection = el(`<div class="messages-details-section"><h4>Options</h4></div>`);
+  const muteRow = el(`<div class="messages-toggle-row"><span>Mute notifications</span><div class="messages-switch${conversation.muted_at ? " on" : ""}" id="messagesMuteSwitch"></div></div>`);
+  muteRow.addEventListener("click", async () => {
+    const switchEl = muteRow.querySelector("#messagesMuteSwitch");
+    const nowMuted = !conversation.muted_at;
+    try {
+      await apiSetConversationState(conversation.id, nowMuted ? "mute" : "unmute");
+      conversation.muted_at = nowMuted ? new Date().toISOString() : null;
+      switchEl.classList.toggle("on", nowMuted);
+    } catch (err) {
+      toast(err.message || "Could not update mute setting.");
+    }
+  });
+  optionsSection.appendChild(muteRow);
+
+  const pinRow = el(`<div class="messages-toggle-row"><span>Pin conversation</span><div class="messages-switch${conversation.pinned_at ? " on" : ""}" id="messagesPinSwitch"></div></div>`);
+  pinRow.addEventListener("click", async () => {
+    const switchEl = pinRow.querySelector("#messagesPinSwitch");
+    const nowPinned = !conversation.pinned_at;
+    try {
+      await apiSetConversationState(conversation.id, nowPinned ? "pin" : "unpin");
+      conversation.pinned_at = nowPinned ? new Date().toISOString() : null;
+      switchEl.classList.toggle("on", nowPinned);
+      refreshMessagesListIfOpen();
+    } catch (err) {
+      toast(err.message || "Could not update pin setting.");
+    }
+  });
+  optionsSection.appendChild(pinRow);
+
+  const archiveLink = el(`<div class="messages-details-link">${conversation.archived_at ? "Unarchive conversation" : "Archive conversation"}</div>`);
+  archiveLink.addEventListener("click", () => messagesToggleArchive(conversation));
+  optionsSection.appendChild(archiveLink);
+  detailsPane.appendChild(optionsSection);
 }
 
-function appendMessageToOpenThread(conversationId, message) {
-  const thread = document.getElementById("inboxThread");
-  if (!thread || !message) return;
-  thread.appendChild(renderInboxMessage(message));
-  thread.scrollTop = thread.scrollHeight;
-  apiMarkConversationRead(conversationId).then(refreshInboxBadge).catch(() => null);
+async function renderMessagesSharedMediaSection(detailsPane, conversationId) {
+  let messages;
+  try {
+    const data = await apiListConversationMessages(conversationId);
+    messages = data.messages || [];
+  } catch {
+    return;
+  }
+  const allAttachments = messages.filter((m) => !m.deleted_at).flatMap((m) => m.attachments || []);
+  const images = allAttachments.filter((a) => (a.mime_type || "").startsWith("image/"));
+  const files = allAttachments.filter((a) => !(a.mime_type || "").startsWith("image/"));
+
+  if (images.length) {
+    const mediaSection = el(`<div class="messages-details-section"><h4>Shared Media</h4></div>`);
+    const grid = el(`<div class="messages-media-grid"></div>`);
+    images.slice(0, 5).forEach((att) => {
+      const tile = el(`<a class="messages-media-tile" href="${escapeHtml(att.file_url)}" target="_blank" rel="noopener"><img src="${escapeHtml(att.file_url)}" alt="" /></a>`);
+      grid.appendChild(tile);
+    });
+    if (images.length > 5) {
+      grid.appendChild(el(`<div class="messages-media-tile">+${images.length - 5}</div>`));
+    }
+    mediaSection.appendChild(grid);
+    detailsPane.appendChild(mediaSection);
+  }
+
+  if (files.length) {
+    const filesSection = el(`<div class="messages-details-section"><h4>Files</h4></div>`);
+    files.slice(0, 8).forEach((att) => {
+      const ext = (att.filename || "").split(".").pop()?.slice(0, 4).toUpperCase() || "FILE";
+      const sizeLabel = att.size_bytes ? `${(att.size_bytes / 1024).toFixed(0)} KB` : "";
+      const row = el(`
+        <div class="messages-file-row">
+          <span class="messages-attachment-icon">${escapeHtml(ext)}</span>
+          <span class="messages-file-row-name">${escapeHtml(att.filename || "Attachment")}${sizeLabel ? ` · ${escapeHtml(sizeLabel)}` : ""}</span>
+          <a href="${escapeHtml(att.file_url)}" target="_blank" rel="noopener" aria-label="Download">
+            <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M8 2v8M4.5 7 8 10.5 11.5 7"/><path d="M3 13.5h10"/></svg>
+          </a>
+        </div>
+      `);
+      filesSection.appendChild(row);
+    });
+    detailsPane.appendChild(filesSection);
+  }
 }
+
+async function messagesToggleArchive(conversation) {
+  try {
+    await apiSetConversationState(conversation.id, conversation.archived_at ? "unarchive" : "archive");
+    toast(conversation.archived_at ? "Unarchived." : "Archived.");
+    navigate("messages");
+  } catch (err) {
+    toast(err.message || "Could not update this conversation.");
+  }
+}
+
+async function messagesLeaveGroup(conversation) {
+  openDeleteConfirmModal(
+    messagesConversationLabel(conversation),
+    "You'll leave this group. Existing messages remain intact for the other members — this only removes your own membership.",
+    async () => {
+      await apiRemoveConversationMember(conversation.id, state.admin.email);
+      navigate("messages");
+    }
+  );
+}
+
+async function messagesRemoveMember(conversationId, email) {
+  try {
+    await apiRemoveConversationMember(conversationId, email);
+    navigate(`messages/${conversationId}`);
+  } catch (err) {
+    toast(err.message || "Could not remove that member.");
+  }
+}
+
+function openAddMembersDialog(conversation) {
+  const currentEmails = new Set(conversation.participants || []);
+  const candidates = messagesState.directory.filter((s) => !currentEmails.has(s.email));
+  if (!candidates.length) {
+    toast("Every active Office user is already in this group.");
+    return;
+  }
+  openDialog("Add Members", [
+    {
+      name: "participant_email", label: "Add", type: "select",
+      options: candidates.map((s) => ({ value: s.email, label: `${s.display_name}${s.office_position ? ` (${s.office_position})` : ""}` })),
+    },
+  ], async (data) => {
+    if (!data.participant_email) throw new Error("Choose someone to add.");
+    await apiAddConversationMembers(conversation.id, [data.participant_email]);
+    navigate(`messages/${conversation.id}`);
+  });
+}
+
+function openRenameGroupDialog(conversation) {
+  openDialog("Rename Group", [
+    { name: "title", label: "Group Name", value: conversation.title || "" },
+  ], async (data) => {
+    if (!data.title?.trim()) throw new Error("Group name is required.");
+    await apiRenameConversation(conversation.id, data.title.trim());
+    navigate(`messages/${conversation.id}`);
+  });
+}
+
+// ---------------------------------------------------------------
+// New Message — direct (resolves to the existing conversation if one
+// already exists, per findDirectStaffConversation) or a genuine named
+// group. Custom dialog (not the generic openDialog) since group
+// creation needs a real multi-select of Office colleagues.
+// ---------------------------------------------------------------
+function openNewMessageDialog() {
+  const candidates = messagesState.directory;
+  const overlay = el(`<div class="dialog-overlay"></div>`);
+  const card = el(`
+    <form class="dialog-card" style="width:min(440px,100%);">
+      <h3>New Message</h3>
+      <div class="messages-tabs" style="margin:10px 0 14px;">
+        <button type="button" class="messages-tab active" data-mode="direct">Direct</button>
+        <button type="button" class="messages-tab" data-mode="group">Group</button>
+      </div>
+      <div class="dialog-fields">
+        <div id="newMessageDirectFields">
+          <label>To
+            <select name="participant_email">
+              ${candidates.map((s) => `<option value="${escapeHtml(s.email)}">${escapeHtml(s.display_name)}${s.office_position ? ` (${escapeHtml(s.office_position)})` : ""}</option>`).join("")}
+            </select>
+          </label>
+        </div>
+        <div id="newMessageGroupFields" style="display:none;">
+          <label>Group Name
+            <input name="title" type="text" placeholder="e.g. Development Team" />
+          </label>
+          <label>Members
+            <div style="max-height:160px;overflow-y:auto;border:1px solid var(--line-strong);border-radius:var(--radius-sm);padding:8px 10px;display:flex;flex-direction:column;gap:6px;">
+              ${candidates.map((s) => `
+                <label style="flex-direction:row;align-items:center;gap:8px;text-transform:none;font-size:12.5px;color:var(--text-primary);">
+                  <input type="checkbox" name="group_member" value="${escapeHtml(s.email)}" style="width:auto;" />
+                  ${escapeHtml(s.display_name)}${s.office_position ? ` (${escapeHtml(s.office_position)})` : ""}
+                </label>
+              `).join("")}
+            </div>
+          </label>
+        </div>
+        <label>Message
+          <textarea name="body" rows="3" placeholder="Write a message… (optional for groups)"></textarea>
+        </label>
+      </div>
+      <div class="dialog-actions">
+        <button type="button" class="btn btn-ghost btn-sm" data-cancel>Cancel</button>
+        <button type="submit" class="btn btn-primary btn-sm">Start</button>
+      </div>
+      <p class="dialog-error"></p>
+    </form>
+  `);
+  overlay.appendChild(card);
+  document.body.appendChild(overlay);
+
+  let mode = "direct";
+  card.querySelectorAll(".messages-tab").forEach((tab) => {
+    tab.addEventListener("click", () => {
+      mode = tab.dataset.mode;
+      card.querySelectorAll(".messages-tab").forEach((t) => t.classList.toggle("active", t === tab));
+      card.querySelector("#newMessageDirectFields").style.display = mode === "direct" ? "" : "none";
+      card.querySelector("#newMessageGroupFields").style.display = mode === "group" ? "" : "none";
+    });
+  });
+
+  function close() { overlay.remove(); }
+  card.querySelector("[data-cancel]").addEventListener("click", close);
+  overlay.addEventListener("click", (event) => { if (event.target === overlay) close(); });
+
+  card.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const errorLabel = card.querySelector(".dialog-error");
+    const submitButton = card.querySelector('button[type="submit"]');
+    if (submitButton.dataset.submitting === "true") return;
+    submitButton.dataset.submitting = "true";
+    submitButton.disabled = true;
+    try {
+      if (mode === "direct") {
+        const email = card.querySelector('select[name="participant_email"]').value;
+        if (!email) throw new Error("Choose who to message.");
+        const { conversation } = await apiCreateConversation([email], "direct");
+        const body = card.querySelector('textarea[name="body"]').value.trim();
+        if (body) await apiSendMessage(conversation.id, body, []);
+        close();
+        navigate(`messages/${conversation.id}`);
+      } else {
+        const title = card.querySelector('input[name="title"]').value.trim();
+        if (!title) throw new Error("Give the group a name.");
+        const memberEmails = Array.from(card.querySelectorAll('input[name="group_member"]:checked')).map((c) => c.value);
+        if (!memberEmails.length) throw new Error("Choose at least one member.");
+        const { conversation } = await apiCreateConversation(memberEmails, "group", title);
+        const body = card.querySelector('textarea[name="body"]').value.trim();
+        if (body) await apiSendMessage(conversation.id, body, []);
+        close();
+        navigate(`messages/${conversation.id}`);
+      }
+    } catch (err) {
+      errorLabel.textContent = err.message || "Could not start this conversation.";
+      submitButton.disabled = false;
+      submitButton.dataset.submitting = "false";
+    }
+  });
+}
+
 
 // ---------------------------------------------------------------
 // Boot
@@ -12783,11 +13884,7 @@ function showShell() {
   if (bell) {
     bell.style.display = hasPermission("notifications.read") ? "" : "none";
   }
-  const inboxBell = document.getElementById("inboxBell");
-  if (inboxBell) {
-    inboxBell.style.display = hasPermission("messages.read") ? "" : "none";
-    if (hasPermission("messages.read")) refreshInboxBadge();
-  }
+  if (hasPermission("messages.read")) refreshMessagesBadge();
   if (hasPermission("notifications.read")) refreshNotifications();
   if (hasPermission("notifications.read") || hasPermission("messages.read")) connectRealtimeStream();
   state.segments = currentSegmentsFromHash();
@@ -12926,7 +14023,6 @@ function wireShellChrome() {
   document.getElementById("navToggle").addEventListener("click", openNav);
   document.getElementById("navScrim").addEventListener("click", closeNav);
   wireNotifBell();
-  document.getElementById("inboxBell").addEventListener("click", () => navigate("inbox"));
 }
 
 // PWA (Programme 14) — app-shell caching only, never API responses; see
