@@ -1218,6 +1218,8 @@ class SupabaseLeadAgentsStore {
       html_url: input.html_url || "",
       email_to: input.email_to || "",
       share_token: input.share_token || "",
+      folder_id: input.folder_id || null,
+      body: input.body || null,
       metadata: input.metadata || {},
     };
     try {
@@ -1239,6 +1241,86 @@ class SupabaseLeadAgentsStore {
       }
       throw error;
     }
+  }
+
+  async deleteOfficeDocument(id) {
+    await this.client.delete(`/office_documents?id=eq.${encodeURIComponent(id)}`, {
+      headers: this.selectHeaders(),
+    });
+    return true;
+  }
+
+  async deleteOfficeFile(id) {
+    await this.client.delete(`/office_files?id=eq.${encodeURIComponent(id)}`, {
+      headers: this.selectHeaders(),
+    });
+    return true;
+  }
+
+  async listOfficeFilesByResource(resourceType, resourceId) {
+    return this.safeGet(
+      `/office_files?resource_type=eq.${encodeURIComponent(resourceType)}&resource_id=eq.${encodeURIComponent(resourceId)}`
+    );
+  }
+
+  async listOfficeFilesByResourceType(resourceType) {
+    return this.safeGet(`/office_files?resource_type=eq.${encodeURIComponent(resourceType)}&select=size`);
+  }
+
+  // Documents Workspace -- folders are a lightweight organizational
+  // entity, deliberately not routed through the generic corporate-record
+  // framework (CORPORATE_COLLECTIONS assumes a business-record shape
+  // with owner/business_unit/status that a folder doesn't have).
+  async listOfficeDocumentFolders() {
+    return this.safeGet("/office_document_folders?order=name.asc");
+  }
+
+  async createOfficeDocumentFolder(input) {
+    const folder = {
+      id: input.id,
+      name: input.name,
+      created_by: input.created_by || "",
+    };
+    try {
+      const response = await this.client.post("/office_document_folders", folder, {
+        headers: this.selectHeaders(),
+      });
+      return response.data[0] || folder;
+    } catch (error) {
+      const status = error?.response?.status;
+      if (status === 400 || status === 404 || status === 406) {
+        return {
+          ...folder,
+          sync_status: "schema_pending",
+          sync_warning:
+            error?.response?.data?.message ||
+            error?.response?.data?.hint ||
+            "office_document_folders schema is not available yet.",
+        };
+      }
+      throw error;
+    }
+  }
+
+  async getOfficeDocumentFolderById(id) {
+    const response = await this.client.get(`/office_document_folders?id=eq.${encodeURIComponent(id)}&limit=1`);
+    return response.data[0] || null;
+  }
+
+  async renameOfficeDocumentFolder(id, name) {
+    const response = await this.client.patch(
+      `/office_document_folders?id=eq.${encodeURIComponent(id)}`,
+      { name },
+      { headers: this.selectHeaders() }
+    );
+    return response.data?.[0] || null;
+  }
+
+  async deleteOfficeDocumentFolder(id) {
+    await this.client.delete(`/office_document_folders?id=eq.${encodeURIComponent(id)}`, {
+      headers: this.selectHeaders(),
+    });
+    return true;
   }
 
   async upsertOfficeCollections(input) {

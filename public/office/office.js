@@ -165,6 +165,39 @@ async function apiGenerateDocument(body) {
 async function apiListDocumentTemplates() {
   return cached("documentTemplates", () => api("/api/lead-agents/admin/documents/templates"));
 }
+async function apiListDocumentFolders() {
+  return api("/api/lead-agents/admin/documents/folders");
+}
+async function apiCreateDocumentFolder(name) {
+  return api("/api/lead-agents/admin/documents/folders", { method: "POST", body: { name } });
+}
+async function apiRenameDocumentFolder(id, name) {
+  return api(`/api/lead-agents/admin/documents/folders/${encodeURIComponent(id)}`, { method: "PATCH", body: { name } });
+}
+async function apiDeleteDocumentFolder(id) {
+  return api(`/api/lead-agents/admin/documents/folders/${encodeURIComponent(id)}`, { method: "DELETE" });
+}
+async function apiPatchDocument(id, patch) {
+  return api(`/api/lead-agents/admin/office/documents/${encodeURIComponent(id)}`, { method: "PATCH", body: patch });
+}
+async function apiUploadDocument(body) {
+  return api("/api/lead-agents/admin/documents/upload", { method: "POST", body });
+}
+async function apiTrashDocument(id) {
+  return api(`/api/lead-agents/admin/documents/${encodeURIComponent(id)}/trash`, { method: "POST" });
+}
+async function apiRestoreDocument(id) {
+  return api(`/api/lead-agents/admin/documents/${encodeURIComponent(id)}/restore`, { method: "POST" });
+}
+async function apiPermanentlyDeleteDocument(id) {
+  return api(`/api/lead-agents/admin/documents/${encodeURIComponent(id)}/permanent`, { method: "DELETE" });
+}
+async function apiRegenerateDocumentShareLink(id) {
+  return api(`/api/lead-agents/admin/documents/${encodeURIComponent(id)}/regenerate-share-link`, { method: "POST" });
+}
+async function apiDocumentStorageSummary() {
+  return api("/api/lead-agents/admin/documents/storage-summary");
+}
 async function apiListContent(status) {
   return api(`/api/lead-agents/admin/content${status ? `?status=${encodeURIComponent(status)}` : ""}`);
 }
@@ -419,6 +452,10 @@ async function fetchPartnerships(force) {
 async function fetchDocuments(force) {
   const data = await cached("documents", apiListOfficeDocuments, force);
   return data.collection || [];
+}
+async function fetchDocumentFolders(force) {
+  const data = await cached("documentFolders", apiListDocumentFolders, force);
+  return data.folders || [];
 }
 async function fetchProposals(force) {
   const data = await cached("proposals", apiListProposals, force);
@@ -3459,6 +3496,69 @@ function openDeleteConfirmModal(recordLabel, warningText, onConfirm) {
   });
 }
 
+// Shared "⋯" overflow menu builder — the fixed pattern from the
+// Portfolio overflow-menu bug: hidden by default via [hidden] (with a
+// matching `[hidden] { display: none; }` CSS override, since a menu
+// class that sets display unconditionally silently defeats the
+// attribute), closes on outside click/Escape/selecting an item, and
+// keeps aria-expanded in sync via one closeMenu() path regardless of
+// which of those closed it. `items` is [{label, onClick, danger, hidden}];
+// hidden items are simply not rendered (never a fake disabled action).
+function buildOverflowMenu({ ariaLabel = "More actions", triggerLabel = "⋯", items = [], trigger = null }) {
+  const visibleItems = items.filter((item) => !item.hidden);
+  const wrap = el(`<div class="portfolio-overflow doc-overflow"></div>`);
+  if (!visibleItems.length) {
+    // A caller-supplied trigger must still end up in the DOM even with
+    // nothing to show — otherwise it silently vanishes instead of just
+    // being inert.
+    if (trigger) wrap.appendChild(trigger);
+    return wrap;
+  }
+  // `trigger` lets a caller supply its own visible button (e.g. a
+  // labeled "New Document ▾" split button) instead of the default "⋯"
+  // icon — the open/close/aria-expanded/Escape wiring below is
+  // identical either way, so the trigger's own accessible state always
+  // stays correct regardless of which element it is.
+  const menuBtn = trigger || el(`<button type="button" class="btn btn-ghost btn-sm portfolio-overflow-trigger" aria-label="${escapeHtml(ariaLabel)}" aria-haspopup="true" aria-expanded="false">${escapeHtml(triggerLabel)}</button>`);
+  if (trigger) {
+    menuBtn.setAttribute("aria-haspopup", "true");
+    menuBtn.setAttribute("aria-expanded", "false");
+  }
+  const menu = el(`<div class="portfolio-overflow-menu" hidden></div>`);
+  function closeMenu() {
+    menu.hidden = true;
+    menuBtn.setAttribute("aria-expanded", "false");
+    document.removeEventListener("keydown", onKeydown);
+  }
+  function onKeydown(event) {
+    if (event.key === "Escape") closeMenu();
+  }
+  visibleItems.forEach((item) => {
+    const btn = el(`<button type="button" class="portfolio-overflow-item${item.danger ? " portfolio-overflow-danger" : ""}">${escapeHtml(item.label)}</button>`);
+    btn.addEventListener("click", (event) => {
+      event.stopPropagation();
+      closeMenu();
+      item.onClick();
+    });
+    menu.appendChild(btn);
+  });
+  menuBtn.addEventListener("click", (event) => {
+    event.stopPropagation();
+    const opening = menu.hidden;
+    if (opening) {
+      menu.hidden = false;
+      menuBtn.setAttribute("aria-expanded", "true");
+      document.addEventListener("click", () => closeMenu(), { once: true });
+      document.addEventListener("keydown", onKeydown);
+    } else {
+      closeMenu();
+    }
+  });
+  wrap.appendChild(menuBtn);
+  wrap.appendChild(menu);
+  return wrap;
+}
+
 function openCreateDialog(collectionKey) {
   const forms = {
     contacts: { title: "New Contact", fields: [{ name: "name", label: "Name" }, { name: "email", label: "Email", type: "email" }, { name: "phone", label: "Phone" }, { name: "role", label: "Role" }] },
@@ -3724,21 +3824,73 @@ async function openCreateDocumentDialog(prefill = {}) {
   // frontend change. Falls back to just the existing basic/type flow if
   // the endpoint is unreachable, rather than blocking document creation.
   let templates = [{ id: "basic", label: "Basic Corporate Document" }];
+  let folders = [];
   try {
     const data = await apiListDocumentTemplates();
     if (data.templates?.length) templates = data.templates;
   } catch {
     /* fall back to basic-only, non-fatal */
   }
+  try {
+    folders = await fetchDocumentFolders();
+  } catch {
+    /* fall back to Unfiled-only, non-fatal */
+  }
   openDialog("New Document", [
     { name: "template_id", label: "Template", type: "select", value: "basic", options: templates.map((t) => ({ value: t.id, label: t.label })) },
     { name: "title", label: "Title", value: prefill.title || "" },
     { name: "document_type", label: "Type", type: "select", value: prefill.document_type || "letter", options: DOCUMENT_TYPE_OPTIONS },
+    { name: "folder_id", label: "Folder", type: "select", value: prefill.folder_id || "", options: [{ value: "", label: "Unfiled" }, ...folders.map((f) => ({ value: f.id, label: f.name }))] },
     { name: "body", label: "Content", type: "textarea" },
   ], async (data) => {
-    await apiGenerateDocument({ ...data, related_type: prefill.related_type, related_id: prefill.related_id });
+    const result = await apiGenerateDocument({ ...data, related_type: prefill.related_type, related_id: prefill.related_id });
     invalidate("documents");
-    navigate(prefill.related_type && prefill.related_id ? `documents` : "documents");
+    invalidate("documentFolders");
+    // Part 18: creation lands the user in the document workspace, not
+    // back on the list — this is a real, continue-editable native
+    // document (its typed content was persisted to `body` server-side),
+    // not a one-shot generator dead-end.
+    navigate(`documents/library/${result.document.id}`);
+  });
+}
+
+async function openUploadDocumentDialog(prefill = {}) {
+  let folders = [];
+  try {
+    folders = await fetchDocumentFolders();
+  } catch {
+    /* fall back to Unfiled-only, non-fatal */
+  }
+  openDialog("Upload Document", [
+    { name: "file", label: "File", type: "file" },
+    { name: "title", label: "Title (optional — defaults to filename)" },
+    { name: "folder_id", label: "Folder", type: "select", value: "", options: [{ value: "", label: "Unfiled" }, ...folders.map((f) => ({ value: f.id, label: f.name }))] },
+  ], async (data) => {
+    const file = data.file;
+    if (!file || !file.size) throw new Error("Choose a file to upload.");
+    const dataUrl = await readFileAsDataUrl(file);
+    const result = await apiUploadDocument({
+      data_url: dataUrl,
+      filename: file.name,
+      title: data.title || file.name,
+      folder_id: data.folder_id || null,
+      related_type: prefill.related_type,
+      related_id: prefill.related_id,
+    });
+    invalidate("documents");
+    invalidate("documentFolders");
+    navigate(`documents/library/${result.document.id}`);
+  });
+}
+
+async function openNewDocumentFolderDialog() {
+  openDialog("New Folder", [
+    { name: "name", label: "Folder Name" },
+  ], async (data) => {
+    if (!data.name?.trim()) throw new Error("Folder name is required.");
+    await apiCreateDocumentFolder(data.name.trim());
+    invalidate("documentFolders");
+    navigate("documents/library");
   });
 }
 
@@ -6820,14 +6972,14 @@ function partnershipOyiContext(record, { label, org, opportunity, handoff } = {}
 }
 
 // ---------------------------------------------------------------
-// DOCUMENTS + PROPOSALS/QUOTATIONS.
+// DOCUMENTS WORKSPACE + PROPOSALS/QUOTATIONS.
 //
 // Two distinct, real backend systems share this nav item as tabs:
-//  - "Documents" (office_documents via POST /admin/documents/generate)
-//    — generic corporate documents. No amount/currency/email_to is
-//    ever sent from this UI: this dialog only ever creates a
-//    non-commercial reference document. No PATCH exists for this
-//    collection — status is shown read-only.
+//  - "All Documents" (office_documents) — a real corporate document
+//    workspace: folders (office_document_folders), native in-Office
+//    documents (persisted `body`, PATCH via the generic corporate-
+//    collection route), uploaded files, and a governed trash lifecycle
+//    (trashed_at/trashed_by, restore, permanent delete).
 //  - "Proposals / Quotations" (the pre-existing lead-scoped proposal
 //    system) — the ONLY commercial-document path in this app, because
 //    it is the only one backed by real, backend-owned pricing
@@ -6835,11 +6987,36 @@ function partnershipOyiContext(record, { label, org, opportunity, handoff } = {}
 //    separate Quotation entity on the backend; both framings use the
 //    same proposal record, so this tab is deliberately titled
 //    "Proposals / Quotations" rather than fabricating a second table.
+// "Templates" and "Shared With Me" are deliberately absent — no real
+// saved-template library or access-control/sharing-target model exists
+// to back either tab (audited; see the New-Document quick action for
+// the one real template capability that does exist).
 // ---------------------------------------------------------------
 const DOCUMENTS_TABS = [
-  { key: "library", label: "Documents" },
+  { key: "library", label: "All Documents" },
   { key: "proposals", label: "Proposals / Quotations" },
+  { key: "trash", label: "Trash" },
 ];
+
+function fmtBytes(bytes) {
+  const n = Number(bytes || 0);
+  if (!n) return "0 B";
+  const units = ["B", "KB", "MB", "GB"];
+  let value = n;
+  let unitIndex = 0;
+  while (value >= 1024 && unitIndex < units.length - 1) {
+    value /= 1024;
+    unitIndex += 1;
+  }
+  return `${value >= 10 || unitIndex === 0 ? Math.round(value) : value.toFixed(1)} ${units[unitIndex]}`;
+}
+
+function documentFolderIcon() {
+  return `<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M3 6a1 1 0 0 1 1-1h5l2 2h9a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V6Z"/></svg>`;
+}
+function documentFileIcon() {
+  return `<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M6 2h8l4 4v16H6V2Z"/><path d="M14 2v4h4"/></svg>`;
+}
 
 // ---------------------------------------------------------------
 // Content / Publishing (Phase 8) — draft -> review -> approve ->
@@ -7545,6 +7722,73 @@ function markdownLiteToHtml(text) {
   }).join("");
 }
 
+// Documents Workspace's own markdown-lite toolbar/renderer — a separate
+// copy of wireBodyToolbar/markdownLiteToHtml above, not a shared/edited
+// version of it. Content/Publishing's copy is exactly coupled to
+// textToPortableText in sanity-adapter.js (what a writer sees in
+// Preview must equal what gets published); extending it here with
+// links/numbered-lists would risk previewing formatting that Sanity
+// publishing doesn't actually parse. Documents has no such external
+// coupling, so it gets the fuller set (adds numbered lists and links)
+// without touching Content/Publishing's contract.
+function wireDocumentBodyToolbar(toolbar, textarea) {
+  const buttons = [
+    { label: "B", wrap: "**", title: "Bold" },
+    { label: "I", wrap: "*", title: "Italic" },
+    { label: "H2", prefix: "## ", title: "Heading" },
+    { label: "H3", prefix: "### ", title: "Subheading" },
+    { label: "•", prefix: "- ", title: "Bullet list" },
+    { label: "1.", prefix: "1. ", title: "Numbered list" },
+    { label: "🔗", title: "Link", link: true },
+  ];
+  buttons.forEach(({ label, wrap, prefix, title, link }) => {
+    const btn = el(`<button type="button" class="btn btn-ghost btn-sm" style="padding:2px 8px;" title="${escapeHtml(title)}">${escapeHtml(label)}</button>`);
+    btn.addEventListener("click", () => {
+      const start = textarea.selectionStart;
+      const end = textarea.selectionEnd;
+      const value = textarea.value;
+      if (link) {
+        const selected = value.slice(start, end) || "link text";
+        const markdown = `[${selected}](https://)`;
+        textarea.value = value.slice(0, start) + markdown + value.slice(end);
+        textarea.selectionStart = start + selected.length + 3;
+        textarea.selectionEnd = start + markdown.length - 1;
+      } else if (wrap) {
+        textarea.value = value.slice(0, start) + wrap + value.slice(start, end) + wrap + value.slice(end);
+        textarea.selectionStart = start + wrap.length;
+        textarea.selectionEnd = end + wrap.length;
+      } else if (prefix) {
+        const lineStart = value.lastIndexOf("\n", start - 1) + 1;
+        textarea.value = value.slice(0, lineStart) + prefix + value.slice(lineStart);
+        textarea.selectionStart = textarea.selectionEnd = start + prefix.length;
+      }
+      textarea.focus();
+    });
+    toolbar.appendChild(btn);
+  });
+}
+
+function documentMarkdownLiteToHtml(text) {
+  const inline = (line) => escapeHtml(line)
+    .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
+    .replace(/\*(.+?)\*/g, "<em>$1</em>")
+    .replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, (match, label, url) => `<a href="${url}" target="_blank" rel="noopener">${label}</a>`);
+  const paragraphs = String(text || "").split(/\n\s*\n/).map((p) => p.trim()).filter(Boolean);
+  return paragraphs.map((p) => {
+    const lines = p.split("\n");
+    if (lines.every((l) => l.trim().startsWith("- "))) {
+      return `<ul>${lines.map((l) => `<li>${inline(l.trim().slice(2))}</li>`).join("")}</ul>`;
+    }
+    if (lines.every((l) => /^\d+\.\s+/.test(l.trim()))) {
+      return `<ol>${lines.map((l) => `<li>${inline(l.trim().replace(/^\d+\.\s+/, ""))}</li>`).join("")}</ol>`;
+    }
+    if (/^###\s+/.test(p)) return `<h4>${inline(p.replace(/^###\s+/, ""))}</h4>`;
+    if (/^##\s+/.test(p)) return `<h3>${inline(p.replace(/^##\s+/, ""))}</h3>`;
+    if (/^#\s+/.test(p)) return `<h2>${inline(p.replace(/^#\s+/, ""))}</h2>`;
+    return `<p>${lines.map(inline).join("<br/>")}</p>`;
+  }).join("");
+}
+
 function renderContentPreviewHtml(item) {
   return `
     <div style="border:1px solid var(--line);border-radius:var(--radius);padding:16px;background:var(--charcoal);">
@@ -7611,9 +7855,16 @@ function renderContentWorkflowActions(item, contentId) {
 }
 
 async function renderDocumentsRoute(outlet, rest, token) {
-  const [subKey = "library", objectId] = rest;
-  setTopbar("Documents", objectId ? "" : titleCase(subKey));
+  const [subKey = "library", objectId, subObjectId] = rest;
+  const inFolder = subKey === "library" && objectId === "folder";
+  setTopbar("Documents", objectId && !inFolder ? "" : titleCase(subKey));
   outlet.innerHTML = "";
+
+  // Trash is a real tab (governed lifecycle, Part 7) but not a detail
+  // sub-route — a trashed document still opens through the normal
+  // library detail route so its own Restore/Permanently Delete actions
+  // live in one place (the overflow menu), not duplicated across two
+  // different detail renderers.
   const tabs = el(`<div class="crm-tabs"></div>`);
   DOCUMENTS_TABS.forEach((tab) => {
     const tabBtn = el(`<button type="button" class="crm-tab ${tab.key === subKey ? "active" : ""}">${escapeHtml(tab.label)}</button>`);
@@ -7628,11 +7879,14 @@ async function renderDocumentsRoute(outlet, rest, token) {
 
   try {
     if (subKey === "library") {
-      if (objectId) await renderDocumentDetail(body, objectId, token);
-      else await renderDocumentsList(body, token);
+      if (inFolder && subObjectId) await renderDocumentsList(body, token, subObjectId);
+      else if (objectId) await renderDocumentDetail(body, objectId, token);
+      else await renderDocumentsList(body, token, null);
     } else if (subKey === "proposals") {
       if (objectId) await renderProposalDetail(body, objectId, token);
       else await renderProposalsList(body, token);
+    } else if (subKey === "trash") {
+      await renderDocumentTrashList(body, token);
     } else {
       setSelectedObject(null);
       body.innerHTML = "";
@@ -7645,40 +7899,386 @@ async function renderDocumentsRoute(outlet, rest, token) {
   }
 }
 
-// GET /admin/office/documents is gated on office.read (legacy
-// view_reports alias) — narrower than the documents.generate gate on
-// this nav item. A role with documents.generate but not office.read
-// (none of the built-in roles today, but the permission model allows
-// it) would otherwise hit a confusing 403 — checked explicitly here,
+function documentQuickActionsMenu(anchorBtn, { folderId } = {}) {
+  const canManage = hasPermission("documents.generate");
+  if (!canManage) return null;
+  return buildOverflowMenu({
+    ariaLabel: "New Document",
+    trigger: anchorBtn,
+    items: [
+      { label: "New Document", onClick: () => openCreateDocumentDialog({ folder_id: folderId }) },
+      { label: "New Folder", onClick: () => openNewDocumentFolderDialog() },
+      { label: "Upload Document", onClick: () => openUploadDocumentDialog({ folder_id: folderId }) },
+      { label: "New Proposal / Quotation", onClick: () => navigate("documents/proposals"), hidden: !hasPermission("crm.manage") },
+    ],
+  });
+}
+
+// Documents Workspace — GET /admin/office/documents is gated on
+// office.read (legacy view_reports alias), narrower than the
+// documents.generate gate on this nav item; checked explicitly here,
 // same defensive pattern used for the Leads/office.read mismatch.
-async function renderDocumentsList(body, token) {
+// folderId === null shows "All Documents" (every non-trashed record,
+// including ones without a folder — nothing is auto-classified);
+// folderId === a real id scopes to that folder's contents only.
+async function renderDocumentsList(body, token, folderId) {
   setSelectedObject(null);
   if (!hasPermission("office.read")) {
     body.innerHTML = "";
     body.appendChild(errorPanel("You don't have permission to view Documents. Contact an administrator if you believe this is incorrect."));
     return;
   }
-  const documents = await fetchDocuments();
+  const [documents, folders] = await Promise.all([
+    fetchDocuments(),
+    fetchDocumentFolders().catch(() => []),
+  ]);
   if (token !== state.renderToken) return;
-  renderStandardList(body, {
-    title: "Documents",
-    records: documents,
+
+  const currentFolder = folderId ? folders.find((f) => f.id === folderId) : null;
+  if (folderId && !currentFolder) {
+    body.innerHTML = "";
+    body.appendChild(errorPanel("This folder could not be found."));
+    return;
+  }
+
+  const activeDocuments = documents.filter((d) => !d.trashed_at);
+  const canManage = hasPermission("documents.generate");
+  const canManageFolders = hasPermission("documents.manage");
+
+  body.innerHTML = "";
+  body.appendChild(el(`
+    <div class="view-heading documents-heading">
+      <div>
+        <h1>Documents</h1>
+        <p>Organize, manage and share your documents in one place.</p>
+      </div>
+    </div>
+  `));
+  if (currentFolder) {
+    const crumb = el(`<div class="documents-breadcrumb"><a href="#/documents/library">Documents</a> / ${escapeHtml(currentFolder.name)}</div>`);
+    body.appendChild(crumb);
+  }
+
+  // Real, computed metrics only (Part 4) — Drafts/Folders/Total counted
+  // from the same already-fetched lists driving the table below, no
+  // hardcoded illustrative values. "Shared" is deliberately omitted:
+  // nearly every generated document has a share_token, so counting it
+  // wouldn't be a truthful "shared" signal.
+  const draftCount = activeDocuments.filter((d) => String(d.status || "").toLowerCase() === "draft").length;
+  body.appendChild(el(`
+    <div class="documents-metrics">
+      <div class="documents-metric-card"><span class="documents-metric-label">Total Documents</span><span class="documents-metric-value">${activeDocuments.length}</span></div>
+      <div class="documents-metric-card"><span class="documents-metric-label">Folders</span><span class="documents-metric-value">${folders.length}</span></div>
+      <div class="documents-metric-card"><span class="documents-metric-label">Drafts</span><span class="documents-metric-value">${draftCount}</span></div>
+    </div>
+  `));
+
+  const grid = el(`<div class="detail-body documents-workspace-grid"></div>`);
+  const main = el(`<div class="detail-main"></div>`);
+  const rail = el(`<div class="detail-rail"></div>`);
+
+  const scopedFolders = currentFolder ? [] : folders;
+  const folderRows = scopedFolders.map((f) => ({
+    __type: "folder",
+    id: f.id,
+    name: f.name,
+    created_by: f.created_by,
+    updated_at: f.updated_at,
+    document_count: activeDocuments.filter((d) => d.folder_id === f.id).length,
+  }));
+  const scopedDocuments = currentFolder ? activeDocuments.filter((d) => d.folder_id === folderId) : activeDocuments;
+  const documentRows = scopedDocuments.map((d) => ({ ...d, __type: "document" }));
+  const rows = [...folderRows, ...documentRows];
+
+  renderStandardList(main, {
+    title: currentFolder ? currentFolder.name : "All Documents",
+    records: rows,
     columns: [
-      { label: "Title", width: "1.6fr", render: (d) => escapeHtml(d.title) },
-      { label: "Type", render: (d) => escapeHtml(titleCase(d.document_type)) },
-      { label: "Status", render: (d) => badge(titleCase(d.status), toneForStatus(d.status)) },
-      { label: "Related", render: (d) => d.related_type ? escapeHtml(titleCase(d.related_type)) : "—" },
-      { label: "Owner", render: (d) => escapeHtml(d.owner || "—") },
-      { label: "Updated", render: (d) => escapeHtml(fmtRelative(d.updated_at)) },
+      {
+        label: "Name", width: "1.8fr", render: (r) => r.__type === "folder"
+          ? `<div class="documents-name-cell"><span class="documents-row-icon documents-folder-icon">${documentFolderIcon()}</span><div><div class="documents-row-title">${escapeHtml(r.name)}</div><div class="documents-row-sub">${r.document_count} document${r.document_count === 1 ? "" : "s"}</div></div></div>`
+          : `<div class="documents-name-cell"><span class="documents-row-icon">${documentFileIcon()}</span><div class="documents-row-title">${escapeHtml(r.title)}</div></div>`,
+      },
+      { label: "Type", render: (r) => r.__type === "folder" ? "—" : escapeHtml(titleCase(r.document_type)) },
+      { label: "Status", render: (r) => r.__type === "folder" ? "—" : badge(titleCase(r.status), toneForStatus(r.status)) },
+      { label: "Related To", render: (r) => r.__type === "folder" ? "—" : (r.related_type ? escapeHtml(titleCase(r.related_type)) : "—") },
+      { label: "Owner", render: (r) => escapeHtml(r.__type === "folder" ? (r.created_by || "—") : (r.owner || "—")) },
+      { label: "Updated", render: (r) => escapeHtml(fmtRelative(r.updated_at)) },
+      {
+        label: "", render: (r) => {
+          const menu = r.__type === "folder"
+            ? buildOverflowMenu({ items: folderOverflowItems(r, { canManage: canManageFolders }) })
+            : buildOverflowMenu({ items: documentOverflowItems(r, { canManage, folders }) });
+          return menu;
+        },
+      },
     ],
-    searchFields: ["title", "document_type", "status", "owner", "related_type"],
-    filters: [{ key: "document_type", label: "Type" }, { key: "status", label: "Status" }],
-    canManage: hasPermission("documents.generate"),
-    onCreate: () => openCreateDocumentDialog(),
-    onRowClick: (d) => navigate(`documents/library/${d.id}`),
-    emptyMessage: "No documents yet.",
+    searchFields: ["title", "name", "document_type", "status", "owner", "created_by", "related_type"],
+    filters: currentFolder ? [] : [{ key: "document_type", label: "Type" }, { key: "status", label: "Status" }],
+    canManage: false,
+    onRowClick: (r) => {
+      if (r.__type === "folder") navigate(`documents/library/folder/${r.id}`);
+      else navigate(`documents/library/${r.id}`);
+    },
+    emptyMessage: currentFolder ? "No documents in this folder yet." : "No documents yet.",
+  });
+
+  // The list toolbar's own primaryAction is deliberately suppressed
+  // (canManage: false above) — "New Document" here is a small quick-
+  // action menu (New Document / New Folder / Upload / New Proposal),
+  // not a single fixed action, mirroring the approved reference's split
+  // button without adding a second, parallel toolbar implementation.
+  if (canManage) {
+    const newBtnWrap = el(`<div class="documents-new-btn-wrap"></div>`);
+    const newBtn = el(`<button type="button" class="btn btn-primary btn-sm">New Document ▾</button>`);
+    // buildOverflowMenu wires its open/close/aria-expanded/Escape
+    // handling directly onto newBtn (passed as `trigger`) and returns a
+    // wrapper containing both newBtn and its menu — appending that
+    // wrapper is enough, no separate click-forwarding needed.
+    const menuWrap = documentQuickActionsMenu(newBtn, { folderId });
+    if (menuWrap) {
+      newBtnWrap.appendChild(menuWrap);
+    } else {
+      newBtnWrap.appendChild(newBtn);
+    }
+    const heading = main.querySelector(".view-heading");
+    if (heading) heading.appendChild(newBtnWrap);
+  }
+
+  buildDocumentsStorageCard().then((card) => rail.appendChild(card)).catch(() => null);
+
+  if (canManage) {
+    const quickActions = [
+      { label: "New Folder", onClick: () => openNewDocumentFolderDialog() },
+      { label: "Upload Document", onClick: () => openUploadDocumentDialog({ folder_id: folderId }) },
+      ...(hasPermission("crm.manage") ? [{ label: "New Proposal / Quotation", onClick: () => navigate("documents/proposals") }] : []),
+    ];
+    const quickActionsList = el(`<div class="rail-list documents-quick-actions"></div>`);
+    quickActions.forEach((action) => {
+      const btn = el(`<button type="button" class="documents-quick-action-btn">${escapeHtml(action.label)}</button>`);
+      btn.addEventListener("click", action.onClick);
+      quickActionsList.appendChild(btn);
+    });
+    rail.appendChild(railCard("Quick Actions", quickActionsList));
+  }
+
+  grid.appendChild(main);
+  grid.appendChild(rail);
+  body.appendChild(grid);
+}
+
+// Storage card — real bytes only (Part 15). No fabricated "available"/
+// quota value: neither storage driver (local disk, Supabase Storage)
+// exposes a real capacity limit here, so the card shows used storage
+// and item count, never a fake "X of 5 GB" bar. Omitted entirely (not
+// shown as a zero/error state) if the summary endpoint is unreachable.
+async function buildDocumentsStorageCard() {
+  try {
+    const summary = await apiDocumentStorageSummary();
+    return railCard("Storage", `
+      <div class="documents-storage-used">${escapeHtml(fmtBytes(summary.used_bytes))}</div>
+      <p class="rail-sub">${summary.file_count} file${summary.file_count === 1 ? "" : "s"} stored</p>
+    `);
+  } catch {
+    return el(`<div style="display:none;"></div>`);
+  }
+}
+
+function folderOverflowItems(folder, { canManage }) {
+  return [
+    { label: "Open", onClick: () => navigate(`documents/library/folder/${folder.id}`) },
+    { label: "Rename", onClick: () => openRenameFolderDialog(folder), hidden: !hasPermission("documents.generate") },
+    {
+      label: "Delete", danger: true, hidden: !canManage,
+      onClick: () => openDeleteConfirmModal(
+        folder.name,
+        "This will permanently delete this folder. A folder that still contains documents cannot be deleted — move or trash its documents first.",
+        async () => {
+          try {
+            await apiDeleteDocumentFolder(folder.id);
+          } catch (err) {
+            if (err?.data?.error === "folder_not_empty") {
+              const count = err.data.document_count;
+              throw new Error(`This folder still contains ${count} document${count === 1 ? "" : "s"} — move or trash ${count === 1 ? "it" : "them"} first.`);
+            }
+            throw err;
+          }
+          invalidate("documentFolders");
+          navigate("documents/library");
+        }
+      ),
+    },
+  ];
+}
+
+function documentOverflowItems(record, { canManage, folders }) {
+  const fileUrl = record.html_url || record.file_url;
+  const isTrashed = Boolean(record.trashed_at);
+  return [
+    { label: "Open", hidden: !fileUrl, onClick: () => window.open(fileUrl, "_blank", "noopener") },
+    { label: "Preview", onClick: () => navigate(`documents/library/${record.id}`) },
+    { label: "Download", hidden: !fileUrl, onClick: () => { const a = document.createElement("a"); a.href = fileUrl; a.download = `${(record.title || "document").replace(/[^a-z0-9]+/gi, "-")}`; a.click(); } },
+    {
+      label: "Copy Share Link", hidden: !record.share_token, onClick: async () => {
+        const shareUrl = `${window.location.origin}/api/lead-agents/documents/shared/${encodeURIComponent(record.id)}/${encodeURIComponent(record.share_token)}`;
+        try { await navigator.clipboard.writeText(shareUrl); toast("Share link copied — this one works for anyone, no Office login needed."); }
+        catch { toast(shareUrl); }
+      },
+    },
+    { label: "Edit", hidden: !canManage || isTrashed, onClick: () => navigate(`documents/library/${record.id}`) },
+    { label: "Rename", hidden: !canManage || isTrashed, onClick: () => openRenameDocumentDialog(record) },
+    { label: "Move to Folder", hidden: !canManage || isTrashed, onClick: () => openMoveToFolderDialog(record, folders) },
+    {
+      label: "Move to Trash", danger: true, hidden: !canManage || isTrashed, onClick: async () => {
+        await apiTrashDocument(record.id);
+        invalidate("documents");
+        toast("Moved to Trash.");
+        navigate("documents/library");
+      },
+    },
+    {
+      label: "Restore", hidden: !canManage || !isTrashed, onClick: async () => {
+        await apiRestoreDocument(record.id);
+        invalidate("documents");
+        toast("Restored.");
+        navigate("documents/trash");
+      },
+    },
+    {
+      label: "Delete Permanently", danger: true, hidden: !hasPermission("documents.manage") || !isTrashed, onClick: () => openDeleteConfirmModal(
+        record.title || "this document",
+        "This permanently deletes the document and its stored file. This cannot be undone.",
+        async () => {
+          await apiPermanentlyDeleteDocument(record.id);
+          invalidate("documents");
+          navigate("documents/trash");
+        }
+      ),
+    },
+  ];
+}
+
+function openRenameDocumentDialog(record) {
+  openDialog("Rename Document", [{ name: "title", label: "Title", value: record.title || "" }], async (data) => {
+    if (!data.title?.trim()) throw new Error("Title is required.");
+    await apiPatchDocument(record.id, { title: data.title.trim() });
+    invalidate("documents");
+    navigate(`documents/library/${record.id}`);
   });
 }
+
+function openRenameFolderDialog(folder) {
+  openDialog("Rename Folder", [{ name: "name", label: "Folder Name", value: folder.name || "" }], async (data) => {
+    if (!data.name?.trim()) throw new Error("Folder name is required.");
+    await apiRenameDocumentFolder(folder.id, data.name.trim());
+    invalidate("documentFolders");
+    navigate("documents/library");
+  });
+}
+
+function openMoveToFolderDialog(record, folders) {
+  openDialog("Move to Folder", [
+    { name: "folder_id", label: "Folder", type: "select", value: record.folder_id || "", options: [{ value: "", label: "Unfiled" }, ...folders.map((f) => ({ value: f.id, label: f.name }))] },
+  ], async (data) => {
+    await apiPatchDocument(record.id, { folder_id: data.folder_id || null });
+    invalidate("documents");
+    toast("Moved.");
+    navigate(record.folder_id ? `documents/library/folder/${record.folder_id}` : "documents/library");
+  });
+}
+
+async function renderDocumentTrashList(body, token) {
+  setSelectedObject(null);
+  if (!hasPermission("office.read")) {
+    body.innerHTML = "";
+    body.appendChild(errorPanel("You don't have permission to view Documents."));
+    return;
+  }
+  const documents = await fetchDocuments();
+  if (token !== state.renderToken) return;
+  const canManage = hasPermission("documents.generate");
+  const trashed = documents.filter((d) => d.trashed_at);
+  body.innerHTML = "";
+  renderStandardList(body, {
+    title: "Trash",
+    records: trashed,
+    columns: [
+      { label: "Title", width: "1.8fr", render: (d) => escapeHtml(d.title) },
+      { label: "Type", render: (d) => escapeHtml(titleCase(d.document_type)) },
+      { label: "Trashed", render: (d) => escapeHtml(fmtRelative(d.trashed_at)) },
+      { label: "By", render: (d) => escapeHtml(d.trashed_by || "—") },
+      { label: "", render: (d) => buildOverflowMenu({ items: documentOverflowItems(d, { canManage, folders: [] }) }) },
+    ],
+    searchFields: ["title", "document_type"],
+    filters: [],
+    canManage: false,
+    onRowClick: (d) => navigate(`documents/library/${d.id}`),
+    emptyMessage: "Trash is empty.",
+  });
+}
+
+async function renderDocumentPreviewContent(record) {
+  const host = el(`<div class="document-preview-body"></div>`);
+  if (record.body) {
+    host.appendChild(el(`<div class="proposal-body document-native-preview">${documentMarkdownLiteToHtml(record.body)}</div>`));
+    return host;
+  }
+  const fileUrl = record.html_url || record.file_url;
+  if (!fileUrl) {
+    host.appendChild(el(`
+      <div class="document-preview-empty">
+        <p><strong>No preview available</strong></p>
+        <p class="detail-note">This document does not currently contain a previewable file or document body.</p>
+      </div>
+    `));
+    return host;
+  }
+  // The root cause of the old {"error":"not_found"} leak: an <iframe>
+  // was pointed straight at fileUrl with no check. A real fetch first
+  // means a genuine miss renders the same honest empty state instead of
+  // the raw backend JSON reaching the page.
+  try {
+    const response = await fetch(fileUrl, { credentials: "same-origin" });
+    if (!response.ok) {
+      host.appendChild(el(`
+        <div class="document-preview-empty">
+          <p><strong>No preview available</strong></p>
+          <p class="detail-note">This document's stored file could not be found. It may have been removed or never fully saved.</p>
+        </div>
+      `));
+      return host;
+    }
+    const contentType = response.headers.get("content-type") || "";
+    if (contentType.startsWith("image/")) {
+      host.appendChild(el(`<img src="${escapeHtml(fileUrl)}" alt="${escapeHtml(record.title || "Document preview")}" class="document-preview-image" />`));
+    } else if (contentType.includes("pdf") || contentType.includes("html")) {
+      host.appendChild(el(`<iframe src="${escapeHtml(fileUrl)}" class="document-preview-frame" title="${escapeHtml(record.title || "Document preview")}"></iframe>`));
+    } else {
+      host.appendChild(el(`
+        <div class="document-preview-empty">
+          <p><strong>Preview not supported for this file type</strong></p>
+          <p class="detail-note">Open or download the file to view it.</p>
+        </div>
+      `));
+    }
+  } catch {
+    host.appendChild(el(`
+      <div class="document-preview-empty">
+        <p><strong>No preview available</strong></p>
+        <p class="detail-note">This document's stored file could not be reached right now.</p>
+      </div>
+    `));
+  }
+  return host;
+}
+
+const DOCUMENT_DETAIL_TABS = [
+  { key: "preview", label: "Preview" },
+  { key: "edit", label: "Edit" },
+  { key: "details", label: "Details" },
+  { key: "activity", label: "Activity" },
+  { key: "access", label: "Access" },
+];
 
 async function renderDocumentDetail(body, id, token) {
   if (!hasPermission("office.read")) {
@@ -7687,8 +8287,9 @@ async function renderDocumentDetail(body, id, token) {
     return;
   }
   const canManage = hasPermission("documents.generate");
-  const [documents, notes, leads, contacts, organizations, opportunities, projects, portfolioEntries, supportCases, privateRelationships, partnerships] = await Promise.all([
+  const [documents, folders, notes, leads, contacts, organizations, opportunities, projects, portfolioEntries, supportCases, privateRelationships, partnerships] = await Promise.all([
     fetchDocuments(),
+    fetchDocumentFolders().catch(() => []),
     fetchRelatedActivities("document", id),
     hasPermission("office.read") ? fetchLeads().catch(() => []) : Promise.resolve([]),
     hasPermission("crm.read") ? fetchContacts().catch(() => []) : Promise.resolve([]),
@@ -7708,87 +8309,193 @@ async function renderDocumentDetail(body, id, token) {
     return;
   }
   const related = resolveGenericRelation(record.related_type, record.related_id, { leads, contacts, organizations, opportunities, projects, portfolioEntries, supportCases, privateRelationships, partnerships });
-
+  const currentFolder = record.folder_id ? folders.find((f) => f.id === record.folder_id) : null;
   const fileUrl = record.html_url || record.file_url;
-  const docSection = el(`
-    <div class="detail-section">
-      <h3>Document</h3>
-      <div class="fact-grid">
-        ${factRow("Type", titleCase(record.document_type))}
-        ${factRow("Status", titleCase(record.status))}
-        ${factRow("Owner", record.owner)}
-        ${factRow("Related", related ? related.name : (record.related_type ? titleCase(record.related_type) : "—"))}
+  const isTrashed = Boolean(record.trashed_at);
+  const isNative = Boolean(record.body) || (!fileUrl && canManage && !isTrashed);
+  setSelectedObject("document", id, record.title, documentOyiContext(record, { related }));
+
+  body.innerHTML = "";
+  const back = el(`<button type="button" class="detail-back">← Documents</button>`);
+  back.addEventListener("click", () => navigate(currentFolder ? `documents/library/folder/${currentFolder.id}` : "documents/library"));
+  body.appendChild(back);
+
+  const fileSizeLabel = record.metadata?.size ? fmtBytes(record.metadata.size) : null;
+  const header = el(`
+    <div class="portfolio-header document-header">
+      <span class="documents-row-icon document-header-icon">${documentFileIcon()}</span>
+      <div class="portfolio-header-main">
+        <h1>${escapeHtml(record.title)}</h1>
+        <div class="detail-badges">
+          ${badge(titleCase(record.document_type))}
+          ${badge(titleCase(record.status), toneForStatus(record.status))}
+          ${isTrashed ? badge("Trashed", "red") : ""}
+        </div>
+        <div class="fact-grid portfolio-header-facts">
+          ${factRow("Owner", record.owner || "—")}
+          ${factRow("Folder", currentFolder ? currentFolder.name : "Unfiled")}
+          ${fileSizeLabel ? factRow("File Size", fileSizeLabel) : ""}
+        </div>
+        <p class="portfolio-header-updated">Updated ${escapeHtml(fmtRelative(record.updated_at))}</p>
       </div>
-      ${fileUrl ? `<div class="doc-actions" style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px;"></div>` : `<p class="detail-note">No file is attached to this document record.</p>`}
-      <div class="doc-preview-frame" style="display:none;margin-top:12px;"></div>
     </div>
   `);
+  const headerActions = el(`<div class="portfolio-header-actions"></div>`);
   if (fileUrl) {
-    const actions = docSection.querySelector(".doc-actions");
-    const previewFrame = docSection.querySelector(".doc-preview-frame");
+    const openBtn = el(`<a href="${escapeHtml(fileUrl)}" target="_blank" rel="noopener" class="btn btn-ghost btn-sm">Open</a>`);
+    headerActions.appendChild(openBtn);
+    const downloadBtn = el(`<a href="${escapeHtml(fileUrl)}" download class="btn btn-ghost btn-sm">Download</a>`);
+    headerActions.appendChild(downloadBtn);
+  }
+  const overflow = buildOverflowMenu({ items: documentOverflowItems(record, { canManage, folders }).filter((item) => item.label !== "Preview") });
+  headerActions.appendChild(overflow);
+  header.appendChild(headerActions);
+  body.appendChild(header);
 
-    const openLink = el(`<a href="${escapeHtml(fileUrl)}" target="_blank" rel="noopener" class="btn btn-ghost btn-sm">Open →</a>`);
-    actions.appendChild(openLink);
+  let activeTab = "preview";
+  const tabsBar = el(`<div class="crm-tabs"></div>`);
+  const bodyHost = el(`<div></div>`);
+  const availableTabs = DOCUMENT_DETAIL_TABS.filter((tab) => {
+    if (tab.key === "edit") return isNative && canManage && !isTrashed;
+    return true;
+  });
 
-    const previewBtn = el(`<button type="button" class="btn btn-ghost btn-sm">Preview</button>`);
-    previewBtn.addEventListener("click", () => {
-      const showing = previewFrame.style.display !== "none";
-      if (showing) {
-        previewFrame.style.display = "none";
-        previewFrame.innerHTML = "";
-        previewBtn.textContent = "Preview";
-      } else {
-        previewFrame.innerHTML = `<iframe src="${escapeHtml(fileUrl)}" style="width:100%;height:480px;border:1px solid var(--line);border-radius:var(--radius);background:var(--white);"></iframe>`;
-        previewFrame.style.display = "block";
-        previewBtn.textContent = "Hide Preview";
+  async function renderTabBody() {
+    bodyHost.innerHTML = "";
+    if (activeTab === "preview") {
+      const previewHost = el(`<div class="detail-section portfolio-panel"></div>`);
+      previewHost.appendChild(el(`<p class="hint">Loading preview…</p>`));
+      bodyHost.appendChild(previewHost);
+      const content = await renderDocumentPreviewContent(record);
+      if (bodyHost.contains(previewHost)) {
+        previewHost.innerHTML = "";
+        previewHost.appendChild(content);
       }
-    });
-    actions.appendChild(previewBtn);
-
-    const downloadLink = el(`<a href="${escapeHtml(fileUrl)}" download="${escapeHtml((record.title || "document").replace(/[^a-z0-9]+/gi, "-"))}.html" class="btn btn-ghost btn-sm">Download</a>`);
-    actions.appendChild(downloadLink);
-
-    // The Open/Download links above require an Office login — fine for
-    // staff, useless if pasted into an email to an external client. The
-    // share link is token-gated instead, so it actually works for them.
-    const shareBtn = el(`<button type="button" class="btn btn-ghost btn-sm">Copy Share Link</button>`);
-    if (record.share_token) {
-      shareBtn.addEventListener("click", async () => {
-        const shareUrl = `${window.location.origin}/api/lead-agents/documents/shared/${encodeURIComponent(id)}/${encodeURIComponent(record.share_token)}`;
-        try {
-          await navigator.clipboard.writeText(shareUrl);
-          toast("Share link copied — this one works for anyone, no Office login needed.");
-        } catch {
-          toast(shareUrl);
+    } else if (activeTab === "edit") {
+      bodyHost.appendChild(renderDocumentEditor(record));
+    } else if (activeTab === "details") {
+      bodyHost.appendChild(el(`
+        <div class="detail-section portfolio-panel">
+          <h3>Details</h3>
+          <div class="fact-grid">
+            ${factRow("Type", titleCase(record.document_type))}
+            ${factRow("Status", titleCase(record.status))}
+            ${factRow("Owner", record.owner || "—")}
+            ${factRow("Folder", currentFolder ? currentFolder.name : "Unfiled")}
+            ${factRow("Related", related ? related.name : (record.related_type ? titleCase(record.related_type) : "—"))}
+            ${fileSizeLabel ? factRow("File Size", fileSizeLabel) : ""}
+            ${factRow("Created", fmtDateTime(record.created_at))}
+            ${factRow("Updated", fmtDateTime(record.updated_at))}
+          </div>
+        </div>
+      `));
+    } else if (activeTab === "activity") {
+      bodyHost.appendChild(renderTimeline(notes, { canAddNote: canManage, onAddNote: () => promptAddRelatedNote("document", id) }));
+    } else if (activeTab === "access") {
+      const shareUrl = record.share_token ? `${window.location.origin}/api/lead-agents/documents/shared/${encodeURIComponent(id)}/${encodeURIComponent(record.share_token)}` : null;
+      const section = el(`
+        <div class="detail-section portfolio-panel">
+          <h3>Access</h3>
+          <div class="fact-grid">
+            ${factRow("Share Link", shareUrl ? "Active — anyone with the link can view it, no expiry" : "Not created yet")}
+          </div>
+        </div>
+      `);
+      if (shareUrl) {
+        const actions = el(`<div style="display:flex;gap:8px;margin-top:10px;"></div>`);
+        const copyBtn = el(`<button type="button" class="btn btn-ghost btn-sm">Copy Share Link</button>`);
+        copyBtn.addEventListener("click", async () => {
+          try { await navigator.clipboard.writeText(shareUrl); toast("Share link copied."); }
+          catch { toast(shareUrl); }
+        });
+        actions.appendChild(copyBtn);
+        if (canManage) {
+          const regenBtn = el(`<button type="button" class="btn btn-ghost btn-sm">Regenerate Link</button>`);
+          regenBtn.addEventListener("click", async () => {
+            await apiRegenerateDocumentShareLink(id);
+            invalidate("documents");
+            toast("Share link regenerated — the old link no longer works.");
+            navigate(`documents/library/${id}`);
+          });
+          actions.appendChild(regenBtn);
         }
-      });
-    } else {
-      shareBtn.disabled = true;
-      shareBtn.title = "This document was created before shareable links existed — regenerate it to get one.";
+        section.appendChild(actions);
+      } else {
+        section.appendChild(el(`<p class="detail-note">This document was created before shareable links existed.</p>`));
+      }
+      bodyHost.appendChild(section);
     }
-    actions.appendChild(shareBtn);
   }
 
-  const mainSections = [
-    docSection,
-    renderTimeline(notes, { canAddNote: canManage, onAddNote: () => promptAddRelatedNote("document", id) }),
-  ];
-
-  const railSections = [];
-  if (related) railSections.push(railCard(titleCase(record.related_type), `<a href="#/${related.path}">${escapeHtml(related.name)}</a>`));
-
-  renderDetailShell(body, {
-    type: "document",
-    id,
-    label: record.title,
-    typeLine: `Document · ${titleCase(record.document_type)}`,
-    badges: [badge(titleCase(record.status), toneForStatus(record.status))],
-    backLabel: "Documents",
-    onBack: () => navigate("documents/library"),
-    oyiContext: documentOyiContext(record, { related }),
-    mainSections,
-    railSections,
+  availableTabs.forEach((tab) => {
+    const tabBtn = el(`<button type="button" class="crm-tab ${tab.key === activeTab ? "active" : ""}" data-tab-key="${tab.key}">${escapeHtml(tab.label)}</button>`);
+    tabBtn.addEventListener("click", () => {
+      activeTab = tab.key;
+      tabsBar.querySelectorAll(".crm-tab").forEach((b) => b.classList.toggle("active", b === tabBtn));
+      renderTabBody();
+    });
+    tabsBar.appendChild(tabBtn);
   });
+  body.appendChild(tabsBar);
+  body.appendChild(bodyHost);
+  renderTabBody();
+}
+
+// Native document editor — the same proven markdown-lite textarea +
+// toolbar pattern Content/Publishing already ships (wireBodyToolbar /
+// markdownLiteToHtml), extended with link support, not a new
+// contenteditable WYSIWYG. Debounced autosave with a real Saving…/
+// Saved/failed state, plus an explicit Save button as a reliable
+// fallback — content is never silently lost on refresh because it is
+// PATCHed to the real `body` column via the generic documents route.
+function renderDocumentEditor(record) {
+  const section = el(`
+    <div class="detail-section portfolio-panel document-editor">
+      <div class="body-toolbar"></div>
+      <textarea class="document-editor-textarea" rows="16">${escapeHtml(record.body || "")}</textarea>
+      <div class="document-editor-status">
+        <span class="document-editor-save-state"></span>
+        <button type="button" class="btn btn-primary btn-sm document-editor-save">Save</button>
+      </div>
+    </div>
+  `);
+  const textarea = section.querySelector(".document-editor-textarea");
+  wireDocumentBodyToolbar(section.querySelector(".body-toolbar"), textarea);
+  const saveState = section.querySelector(".document-editor-save-state");
+  const saveBtn = section.querySelector(".document-editor-save");
+
+  let lastSavedValue = record.body || "";
+  let saveTimer = null;
+  let inFlight = false;
+
+  async function save() {
+    if (textarea.value === lastSavedValue) return;
+    if (inFlight) return;
+    inFlight = true;
+    saveState.textContent = "Saving…";
+    try {
+      await apiPatchDocument(record.id, { body: textarea.value });
+      lastSavedValue = textarea.value;
+      record.body = textarea.value;
+      invalidate("documents");
+      saveState.textContent = `Saved — ${fmtDateTime(new Date().toISOString())}`;
+    } catch (err) {
+      saveState.textContent = err.message || "Could not save — your changes are still in this box, try again.";
+    } finally {
+      inFlight = false;
+    }
+  }
+
+  textarea.addEventListener("input", () => {
+    saveState.textContent = "Unsaved changes…";
+    if (saveTimer) clearTimeout(saveTimer);
+    saveTimer = setTimeout(save, 1500);
+  });
+  saveBtn.addEventListener("click", () => {
+    if (saveTimer) clearTimeout(saveTimer);
+    save();
+  });
+  return section;
 }
 
 // Built ONLY from document metadata already rendered on this page — never

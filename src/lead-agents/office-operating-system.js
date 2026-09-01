@@ -27,6 +27,16 @@ const CORPORATE_COLLECTIONS = Object.freeze({
   private: { state: "office_private_relationships", table: "office_private_relationships", permission: "private.read", manage: "private.manage" },
   partnerships: { state: "office_partnership_relationships", table: "office_partnership_relationships", permission: "partnerships.read", manage: "partnerships.manage" },
   meetings: { state: "office_meetings", table: "office_meetings", permission: "meetings.read", manage: "meetings.manage" },
+  // Documents Workspace (rebuild) -- registered for PATCH only (rename,
+  // move between folders, edit native body, relate). Creation keeps its
+  // existing bespoke POST /admin/documents/generate route (template
+  // rendering + storage write + share token), so "documents" is
+  // deliberately absent from the plural create/list route regex in
+  // server.js, only the singular PATCH-by-id one. This also fixes a
+  // pre-existing gap: validateRelatedObject/findCorporateRecord already
+  // expected collection "documents" to resolve (RELATED_TYPES.document)
+  // but it 404'd against the Supabase store before this entry existed.
+  documents: { state: "office_documents", table: "office_documents", permission: "documents.generate", manage: "documents.generate" },
 });
 
 function text(value, fallback = "") {

@@ -42,6 +42,7 @@ class FileLeadAgentsStore {
       office_wallets: [],
       office_analytics: [],
       office_documents: [],
+      office_document_folders: [],
       office_support_mappings: [],
       office_handoffs: [],
       office_files: [],
@@ -113,6 +114,7 @@ class FileLeadAgentsStore {
         office_wallets: Array.isArray(parsed.office_wallets) ? parsed.office_wallets : [],
         office_analytics: Array.isArray(parsed.office_analytics) ? parsed.office_analytics : [],
         office_documents: Array.isArray(parsed.office_documents) ? parsed.office_documents : [],
+        office_document_folders: Array.isArray(parsed.office_document_folders) ? parsed.office_document_folders : [],
         office_support_mappings: Array.isArray(parsed.office_support_mappings)
           ? parsed.office_support_mappings
           : [],
@@ -1401,6 +1403,8 @@ class FileLeadAgentsStore {
       html_url: input.html_url || "",
       email_to: input.email_to || "",
       share_token: input.share_token || "",
+      folder_id: input.folder_id || null,
+      body: input.body || null,
       metadata: input.metadata || {},
       created_at: input.created_at || nowIso,
       updated_at: nowIso,
@@ -1408,6 +1412,69 @@ class FileLeadAgentsStore {
     this.state.office_documents.push(document);
     await this.persist();
     return document;
+  }
+
+  async deleteOfficeDocument(id) {
+    const index = this.state.office_documents.findIndex((doc) => doc.id === id);
+    if (index === -1) return false;
+    this.state.office_documents.splice(index, 1);
+    await this.persist();
+    return true;
+  }
+
+  async deleteOfficeFile(id) {
+    const index = this.state.office_files.findIndex((file) => file.id === id);
+    if (index === -1) return false;
+    this.state.office_files.splice(index, 1);
+    await this.persist();
+    return true;
+  }
+
+  async listOfficeFilesByResource(resourceType, resourceId) {
+    return this.state.office_files.filter((f) => f.resource_type === resourceType && f.resource_id === resourceId);
+  }
+
+  async listOfficeFilesByResourceType(resourceType) {
+    return this.state.office_files.filter((f) => f.resource_type === resourceType).map((f) => ({ size: f.size }));
+  }
+
+  async listOfficeDocumentFolders() {
+    return [...this.state.office_document_folders].sort((a, b) => String(a.name || "").localeCompare(String(b.name || "")));
+  }
+
+  async createOfficeDocumentFolder(input) {
+    const nowIso = this.nowIso();
+    const folder = {
+      id: input.id || crypto.randomUUID(),
+      name: input.name,
+      created_by: input.created_by || "",
+      created_at: nowIso,
+      updated_at: nowIso,
+    };
+    this.state.office_document_folders.push(folder);
+    await this.persist();
+    return folder;
+  }
+
+  async getOfficeDocumentFolderById(id) {
+    return this.state.office_document_folders.find((folder) => folder.id === id) || null;
+  }
+
+  async renameOfficeDocumentFolder(id, name) {
+    const folder = this.state.office_document_folders.find((f) => f.id === id);
+    if (!folder) return null;
+    folder.name = name;
+    folder.updated_at = this.nowIso();
+    await this.persist();
+    return folder;
+  }
+
+  async deleteOfficeDocumentFolder(id) {
+    const index = this.state.office_document_folders.findIndex((folder) => folder.id === id);
+    if (index === -1) return false;
+    this.state.office_document_folders.splice(index, 1);
+    await this.persist();
+    return true;
   }
 
   async upsertOfficeCollections(input) {

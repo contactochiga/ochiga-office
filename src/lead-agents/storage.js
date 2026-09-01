@@ -213,6 +213,29 @@ function createStorageService(config) {
     }
   }
 
+  // Documents Workspace permanent-delete needs a real way to remove the
+  // underlying bytes, not just the office_files metadata row -- without
+  // this, permanently deleting a document would silently orphan its
+  // storage object on whichever driver is active.
+  async function deleteObject(filename) {
+    const safeName = path.basename(String(filename || ""));
+    if (driver === "supabase") {
+      const response = await supabaseClient.delete(`/object/${encodeURIComponent(bucket)}/${encodeURIComponent(safeName)}`);
+      if (response.status >= 200 && response.status < 300) return true;
+      if (response.status === 404) return false;
+      const error = new Error(`Supabase Storage delete failed (${response.status})`);
+      error.statusCode = 502;
+      throw error;
+    }
+    try {
+      await fs.unlink(path.join(rootDir, safeName));
+      return true;
+    } catch (error) {
+      if (error && error.code === "ENOENT") return false;
+      throw error;
+    }
+  }
+
   return {
     driver,
     get rootDir() {
@@ -223,6 +246,7 @@ function createStorageService(config) {
     putDataUrl,
     putText,
     getObject,
+    deleteObject,
     filePathFor(filename) {
       return path.join(rootDir, path.basename(String(filename || "")));
     },

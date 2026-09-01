@@ -17,6 +17,12 @@ const FIELD_POLICY = Object.freeze({
   meetings: ["title", "scheduled_at", "owner", "participants", "notes", "outcome", "status", "follow_up_task_id", "related_type", "related_id", "business_unit"],
   private: ["relationship_type", "relationship_manager", "owner", "status", "review_status", "notes", "business_unit", "contact_id", "organization_id", "opportunity_id"],
   partnerships: ["relationship_type", "relationship_manager", "owner", "status", "review_status", "notes", "business_unit", "contact_id", "organization_id", "opportunity_id"],
+  // Documents Workspace -- rename/move/relate/edit-body only. `status`
+  // deliberately excluded: it carries free-form business meaning
+  // (draft/sent/accepted, varying by document_type) rather than a fixed
+  // workflow this generic PATCH's status-transition gate can govern, and
+  // it was never editable before this change either.
+  documents: ["title", "folder_id", "related_type", "related_id", "body"],
 });
 
 const STATUS_TRANSITIONS = Object.freeze({
