@@ -239,6 +239,100 @@ async function main() {
     assert.ok(listWithLegacy.some((d) => d.id === "doc_legacy_1"), "a legacy metadata-only record must still list");
     console.log("H. Legacy (pre-migration-shaped) documents still list and open — PASS");
 
+    // I. Corporate Letterhead master config -- readable by any staff
+    // (documents.generate holders need to snapshot it), editable only by
+    // settings.manage.
+    const configGetRes = await fetch(`${base}/api/lead-agents/admin/letterhead-config`, { headers: { cookie: staffCookie } });
+    assert.equal(configGetRes.status, 200, "any staff can read the letterhead config to snapshot it");
+    const patchByStaffRes = await fetch(`${base}/api/lead-agents/admin/letterhead-config`, {
+      method: "PATCH", headers: { "content-type": "application/json", cookie: staffCookie },
+      body: JSON.stringify({ email: "hacker@example.com" }),
+    });
+    assert.equal(patchByStaffRes.status, 403, "ordinary documents.generate staff must not edit the master letterhead config");
+    const letterheadPatchRes = await fetch(`${base}/api/lead-agents/admin/letterhead-config`, {
+      method: "PATCH", headers: { "content-type": "application/json", cookie: superCookie },
+      body: JSON.stringify({
+        logo_url: "/office/brand/ochiga-logo-light.png", email: "office@ochiga.com.ng", website: "www.ochiga.com.ng",
+        whatsapp: "+2349164738454", address: "Plot 45, Oyibo Adjarho Street, Lekki Phase 1, Lagos", social_handle: "@OchigaGlobal",
+      }),
+    });
+    assert.equal(letterheadPatchRes.status, 200, "settings.manage holder can update the master letterhead config");
+    console.log("I. Letterhead config: readable by staff, editable only by settings.manage — PASS");
+
+    // J. New Document -> Ochiga Letterhead: creates a real native
+    // document whose metadata carries a genuine snapshot of the config
+    // AT CREATION TIME, not a live reference to it.
+    const letterheadRes = await fetch(`${base}/api/lead-agents/admin/documents/letterhead`, {
+      method: "POST", headers: { "content-type": "application/json", cookie: staffCookie },
+      body: JSON.stringify({ title: "Board Resolution — Disposable Test" }),
+    });
+    assert.equal(letterheadRes.status, 201);
+    const letterDoc = (await letterheadRes.json()).document;
+    assert.equal(letterDoc.metadata.template, "ochiga_letterhead");
+    assert.equal(letterDoc.metadata.body_format, "html");
+    assert.equal(letterDoc.metadata.letterhead_snapshot.email, "office@ochiga.com.ng", "the snapshot must capture the real, current config values");
+    console.log("J. New Document creates a real Letterhead document with a genuine config snapshot — PASS");
+
+    // K. Editing the document body persists real HTML via the generic
+    // PATCH route (server-side sanitized), and — the core historical-
+    // document guarantee — subsequently changing the MASTER config never
+    // touches this document's own already-snapshotted values.
+    const bodyPatchRes = await fetch(`${base}/api/lead-agents/admin/office/documents/${letterDoc.id}`, {
+      method: "PATCH", headers: { "content-type": "application/json", cookie: staffCookie },
+      body: JSON.stringify({ body: '<p>Resolved that <strong>the Board</strong> approves the matter.</p><script>alert(1)</script>' }),
+    });
+    assert.equal(bodyPatchRes.status, 200);
+    const patchedLetter = (await bodyPatchRes.json()).record;
+    assert.ok(patchedLetter.body.includes("<strong>the Board</strong>"), "real formatted HTML must persist");
+    assert.ok(!patchedLetter.body.includes("<script>"), "the server must sanitize HTML-bodied documents regardless of what the client sent");
+
+    await fetch(`${base}/api/lead-agents/admin/letterhead-config`, {
+      method: "PATCH", headers: { "content-type": "application/json", cookie: superCookie },
+      body: JSON.stringify({ email: "new-office-email@ochiga.com.ng", address: "A Brand New Address, Lagos" }),
+    });
+    const letterAfterMasterEditRes = await fetch(`${base}/api/lead-agents/admin/office/documents`, { headers: { cookie: staffCookie } });
+    const letterAfterMasterEdit = (await letterAfterMasterEditRes.json()).collection.find((d) => d.id === letterDoc.id);
+    assert.equal(letterAfterMasterEdit.metadata.letterhead_snapshot.email, "office@ochiga.com.ng", "an already-created letter must keep ITS OWN snapshot after the master config changes");
+    assert.equal(letterAfterMasterEdit.metadata.letterhead_snapshot.address, "Plot 45, Oyibo Adjarho Street, Lekki Phase 1, Lagos", "same for every other snapshotted field");
+    console.log("K. Body edits persist real sanitized HTML; master config edits never rewrite an existing document's snapshot — PASS");
+
+    // L. The public share route renders the letterhead server-side for a
+    // body-only native document (no stored file exists for it) — reusing
+    // the exact same token-gated route, not a second sharing mechanism.
+    const letterShareRes = await fetch(`${base}/api/lead-agents/documents/shared/${letterDoc.id}/${letterDoc.share_token}`);
+    assert.equal(letterShareRes.status, 200, "a body-only Letterhead document must still have a working public share link");
+    const letterShareHtml = await letterShareRes.text();
+    assert.ok(letterShareHtml.includes("the Board"), "the rendered share page must include the real document content");
+    assert.ok(letterShareHtml.includes("office@ochiga.com.ng") || letterShareHtml.includes("Plot 45"), "the rendered share page must include the document's own snapshotted contact/address details");
+    console.log("L. Public share link server-renders the letterhead for a body-only document — PASS");
+
+    // M. Folder visibility: a document filed into a folder must
+    // disappear from the root listing (not just appear in both), and a
+    // move back to root (folder_id -> null) must restore it there —
+    // same canonical record throughout, never duplicated.
+    const visFolderRes = await fetch(`${base}/api/lead-agents/admin/documents/folders`, {
+      method: "POST", headers: { "content-type": "application/json", cookie: staffCookie }, body: JSON.stringify({ name: "ZZ Visibility Test Folder" }),
+    });
+    const visFolder = (await visFolderRes.json()).folder;
+    await fetch(`${base}/api/lead-agents/admin/office/documents/${letterDoc.id}`, {
+      method: "PATCH", headers: { "content-type": "application/json", cookie: staffCookie }, body: JSON.stringify({ folder_id: visFolder.id }),
+    });
+    const allDocsRes = await fetch(`${base}/api/lead-agents/admin/office/documents`, { headers: { cookie: staffCookie } });
+    const allDocs = (await allDocsRes.json()).collection;
+    const filedRecord = allDocs.find((d) => d.id === letterDoc.id);
+    assert.equal(filedRecord.folder_id, visFolder.id, "the canonical record's folder_id is the one and only place placement lives — no duplicate record");
+    const rootView = allDocs.filter((d) => !d.trashed_at && !d.folder_id);
+    assert.ok(!rootView.some((d) => d.id === letterDoc.id), "a filed document must not appear in a root-scoped (folder_id IS NULL) view");
+    const folderView = allDocs.filter((d) => !d.trashed_at && d.folder_id === visFolder.id);
+    assert.ok(folderView.some((d) => d.id === letterDoc.id), "the same document must appear when scoped to its actual folder");
+    await fetch(`${base}/api/lead-agents/admin/office/documents/${letterDoc.id}`, {
+      method: "PATCH", headers: { "content-type": "application/json", cookie: staffCookie }, body: JSON.stringify({ folder_id: null }),
+    });
+    const afterMoveBackRes = await fetch(`${base}/api/lead-agents/admin/office/documents`, { headers: { cookie: staffCookie } });
+    const afterMoveBack = (await afterMoveBackRes.json()).collection.find((d) => d.id === letterDoc.id);
+    assert.equal(afterMoveBack.folder_id, null, "moving back to root must clear folder_id on the same canonical record");
+    console.log("M. Folder visibility: filed documents leave the root scope, the same record moves cleanly between folder and root — PASS");
+
     console.log("office Documents Workspace smoke passed");
   } finally {
     await close(server);

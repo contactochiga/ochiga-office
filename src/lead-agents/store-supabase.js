@@ -1323,6 +1323,43 @@ class SupabaseLeadAgentsStore {
     return true;
   }
 
+  // Corporate Letterhead master config -- one row, id 'default'. Never
+  // joined at document-render time; only read when creating a new
+  // Letterhead document (to snapshot) or by the Settings admin editor.
+  async getLetterheadConfig() {
+    try {
+      const response = await this.client.get("/office_letterhead_config?id=eq.default&limit=1");
+      return response.data[0] || null;
+    } catch (error) {
+      const status = error?.response?.status;
+      if (status === 400 || status === 404 || status === 406) return null;
+      throw error;
+    }
+  }
+
+  async upsertLetterheadConfig(patch) {
+    const payload = { id: "default", ...patch };
+    try {
+      const response = await this.client.post("/office_letterhead_config", payload, {
+        headers: { ...this.selectHeaders(), Prefer: "return=representation,resolution=merge-duplicates" },
+      });
+      return response.data[0] || payload;
+    } catch (error) {
+      const status = error?.response?.status;
+      if (status === 400 || status === 404 || status === 406) {
+        return {
+          ...payload,
+          sync_status: "schema_pending",
+          sync_warning:
+            error?.response?.data?.message ||
+            error?.response?.data?.hint ||
+            "office_letterhead_config schema is not available yet.",
+        };
+      }
+      throw error;
+    }
+  }
+
   async upsertOfficeCollections(input) {
     const collections = input || {};
     await this.upsertRows("office_packages", collections.packages);

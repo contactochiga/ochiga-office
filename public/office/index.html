@@ -1258,9 +1258,55 @@
   .document-editor-status { display: flex; align-items: center; justify-content: space-between; margin-top: 10px; }
   .document-editor-save-state { font-size: 11px; color: var(--text-tertiary); }
 
+  /* Corporate Letterhead — the page IS the artifact being written, so it
+     deliberately breaks from the app's dark theme (real paper, real
+     ink) rather than trying to theme a letter dark. Header/footer are
+     always plain, non-editable markup; only .letterhead-body ever
+     carries contenteditable, set in JS, never here. */
+  .letterhead-toolbar { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; margin-bottom: 10px; }
+  .letterhead-block-select {
+    font-size: 12px; padding: 3px 6px; border-radius: var(--radius-sm); border: 1px solid var(--line);
+    background: var(--charcoal); color: var(--white);
+  }
+  .letterhead-page-wrap { display: flex; justify-content: center; background: #d9dbe0; padding: 24px; border-radius: var(--radius); overflow-x: auto; }
+  .letterhead-page {
+    width: 100%; max-width: 760px; min-height: 980px; background: #ffffff; color: #1a1a1a;
+    padding: 56px 64px; box-shadow: 0 1px 4px rgba(0,0,0,0.2); position: relative; overflow: hidden;
+    display: flex; flex-direction: column; font-family: Georgia, 'Times New Roman', serif;
+  }
+  .letterhead-page::before {
+    content: ""; position: absolute; top: -40px; right: -60px; width: 340px; height: 180px;
+    background: linear-gradient(135deg, rgba(226,69,58,0.14), rgba(226,69,58,0.03)); border-radius: 50%; pointer-events: none;
+  }
+  .letterhead-header { position: relative; z-index: 1; }
+  .letterhead-logo { height: 40px; display: block; }
+  .letterhead-tagline { font-family: Arial, sans-serif; font-size: 11.5px; color: #555; margin: 6px 0 0; }
+  .letterhead-body-wrap { flex: 1; position: relative; z-index: 1; }
+  .letterhead-body { margin: 44px 0 56px; font-size: 14.5px; line-height: 1.7; min-height: 420px; outline: none; }
+  .letterhead-body[contenteditable="true"] { cursor: text; }
+  .letterhead-body p { margin: 0 0 12px; }
+  .letterhead-body h2 { font-size: 19px; margin: 0 0 12px; }
+  .letterhead-footer {
+    border-top: 2px solid #e2453a; padding-top: 12px; font-family: Arial, sans-serif; font-size: 10.5px;
+    color: #333; position: relative; z-index: 1; margin-top: auto;
+  }
+  .letterhead-contact-row { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-bottom: 4px; }
+  .letterhead-contact-item { display: inline-flex; align-items: center; gap: 4px; }
+  .letterhead-divider { color: #ccc; }
+  .letterhead-social { display: inline-flex; align-items: center; gap: 4px; }
+  .letterhead-social svg { margin-right: 1px; }
+  .letterhead-address { display: flex; align-items: center; gap: 4px; color: #666; }
+
+  @media print {
+    .app-shell, .crm-tabs, .document-header, .letterhead-toolbar, .document-editor-status { display: none !important; }
+    .letterhead-page-wrap { background: #fff; padding: 0; }
+    .letterhead-page { box-shadow: none; margin: 0; }
+  }
+
   @media (max-width: 860px) {
     .documents-heading { flex-direction: column; }
     .documents-metrics { grid-template-columns: repeat(2, 1fr); }
+    .letterhead-page { padding: 32px 24px; }
   }
 
   /* Tasks Domain — split list+panel layout (Automations, and reused by
