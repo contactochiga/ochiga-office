@@ -56,6 +56,7 @@ class FileLeadAgentsStore {
       staff_messages: [],
       staff_message_reads: [],
       staff_message_attachments: [],
+      staff_message_reactions: [],
       office_content_items: [],
       office_reports: [],
       office_development_projects: [],
@@ -131,6 +132,7 @@ class FileLeadAgentsStore {
         staff_messages: Array.isArray(parsed.staff_messages) ? parsed.staff_messages : [],
         staff_message_reads: Array.isArray(parsed.staff_message_reads) ? parsed.staff_message_reads : [],
         staff_message_attachments: Array.isArray(parsed.staff_message_attachments) ? parsed.staff_message_attachments : [],
+        staff_message_reactions: Array.isArray(parsed.staff_message_reactions) ? parsed.staff_message_reactions : [],
         office_content_items: Array.isArray(parsed.office_content_items) ? parsed.office_content_items : [],
         office_reports: Array.isArray(parsed.office_reports) ? parsed.office_reports : [],
         office_development_projects: Array.isArray(parsed.office_development_projects) ? parsed.office_development_projects : [],
@@ -859,6 +861,7 @@ class FileLeadAgentsStore {
       filename: att.filename || null,
       mime_type: att.mime_type || null,
       size_bytes: att.size_bytes || null,
+      duration_seconds: att.duration_seconds || null,
       created_at: message.created_at,
     }));
     this.state.staff_message_attachments.push(...attachmentRows);
@@ -881,6 +884,8 @@ class FileLeadAgentsStore {
     return messages.map((message) => ({
       ...message,
       attachments: this.state.staff_message_attachments.filter((att) => att.message_id === message.id),
+      reactions: this.state.staff_message_reactions.filter((r) => r.message_id === message.id),
+      read_by: this.state.staff_message_reads.filter((r) => r.message_id === message.id).map((r) => r.staff_email),
     }));
   }
 
@@ -904,6 +909,93 @@ class FileLeadAgentsStore {
     const normalized = normalizeEmail(email);
     const messages = this.state.staff_messages.filter((item) => item.conversation_id === conversationId && item.sender_email !== normalized);
     return messages.filter((message) => !this.state.staff_message_reads.some((r) => r.message_id === message.id && r.staff_email === normalized)).length;
+  }
+
+  // ---------------------------------------------------------------
+  // Messages workspace additions (additive to Phase 5 staff messaging
+  // above) — group management, per-participant archive/mute/pin,
+  // reactions, soft-delete, search.
+  // ---------------------------------------------------------------
+  async updateStaffConversation(conversationId, patch) {
+    const conversation = this.state.staff_conversations.find((item) => item.id === conversationId);
+    if (!conversation) return null;
+    Object.assign(conversation, patch, { updated_at: this.nowIso() });
+    await this.persist();
+    return conversation;
+  }
+
+  async addStaffConversationParticipants(conversationId, emails) {
+    const existingEmails = new Set(
+      this.state.staff_conversation_participants.filter((p) => p.conversation_id === conversationId).map((p) => p.staff_email)
+    );
+    const toInsert = Array.from(new Set(emails.map(normalizeEmail).filter(Boolean))).filter((e) => !existingEmails.has(e));
+    const rows = toInsert.map((email) => ({ id: crypto.randomUUID(), conversation_id: conversationId, staff_email: email, joined_at: this.nowIso() }));
+    this.state.staff_conversation_participants.push(...rows);
+    if (rows.length) await this.persist();
+    return rows;
+  }
+
+  async removeStaffConversationParticipant(conversationId, email) {
+    const normalized = normalizeEmail(email);
+    const before = this.state.staff_conversation_participants.length;
+    this.state.staff_conversation_participants = this.state.staff_conversation_participants.filter(
+      (item) => !(item.conversation_id === conversationId && item.staff_email === normalized)
+    );
+    if (this.state.staff_conversation_participants.length !== before) await this.persist();
+    return true;
+  }
+
+  async setStaffConversationParticipantState(conversationId, email, patch) {
+    const normalized = normalizeEmail(email);
+    const participant = this.state.staff_conversation_participants.find(
+      (item) => item.conversation_id === conversationId && item.staff_email === normalized
+    );
+    if (!participant) return null;
+    Object.assign(participant, patch);
+    await this.persist();
+    return participant;
+  }
+
+  async toggleStaffMessageReaction(messageId, email, emoji) {
+    const normalized = normalizeEmail(email);
+    const index = this.state.staff_message_reactions.findIndex(
+      (r) => r.message_id === messageId && r.staff_email === normalized && r.emoji === emoji
+    );
+    if (index !== -1) {
+      this.state.staff_message_reactions.splice(index, 1);
+      await this.persist();
+      return { action: "removed", emoji };
+    }
+    const reaction = { id: crypto.randomUUID(), message_id: messageId, staff_email: normalized, emoji, created_at: this.nowIso() };
+    this.state.staff_message_reactions.push(reaction);
+    await this.persist();
+    return { action: "added", reaction };
+  }
+
+  async listStaffMessageReactions(messageIds) {
+    return this.state.staff_message_reactions.filter((r) => messageIds.includes(r.message_id));
+  }
+
+  async getStaffMessageById(messageId) {
+    return this.state.staff_messages.find((item) => item.id === messageId) || null;
+  }
+
+  async softDeleteStaffMessage(messageId, deletedBy) {
+    const message = this.state.staff_messages.find((item) => item.id === messageId);
+    if (!message) return null;
+    message.deleted_at = this.nowIso();
+    message.deleted_by = normalizeEmail(deletedBy);
+    await this.persist();
+    return message;
+  }
+
+  async searchStaffMessages(conversationIds, query, limit = 40) {
+    const needle = String(query || "").toLowerCase();
+    if (!conversationIds.length || !needle) return [];
+    return this.state.staff_messages
+      .filter((item) => conversationIds.includes(item.conversation_id) && !item.deleted_at && (item.body || "").toLowerCase().includes(needle))
+      .sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)))
+      .slice(0, limit);
   }
 
   // ---------------------------------------------------------------

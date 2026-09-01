@@ -7,6 +7,9 @@ const REALTIME_EVENT_NAMES = Object.freeze([
   "estate.updated",
   "office.notification",
   "office.message",
+  "office.message.reaction",
+  "office.message.deleted",
+  "office.conversation.updated",
   "edge.heartbeat",
   "twin.state.updated",
   "audit.recorded",
@@ -53,6 +56,18 @@ function createRealtimeHub() {
     },
     stats() {
       return { clients: clients.size, events: REALTIME_EVENT_NAMES };
+    },
+    // Real presence signal for Messages (Part 15 of the brief) — "is
+    // there a currently-open SSE connection for this email," derived
+    // from the same connection set every other realtime feature uses,
+    // never a fabricated "everyone is online" default.
+    isOnline(email) {
+      const normalized = String(email || "").trim().toLowerCase();
+      if (!normalized) return false;
+      for (const client of clients) {
+        if (String(client.session?.email || "").trim().toLowerCase() === normalized) return true;
+      }
+      return false;
     },
   };
 }
