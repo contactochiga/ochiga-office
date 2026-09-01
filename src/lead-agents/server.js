@@ -2837,6 +2837,37 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
         return;
       }
 
+      // Genuine self-service profile editing -- deliberately the ONLY
+      // route (besides /session/photo above) any team member can use to
+      // change their own admin_users row, and deliberately narrow: only
+      // `phone` is ever read off the body. Organisation-controlled
+      // fields (role/status/office_position/permission_scopes) are only
+      // reachable via the team.manage-gated admin routes, never here --
+      // this is a real server-side boundary, not a client-side hide.
+      if (pathname === "/api/lead-agents/admin/session/profile") {
+        if (req.method !== "PATCH") {
+          methodNotAllowed(res, "PATCH");
+          return;
+        }
+        const body = await readJsonBody(req);
+        requireObject(body, "body");
+        const currentUser = await store.getAdminUserByEmail(authContext.email);
+        if (!currentUser) {
+          json(res, 401, { error: "unauthorized" });
+          return;
+        }
+        const patch = {};
+        if (body.phone !== undefined) patch.phone = String(body.phone || "").trim();
+        if (!Object.keys(patch).length) {
+          json(res, 400, { error: "no_editable_fields_supplied" }, { "x-request-id": ctx.requestId });
+          return;
+        }
+        const updated = await store.updateAdminUser(currentUser.id, patch);
+        await appendAudit(store, authContext, "admin_user_profile_updated", "admin_user", currentUser.id, { email: currentUser.email, self_service: true, fields: Object.keys(patch) });
+        json(res, 200, { user: sanitizeAdminUser(updated) }, { "x-request-id": ctx.requestId });
+        return;
+      }
+
       if (pathname === "/api/lead-agents/admin/session/invite/accept") {
         if (req.method !== "POST") {
           methodNotAllowed(res, "POST");
@@ -5285,6 +5316,90 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
       }
 
       // ---------------------------------------------------------------
+      // Meetings Trash lifecycle -- same additive trashed_at/trashed_by
+      // shape and same three-dedicated-routes pattern already proven for
+      // Documents (kept separate from the generic PATCH above, exactly
+      // like Documents' trash routes are separate from its own PATCH).
+      // Permanent delete requires meetings.manage AND crm.manage, the
+      // same dual-grant precedent Portfolio's own governed delete uses
+      // above -- meetings has no documents.manage-style dedicated
+      // senior-tier permission of its own.
+      // ---------------------------------------------------------------
+      const meetingTrashMatch = pathname.match(/^\/api\/lead-agents\/admin\/meetings\/([^/]+)\/trash$/);
+      if (meetingTrashMatch) {
+        if (req.method !== "POST") {
+          methodNotAllowed(res, "POST");
+          return;
+        }
+        authorizePermission(authContext, "meetings.manage");
+        const id = decodeURIComponent(meetingTrashMatch[1]);
+        const current = await findCorporateRecord(store, "meetings", id);
+        if (!current) {
+          notFound(res);
+          return;
+        }
+        if (current.trashed_at) {
+          json(res, 200, { meeting: current }, { "x-request-id": ctx.requestId });
+          return;
+        }
+        const record = await persistCorporateRecord(store, "meetings", {
+          ...current,
+          trashed_at: new Date().toISOString(),
+          trashed_by: authContext?.email || "office",
+        });
+        await appendAudit(store, authContext, "office_meeting_trashed", "office_meeting", id, { title: current.title });
+        json(res, 200, { meeting: record }, { "x-request-id": ctx.requestId });
+        return;
+      }
+
+      const meetingRestoreMatch = pathname.match(/^\/api\/lead-agents\/admin\/meetings\/([^/]+)\/restore$/);
+      if (meetingRestoreMatch) {
+        if (req.method !== "POST") {
+          methodNotAllowed(res, "POST");
+          return;
+        }
+        authorizePermission(authContext, "meetings.manage");
+        const id = decodeURIComponent(meetingRestoreMatch[1]);
+        const current = await findCorporateRecord(store, "meetings", id);
+        if (!current) {
+          notFound(res);
+          return;
+        }
+        if (!current.trashed_at) {
+          json(res, 200, { meeting: current }, { "x-request-id": ctx.requestId });
+          return;
+        }
+        const record = await persistCorporateRecord(store, "meetings", { ...current, trashed_at: null, trashed_by: null });
+        await appendAudit(store, authContext, "office_meeting_restored", "office_meeting", id, { title: current.title });
+        json(res, 200, { meeting: record }, { "x-request-id": ctx.requestId });
+        return;
+      }
+
+      const meetingPermanentDeleteMatch = pathname.match(/^\/api\/lead-agents\/admin\/meetings\/([^/]+)\/permanent$/);
+      if (meetingPermanentDeleteMatch) {
+        if (req.method !== "DELETE") {
+          methodNotAllowed(res, "DELETE");
+          return;
+        }
+        authorizePermission(authContext, "meetings.manage");
+        authorizePermission(authContext, "crm.manage");
+        const id = decodeURIComponent(meetingPermanentDeleteMatch[1]);
+        const current = await findCorporateRecord(store, "meetings", id);
+        if (!current) {
+          json(res, 200, { ok: true, already_deleted: true, id }, { "x-request-id": ctx.requestId });
+          return;
+        }
+        if (!current.trashed_at) {
+          json(res, 409, { ok: false, error: "meeting_not_trashed" }, { "x-request-id": ctx.requestId });
+          return;
+        }
+        await deleteCorporateRecord(store, "meetings", id);
+        await appendAudit(store, authContext, "office_meeting_deleted", "office_meeting", id, { title: current.title });
+        json(res, 200, { ok: true, deleted: true, id }, { "x-request-id": ctx.requestId });
+        return;
+      }
+
+      // ---------------------------------------------------------------
       // Corporate Letterhead -- one small, admin-editable master config
       // row. GET is office.read (any staff creating a Letterhead
       // document needs to read it to snapshot it); PATCH is
@@ -7234,7 +7349,10 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           methodNotAllowed(res, "POST");
           return;
         }
-        authorizePermission(authContext, "manage_security");
+        // Adding a team member is organisation-controlled -- super_admin
+        // only (team.manage), same gate as every other Team-management
+        // mutation.
+        authorizePermission(authContext, "team.manage");
         const body = await readJsonBody(req);
         requireObject(body, "body");
         if (!body.email) {
@@ -7429,7 +7547,9 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           methodNotAllowed(res, "POST");
           return;
         }
-        authorizePermission(authContext, "manage_security");
+        // Resetting ANOTHER member's credentials is organisation-
+        // controlled, same gate as the rest of Team management.
+        authorizePermission(authContext, "team.manage");
         const user = await store.getAdminUserById(adminUserResetMatch[1]);
         if (!user) {
           notFound(res);
@@ -7478,6 +7598,91 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           },
           { "x-request-id": ctx.requestId }
         );
+        return;
+      }
+
+      // ---------------------------------------------------------------
+      // Team lifecycle: Active -> Deactivated (existing `status` PATCH,
+      // already immediate -- enrichAuthContext 401s the very next
+      // request once status != "active") -> Removed/Trash -> Permanently
+      // Deleted. Same governance shape as Documents: Remove/Restore are
+      // reversible, permanent delete requires the account to already be
+      // removed first, all three team.manage-gated (super_admin only).
+      // ---------------------------------------------------------------
+      const adminUserRemoveMatch = pathname.match(/^\/api\/lead-agents\/admin\/users\/([^/]+)\/remove$/);
+      if (adminUserRemoveMatch) {
+        if (req.method !== "POST") {
+          methodNotAllowed(res, "POST");
+          return;
+        }
+        authorizePermission(authContext, "team.manage");
+        const id = adminUserRemoveMatch[1];
+        const user = await store.getAdminUserById(id);
+        if (!user) {
+          notFound(res);
+          return;
+        }
+        if (user.email && normalizeEmail(user.email) === normalizeEmail(authContext?.email || "")) {
+          json(res, 400, { error: "cannot_remove_self" }, { "x-request-id": ctx.requestId });
+          return;
+        }
+        const updated = await store.updateAdminUser(id, {
+          removed_at: new Date().toISOString(),
+          removed_by: authContext?.email || "office",
+          // Reuses the existing, already-immediate access-revocation
+          // check (enrichAuthContext rejects any status != "active") --
+          // no separate revocation logic needed.
+          status: "removed",
+        });
+        await appendAudit(store, authContext, "admin_user_removed", "admin_user", id, { email: user.email });
+        json(res, 200, { user: sanitizeAdminUser(updated) }, { "x-request-id": ctx.requestId });
+        return;
+      }
+
+      const adminUserRestoreMatch = pathname.match(/^\/api\/lead-agents\/admin\/users\/([^/]+)\/restore$/);
+      if (adminUserRestoreMatch) {
+        if (req.method !== "POST") {
+          methodNotAllowed(res, "POST");
+          return;
+        }
+        authorizePermission(authContext, "team.manage");
+        const id = adminUserRestoreMatch[1];
+        const user = await store.getAdminUserById(id);
+        if (!user) {
+          notFound(res);
+          return;
+        }
+        const updated = await store.updateAdminUser(id, { removed_at: null, removed_by: null, status: "active" });
+        await appendAudit(store, authContext, "admin_user_restored", "admin_user", id, { email: user.email });
+        json(res, 200, { user: sanitizeAdminUser(updated) }, { "x-request-id": ctx.requestId });
+        return;
+      }
+
+      const adminUserPermanentMatch = pathname.match(/^\/api\/lead-agents\/admin\/users\/([^/]+)\/permanent$/);
+      if (adminUserPermanentMatch) {
+        if (req.method !== "DELETE") {
+          methodNotAllowed(res, "DELETE");
+          return;
+        }
+        authorizePermission(authContext, "team.manage");
+        const id = adminUserPermanentMatch[1];
+        const user = await store.getAdminUserById(id);
+        if (!user) {
+          json(res, 200, { ok: true, already_deleted: true, id }, { "x-request-id": ctx.requestId });
+          return;
+        }
+        if (!user.removed_at) {
+          json(res, 409, { ok: false, error: "user_not_removed" }, { "x-request-id": ctx.requestId });
+          return;
+        }
+        // Real physical delete -- see deleteAdminUser's comment in the
+        // store layer for exactly why this is safe: no business table
+        // FKs to admin_users.id, every historical document/meeting/
+        // audit row already keeps its owner/actor as a durable email
+        // string independent of whether this row still exists.
+        await store.deleteAdminUser(id);
+        await appendAudit(store, authContext, "admin_user_permanently_deleted", "admin_user", id, { email: user.email });
+        json(res, 200, { ok: true, deleted: true, id }, { "x-request-id": ctx.requestId });
         return;
       }
 

@@ -492,6 +492,14 @@ alter table admin_users add column if not exists qr_credential text;
 alter table admin_users add column if not exists permission_scopes text[] not null default '{}'::text[];
 alter table admin_users add column if not exists office_position text;
 alter table admin_users add column if not exists phone text;
+-- Team lifecycle (Active -> Deactivated -> Removed/Trash -> Permanently
+-- Deleted). Deactivation already used the existing `status` column
+-- (checked on every authenticated request). Removed is a distinct,
+-- separately-tracked state -- hidden from the active Team list but
+-- fully recoverable -- same trashed_at/trashed_by shape already proven
+-- for office_documents, not a new pattern.
+alter table admin_users add column if not exists removed_at timestamptz;
+alter table admin_users add column if not exists removed_by text;
 
 drop trigger if exists admin_users_set_updated_at on admin_users;
 create trigger admin_users_set_updated_at
@@ -1019,6 +1027,14 @@ create table if not exists office_meetings (
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
+
+-- Meetings Trash lifecycle -- same additive trashed_at/trashed_by shape
+-- already proven for office_documents, deliberately reused rather than
+-- inventing a second pattern. Kept separate from the business `status`
+-- column (active/completed/cancelled) exactly as documents kept trash
+-- separate from draft/sent/accepted.
+alter table office_meetings add column if not exists trashed_at timestamptz;
+alter table office_meetings add column if not exists trashed_by text;
 
 alter table crm_tasks add column if not exists project_id text;
 alter table crm_tasks add column if not exists portfolio_id text;

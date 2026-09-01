@@ -1007,6 +1007,18 @@ class SupabaseLeadAgentsStore {
     return response.data[0] || null;
   }
 
+  // Real physical delete -- safe in this schema because no business
+  // table (documents/meetings/tasks/CRM/audit_events.actor_email) FKs
+  // to admin_users.id; they all store the durable email string
+  // directly. admin_invites/password_reset_tokens cascade (correct --
+  // auth-lifecycle rows tied 1:1 to the account); audit_events.actor_user_id
+  // (its one real FK, on delete set null) nulls out while actor_email
+  // keeps historical attribution intact.
+  async deleteAdminUser(userId) {
+    await this.client.delete(`/admin_users?id=eq.${userId}`, { headers: this.selectHeaders() });
+    return true;
+  }
+
   async createAdminInvite(input) {
     const response = await this.client.post(
       "/admin_invites",

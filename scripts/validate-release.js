@@ -26,6 +26,7 @@ const commands = [
   "npm run office:dialog-submit-guard:test",
   "npm run office:facility-invite-email-envelope:test",
   "npm run office:documents-workspace:test",
+  "npm run office:team-lifecycle-meetings-trash:test",
 ];
 
 for (const command of commands) {

@@ -36,6 +36,7 @@
     "office:dialog-submit-guard:test": "node scripts/test-office-dialog-submit-guard.js",
     "office:facility-invite-email-envelope:test": "node scripts/test-office-facility-invite-email-envelope.js",
     "office:documents-workspace:test": "node scripts/test-office-documents-workspace.js",
+    "office:team-lifecycle-meetings-trash:test": "node scripts/test-office-team-lifecycle-meetings-trash.js",
     "office:eval": "node scripts/run-lead-agents-evals.js"
   },
   "dependencies": {
