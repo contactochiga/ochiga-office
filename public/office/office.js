@@ -3525,10 +3525,33 @@ function buildOverflowMenu({ ariaLabel = "More actions", triggerLabel = "⋯", i
     menuBtn.setAttribute("aria-expanded", "false");
   }
   const menu = el(`<div class="portfolio-overflow-menu" hidden></div>`);
+  // Documents' table rows (.crm-table / .crm-row .cell) clip overflow
+  // for text-truncation purposes -- correct for ordinary cell content,
+  // but it silently clipped this menu to invisibility even though its
+  // open/close state (hidden, aria-expanded) was toggling correctly.
+  // Portfolio's own header never hit this because it isn't inside a
+  // clipped table cell. Fixed generically (every caller benefits, not
+  // just Documents rows): while open, the menu is reparented to
+  // <body> and positioned with `position: fixed` from the trigger's
+  // real on-screen rect, which escapes ANY ancestor's overflow/clip
+  // context -- not just today's .crm-table/.cell rules. closeMenu()
+  // always reparents it back into `wrap` before hiding, so a
+  // subsequent re-render (e.g. the navigate() most actions trigger)
+  // never leaves an orphaned node sitting in <body>.
+  function positionMenu() {
+    const rect = menuBtn.getBoundingClientRect();
+    menu.style.position = "fixed";
+    menu.style.top = `${rect.bottom + 4}px`;
+    menu.style.left = "auto";
+    menu.style.right = `${Math.max(4, window.innerWidth - rect.right)}px`;
+  }
   function closeMenu() {
     menu.hidden = true;
     menuBtn.setAttribute("aria-expanded", "false");
     document.removeEventListener("keydown", onKeydown);
+    window.removeEventListener("scroll", closeMenu, true);
+    window.removeEventListener("resize", closeMenu);
+    if (menu.parentNode !== wrap) wrap.appendChild(menu);
   }
   function onKeydown(event) {
     if (event.key === "Escape") closeMenu();
@@ -3546,10 +3569,17 @@ function buildOverflowMenu({ ariaLabel = "More actions", triggerLabel = "⋯", i
     event.stopPropagation();
     const opening = menu.hidden;
     if (opening) {
+      document.body.appendChild(menu);
+      positionMenu();
       menu.hidden = false;
       menuBtn.setAttribute("aria-expanded", "true");
       document.addEventListener("click", () => closeMenu(), { once: true });
       document.addEventListener("keydown", onKeydown);
+      // A scroll/resize invalidates the fixed coordinates computed at
+      // open-time — close rather than leave the menu floating over the
+      // wrong row.
+      window.addEventListener("scroll", closeMenu, true);
+      window.addEventListener("resize", closeMenu);
     } else {
       closeMenu();
     }

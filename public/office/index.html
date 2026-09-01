@@ -1171,6 +1171,14 @@
 
   .portfolio-overflow { position: relative; }
   .portfolio-overflow-trigger { font-size: 16px; line-height: 1; padding-left: 10px; padding-right: 10px; }
+  /* `position: absolute` here is only the resting/hidden-state default.
+     buildOverflowMenu() (office.js) switches this to `position: fixed`
+     with JS-computed top/right and reparents the element to <body>
+     while it's open, then reparents it back on close -- this lets the
+     menu escape ANY ancestor's `overflow: hidden` (e.g. Documents'
+     .crm-table/.crm-row .cell, which clip normally for text-truncation
+     but were silently clipping this menu to invisibility) rather than
+     depending on every future container that might hold one. */
   .portfolio-overflow-menu {
     position: absolute; top: calc(100% + 4px); right: 0; z-index: 20; min-width: 140px;
     border: 1px solid var(--line-strong); border-radius: var(--radius-sm); background: var(--charcoal);
@@ -1221,7 +1229,6 @@
   .documents-metric-value { font-size: 20px; font-weight: 600; color: var(--white); font-variant-numeric: tabular-nums; }
   .documents-workspace-grid { margin-top: 4px; }
   .documents-new-btn-wrap { position: relative; flex-shrink: 0; }
-  .documents-new-btn-wrap .portfolio-overflow-menu { right: 0; }
   .documents-name-cell { display: flex; align-items: center; gap: 10px; min-width: 0; }
   .documents-row-icon { flex-shrink: 0; display: flex; align-items: center; justify-content: center; width: 28px; height: 28px; border-radius: var(--radius-sm); color: var(--text-secondary); background: rgba(255,255,255,0.04); }
   .documents-folder-icon { color: var(--info-blue); }
