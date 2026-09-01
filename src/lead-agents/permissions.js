@@ -37,6 +37,15 @@ const PERMISSION_KEYS = Object.freeze([
   "planstudio.read",
   "planstudio.write",
   "staff.manage",
+  // Team governance (org fields, add/remove/permanently-delete a team
+  // member) -- deliberately narrower than staff.manage (which still
+  // gates viewing the Team list/detail, unchanged). Before this key
+  // existed, super_admin and ochiga_admin were IDENTICAL grants (both
+  // `= PERMISSION_KEYS`), so any ochiga_admin could edit/deactivate/
+  // reassign the role of ANY user including another super_admin. This
+  // is the one key that makes "only the authorised super admin" real —
+  // granted below to super_admin only, never to ochiga_admin.
+  "team.manage",
   "settings.manage",
   "audit.read",
   "office.read",
@@ -80,7 +89,10 @@ const PERMISSION_KEYS = Object.freeze([
 
 const ROLE_PERMISSIONS = Object.freeze({
   super_admin: PERMISSION_KEYS,
-  ochiga_admin: PERMISSION_KEYS,
+  // Every other key is unchanged from super_admin -- ochiga_admin stays
+  // a fully-privileged operational admin. team.manage is the one
+  // deliberate exception (Team governance/deletion lifecycle task).
+  ochiga_admin: PERMISSION_KEYS.filter((key) => key !== "team.manage"),
   ochiga_staff: [
     "office.read",
     "estates.read",
@@ -225,7 +237,10 @@ const LEGACY_PERMISSION_ALIASES = Object.freeze({
   view_traces: "audit.read",
   view_audit: "audit.read",
   view_users: "staff.manage",
-  manage_users: "staff.manage",
+  // manage_users now aliases the narrower team.manage (super_admin
+  // only) rather than staff.manage -- see the team.manage comment in
+  // PERMISSION_KEYS above for why this split exists.
+  manage_users: "team.manage",
   manage_security: "settings.manage",
   manage_leads: "crm.manage",
   manage_demos: "crm.manage",

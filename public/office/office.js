@@ -134,6 +134,15 @@ async function apiCreateOffice(collection, body) {
 async function apiPatchOperational(namespace, collection, id, patch) {
   return api(`/api/lead-agents/admin/${namespace}/${collection}/${encodeURIComponent(id)}`, { method: "PATCH", body: patch });
 }
+async function apiTrashMeeting(id) {
+  return api(`/api/lead-agents/admin/meetings/${encodeURIComponent(id)}/trash`, { method: "POST" });
+}
+async function apiRestoreMeeting(id) {
+  return api(`/api/lead-agents/admin/meetings/${encodeURIComponent(id)}/restore`, { method: "POST" });
+}
+async function apiPermanentlyDeleteMeeting(id) {
+  return api(`/api/lead-agents/admin/meetings/${encodeURIComponent(id)}/permanent`, { method: "DELETE" });
+}
 // Office->Facility provisioning lifecycle (Portfolio -> New).
 async function apiProvisionFacility(portfolioId, body) {
   return api(`/api/lead-agents/admin/office/portfolio/${encodeURIComponent(portfolioId)}/provision-facility`, { method: "POST", body });
@@ -297,6 +306,22 @@ async function apiUploadAdminUserPhoto(id, photoDataUrl) {
 // an arbitrary staff.manage-gated target the way the function above does.
 async function apiUploadMyPhoto(photoDataUrl) {
   return api("/api/lead-agents/admin/session/photo", { method: "POST", body: { photo_data_url: photoDataUrl } });
+}
+// Self-service — the ONLY route any team member can use to change their
+// own admin_users row besides the photo route above; the server only
+// ever reads `phone` off this body, organisation fields are never
+// reachable here regardless of what a caller sends.
+async function apiUpdateMyProfile(patch) {
+  return api("/api/lead-agents/admin/session/profile", { method: "PATCH", body: patch });
+}
+async function apiRemoveAdminUser(id) {
+  return api(`/api/lead-agents/admin/users/${encodeURIComponent(id)}/remove`, { method: "POST" });
+}
+async function apiRestoreAdminUser(id) {
+  return api(`/api/lead-agents/admin/users/${encodeURIComponent(id)}/restore`, { method: "POST" });
+}
+async function apiPermanentlyDeleteAdminUser(id) {
+  return api(`/api/lead-agents/admin/users/${encodeURIComponent(id)}/permanent`, { method: "DELETE" });
 }
 function readFileAsDataUrl(file) {
   return new Promise((resolve, reject) => {
@@ -531,10 +556,18 @@ async function logout() {
 // Tasks and Meetings are top-level, cross-company workspaces as of
 // Phase 3 (they also surface contextually inside object detail rails).
 // ---------------------------------------------------------------
+// Projects and Reports are deliberately absent from this visible sidebar
+// list (Team/Permissions/Navigation cleanup pass): Portfolio is now the
+// one corporate/project/deployment relationship surface (Projects'
+// underlying office_projects data/route/deep-link is preserved and
+// still reachable, e.g. Portfolio's own "Project" rail-card link — see
+// PROJECTS_NAV_ITEM below), and Reports moved into the Documents
+// workspace as a tab reusing the exact same office_reports data/routes
+// (see REPORTS_NAV_ITEM below, and the documents/reports redirect in
+// renderRoute for old bookmarks).
 const PRIMARY_NAV = [
   { key: "home", label: "Home", permission: "office.read", phase: null },
   { key: "crm", label: "CRM", permission: "crm.read", phase: null },
-  { key: "projects", label: "Projects", permission: "projects.read", phase: null },
   { key: "portfolio", label: "Portfolio", permission: "portfolio.read", phase: null },
   { key: "support", label: "Support", permission: "support.read", phase: null },
   { key: "tasks", label: "Tasks", permission: "tasks.read", phase: null },
@@ -543,7 +576,6 @@ const PRIMARY_NAV = [
   { key: "partnerships", label: "Partnerships", permission: "partnerships.read", phase: null },
   { key: "documents", label: "Documents", permission: "documents.generate", phase: null },
   { key: "content", label: "Content", permission: "content.write", phase: null },
-  { key: "reports", label: "Reports", permission: "reports.write", phase: null },
   { key: "development-projects", label: "Development", permission: "development.manage", phase: null },
 ];
 
@@ -601,8 +633,16 @@ function navIconSvg(key) {
 // permission gate and topbar title the same way every routed view does.
 const INBOX_NAV_ITEM = { key: "inbox", label: "Inbox", permission: "messages.read", phase: null };
 
+// Same pattern as INBOX_NAV_ITEM — removed from the visible sidebar
+// (PRIMARY_NAV above), but still registered here so findNavItem() keeps
+// resolving the correct permission for direct navigation: Portfolio's
+// existing "Project" rail-card deep link (#/projects/:id), any old
+// #/projects bookmark, and the #/reports redirect above.
+const PROJECTS_NAV_ITEM = { key: "projects", label: "Projects", permission: "projects.read", phase: null };
+const REPORTS_NAV_ITEM = { key: "reports", label: "Reports", permission: "reports.write", phase: null };
+
 function allNavItems() {
-  return [...PRIMARY_NAV, ...ADMIN_NAV, INBOX_NAV_ITEM];
+  return [...PRIMARY_NAV, ...ADMIN_NAV, INBOX_NAV_ITEM, PROJECTS_NAV_ITEM, REPORTS_NAV_ITEM];
 }
 function findNavItem(key) {
   return allNavItems().find((item) => item.key === key);
@@ -1337,9 +1377,12 @@ async function renderRoute() {
     outlet.appendChild(skeletonPanel(4));
     await renderContentRoute(outlet, rest, token);
   } else if (topKey === "reports") {
-    outlet.innerHTML = "";
-    outlet.appendChild(skeletonPanel(4));
-    await renderReportsRoute(outlet, rest, token);
+    // Reports moved into the Documents workspace as a tab (reusing the
+    // exact same office_reports data/routes, no duplication) — this
+    // keeps any old #/reports or #/reports/:id bookmark/deep-link
+    // working by redirecting to its new home, per the explicit
+    // "don't break existing links" instruction.
+    navigate(`documents/reports${rest.length ? `/${rest.join("/")}` : ""}`);
   } else if (topKey === "development-projects") {
     outlet.innerHTML = "";
     outlet.appendChild(skeletonPanel(4));
@@ -1566,7 +1609,7 @@ const HOME_KPI_CARDS = [
   { key: "attention_count", label: "Needs Attention", permission: "office.read", icon: "attention", tone: "red", alert: (s) => s.attention_count > 0 },
   { key: "active_projects", label: "Active Projects", permission: "projects.read", route: "projects", icon: "projects", tone: "green" },
   { key: "open_tasks", label: "My Tasks", permission: "tasks.read", route: "tasks", icon: "tasks", tone: "blue", sub: (s) => (s.overdue_tasks ? `${s.overdue_tasks} overdue` : null), alert: (s) => s.overdue_tasks > 0 },
-  { key: "reports_awaiting_approval", label: "Pending Approvals", permission: "reports.review", route: "reports", icon: "reports", tone: "amber", alert: (s) => s.reports_awaiting_approval > 0 },
+  { key: "reports_awaiting_approval", label: "Pending Approvals", permission: "reports.review", route: "documents/reports", icon: "reports", tone: "amber", alert: (s) => s.reports_awaiting_approval > 0 },
   { key: "crm_leads", label: "CRM Leads", permission: "crm.read", route: "crm/leads", icon: "crm", tone: "violet" },
   // Financial Unification Programme — the one Home financial executive
   // KPI, real aggregate current balance across estate wallets (see
@@ -1903,7 +1946,7 @@ function renderMeetingsPanel(meetings) {
 // unrelated table block. Still only ever the real "submitted" (awaiting
 // approval) reports this panel has always fetched — no new data source.
 async function renderReportsHomePanel(token) {
-  const panel = homePanel("Reports & Approvals", "View all", () => navigate("reports"));
+  const panel = homePanel("Reports & Approvals", "View all", () => navigate("documents/reports"));
   try {
     const data = await apiListReports("submitted");
     if (token !== state.renderToken) return panel;
@@ -1931,12 +1974,12 @@ async function renderReportsHomePanel(token) {
       // self-escalation happens here.
       if (canReview) {
         const btn = el(`<button type="button" class="btn btn-ghost btn-sm attention-row-action">Review</button>`);
-        btn.addEventListener("click", (event) => { event.stopPropagation(); navigate(`reports/${r.id}`); });
+        btn.addEventListener("click", (event) => { event.stopPropagation(); navigate(`documents/reports/${r.id}`); });
         row.appendChild(btn);
       } else {
         row.appendChild(el(`<span class="badge badge-amber attention-row-action">Awaiting</span>`));
       }
-      row.addEventListener("click", () => navigate(`reports/${r.id}`));
+      row.addEventListener("click", () => navigate(`documents/reports/${r.id}`));
       list.appendChild(row);
     });
     panel.appendChild(list);
@@ -3987,7 +4030,8 @@ async function renderModuleRoute(outlet, moduleKey, rest, token) {
       if (objectId) await renderSupportDetail(outlet, objectId, token);
       else await renderSupportList(outlet, token);
     } else if (moduleKey === "meetings") {
-      if (objectId) await renderMeetingDetail(outlet, objectId, token);
+      if (objectId === "trash") await renderMeetingsTrashList(outlet, token);
+      else if (objectId) await renderMeetingDetail(outlet, objectId, token);
       else await renderMeetingsList(outlet, token);
     } else if (moduleKey === "private") {
       if (objectId) await renderPrivateDetail(outlet, objectId, token);
@@ -6560,12 +6604,55 @@ function relationshipLabel(record, contacts, organizations) {
   return titleCase(record.relationship_type) || "Relationship";
 }
 
+// Move to Trash / Restore / Delete Permanently -- same additive
+// trashed_at/trashed_by lifecycle already proven for Documents. Delete
+// Permanently is a dual-grant gate (meetings.manage + crm.manage),
+// matching the existing Portfolio hard-delete precedent, since Meetings
+// has no separate manage-tier split the way Documents got with
+// documents.manage.
+function meetingOverflowItems(record) {
+  const canManage = hasPermission("meetings.manage");
+  const canDeletePermanently = canManage && hasPermission("crm.manage");
+  const isTrashed = Boolean(record.trashed_at);
+  return [
+    {
+      label: "Move to Trash", danger: true, hidden: !canManage || isTrashed, onClick: async () => {
+        await apiTrashMeeting(record.id);
+        invalidate("meetings");
+        toast("Moved to Trash.");
+        navigate("meetings");
+      },
+    },
+    {
+      label: "Restore", hidden: !canManage || !isTrashed, onClick: async () => {
+        await apiRestoreMeeting(record.id);
+        invalidate("meetings");
+        toast("Restored.");
+        navigate("meetings/trash");
+      },
+    },
+    {
+      label: "Delete Permanently", danger: true, hidden: !canDeletePermanently || !isTrashed, onClick: () => openDeleteConfirmModal(
+        record.title || "this meeting",
+        "This permanently deletes the meeting and its notes, outcome and activity history. This cannot be undone.",
+        async () => {
+          await apiPermanentlyDeleteMeeting(record.id);
+          invalidate("meetings");
+          navigate("meetings/trash");
+        }
+      ),
+    },
+  ];
+}
+
 async function renderMeetingsList(outlet, token) {
   setSelectedObject(null);
   const meetings = await fetchMeetings();
   if (token !== state.renderToken) return;
   const now = Date.now();
-  const enriched = meetings.map((m) => ({ ...m, __upcoming: Boolean(m.scheduled_at) && new Date(m.scheduled_at).getTime() >= now }));
+  const canManage = hasPermission("meetings.manage");
+  const activeMeetings = meetings.filter((m) => !m.trashed_at);
+  const enriched = activeMeetings.map((m) => ({ ...m, __upcoming: Boolean(m.scheduled_at) && new Date(m.scheduled_at).getTime() >= now }));
   renderStandardList(outlet, {
     title: "Meetings",
     records: enriched,
@@ -6575,13 +6662,40 @@ async function renderMeetingsList(outlet, token) {
       { label: "Scheduled", render: (m) => m.scheduled_at ? (m.__upcoming ? badge(fmtDateTime(m.scheduled_at), "amber") : escapeHtml(fmtDateTime(m.scheduled_at))) : "—" },
       { label: "Owner", render: (m) => escapeHtml(m.owner || "Unassigned") },
       { label: "Outcome", render: (m) => escapeHtml(m.outcome || "—") },
+      ...(canManage ? [{ label: "", render: (m) => buildOverflowMenu({ items: meetingOverflowItems(m) }) }] : []),
     ],
     searchFields: ["title", "notes", "outcome"],
     filters: [{ key: "business_unit", label: "Business Unit" }, { key: "related_type", label: "Related Type" }],
-    canManage: hasPermission("meetings.manage"),
+    canManage,
     onCreate: () => openCreateMeetingDialog(),
     onRowClick: (m) => navigate(`meetings/${m.id}`),
     emptyMessage: "No meetings scheduled yet.",
+    secondaryActions: canManage ? [{ label: "Trash", onClick: () => navigate("meetings/trash") }] : undefined,
+  });
+}
+
+async function renderMeetingsTrashList(outlet, token) {
+  setSelectedObject(null);
+  const canManage = hasPermission("meetings.manage");
+  const meetings = await fetchMeetings();
+  if (token !== state.renderToken) return;
+  const trashed = meetings.filter((m) => m.trashed_at);
+  renderStandardList(outlet, {
+    title: "Meetings Trash",
+    records: trashed,
+    columns: [
+      { label: "Title", width: "1.6fr", render: (m) => escapeHtml(m.title) },
+      { label: "Related", render: (m) => m.related_type ? escapeHtml(titleCase(m.related_type)) : "—" },
+      { label: "Trashed", render: (m) => escapeHtml(fmtRelative(m.trashed_at)) },
+      { label: "By", render: (m) => escapeHtml(m.trashed_by || "—") },
+      { label: "", render: (m) => buildOverflowMenu({ items: meetingOverflowItems(m) }) },
+    ],
+    searchFields: ["title", "notes", "outcome"],
+    filters: [],
+    canManage: false,
+    onRowClick: (m) => navigate(`meetings/${m.id}`),
+    emptyMessage: "Trash is empty.",
+    secondaryActions: canManage ? [{ label: "Back to Meetings", onClick: () => navigate("meetings") }] : undefined,
   });
 }
 
@@ -6624,6 +6738,7 @@ async function renderMeetingDetail(outlet, id, token) {
   }
   const related = resolveGenericRelation(record.related_type, record.related_id, { leads, contacts, organizations, opportunities, projects, portfolioEntries, supportCases, privateRelationships, partnerships });
   const followUpTask = tasks.find((t) => t.id === record.follow_up_task_id);
+  const isTrashed = Boolean(record.trashed_at);
 
   const mainSections = [
     el(`
@@ -6641,7 +6756,7 @@ async function renderMeetingDetail(outlet, id, token) {
     el(`<div class="detail-section"><h3>Notes</h3><p>${record.notes ? escapeHtml(record.notes) : "No notes recorded yet."}</p></div>`),
     el(`<div class="detail-section"><h3>Outcome &amp; Follow-up</h3><p>${record.outcome ? escapeHtml(record.outcome) : "No outcome recorded yet."}</p></div>`),
   ];
-  if (canManage) {
+  if (canManage && !isTrashed) {
     const actions = renderStatusActions("office", "meetings", record, () => navigate(`meetings/${id}`));
     if (actions) {
       const section = el(`<div class="detail-section"><h3>Update Status</h3></div>`);
@@ -6658,17 +6773,26 @@ async function renderMeetingDetail(outlet, id, token) {
   if (related) railSections.push(railCard(titleCase(record.related_type), `<a href="#/${related.path}">${escapeHtml(related.name)}</a>`));
   if (followUpTask) railSections.push(railCard("Follow-up Task", `${escapeHtml(followUpTask.title)} <span class="rail-sub">${escapeHtml(titleCase(followUpTask.status))}</span>`));
 
+  const headerActions = hasPermission("meetings.manage")
+    ? [buildOverflowMenu({ items: meetingOverflowItems(record) })]
+    : [];
+
   renderDetailShell(outlet, {
     type: "meeting",
     id,
     label: record.title,
     typeLine: `Meeting · ${titleCase(record.business_unit)}`,
-    badges: [badge(meetingStatusLabel(meetingDisplayStatus(record)), toneForStatus(meetingDisplayStatus(record))), badge(record.scheduled_at ? fmtDateTime(record.scheduled_at) : "Unscheduled")],
-    backLabel: "Meetings",
-    onBack: () => navigate("meetings"),
+    badges: [
+      badge(meetingStatusLabel(meetingDisplayStatus(record)), toneForStatus(meetingDisplayStatus(record))),
+      badge(record.scheduled_at ? fmtDateTime(record.scheduled_at) : "Unscheduled"),
+      ...(isTrashed ? [badge("Trashed", "red")] : []),
+    ],
+    backLabel: isTrashed ? "Meetings Trash" : "Meetings",
+    onBack: () => navigate(isTrashed ? "meetings/trash" : "meetings"),
     oyiContext: meetingOyiContext(record, { related, followUpTask }),
     mainSections,
     railSections,
+    headerActions,
   });
 }
 
@@ -7045,6 +7169,14 @@ function partnershipOyiContext(record, { label, org, opportunity, handoff } = {}
 const DOCUMENTS_TABS = [
   { key: "library", label: "All Documents" },
   { key: "proposals", label: "Proposals / Quotations" },
+  // Reuses the existing, separate office_reports table/routes/
+  // reports.write/reports.review permissions exactly as-is -- this is a
+  // navigation move (Reports folded into the Documents workspace as a
+  // tab, matching how Proposals already works here), not a data merge.
+  // Reports has a real submitted/approved/rejected approval-review
+  // lifecycle, structurally different from Documents' draft/trash
+  // shape, so it deliberately stays its own record type.
+  { key: "reports", label: "Reports" },
   { key: "trash", label: "Trash" },
 ];
 
@@ -7175,14 +7307,9 @@ const REPORT_RELATED_TYPE_OPTIONS = [
   { value: "document", label: "Document" },
 ];
 
-async function renderReportsRoute(outlet, rest, token) {
-  const reportId = rest[0];
-  if (reportId) await renderReportDetail(outlet, reportId, token);
-  else await renderReportsList(outlet, token);
-}
-
 async function renderReportsList(outlet, token) {
-  setTopbar("Reports", "");
+  // No setTopbar here — this now renders inside the Documents workspace
+  // (renderDocumentsRoute already sets "Documents" / "Reports").
   setSelectedObject(null);
   let reports;
   try {
@@ -7227,7 +7354,7 @@ async function renderReportsList(outlet, token) {
       { label: "Updated", render: (r) => escapeHtml(fmtRelative(r.updated_at)) },
     ],
     rows: reports,
-    onRowClick: (r) => navigate(`reports/${r.id}`),
+    onRowClick: (r) => navigate(`documents/reports/${r.id}`),
     emptyMessage: "No reports yet. Start with Submit Report.",
   }));
 }
@@ -7247,7 +7374,7 @@ function openNewReportDialog() {
       related_id: data.related_type ? data.related_id : undefined,
     });
     invalidate("reports");
-    navigate("reports");
+    navigate("documents/reports");
   });
 }
 
@@ -7269,7 +7396,7 @@ async function renderReportDetail(outlet, id, token) {
   // richer per-type slots were added.
   outlet.innerHTML = "";
   const back = el(`<button type="button" class="detail-back">← Reports</button>`);
-  back.addEventListener("click", () => navigate("reports"));
+  back.addEventListener("click", () => navigate("documents/reports"));
   outlet.appendChild(back);
 
   outlet.appendChild(el(`
@@ -7307,12 +7434,12 @@ async function renderReportDetail(outlet, id, token) {
     const approveBtn = el(`<button type="button" class="btn btn-primary btn-sm">Approve</button>`);
     approveBtn.addEventListener("click", () => openDialog("Approve Report", [{ name: "decision_note", label: "Note (optional)", type: "textarea" }], async (data) => {
       await apiReportDecision(id, "approve", data);
-      navigate(`reports/${id}`);
+      navigate(`documents/reports/${id}`);
     }));
     const rejectBtn = el(`<button type="button" class="btn btn-ghost btn-sm">Reject</button>`);
     rejectBtn.addEventListener("click", () => openDialog("Reject Report", [{ name: "decision_note", label: "Reason", type: "textarea" }], async (data) => {
       await apiReportDecision(id, "reject", data);
-      navigate(`reports/${id}`);
+      navigate(`documents/reports/${id}`);
     }));
     actions.appendChild(approveBtn);
     actions.appendChild(rejectBtn);
@@ -7331,7 +7458,7 @@ async function renderReportDetail(outlet, id, token) {
     typeLine: "Report",
     badges: [badge(titleCase(report.status), REPORT_STATUS_TONE[report.status] || "default")],
     backLabel: "Reports",
-    onBack: () => navigate("reports"),
+    onBack: () => navigate("documents/reports"),
     mainSections,
     railSections: [],
   });
@@ -8114,6 +8241,9 @@ async function renderDocumentsRoute(outlet, rest, token) {
     } else if (subKey === "proposals") {
       if (objectId) await renderProposalDetail(body, objectId, token);
       else await renderProposalsList(body, token);
+    } else if (subKey === "reports") {
+      if (objectId) await renderReportDetail(body, objectId, token);
+      else await renderReportsList(body, token);
     } else if (subKey === "trash") {
       await renderDocumentTrashList(body, token);
     } else {
@@ -9036,60 +9166,144 @@ async function renderTeamView(outlet, token) {
   }
   if (token !== state.renderToken) return;
 
-  const canManage = hasPermission("staff.manage");
-  const canManageSecurity = hasPermission("manage_security");
+  // Viewing the Team list stays gated on staff.manage (unchanged — the
+  // nav item itself already requires it). team.manage is the new,
+  // narrower gate for every actual mutation (add/invite/edit-org-fields/
+  // deactivate/remove/permanently-delete) — see permissions.js for why
+  // this split exists (super_admin and ochiga_admin used to be
+  // identical grants).
+  const canManageTeam = hasPermission("team.manage");
+  const activeUsers = users.filter((u) => !u.removed_at);
+  const removedUsers = users.filter((u) => u.removed_at);
+  let showingRemoved = false;
+
   outlet.innerHTML = "";
   outlet.appendChild(el(`
     <div class="view-heading">
       <h1>Team</h1>
-      <p>Ochiga Office staff accounts — ${users.length} total.</p>
+      <p>Ochiga Office staff accounts — ${activeUsers.length} active.</p>
     </div>
   `));
 
-  if (canManage) {
+  if (canManageTeam) {
     const toolbar = el(`<div class="list-toolbar"></div>`);
     const spacer = el(`<div class="toolbar-spacer"></div>`);
     toolbar.appendChild(spacer);
-    if (canManageSecurity) {
-      const inviteBtn = el(`<button type="button" class="btn btn-ghost btn-sm">Invite Staff</button>`);
-      inviteBtn.addEventListener("click", () => openInviteStaffDialog(canonicalRoles, token));
-      toolbar.appendChild(inviteBtn);
+    let removedToggleBtn = null;
+    if (removedUsers.length) {
+      removedToggleBtn = el(`<button type="button" class="btn btn-ghost btn-sm">Removed (${removedUsers.length})</button>`);
+      toolbar.appendChild(removedToggleBtn);
     }
+    const inviteBtn = el(`<button type="button" class="btn btn-ghost btn-sm">Invite Staff</button>`);
+    inviteBtn.addEventListener("click", () => openInviteStaffDialog(canonicalRoles, token));
+    toolbar.appendChild(inviteBtn);
     const addBtn = el(`<button type="button" class="btn btn-primary btn-sm">Add Staff</button>`);
     addBtn.addEventListener("click", () => openAddStaffDialog(canonicalRoles, token));
     toolbar.appendChild(addBtn);
     outlet.appendChild(toolbar);
+
+    if (removedToggleBtn) {
+      removedToggleBtn.addEventListener("click", () => {
+        showingRemoved = !showingRemoved;
+        removedToggleBtn.textContent = showingRemoved ? "Back to Active" : `Removed (${removedUsers.length})`;
+        drawTable();
+      });
+    }
   }
 
-  const table = renderDataTable({
-    columns: [
-      {
-        label: "Photo", width: "40px",
-        render: (u) => {
-          const initials = (u.display_name || u.email || "?").trim().split(/\s+/).map((p) => p[0]).slice(0, 2).join("").toUpperCase();
-          return `<div class="avatar" style="width:24px;height:24px;font-size:10px;">${u.passport_photo_url ? `<img class="avatar-img" src="${escapeHtml(u.passport_photo_url)}" alt="" />` : `<span>${escapeHtml(initials || "?")}</span>`}</div>`;
-        },
-      },
-      { label: "Name", render: (u) => escapeHtml(u.display_name || u.email) },
-      { label: "Email", render: (u) => escapeHtml(u.email) },
-      { label: "Phone", render: (u) => escapeHtml(u.phone || "—") },
-      { label: "Position", render: (u) => escapeHtml(u.office_position || "—") },
-      { label: "Role", render: (u) => badge(titleCase(u.role), u.role === "super_admin" || u.role === "admin" ? "red" : "default") },
-      { label: "Status", render: (u) => badge(titleCase(u.status || "active"), toneForStatus(u.status || "active")) },
-      { label: "Last active", render: (u) => fmtRelative(u.last_login_at) },
-    ],
-    rows: users,
-    onRowClick: canManage ? (user) => toggleTeamEditRow(user, canonicalRoles, canManageSecurity) : undefined,
-    emptyMessage: "No staff accounts yet.",
-  });
-  outlet.appendChild(table);
+  const tableHost = el(`<div id="teamTableHost"></div>`);
+  outlet.appendChild(tableHost);
 
-  if (canManage) {
+  function drawTable() {
+    tableHost.innerHTML = "";
+    const rows = showingRemoved ? removedUsers : activeUsers;
+    const table = renderDataTable({
+      columns: [
+        {
+          label: "Photo", width: "40px",
+          render: (u) => {
+            const initials = (u.display_name || u.email || "?").trim().split(/\s+/).map((p) => p[0]).slice(0, 2).join("").toUpperCase();
+            return `<div class="avatar" style="width:24px;height:24px;font-size:10px;">${u.passport_photo_url ? `<img class="avatar-img" src="${escapeHtml(u.passport_photo_url)}" alt="" />` : `<span>${escapeHtml(initials || "?")}</span>`}</div>`;
+          },
+        },
+        { label: "Name", render: (u) => escapeHtml(u.display_name || u.email) },
+        { label: "Email", render: (u) => escapeHtml(u.email) },
+        { label: "Phone", render: (u) => escapeHtml(u.phone || "—") },
+        { label: "Position", render: (u) => escapeHtml(u.office_position || "—") },
+        { label: "Role", render: (u) => badge(titleCase(u.role), u.role === "super_admin" || u.role === "admin" ? "red" : "default") },
+        { label: "Status", render: (u) => badge(titleCase(u.status || "active"), toneForStatus(u.status || "active")) },
+        { label: "Last active", render: (u) => fmtRelative(u.last_login_at) },
+        {
+          label: "", render: (u) => canManageTeam
+            ? buildOverflowMenu({ items: teamMemberOverflowItems(u, { canonicalRoles }) })
+            : "",
+        },
+      ],
+      rows,
+      onRowClick: canManageTeam ? (user) => toggleTeamEditRow(user, canonicalRoles) : undefined,
+      emptyMessage: showingRemoved ? "No removed accounts." : "No staff accounts yet.",
+    });
+    tableHost.appendChild(table);
+  }
+  drawTable();
+
+  if (canManageTeam) {
     const editWrap = el(`<div id="teamEditWrap"></div>`);
     outlet.appendChild(editWrap);
   } else {
-    outlet.appendChild(el(`<p class="hint" style="margin-top:14px;">You have read-only visibility into Team. Role/status changes require the staff.manage permission.</p>`));
+    outlet.appendChild(el(`<p class="hint" style="margin-top:14px;">You have read-only visibility into Team. Editing another member's organisation-controlled fields requires the team.manage permission (super admin only). To change your own avatar or phone number, use "Edit profile" in the sidebar.</p>`));
   }
+}
+
+// Row/detail overflow for a super_admin managing the Team — Deactivate/
+// Reactivate is also available via the Status field in the edit form;
+// this is the quick-action equivalent plus the lifecycle actions that
+// aren't just a field edit (Remove, Restore, Permanently Delete).
+function teamMemberOverflowItems(user, { canonicalRoles }) {
+  const isRemoved = Boolean(user.removed_at);
+  const isSelf = normalizeEmailForCompare(user.email) === normalizeEmailForCompare(state.admin?.email);
+  return [
+    { label: "Edit Role / Job Title", hidden: isRemoved, onClick: () => toggleTeamEditRow(user, canonicalRoles) },
+    {
+      label: user.status === "active" ? "Deactivate" : "Reactivate", hidden: isRemoved, onClick: async () => {
+        await apiUpdateAdminUser(user.id, { status: user.status === "active" ? "suspended" : "active" });
+        toast(user.status === "active" ? "Deactivated." : "Reactivated.");
+        await renderTeamView(document.getElementById("viewOutlet"), ++state.renderToken);
+      },
+    },
+    {
+      label: "Remove from Team", danger: true, hidden: isRemoved || isSelf, onClick: async () => {
+        try {
+          await apiRemoveAdminUser(user.id);
+          toast("Removed from Team.");
+          await renderTeamView(document.getElementById("viewOutlet"), ++state.renderToken);
+        } catch (err) {
+          toast(err.message || "Could not remove this account.");
+        }
+      },
+    },
+    {
+      label: "Restore", hidden: !isRemoved, onClick: async () => {
+        await apiRestoreAdminUser(user.id);
+        toast("Restored to Active.");
+        await renderTeamView(document.getElementById("viewOutlet"), ++state.renderToken);
+      },
+    },
+    {
+      label: "Permanently Delete", danger: true, hidden: !isRemoved, onClick: () => openDeleteConfirmModal(
+        user.display_name || user.email,
+        "This permanently deletes this account. Documents, meetings and audit history they created keep their historical record — this only removes their ability to sign in and their profile. This cannot be undone.",
+        async () => {
+          await apiPermanentlyDeleteAdminUser(user.id);
+          await renderTeamView(document.getElementById("viewOutlet"), ++state.renderToken);
+        }
+      ),
+    },
+  ];
+}
+
+function normalizeEmailForCompare(email) {
+  return String(email || "").trim().toLowerCase();
 }
 
 function openAddStaffDialog(canonicalRoles, token) {
@@ -9149,9 +9363,14 @@ function groupedPermissionKeys(scopes) {
   return groups;
 }
 
-async function toggleTeamEditRow(user, canonicalRoles, canManageSecurity) {
+async function toggleTeamEditRow(user, canonicalRoles) {
   const wrap = document.getElementById("teamEditWrap");
   if (!wrap) return;
+  // team.manage (super_admin only) already gates this whole form's
+  // reachability (see renderTeamView's onRowClick) and every route it
+  // submits to server-side -- re-checked here only to decide whether to
+  // show the Reset Password button, not as the real security boundary.
+  const canManageSecurity = hasPermission("team.manage");
   wrap.innerHTML = "";
   // A stored role that predates this account's current role (a legacy
   // alias like "admin"/"founder") won't be in canonicalRoles — keep it
@@ -10190,7 +10409,25 @@ function renderUserFooter() {
 // Self-service sidebar photo change — separate from the Team edit row's
 // admin-on-someone-else upload. Every signed-in staff member can set
 // their own canonical avatar this way.
+// Self profile dialog -- phone only, via the self-service PATCH route.
+// Avatar is edited directly from the sidebar (wireOwnAvatarUpload
+// below), not duplicated here. Deliberately does not expose office
+// position/role/status/permissions -- those are organisation-controlled
+// (Team, team.manage-only), not something anyone edits on themselves.
+function openMyProfileDialog() {
+  if (!state.admin) return;
+  openDialog("Edit Profile", [
+    { name: "phone", label: "Phone number", type: "tel", value: state.admin.phone || "" },
+  ], async (data) => {
+    const updated = await apiUpdateMyProfile({ phone: data.phone || "" });
+    state.admin.phone = updated.user?.phone ?? data.phone;
+    toast("Profile updated.");
+  });
+}
+
 function wireOwnAvatarUpload() {
+  const editProfileBtn = document.getElementById("navEditProfile");
+  if (editProfileBtn) editProfileBtn.addEventListener("click", () => openMyProfileDialog());
   const trigger = document.getElementById("navAvatar");
   const input = document.getElementById("navAvatarInput");
   if (!trigger || !input) return;

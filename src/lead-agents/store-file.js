@@ -1189,6 +1189,14 @@ class FileLeadAgentsStore {
     return this.state.admin_users[index];
   }
 
+  async deleteAdminUser(userId) {
+    const index = this.state.admin_users.findIndex((item) => item.id === userId);
+    if (index === -1) return false;
+    this.state.admin_users.splice(index, 1);
+    await this.persist();
+    return true;
+  }
+
   async createAdminInvite(input) {
     const invite = {
       id: crypto.randomUUID(),
