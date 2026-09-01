@@ -1196,6 +1196,13 @@ function currentSegmentsFromHash() {
   const segments = raw.split("/").filter(Boolean);
   return segments.length ? segments : ["home"];
 }
+// Lets a caller (e.g. Portfolio's "View Audit Log" action) pre-fill the
+// Audit page's own real search filter with a specific record's id right
+// before navigating there -- a genuinely filtered, real view of that
+// record's own audit trail, not a blind link to the unfiltered global
+// page. Consumed once by renderAuditView and cleared immediately after,
+// so it never leaks into an unrelated later visit to Audit.
+let pendingAuditFilter = null;
 function navigate(path) {
   const target = `#/${path}`;
   if (window.location.hash === target) {
@@ -1444,12 +1451,20 @@ async function renderHomeView(outlet, token) {
   rowTop.appendChild(homePanelWrap("span-3", renderOyiBriefingPanel(summary, mine, developmentProjects, homeFetchedAt)));
   outlet.appendChild(rowTop);
 
+  // Rebalanced to four equal, real, defined columns (Home closure pass) --
+  // this row previously mixed span-4/span-4/span-2/span-2, but ".span-2"
+  // was never actually defined in index.html's CSS, so Portfolio and
+  // Upcoming Meetings silently fell back to an undefined (effectively
+  // ~1-column) grid-column instead of the intended 2/12 -- the real
+  // source of "too narrow/squeezed". span-3 already exists and is used
+  // throughout the rest of Office, so this reuses an existing, defined
+  // class rather than inventing a new one.
   const rowMid = el(`<div class="home-grid"></div>`);
   outlet.appendChild(rowMid);
-  if (hasPermission("crm.read")) rowMid.appendChild(homePanelWrap("span-4", await renderCrmSnapshotPanel(token)));
-  if (hasPermission("development.manage")) rowMid.appendChild(homePanelWrap("span-4", renderDevelopmentHomePanel(developmentProjects, developmentFetchFailed)));
-  if (hasPermission("portfolio.read")) rowMid.appendChild(homePanelWrap("span-2", renderPortfolioPanel(summary)));
-  if (hasPermission("meetings.read")) rowMid.appendChild(homePanelWrap("span-2", renderMeetingsPanel(home.upcoming_meetings || [])));
+  if (hasPermission("crm.read")) rowMid.appendChild(homePanelWrap("span-3", await renderCrmSnapshotPanel(token)));
+  if (hasPermission("development.manage")) rowMid.appendChild(homePanelWrap("span-3", renderDevelopmentHomePanel(developmentProjects, developmentFetchFailed)));
+  if (hasPermission("portfolio.read")) rowMid.appendChild(homePanelWrap("span-3", renderPortfolioPanel(summary)));
+  if (hasPermission("meetings.read")) rowMid.appendChild(homePanelWrap("span-3", renderMeetingsPanel(home.upcoming_meetings || [])));
   if (token !== state.renderToken) return;
 
   const rowBottom = el(`<div class="home-grid"></div>`);
@@ -1542,36 +1557,67 @@ function renderHomeKpiGrid(summary) {
 // vertical space than this panel's density target allows, and the
 // reference's row language (icon, stacked title/detail, domain, real
 // age, action) doesn't map cleanly onto tabular columns anyway.
+function buildAttentionRow(item) {
+  const meta = ATTENTION_TYPE_META[item.type] || {};
+  const tone = toneForStatus(item.priority);
+  const row = el(`
+    <div class="attention-row-v2" style="border-left-color:${ATTENTION_BORDER_COLOR[tone] || ATTENTION_BORDER_COLOR.default};">
+      ${meta.icon ? `<span class="kpi-icon-box${meta.tone ? ` kpi-icon-${meta.tone}` : ""} attention-row-icon">${iconSvg(meta.icon, "kpi-icon")}</span>` : ""}
+      <div class="attention-row-text">
+        <div class="attention-row-title">${escapeHtml(item.title || "Untitled")}</div>
+        ${item.detail ? `<div class="attention-row-detail">${escapeHtml(item.detail)}</div>` : ""}
+      </div>
+      <span class="badge badge-default attention-row-domain">${escapeHtml(meta.label || titleCase(item.type))}</span>
+      ${item.at ? `<span class="attention-row-age">${escapeHtml(fmtRelative(item.at))}</span>` : `<span class="attention-row-age"></span>`}
+    </div>
+  `);
+  if (meta.route) {
+    const btn = el(`<button type="button" class="btn btn-ghost btn-sm attention-row-action">${escapeHtml(meta.actionLabel)}</button>`);
+    btn.addEventListener("click", (event) => { event.stopPropagation(); navigate(meta.route(item.id)); });
+    row.appendChild(btn);
+    row.classList.add("clickable");
+    row.addEventListener("click", () => navigate(meta.route(item.id)));
+  }
+  return row;
+}
+
+// Global list-density protocol for Home/dashboard summary widgets: show a
+// bounded preview, never grow unbounded, always give real access to the
+// complete set. Every other Home panel already does this via
+// homePanel(title, "View all", onLink) pointing at that data's own module
+// page (Tasks, Meetings, ...) -- Needs Attention was the one outlier
+// (audited: it's the only Home/CRM/Tasks/Observatory list widget with no
+// cap). It has no single "module page" to link to (items are a genuine
+// mix of tasks/support/proposals/leads), so "View all" opens the complete,
+// un-truncated list instead of inventing a destination page that doesn't
+// exist -- nothing is deleted or hidden, just not all rendered inline.
+const ATTENTION_PREVIEW_COUNT = 5;
+function openAttentionOverlay(items) {
+  const overlay = el(`<div class="dialog-overlay"></div>`);
+  const card = el(`
+    <div class="dialog-card attention-overlay-card">
+      <h3>Needs Attention <span class="attention-overlay-count">(${items.length})</span></h3>
+      <div class="attention-list-v2 attention-overlay-list"></div>
+      <div class="dialog-actions"><button type="button" class="btn btn-ghost btn-sm" data-cancel>Close</button></div>
+    </div>
+  `);
+  const list = card.querySelector(".attention-overlay-list");
+  items.forEach((item) => list.appendChild(buildAttentionRow(item)));
+  overlay.appendChild(card);
+  document.body.appendChild(overlay);
+  function close() { overlay.remove(); }
+  card.querySelector("[data-cancel]").addEventListener("click", close);
+  overlay.addEventListener("click", (event) => { if (event.target === overlay) close(); });
+}
 function renderAttentionPanel(items) {
-  const panel = homePanel("Needs Attention");
+  const showAll = items.length > ATTENTION_PREVIEW_COUNT;
+  const panel = homePanel("Needs Attention", showAll ? "View all" : null, showAll ? () => openAttentionOverlay(items) : null);
   if (!items.length) {
     panel.appendChild(el(`<p class="home-panel-empty">Nothing needs attention right now.</p>`));
     return panel;
   }
   const list = el(`<div class="attention-list-v2"></div>`);
-  items.forEach((item) => {
-    const meta = ATTENTION_TYPE_META[item.type] || {};
-    const tone = toneForStatus(item.priority);
-    const row = el(`
-      <div class="attention-row-v2" style="border-left-color:${ATTENTION_BORDER_COLOR[tone] || ATTENTION_BORDER_COLOR.default};">
-        ${meta.icon ? `<span class="kpi-icon-box${meta.tone ? ` kpi-icon-${meta.tone}` : ""} attention-row-icon">${iconSvg(meta.icon, "kpi-icon")}</span>` : ""}
-        <div class="attention-row-text">
-          <div class="attention-row-title">${escapeHtml(item.title || "Untitled")}</div>
-          ${item.detail ? `<div class="attention-row-detail">${escapeHtml(item.detail)}</div>` : ""}
-        </div>
-        <span class="badge badge-default attention-row-domain">${escapeHtml(meta.label || titleCase(item.type))}</span>
-        ${item.at ? `<span class="attention-row-age">${escapeHtml(fmtRelative(item.at))}</span>` : `<span class="attention-row-age"></span>`}
-      </div>
-    `);
-    if (meta.route) {
-      const btn = el(`<button type="button" class="btn btn-ghost btn-sm attention-row-action">${escapeHtml(meta.actionLabel)}</button>`);
-      btn.addEventListener("click", (event) => { event.stopPropagation(); navigate(meta.route(item.id)); });
-      row.appendChild(btn);
-      row.classList.add("clickable");
-      row.addEventListener("click", () => navigate(meta.route(item.id)));
-    }
-    list.appendChild(row);
-  });
+  items.slice(0, ATTENTION_PREVIEW_COUNT).forEach((item) => list.appendChild(buildAttentionRow(item)));
   panel.appendChild(list);
   return panel;
 }
@@ -1763,8 +1809,18 @@ function renderPortfolioPanel(summary) {
 
 function renderMeetingsPanel(meetings) {
   const panel = homePanel("Upcoming Meetings", "View all", () => navigate("meetings"));
+  const canSchedule = hasPermission("meetings.manage");
   if (!meetings.length) {
+    // An intentional empty state (Home closure pass): a plain sentence in
+    // a now-wider panel read like unused space. A real action here is
+    // both more honest about what's actually possible (schedule one) and
+    // makes the empty card feel purposeful rather than a leftover slot.
     panel.appendChild(el(`<p class="home-panel-empty">No upcoming meetings.</p>`));
+    if (canSchedule) {
+      const scheduleBtn = el(`<button type="button" class="btn btn-ghost btn-sm">Schedule Meeting</button>`);
+      scheduleBtn.addEventListener("click", () => openCreateMeetingDialog({}));
+      panel.appendChild(scheduleBtn);
+    }
     return panel;
   }
   // A narrow panel (span-2/3) is too tight for a 2-column data table
@@ -1782,6 +1838,11 @@ function renderMeetingsPanel(meetings) {
     list.appendChild(row);
   });
   panel.appendChild(list);
+  if (canSchedule) {
+    const scheduleBtn = el(`<button type="button" class="btn btn-ghost btn-sm">Schedule Meeting</button>`);
+    scheduleBtn.addEventListener("click", () => openCreateMeetingDialog({}));
+    panel.appendChild(scheduleBtn);
+  }
   return panel;
 }
 
@@ -1902,15 +1963,31 @@ function renderContentPanel(content) {
 async function renderAiAgentsHomePanel(token) {
   const panel = homePanel("AI Agents", "View all", () => navigate("observatory"));
   try {
-    const data = await apiListTraces();
+    // "Recorded Interactions" must agree with the AI Agents (Observatory)
+    // page — it previously didn't: Home counted traces.length only
+    // (Office-local traces, server-defaulted to a 200-row cap when no
+    // limit is requested), while Observatory counts traces(500) +
+    // observability-events(500) (the same local traces PLUS Oyi Core's
+    // cross-surface Consumer/Facility/Website events). Both numbers were
+    // genuinely real, live, non-fabricated — just deliberately different
+    // scope, which read as "disagreeing" data. Fixed by fetching and
+    // summing the exact same two sources, with the exact same limits, so
+    // this is the same aggregate, not a relabeled narrower one.
+    // Tool Executions / Failures / Active Surfaces stay Office-traces-only
+    // below (deliberately, unchanged) -- those are Office-tool-specific
+    // signals that don't exist on Consumer/Facility/Website conversational
+    // events, so folding events into them would fabricate a meaning those
+    // metrics were never designed to carry.
+    let eventsAvailable = true;
+    const [tracesData, eventsData] = await Promise.all([
+      apiListTraces(500),
+      apiListObservabilityEvents(500).catch(() => { eventsAvailable = false; return { events: [] }; }),
+    ]);
     if (token !== state.renderToken) return panel;
-    const traces = data.traces || [];
+    const traces = tracesData.traces || [];
+    const events = eventsData.events || [];
     const toolExecutions = traces.filter((t) => t.type === "tool_executed");
     const failures = traces.filter((t) => t.type === "office_internal_chat_failed").length;
-    // Home's own summary stays scoped to Office's local traces only
-    // (the same lightweight fetch as before) — the full cross-surface
-    // picture, including Consumer/Facility/Website events, lives on the
-    // AI Agents page itself, not duplicated here.
     const surfaceCounts = OBSERVATORY_SURFACES.map((surface) => ({
       label: surface.label,
       count: traces.filter((t) => TRACE_SURFACE_KEY_BY_TYPE[t.type] === surface.key).length,
@@ -1919,7 +1996,7 @@ async function renderAiAgentsHomePanel(token) {
     // least one recorded trace) — not a fabricated "Operational" status.
     const activeSurfaces = surfaceCounts.filter((surface) => surface.count > 0).length;
     panel.appendChild(metricCellGrid([
-      { label: "Interactions", value: traces.length, icon: iconSvg("observatory", "kpi-icon"), tone: "blue" },
+      { label: "Recorded Interactions", value: traces.length + events.length, icon: iconSvg("observatory", "kpi-icon"), tone: "blue" },
       { label: "Tool Executions", value: toolExecutions.length, icon: iconSvg("lightning", "kpi-icon"), tone: "violet" },
       { label: "Failures", value: failures, icon: iconSvg("attention", "kpi-icon"), tone: failures > 0 ? "red" : "green" },
       { label: "Active Surfaces", value: `${activeSurfaces} / ${OBSERVATORY_SURFACES.length}`, icon: iconSvg("briefing", "kpi-icon"), tone: "blue" },
@@ -1930,6 +2007,12 @@ async function renderAiAgentsHomePanel(token) {
       label: surface.label,
       value: String(surface.count),
     }))));
+    // Same honest disclosure the AI Agents page itself shows when the
+    // cross-surface events source is unreachable — never silently
+    // under-count without saying so.
+    if (!eventsAvailable) {
+      panel.appendChild(el(`<p class="home-panel-empty">Cross-surface activity is temporarily unavailable — Recorded Interactions reflects Office's own activity only.</p>`));
+    }
   } catch {
     panel.appendChild(errorPanel("Could not load agent activity."));
   }
@@ -3902,19 +3985,24 @@ function portfolioOperationalSummaryText(entry) {
 // true in Backend right now (operational_projection.owner_activated).
 function renderFacilityProvisioningSection(record) {
   const workspace = record.facility_workspace;
-  const ownerActivated = record.operational_projection?.owner_activated;
   const canManage = hasPermission("crm.manage");
 
   if (!workspace) {
     return el(`
-      <div class="detail-section">
+      <div class="detail-section portfolio-panel">
         <h3>Facility Provisioning</h3>
         <p class="detail-note">No Facility provisioning has been initiated for this record yet.</p>
       </div>
     `);
   }
 
+  // "Owner Activated" (a live Backend fact, not a checklist item) plus
+  // the checklist's own facility_admin_invite/deployment_project entries
+  // moved to the dedicated "Operational Summary" panel (Overview
+  // duplication cleanup) -- shown there once, not here too. Only
+  // Office's own tracked provisioning steps stay in this panel.
   const checklistRows = Object.entries(workspace.checklist || {})
+    .filter(([key]) => !["facility_admin_invite", "deployment_project"].includes(key))
     .map(([key, value]) => factRow(titleCase(key), titleCase(value)))
     .join("");
 
@@ -3928,13 +4016,12 @@ function renderFacilityProvisioningSection(record) {
   const undelivered = workspace.status === "invitation_undelivered";
 
   const section = el(`
-    <div class="detail-section">
+    <div class="detail-section portfolio-panel">
       <h3>Facility Provisioning</h3>
       <div class="fact-grid">
         ${factRow("Workspace Status", titleCase(workspace.status))}
-        ${factRow("Owner Activated", ownerActivated === null || ownerActivated === undefined ? "Unknown" : ownerActivated ? "Yes" : "Not yet")}
+        ${checklistRows}
       </div>
-      <div class="fact-grid">${checklistRows}</div>
       ${undelivered && workspace.notes ? `<p class="detail-note" style="color: var(--red-bright);">${escapeHtml(workspace.notes)}</p>` : ""}
     </div>
   `);
@@ -4100,6 +4187,41 @@ function exportPortfolioCsv(records) {
   URL.revokeObjectURL(url);
 }
 
+// Detail-page "Export Summary" overflow action -- genuinely functional
+// (not a placeholder): a real, client-side text export of exactly the
+// facts already shown on this record's own Overview (same source data,
+// no new fetch, nothing fabricated). Distinct from exportPortfolioCsv
+// above, which exports the whole filtered list, not one record's detail.
+function exportPortfolioSummary(record) {
+  const facilityOs = derivePortfolioOsStatus(record, "facility_os_status");
+  const consumerOs = derivePortfolioOsStatus(record, "consumer_os_status");
+  const workspace = record.facility_workspace;
+  const lines = [
+    record.name || "Portfolio entry",
+    `Relationship Type: ${titleCase(record.relationship_type)}`,
+    `Client / Account: ${record.client_account || "—"}`,
+    `Location: ${record.location || "—"}`,
+    `Business Unit: ${titleCase(record.business_unit)}`,
+    `Facility OS Status: ${osStatusLabel(facilityOs)}`,
+    `Consumer OS Status: ${osStatusLabel(consumerOs)}`,
+    `Oyi Deployment: ${titleCase(record.oyi_deployment_status)}`,
+    `Support Status: ${titleCase(record.support_status)}`,
+    `Provisioning State: ${workspace ? titleCase(workspace.status) : "Not initiated"}`,
+    `Homes / Devices: ${portfolioOperationalSummaryText(record)}`,
+    `Open Escalations: ${record.operational_projection?.linked ? record.operational_projection.major_open_escalations ?? "—" : "Not linked"}`,
+    `Reference ID: ${record.backend_estate_id || record.backend_building_id || "—"}`,
+    `Updated: ${fmtDateTime(record.updated_at)}`,
+    `Exported: ${fmtDateTime(new Date().toISOString())}`,
+  ];
+  const url = URL.createObjectURL(new Blob([lines.join("\n")], { type: "text/plain;charset=utf-8;" }));
+  const safeName = String(record.name || "portfolio-entry").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "");
+  const link = el(`<a href="${url}" download="${safeName || "portfolio-entry"}-summary.txt"></a>`);
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+}
+
 async function renderPortfolioList(outlet, token) {
   setSelectedObject(null);
   const portfolioEntries = await fetchPortfolio();
@@ -4193,36 +4315,27 @@ function renderFacilityInformationPanel(record) {
   `);
 }
 
-// Overview tab's "Operational Summary" panel -- corporate-level
-// aggregates only (Part 7 is explicit: never camera feeds, resident
-// records, meter controls, or device commands here). Support-case/task
-// counts are computed from the SAME already-fetched, portfolio-scoped
-// lists the rail cards use -- not a new data source.
-function renderOperationalSummaryPanel(record, { relatedSupport, relatedTasks, linkedProject, timelineEvents }) {
-  const projection = record.operational_projection;
-  const linked = Boolean(projection?.linked);
-  const devicesTotal = linked ? projection.devices_total : null;
-  const devicesOnline = linked ? projection.devices_online : null;
-  const devicesOffline = Number.isFinite(devicesTotal) && Number.isFinite(devicesOnline) ? devicesTotal - devicesOnline : null;
-  const openSupport = relatedSupport.filter((s) => !["resolved", "closed"].includes(String(s.status || "").toLowerCase())).length;
-  const lastActivity = projection?.last_activity_at
-    ? `${projection.last_activity_label || "Activity recorded"} · ${fmtRelative(projection.last_activity_at)}`
-    : timelineEvents.length
-      ? fmtRelative([...timelineEvents].sort((a, b) => String(b.occurred_at || "").localeCompare(String(a.occurred_at || "")))[0].occurred_at)
-      : "No recent activity";
+// Overview tab's "Operational Summary" panel -- provisioning-adjacent
+// facts that live outside the Facility Provisioning panel's own tracked
+// checklist: whether the invited owner has actually activated (a live
+// Backend fact, never inferred from email delivery), plus the
+// deployment-project and admin-invite checklist entries. Homes/devices/
+// escalation aggregates already live in the KPI row and the Homes &
+// Devices tab -- repeating them here would be exactly the duplication
+// this cleanup pass removes. Only rendered when a Facility workspace
+// exists (nothing "operational" to summarize otherwise).
+function renderOperationalSummaryPanel(record) {
+  const workspace = record.facility_workspace;
+  if (!workspace) return null;
+  const ownerActivated = record.operational_projection?.owner_activated;
+  const checklist = workspace.checklist || {};
   return el(`
     <div class="detail-section portfolio-panel">
       <h3>Operational Summary</h3>
       <div class="fact-grid">
-        ${factRow("Total Homes", linked ? projection.homes_total ?? "—" : "Not linked")}
-        ${factRow("Active Homes", linked ? projection.homes_active ?? "—" : "Not linked")}
-        ${factRow("Total Devices", linked ? devicesTotal ?? "—" : "Not linked")}
-        ${factRow("Online Devices", linked && devicesOnline != null ? devicesOnline : "Not reported")}
-        ${factRow("Offline Devices", linked && devicesOffline != null ? devicesOffline : "Not reported")}
-        ${factRow("Open Escalations", linked ? projection.major_open_escalations ?? "—" : "Not linked")}
-        ${factRow("Open Support Cases", openSupport)}
-        ${factRow("Related Projects", linkedProject ? 1 : 0)}
-        ${factRow("Last Activity", lastActivity)}
+        ${factRow("Owner Activated", ownerActivated === null || ownerActivated === undefined ? "Unknown" : ownerActivated ? "Yes" : "Not yet")}
+        ${factRow("Deployment Project", checklist.deployment_project ? titleCase(checklist.deployment_project) : "Not applicable")}
+        ${factRow("Facility Admin Invite", checklist.facility_admin_invite ? titleCase(checklist.facility_admin_invite) : "Not applicable")}
       </div>
     </div>
   `);
@@ -4279,17 +4392,15 @@ function renderPortfolioRecentActivityPanel(timelineEvents, onViewAll) {
 // per-system state Facility hasn't supplied. Showing fabricated domain
 // chips here would be exactly the kind of invented operational data Part
 // 9/12 explicitly forbid, so this stays honest about the real boundary
-// instead.
+// instead. The Facility OS badge and backend estate/building references
+// already appear in the header and the Facility/Portfolio Information
+// panel -- a third copy here would be duplication this cleanup removes.
 function renderOperationalEnvironmentTab(record) {
-  const facilityOs = derivePortfolioOsStatus(record, "facility_os_status");
   return el(`
     <div class="detail-section portfolio-panel">
       <h3>Linked Operational Environment</h3>
       <div class="fact-grid">
-        ${factRowHtml("Facility OS", badge(osStatusLabel(facilityOs), osStatusTone(facilityOs)))}
         ${record.facility_deep_link ? factRowHtml("Facility Deep Link", `<a href="${escapeHtml(record.facility_deep_link)}" target="_blank" rel="noopener">Open in Facility →</a>`) : factRow("Facility Deep Link", "Not set")}
-        ${record.backend_building_id ? factRow("Backend Building Reference", record.backend_building_id) : ""}
-        ${record.backend_estate_id ? factRow("Backend Estate Reference", record.backend_estate_id) : ""}
       </div>
       <p class="detail-note">
         Office does not yet receive domain-level operational data (per-system status for power, water, security, access, network, HVAC, etc.) from Facility OS --
@@ -4349,8 +4460,15 @@ const PORTFOLIO_TABS = [
   { key: "activity", label: "Activity Timeline" },
 ];
 
+// Single overflow menu only (Part 1B) -- no standalone Edit button
+// alongside it. Facts row shows each identity fact once (Location,
+// Business Unit, Facility OS, Consumer OS); Homes/Devices and a
+// standalone "Updated" fact were dropped here since the KPI row and a
+// single shared caption already carry them without repeating a whole
+// fact-grid row for one timestamp.
 function renderPortfolioHeader(record, { canEdit, canDelete, onEdit, onDelete }) {
   const escalationCount = Number(record.operational_projection?.linked ? record.operational_projection.major_open_escalations ?? 0 : record.major_escalations || 0);
+  const canViewAudit = hasPermission("audit.read");
   const header = el(`
     <div class="portfolio-header">
       ${portfolioTileHtml(record, "lg")}
@@ -4365,41 +4483,51 @@ function renderPortfolioHeader(record, { canEdit, canDelete, onEdit, onDelete })
           ${factRow("Business Unit", titleCase(record.business_unit))}
           ${factRowHtml("Facility OS", badge(osStatusLabel(derivePortfolioOsStatus(record, "facility_os_status")), osStatusTone(derivePortfolioOsStatus(record, "facility_os_status"))))}
           ${factRowHtml("Consumer OS", badge(osStatusLabel(derivePortfolioOsStatus(record, "consumer_os_status")), osStatusTone(derivePortfolioOsStatus(record, "consumer_os_status"))))}
-          ${factRow("Homes / Devices", portfolioOperationalSummaryText(record))}
-          ${factRow("Updated", fmtRelative(record.updated_at))}
         </div>
+        <p class="portfolio-header-updated">Updated ${escapeHtml(fmtRelative(record.updated_at))}</p>
       </div>
     </div>
   `);
-  if (canEdit || canDelete) {
+  if (canEdit || canDelete || canViewAudit) {
     const actions = el(`<div class="portfolio-header-actions"></div>`);
+    const menuWrap = el(`<div class="portfolio-overflow"></div>`);
+    const menuBtn = el(`<button type="button" class="btn btn-ghost btn-sm portfolio-overflow-trigger" aria-label="More actions">⋯</button>`);
+    const menu = el(`<div class="portfolio-overflow-menu" hidden></div>`);
     if (canEdit) {
-      const editBtn = el(`<button type="button" class="btn btn-ghost btn-sm">Edit Facility</button>`);
-      editBtn.addEventListener("click", onEdit);
-      actions.appendChild(editBtn);
+      const item = el(`<button type="button" class="portfolio-overflow-item">Edit Facility</button>`);
+      item.addEventListener("click", () => { menu.hidden = true; onEdit(); });
+      menu.appendChild(item);
+    }
+    const exportItem = el(`<button type="button" class="portfolio-overflow-item">Export Summary</button>`);
+    exportItem.addEventListener("click", () => { menu.hidden = true; exportPortfolioSummary(record); });
+    menu.appendChild(exportItem);
+    if (canViewAudit) {
+      const auditItem = el(`<button type="button" class="portfolio-overflow-item">View Audit Log</button>`);
+      auditItem.addEventListener("click", () => {
+        menu.hidden = true;
+        pendingAuditFilter = record.id;
+        navigate("audit");
+      });
+      menu.appendChild(auditItem);
     }
     if (canDelete) {
-      const menuWrap = el(`<div class="portfolio-overflow"></div>`);
-      const menuBtn = el(`<button type="button" class="btn btn-ghost btn-sm portfolio-overflow-trigger" aria-label="More actions">⋯</button>`);
-      const menu = el(`<div class="portfolio-overflow-menu" hidden><button type="button" class="portfolio-overflow-item portfolio-overflow-danger">Delete</button></div>`);
-      menuBtn.addEventListener("click", (event) => {
-        event.stopPropagation();
-        const opening = menu.hidden;
-        menu.hidden = false;
-        if (opening) {
-          document.addEventListener("click", () => { menu.hidden = true; }, { once: true });
-        } else {
-          menu.hidden = true;
-        }
-      });
-      menu.querySelector(".portfolio-overflow-danger").addEventListener("click", () => {
-        menu.hidden = true;
-        onDelete();
-      });
-      menuWrap.appendChild(menuBtn);
-      menuWrap.appendChild(menu);
-      actions.appendChild(menuWrap);
+      const deleteItem = el(`<button type="button" class="portfolio-overflow-item portfolio-overflow-danger">Delete Facility</button>`);
+      deleteItem.addEventListener("click", () => { menu.hidden = true; onDelete(); });
+      menu.appendChild(deleteItem);
     }
+    menuBtn.addEventListener("click", (event) => {
+      event.stopPropagation();
+      const opening = menu.hidden;
+      menu.hidden = false;
+      if (opening) {
+        document.addEventListener("click", () => { menu.hidden = true; }, { once: true });
+      } else {
+        menu.hidden = true;
+      }
+    });
+    menuWrap.appendChild(menuBtn);
+    menuWrap.appendChild(menu);
+    actions.appendChild(menuWrap);
     header.appendChild(actions);
   }
   return header;
@@ -4484,14 +4612,15 @@ async function renderPortfolioDetail(outlet, id, token) {
         KPIGroup([
           { label: "Homes", value: record.operational_projection?.linked ? record.operational_projection.homes_total ?? "—" : "—", icon: iconSvg("home", "kpi-icon"), tone: "blue" },
           { label: "Devices", value: record.operational_projection?.linked ? record.operational_projection.devices_total ?? "—" : "—", icon: iconSvg("observatory", "kpi-icon"), tone: "green" },
-          { label: "Facility OS", value: osStatusLabel(derivePortfolioOsStatus(record, "facility_os_status")), icon: iconSvg("trend", "kpi-icon"), tone: "amber" },
+          { label: "Active Facility", value: derivePortfolioOsStatus(record, "facility_os_status") === "operational" ? 1 : 0, icon: iconSvg("trend", "kpi-icon"), tone: "amber" },
           { label: "Open Escalations", value: record.operational_projection?.linked ? record.operational_projection.major_open_escalations ?? "—" : "—", icon: iconSvg("attention", "kpi-icon"), tone: "violet", alert: (record.operational_projection?.major_open_escalations || 0) > 0 },
         ]),
       ];
       if (record.facility_workspace) mainSections.push(renderFacilityProvisioningSection(record));
       const grid = el(`<div class="portfolio-overview-grid"></div>`);
       grid.appendChild(renderFacilityInformationPanel(record));
-      grid.appendChild(renderOperationalSummaryPanel(record, { relatedSupport, relatedTasks, linkedProject, timelineEvents }));
+      const operationalSummary = renderOperationalSummaryPanel(record);
+      if (operationalSummary) grid.appendChild(operationalSummary);
       grid.appendChild(renderPortfolioRecentActivityPanel(timelineEvents, () => {
         activeTab = "activity";
         tabsBar.querySelectorAll(".crm-tab").forEach((b) => b.classList.toggle("active", b.dataset.tabKey === activeTab));
@@ -8236,6 +8365,10 @@ async function renderAuditView(outlet, token) {
   const tableWrap = el(`<div id="auditTableWrap"></div>`);
   outlet.appendChild(tableWrap);
 
+  const initialFilter = pendingAuditFilter || "";
+  pendingAuditFilter = null;
+  if (initialFilter) toolbar.querySelector("#auditSearch").value = initialFilter;
+
   function renderFiltered(query) {
     const q = query.trim().toLowerCase();
     const filtered = q
@@ -8255,7 +8388,7 @@ async function renderAuditView(outlet, token) {
       emptyMessage: "No audit events match this filter.",
     }));
   }
-  renderFiltered("");
+  renderFiltered(initialFilter);
   toolbar.querySelector("#auditSearch").addEventListener("input", (event) => renderFiltered(event.target.value));
 }
 
