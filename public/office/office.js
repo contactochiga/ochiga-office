@@ -4491,20 +4491,31 @@ function renderPortfolioHeader(record, { canEdit, canDelete, onEdit, onDelete })
   if (canEdit || canDelete || canViewAudit) {
     const actions = el(`<div class="portfolio-header-actions"></div>`);
     const menuWrap = el(`<div class="portfolio-overflow"></div>`);
-    const menuBtn = el(`<button type="button" class="btn btn-ghost btn-sm portfolio-overflow-trigger" aria-label="More actions">⋯</button>`);
+    const menuBtn = el(`<button type="button" class="btn btn-ghost btn-sm portfolio-overflow-trigger" aria-label="More actions" aria-haspopup="true" aria-expanded="false">⋯</button>`);
     const menu = el(`<div class="portfolio-overflow-menu" hidden></div>`);
+    // Closed via three paths (outside click, Escape, selecting an item) --
+    // routed through one helper so aria-expanded and the Escape listener
+    // stay in sync with menu.hidden regardless of which path triggered it.
+    function closeMenu() {
+      menu.hidden = true;
+      menuBtn.setAttribute("aria-expanded", "false");
+      document.removeEventListener("keydown", onKeydown);
+    }
+    function onKeydown(event) {
+      if (event.key === "Escape") closeMenu();
+    }
     if (canEdit) {
       const item = el(`<button type="button" class="portfolio-overflow-item">Edit Facility</button>`);
-      item.addEventListener("click", () => { menu.hidden = true; onEdit(); });
+      item.addEventListener("click", () => { closeMenu(); onEdit(); });
       menu.appendChild(item);
     }
     const exportItem = el(`<button type="button" class="portfolio-overflow-item">Export Summary</button>`);
-    exportItem.addEventListener("click", () => { menu.hidden = true; exportPortfolioSummary(record); });
+    exportItem.addEventListener("click", () => { closeMenu(); exportPortfolioSummary(record); });
     menu.appendChild(exportItem);
     if (canViewAudit) {
       const auditItem = el(`<button type="button" class="portfolio-overflow-item">View Audit Log</button>`);
       auditItem.addEventListener("click", () => {
-        menu.hidden = true;
+        closeMenu();
         pendingAuditFilter = record.id;
         navigate("audit");
       });
@@ -4512,17 +4523,19 @@ function renderPortfolioHeader(record, { canEdit, canDelete, onEdit, onDelete })
     }
     if (canDelete) {
       const deleteItem = el(`<button type="button" class="portfolio-overflow-item portfolio-overflow-danger">Delete Facility</button>`);
-      deleteItem.addEventListener("click", () => { menu.hidden = true; onDelete(); });
+      deleteItem.addEventListener("click", () => { closeMenu(); onDelete(); });
       menu.appendChild(deleteItem);
     }
     menuBtn.addEventListener("click", (event) => {
       event.stopPropagation();
       const opening = menu.hidden;
-      menu.hidden = false;
       if (opening) {
-        document.addEventListener("click", () => { menu.hidden = true; }, { once: true });
+        menu.hidden = false;
+        menuBtn.setAttribute("aria-expanded", "true");
+        document.addEventListener("click", () => closeMenu(), { once: true });
+        document.addEventListener("keydown", onKeydown);
       } else {
-        menu.hidden = true;
+        closeMenu();
       }
     });
     menuWrap.appendChild(menuBtn);
