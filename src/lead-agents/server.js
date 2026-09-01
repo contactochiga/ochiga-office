@@ -5143,7 +5143,7 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
         return;
       }
 
-      const officeOperatingItemMatch = pathname.match(/^\/api\/lead-agents\/admin\/office\/(projects|portfolio|support|private|partnerships|meetings)\/([^/]+)$/);
+      const officeOperatingItemMatch = pathname.match(/^\/api\/lead-agents\/admin\/office\/(projects|portfolio|support|private|partnerships|meetings|documents)\/([^/]+)$/);
       if (officeOperatingItemMatch) {
         const [, collection, id] = officeOperatingItemMatch;
         const policy = CORPORATE_COLLECTIONS[collection];
@@ -5216,6 +5216,102 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           return;
         }
         methodNotAllowed(res, collection === "portfolio" ? "PATCH,DELETE" : "PATCH");
+        return;
+      }
+
+      // ---------------------------------------------------------------
+      // Documents Workspace -- Folders. A real, persisted first-level
+      // organizational entity (Documents rebuild) -- not a frontend-only
+      // filter. Deliberately bespoke rather than routed through
+      // CORPORATE_COLLECTIONS: a folder is just {id, name}, not a
+      // business record with owner/business_unit/status.
+      // ---------------------------------------------------------------
+      if (pathname === "/api/lead-agents/admin/documents/folders") {
+        if (req.method === "GET") {
+          authorizePermission(authContext, "office.read");
+          const folders = await store.listOfficeDocumentFolders();
+          json(res, 200, { folders }, { "x-request-id": ctx.requestId });
+          return;
+        }
+        if (req.method === "POST") {
+          authorizePermission(authContext, "documents.generate");
+          const body = await readJsonBody(req);
+          requireObject(body, "body");
+          const name = String(body.name || "").trim();
+          if (!name) {
+            json(res, 400, { error: "name is required" }, { "x-request-id": ctx.requestId });
+            return;
+          }
+          const id = `docfolder_${Date.now().toString(36)}_${crypto.randomBytes(5).toString("hex")}`;
+          const folder = await store.createOfficeDocumentFolder({ id, name, created_by: authContext?.email || "office" });
+          // office_document_folders is a brand-new table (unlike
+          // office_documents' new columns, which already exist on a
+          // live table) -- if the migration hasn't run yet, the store
+          // layer's schema-pending fallback would otherwise look like a
+          // real 201 to the caller while nothing was actually
+          // persisted. Fail honestly instead of a phantom success.
+          if (folder.sync_status === "schema_pending") {
+            json(res, 503, { error: "documents_workspace_schema_pending", message: folder.sync_warning || "Documents Workspace database migration has not been applied yet." }, { "x-request-id": ctx.requestId });
+            return;
+          }
+          await appendAudit(store, authContext, "office_document_folder_created", "document_folder", folder.id, { name });
+          json(res, 201, { folder }, { "x-request-id": ctx.requestId });
+          return;
+        }
+        methodNotAllowed(res, "GET,POST");
+        return;
+      }
+
+      const documentFolderItemMatch = pathname.match(/^\/api\/lead-agents\/admin\/documents\/folders\/([^/]+)$/);
+      if (documentFolderItemMatch) {
+        const folderId = decodeURIComponent(documentFolderItemMatch[1]);
+        if (req.method === "PATCH") {
+          authorizePermission(authContext, "documents.generate");
+          const body = await readJsonBody(req);
+          requireObject(body, "body");
+          const name = String(body.name || "").trim();
+          if (!name) {
+            json(res, 400, { error: "name is required" }, { "x-request-id": ctx.requestId });
+            return;
+          }
+          const folder = await store.renameOfficeDocumentFolder(folderId, name);
+          if (!folder) {
+            notFound(res);
+            return;
+          }
+          await appendAudit(store, authContext, "office_document_folder_renamed", "document_folder", folderId, { name });
+          json(res, 200, { folder }, { "x-request-id": ctx.requestId });
+          return;
+        }
+        if (req.method === "DELETE") {
+          // Senior-tier: deleting a folder is not the same action as
+          // creating/renaming one. A folder that still contains
+          // documents is never silently cascade-deleted -- same
+          // "blocked with a clear reason" precedent as Portfolio delete
+          // above, not a fake-filesystem rm -rf.
+          authorizePermission(authContext, "documents.manage");
+          const folder = await store.getOfficeDocumentFolderById(folderId);
+          if (!folder) {
+            json(res, 200, { ok: true, already_deleted: true, id: folderId }, { "x-request-id": ctx.requestId });
+            return;
+          }
+          const documents = await store.listOfficeDocuments();
+          const contained = documents.filter((d) => d.folder_id === folderId).length;
+          if (contained > 0) {
+            json(
+              res,
+              409,
+              { ok: false, error: "folder_not_empty", document_count: contained },
+              { "x-request-id": ctx.requestId }
+            );
+            return;
+          }
+          await store.deleteOfficeDocumentFolder(folderId);
+          await appendAudit(store, authContext, "office_document_folder_deleted", "document_folder", folderId, { name: folder.name });
+          json(res, 200, { ok: true, deleted: true, id: folderId }, { "x-request-id": ctx.requestId });
+          return;
+        }
+        methodNotAllowed(res, "PATCH,DELETE");
         return;
       }
 
@@ -5841,6 +5937,12 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           file_url: storedHtml.url,
           email_to: body.email_to || "",
           share_token: shareToken,
+          folder_id: body.folder_id || null,
+          // Persisted verbatim (not just baked into the generated HTML)
+          // so this document is immediately continue-editable through
+          // the Documents Workspace native editor -- create/write/save/
+          // reopen from the very first save, not just at creation time.
+          body: body.body || null,
           metadata: {
             recipient: body.recipient || "",
             template_id: body.template_id || "basic",
@@ -5907,6 +6009,228 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           relatedId: documentRecord.id,
         });
         json(res, 201, { document: documentRecord, html_file: storedHtml }, { "x-request-id": ctx.requestId });
+        return;
+      }
+
+      // ---------------------------------------------------------------
+      // Documents Workspace -- Upload. A genuinely different creation
+      // path from /documents/generate above: no server-side HTML
+      // template, the bytes the caller uploaded are stored verbatim via
+      // the same primitives the generic /admin/storage upload and
+      // staff-messaging-attachment paths already use. metadata.upload_kind
+      // is the one flag that distinguishes an uploaded file from a
+      // native document at render time (never both).
+      // ---------------------------------------------------------------
+      if (pathname === "/api/lead-agents/admin/documents/upload") {
+        if (req.method !== "POST") {
+          methodNotAllowed(res, "POST");
+          return;
+        }
+        authorizePermission(authContext, "documents.generate");
+        const body = await readJsonBody(req, 16 * 1024 * 1024);
+        requireObject(body, "body");
+        if (!body.title) {
+          json(res, 400, { error: "title is required" }, { "x-request-id": ctx.requestId });
+          return;
+        }
+        if (!body.data_url) {
+          json(res, 400, { error: "data_url is required" }, { "x-request-id": ctx.requestId });
+          return;
+        }
+        const id = `doc_${Date.now().toString(36)}_${crypto.randomBytes(5).toString("hex")}`;
+        const storedRaw = await storageService.putDataUrl({
+          purpose: "document",
+          data_url: body.data_url,
+          filename: body.filename || "",
+          resource_type: "office_document",
+          resource_id: id,
+        });
+        let stored = storedRaw;
+        if (typeof store.createOfficeFile === "function") {
+          try {
+            stored = await store.createOfficeFile(storedRaw);
+          } catch (error) {
+            stored = {
+              ...storedRaw,
+              sync_status: "metadata_pending",
+              sync_warning: error?.response?.data?.message || error.message || "office_files metadata write failed.",
+            };
+          }
+        }
+        const shareToken = crypto.randomBytes(16).toString("hex");
+        const documentRecord = await store.createOfficeDocument({
+          id,
+          title: body.title,
+          document_type: body.document_type || "uploaded_file",
+          status: "draft",
+          owner: authContext?.email || "Office",
+          related_type: body.related_type || "",
+          related_id: body.related_id || "",
+          folder_id: body.folder_id || null,
+          file_url: stored.url,
+          share_token: shareToken,
+          metadata: { upload_kind: "uploaded_file", mime_type: stored.mime_type, size: stored.size, filename: stored.filename },
+        });
+        documentRecord.share_url = absoluteUrl(req, `/api/lead-agents/documents/shared/${id}/${shareToken}`);
+        await appendAudit(store, authContext, "office_document_uploaded", "office_document", id, {
+          title: body.title,
+          mime_type: stored.mime_type,
+          size: stored.size,
+        });
+        eventBus.publish("office.document", { actor: authContext?.email || "", document: documentRecord });
+        json(res, 201, { document: documentRecord, file: stored }, { "x-request-id": ctx.requestId });
+        return;
+      }
+
+      // ---------------------------------------------------------------
+      // Documents Workspace -- Trash / Restore / Permanent delete.
+      // trashed_at is a separate lifecycle flag from the business
+      // `status` column (draft/sent/accepted, per document_type) --
+      // trashing never rewrites status. Permanent delete requires the
+      // document to already be trashed (no direct hard-delete) and is
+      // gated on the senior documents.manage permission, matching the
+      // Portfolio-delete governance precedent.
+      // ---------------------------------------------------------------
+      const documentTrashMatch = pathname.match(/^\/api\/lead-agents\/admin\/documents\/([^/]+)\/trash$/);
+      if (documentTrashMatch) {
+        if (req.method !== "POST") {
+          methodNotAllowed(res, "POST");
+          return;
+        }
+        authorizePermission(authContext, "documents.generate");
+        const id = decodeURIComponent(documentTrashMatch[1]);
+        const current = await findCorporateRecord(store, "documents", id);
+        if (!current) {
+          notFound(res);
+          return;
+        }
+        if (current.trashed_at) {
+          json(res, 200, { document: current }, { "x-request-id": ctx.requestId });
+          return;
+        }
+        const record = await persistCorporateRecord(store, "documents", {
+          ...current,
+          trashed_at: new Date().toISOString(),
+          trashed_by: authContext?.email || "office",
+        });
+        await appendAudit(store, authContext, "office_document_trashed", "office_document", id, { title: current.title });
+        json(res, 200, { document: record }, { "x-request-id": ctx.requestId });
+        return;
+      }
+
+      const documentRestoreMatch = pathname.match(/^\/api\/lead-agents\/admin\/documents\/([^/]+)\/restore$/);
+      if (documentRestoreMatch) {
+        if (req.method !== "POST") {
+          methodNotAllowed(res, "POST");
+          return;
+        }
+        authorizePermission(authContext, "documents.generate");
+        const id = decodeURIComponent(documentRestoreMatch[1]);
+        const current = await findCorporateRecord(store, "documents", id);
+        if (!current) {
+          notFound(res);
+          return;
+        }
+        if (!current.trashed_at) {
+          json(res, 200, { document: current }, { "x-request-id": ctx.requestId });
+          return;
+        }
+        const record = await persistCorporateRecord(store, "documents", {
+          ...current,
+          trashed_at: null,
+          trashed_by: null,
+        });
+        await appendAudit(store, authContext, "office_document_restored", "office_document", id, { title: current.title });
+        json(res, 200, { document: record }, { "x-request-id": ctx.requestId });
+        return;
+      }
+
+      const documentShareRegenerateMatch = pathname.match(/^\/api\/lead-agents\/admin\/documents\/([^/]+)\/regenerate-share-link$/);
+      if (documentShareRegenerateMatch) {
+        if (req.method !== "POST") {
+          methodNotAllowed(res, "POST");
+          return;
+        }
+        authorizePermission(authContext, "documents.generate");
+        const id = decodeURIComponent(documentShareRegenerateMatch[1]);
+        const current = await findCorporateRecord(store, "documents", id);
+        if (!current) {
+          notFound(res);
+          return;
+        }
+        const shareToken = crypto.randomBytes(16).toString("hex");
+        const record = await persistCorporateRecord(store, "documents", { ...current, share_token: shareToken });
+        await appendAudit(store, authContext, "office_document_share_link_regenerated", "office_document", id, {});
+        json(
+          res,
+          200,
+          { document: record, share_url: absoluteUrl(req, `/api/lead-agents/documents/shared/${id}/${shareToken}`) },
+          { "x-request-id": ctx.requestId }
+        );
+        return;
+      }
+
+      const documentPermanentDeleteMatch = pathname.match(/^\/api\/lead-agents\/admin\/documents\/([^/]+)\/permanent$/);
+      if (documentPermanentDeleteMatch) {
+        if (req.method !== "DELETE") {
+          methodNotAllowed(res, "DELETE");
+          return;
+        }
+        authorizePermission(authContext, "documents.manage");
+        const id = decodeURIComponent(documentPermanentDeleteMatch[1]);
+        const current = await findCorporateRecord(store, "documents", id);
+        if (!current) {
+          json(res, 200, { ok: true, already_deleted: true, id }, { "x-request-id": ctx.requestId });
+          return;
+        }
+        if (!current.trashed_at) {
+          json(res, 409, { ok: false, error: "document_not_trashed" }, { "x-request-id": ctx.requestId });
+          return;
+        }
+        // Clean up the underlying storage object and its office_files
+        // row before removing the record itself -- never leave an
+        // orphaned storage object or a dangling office_files reference.
+        if (typeof store.listOfficeFilesByResource === "function") {
+          const files = await store.listOfficeFilesByResource("office_document", id).catch(() => []);
+          for (const file of files) {
+            try {
+              await storageService.deleteObject(file.filename);
+            } catch {
+              // Non-fatal — the metadata row is still removed below, and
+              // this is logged via the audit event's file list so a
+              // stray object can be found and cleaned up manually.
+            }
+            if (typeof store.deleteOfficeFile === "function") await store.deleteOfficeFile(file.id).catch(() => null);
+          }
+        }
+        if (typeof store.deleteOfficeDocument === "function") {
+          await store.deleteOfficeDocument(id);
+        } else {
+          await deleteCorporateRecord(store, "documents", id);
+        }
+        await appendAudit(store, authContext, "office_document_deleted", "office_document", id, { title: current.title });
+        json(res, 200, { ok: true, deleted: true, id }, { "x-request-id": ctx.requestId });
+        return;
+      }
+
+      // ---------------------------------------------------------------
+      // Documents Workspace -- Storage summary. Real bytes only (sum of
+      // office_files.size for office_document-resourced uploads) -- no
+      // fabricated "available"/quota value, since no real capacity limit
+      // exists on either storage driver.
+      // ---------------------------------------------------------------
+      if (pathname === "/api/lead-agents/admin/documents/storage-summary") {
+        if (req.method !== "GET") {
+          methodNotAllowed(res, "GET");
+          return;
+        }
+        authorizePermission(authContext, "office.read");
+        const files =
+          typeof store.listOfficeFilesByResourceType === "function"
+            ? await store.listOfficeFilesByResourceType("office_document")
+            : [];
+        const usedBytes = files.reduce((sum, f) => sum + Number(f.size || 0), 0);
+        json(res, 200, { used_bytes: usedBytes, file_count: files.length }, { "x-request-id": ctx.requestId });
         return;
       }
 

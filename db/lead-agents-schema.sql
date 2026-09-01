@@ -685,6 +685,38 @@ create table if not exists office_documents (
 );
 alter table office_documents add column if not exists share_token text;
 
+-- Documents Workspace rebuild -- additive only, existing rows keep
+-- folder_id/body/trashed_at as null (unfiled, file-backed, not trashed),
+-- so no legacy document/proposal record is altered by this migration.
+create table if not exists office_document_folders (
+  id text primary key,
+  name text not null,
+  created_by text,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+drop trigger if exists office_document_folders_set_updated_at on office_document_folders;
+create trigger office_document_folders_set_updated_at
+before update on office_document_folders
+for each row
+execute function set_updated_at();
+
+alter table office_documents add column if not exists folder_id text references office_document_folders(id) on delete set null;
+-- Native in-Office document content (markdown-lite, same convention as
+-- Content/Publishing's article body). Null for file-backed/legacy
+-- records -- presence of body is what distinguishes a native document
+-- from an uploaded file at render time.
+alter table office_documents add column if not exists body text;
+-- Soft-delete lifecycle. Deliberately separate from `status` (which
+-- carries business meaning like draft/sent/accepted) rather than
+-- overloading it with a lifecycle state.
+alter table office_documents add column if not exists trashed_at timestamptz;
+alter table office_documents add column if not exists trashed_by text;
+
+create index if not exists office_documents_folder_id_idx
+on office_documents (folder_id);
+
 drop trigger if exists office_documents_set_updated_at on office_documents;
 create trigger office_documents_set_updated_at
 before update on office_documents

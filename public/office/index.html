@@ -1203,6 +1203,59 @@
     .portfolio-overview-grid { grid-template-columns: 1fr; }
   }
 
+  /* Documents Workspace rebuild — reuses .detail-body/.detail-main/
+     .detail-rail (generic 2-column grid, already responsive below
+     860px) and .portfolio-header/.portfolio-overflow-* (already-fixed
+     overflow menu) rather than inventing a parallel layout system. */
+  .documents-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; margin-bottom: 4px; }
+  .documents-heading h1 { font-size: 22px; font-weight: 600; color: var(--white); margin: 0 0 4px; }
+  .documents-heading p { color: var(--text-tertiary); font-size: 12.5px; margin: 0; }
+  .documents-breadcrumb { font-size: 11.5px; color: var(--text-tertiary); margin-bottom: 14px; }
+  .documents-breadcrumb a { color: var(--text-secondary); }
+  .documents-metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px; margin-bottom: 20px; }
+  .documents-metric-card {
+    border: 1px solid var(--line); border-radius: var(--radius); background: rgba(255,255,255,0.015);
+    padding: 12px 14px; display: flex; flex-direction: column; gap: 4px;
+  }
+  .documents-metric-label { font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-tertiary); }
+  .documents-metric-value { font-size: 20px; font-weight: 600; color: var(--white); font-variant-numeric: tabular-nums; }
+  .documents-workspace-grid { margin-top: 4px; }
+  .documents-new-btn-wrap { position: relative; flex-shrink: 0; }
+  .documents-new-btn-wrap .portfolio-overflow-menu { right: 0; }
+  .documents-name-cell { display: flex; align-items: center; gap: 10px; min-width: 0; }
+  .documents-row-icon { flex-shrink: 0; display: flex; align-items: center; justify-content: center; width: 28px; height: 28px; border-radius: var(--radius-sm); color: var(--text-secondary); background: rgba(255,255,255,0.04); }
+  .documents-folder-icon { color: var(--info-blue); }
+  .documents-row-title { color: var(--white); font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .documents-row-sub { color: var(--text-tertiary); font-size: 11px; margin-top: 1px; }
+  .documents-storage-used { font-size: 18px; font-weight: 600; color: var(--white); }
+  .documents-quick-actions { gap: 6px; }
+  .documents-quick-action-btn {
+    background: none; border: none; text-align: left; padding: 6px 0; font-size: 12.5px;
+    color: var(--text-secondary); cursor: pointer;
+  }
+  .documents-quick-action-btn:hover { color: var(--white); }
+
+  .document-header { align-items: center; }
+  .document-header-icon { width: 44px; height: 44px; border-radius: var(--radius); background: rgba(255,255,255,0.04); display: flex; align-items: center; justify-content: center; color: var(--text-secondary); flex-shrink: 0; }
+  .document-preview-body { min-height: 200px; }
+  .document-preview-empty { padding: 40px 20px; text-align: center; color: var(--text-tertiary); }
+  .document-preview-empty p { margin: 0 0 6px; }
+  .document-preview-image { max-width: 100%; border-radius: var(--radius); border: 1px solid var(--line); }
+  .document-preview-frame { width: 100%; height: 560px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--white); }
+  .document-native-preview { padding: 4px 0; }
+  .document-editor-textarea {
+    width: 100%; min-height: 320px; resize: vertical; font-family: inherit; font-size: 13px; line-height: 1.6;
+    background: rgba(255,255,255,0.02); border: 1px solid var(--line); border-radius: var(--radius-sm);
+    color: var(--white); padding: 12px; margin-top: 6px;
+  }
+  .document-editor-status { display: flex; align-items: center; justify-content: space-between; margin-top: 10px; }
+  .document-editor-save-state { font-size: 11px; color: var(--text-tertiary); }
+
+  @media (max-width: 860px) {
+    .documents-heading { flex-direction: column; }
+    .documents-metrics { grid-template-columns: repeat(2, 1fr); }
+  }
+
   /* Tasks Domain — split list+panel layout (Automations, and reused by
      Tasks/Schedule per the same reference standard). Distinct from
      .detail-rail (full-page nav shell): the list stays visible next

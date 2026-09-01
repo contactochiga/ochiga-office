@@ -13,6 +13,12 @@ const PERMISSION_KEYS = Object.freeze([
   "support.read",
   "support.assign",
   "documents.generate",
+  // Documents Workspace (folders/trash) -- senior-tier, deliberately
+  // separate from documents.generate: every staff role that can create
+  // a document should not automatically be able to delete a folder or
+  // permanently destroy a corporate document. Same additive pattern as
+  // reports.review/content.publish/development.manage below.
+  "documents.manage",
   "projects.read",
   "projects.manage",
   "portfolio.read",
