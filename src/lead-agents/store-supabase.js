@@ -1097,6 +1097,69 @@ class SupabaseLeadAgentsStore {
     return response.data;
   }
 
+  // Oyi Communications Convergence, Slice 3 -- the operational-routing
+  // profile for chooseStaffForHandoff(), genuinely separate from
+  // admin_users (authentication/authorization). Keyed on email, matching
+  // every other cross-cutting staff concern in this codebase.
+  async listStaffProfiles() {
+    const response = await this.client.get("/office_staff_profiles?order=staff_email.asc");
+    return response.data;
+  }
+
+  async getStaffProfile(email) {
+    const response = await this.client.get(
+      `/office_staff_profiles?staff_email=eq.${encodeURIComponent(normalizeEmail(email))}&limit=1`
+    );
+    return response.data[0] || null;
+  }
+
+  async upsertStaffProfile(email, patch = {}) {
+    const response = await this.client.post(
+      "/office_staff_profiles?on_conflict=staff_email",
+      {
+        staff_email: normalizeEmail(email),
+        ...(patch.business_unit !== undefined ? { business_unit: patch.business_unit } : {}),
+        ...(patch.availability !== undefined ? { availability: patch.availability } : {}),
+        ...(patch.routing_priority !== undefined ? { routing_priority: patch.routing_priority } : {}),
+        updated_at: new Date().toISOString(),
+      },
+      { headers: { ...this.selectHeaders(), Prefer: "resolution=merge-duplicates,return=representation" } }
+    );
+    return response.data[0];
+  }
+
+  async listStaffCapabilitiesAll() {
+    const response = await this.client.get("/office_staff_capabilities?order=staff_email.asc");
+    return response.data;
+  }
+
+  async listStaffCapabilities(email) {
+    const response = await this.client.get(
+      `/office_staff_capabilities?staff_email=eq.${encodeURIComponent(normalizeEmail(email))}`
+    );
+    return response.data;
+  }
+
+  async upsertStaffCapability(email, { capability, specialty } = {}) {
+    const response = await this.client.post(
+      "/office_staff_capabilities?on_conflict=staff_email,capability",
+      {
+        staff_email: normalizeEmail(email),
+        capability: String(capability || "").trim().toLowerCase(),
+        specialty: String(specialty || "").trim(),
+      },
+      { headers: { ...this.selectHeaders(), Prefer: "resolution=merge-duplicates,return=representation" } }
+    );
+    return response.data[0];
+  }
+
+  async deleteStaffCapability(email, capability) {
+    await this.client.delete(
+      `/office_staff_capabilities?staff_email=eq.${encodeURIComponent(normalizeEmail(email))}&capability=eq.${encodeURIComponent(String(capability || "").trim().toLowerCase())}`
+    );
+    return true;
+  }
+
   async updateAdminUser(userId, patch) {
     const response = await this.client.patch(`/admin_users?id=eq.${userId}`, patch, {
       headers: this.selectHeaders(),

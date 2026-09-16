@@ -1108,6 +1108,51 @@ create index if not exists office_handoffs_status_idx on office_handoffs (status
 alter table office_handoffs add column if not exists lead_id uuid;
 create index if not exists office_handoffs_lead_idx on office_handoffs (lead_id, status);
 
+-- Oyi Communications Convergence, Slice 3 -- chooseStaffForHandoff()
+-- (communications-handoff.js) has always existed but has never had a
+-- real staffCapabilities source: admin_users has no business_unit/
+-- capability/specialty/availability/routing_priority columns (confirmed
+-- by this slice's audit), and no other existing table captures them.
+-- Everything else it needs (staff_id, active, permissions, last_seen_at,
+-- active_session_count, relationship ownership) is genuinely derivable
+-- from admin_users/permission_scopes/office_handoffs/crm_opportunities
+-- and is NOT duplicated here -- see
+-- office-operational-workflows.js::resolveEligibleStaffCapabilities().
+--
+-- Keyed on admin_users.email (not admin_users.id): every other
+-- cross-cutting staff concern in this codebase already keys on email
+-- (CRM ownership's owner/relationship_manager/assigned_staff fields,
+-- the staff presence endpoint, audit_events.actor_email) -- id remains
+-- the DB primary key/FK target elsewhere, but email is this system's
+-- established operational identity.
+--
+-- availability is a DELIBERATE, staff/admin-set operational status
+-- ("available"/"unavailable"), never inferred from presence
+-- (eventBus.isOnline) or last_login_at -- being connected to the Office
+-- web UI is not the same as being willing to accept a handoff. A
+-- genuinely separate operational profile, not bloating admin_users
+-- (authentication/authorization) with routing-only concerns.
+create table if not exists office_staff_profiles (
+  staff_email text primary key references admin_users(email) on delete cascade,
+  business_unit text not null default 'corporate',
+  availability text not null default 'unavailable',
+  routing_priority numeric not null default 50,
+  updated_at timestamptz not null default now()
+);
+
+-- A staff member can hold multiple capabilities (e.g. development's
+-- commercial_jv AND engineering) -- a separate table, not a column,
+-- mirroring the existing DEFAULT_CAPABILITIES catalog shape
+-- (business_unit + capability + specialty) in communications-handoff.js.
+create table if not exists office_staff_capabilities (
+  id uuid primary key default gen_random_uuid(),
+  staff_email text not null references admin_users(email) on delete cascade,
+  capability text not null,
+  specialty text,
+  created_at timestamptz not null default now()
+);
+create unique index if not exists office_staff_capabilities_unique_idx on office_staff_capabilities (staff_email, capability);
+
 -- crm_contacts/crm_organizations/crm_activities/crm_tasks were missing
 -- columns that office-operating-system.js's normalizeCorporateRecord()
 -- has always sent for every CORPORATE_COLLECTIONS entry (business_unit,
