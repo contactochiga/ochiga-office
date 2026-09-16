@@ -89,6 +89,22 @@ function buildMaterialCrmEvent({ lead, envelope, timelineEvent, requestId } = {}
       stage: text(safeLead.commercial_stage),
       owner: text(safeLead.owner),
     },
+    // Oyi Communications Convergence, Slice 1 -- this was previously
+    // captured and persisted on the Lead (primary_channel/phone/email/
+    // whatsapp_phone) but silently dropped exactly at this hop (the
+    // Slice 1 audit's finding). contactability is deliberately always
+    // "unknown" here: Office's schema has no structured consent/opt-out
+    // column yet (raw JSON only), so there is no real evidence to send
+    // "allowed" or "denied" from -- never inferred from mere field
+    // presence. Backend's relationship-communication policy treats
+    // "unknown" exactly like "denied" for any autonomous send decision.
+    communication_context: {
+      primary_channel: text(safeLead.primary_channel) || null,
+      email: text(safeLead.email) || null,
+      phone: text(safeLead.phone) || null,
+      whatsapp_phone: text(safeLead.whatsapp_phone) || null,
+      contactability: "unknown",
+    },
     metadata: {
       timeline_event_id: text(safeTimelineEvent.id),
       campaign_present: Object.keys(recordOf(safeEnvelope.campaign)).length > 0,
