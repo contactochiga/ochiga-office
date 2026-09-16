@@ -2,7 +2,7 @@ const crypto = require("crypto");
 const { BUSINESS_UNITS, CORPORATE_COLLECTIONS, createCorporateRecord, listCorporateRecords } = require("./office-operating-system");
 const { normalizeText } = require("./normalize-lead");
 const { hasPermission } = require("./permissions");
-const { chooseStaffForHandoff } = require("./communications-handoff");
+const { chooseStaffForHandoff, recordHandoffTimeline } = require("./communications-handoff");
 
 const FIELD_POLICY = Object.freeze({
   tasks: ["title", "description", "owner", "assignee", "priority", "due_at", "status", "lead_id", "opportunity_id", "project_id", "portfolio_id", "support_case_id", "private_relationship_id", "partnership_relationship_id", "business_unit"],
@@ -459,6 +459,12 @@ function safeHandoffProjection(handoff = {}) {
     assigned_staff_id: text(handoff.assigned_staff_id),
     crm_contact_ref: text(handoff.crm_contact_ref || handoff.contact_id),
     crm_opportunity_ref: text(handoff.crm_opportunity_ref || handoff.opportunity_id),
+    // Oyi Communications Convergence, Slice 2 -- Leads are not CRM
+    // Contacts (crm_contact_ref links to crm_contacts.id, a different
+    // table used by the Private/Partnerships relationship pages), so a
+    // Development/JV Lead-originated handoff needs its own linking
+    // column rather than overloading that one.
+    lead_id: text(handoff.lead_id),
     safe_visitor_context: typeof handoff.safe_visitor_context === "object" && handoff.safe_visitor_context ? handoff.safe_visitor_context : {},
     created_at: text(handoff.created_at, nowIso()),
     updated_at: text(handoff.updated_at, handoff.created_at || nowIso()),
@@ -507,6 +513,89 @@ async function createOrUpdateHandoff(store, input = {}) {
   return item;
 }
 
+// Oyi Communications Convergence, Slice 2 -- repeated qualification
+// (a material event replayed, or a second HANDOFF-policy decision for a
+// lead that already has one in flight) must resolve to the SAME
+// handoff, not spawn a duplicate. "declined" is the only real terminal
+// status this codebase's updateHandoff() actually produces today (no
+// "completed" literal exists yet) -- everything else (requested/
+// offered/accepted/callback_requested) is still "active" for this
+// purpose, since a human hasn't finished with it.
+async function findActiveHandoffForLead(store, leadId) {
+  if (!leadId) return null;
+  const rows = (await readHandoffs(store)).map(safeHandoffProjection);
+  const active = rows
+    .filter((row) => row.lead_id === String(leadId) && row.status !== "declined")
+    .sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)));
+  return active[0] || null;
+}
+
+// Oyi Communications Convergence, Slice 2 -- the single entry point
+// Core's HANDOFF decision (relationshipCommunicationPolicyForJv) drives,
+// via the new Backend->Office bridge route
+// (/admin/communications/handoff-request). Reuses createOrUpdateHandoff
+// (real Supabase upsert, already existed) and chooseStaffForHandoff
+// (already existed, already correctly returns "unavailable" rather than
+// a fake match) -- no new handoff system, no new routing logic.
+//
+// Staff routing today has no real capability data source to draw on:
+// admin_users has no business_unit/capability/availability columns
+// (Team's own schema, checked as part of this slice's audit), and no
+// UI/flow currently supplies communications-handoff.js's
+// chooseStaffForHandoff() with a real staffCapabilities list either (its
+// only existing caller, this same updateHandoff()'s "assign" action, has
+// zero production callers in the Office frontend today). Passing an
+// empty list is the honest choice -- it runs chooseStaffForHandoff() for
+// real and lets it correctly report "unavailable" rather than fabricate
+// a match, exactly as Slice 2 requires. A real capability/availability
+// data source for staff is a genuinely separate, disclosed gap for a
+// future slice, not something invented here.
+async function requestHandoffForLead(store, { leadId, businessUnit, requestedCapability, reason, priority } = {}) {
+  const normalizedLeadId = text(leadId);
+  if (!normalizedLeadId) throw errorWithStatus("lead_id_required", 400);
+
+  const existing = await findActiveHandoffForLead(store, normalizedLeadId);
+  if (existing) {
+    return { handoff: existing, created: false, routing: { status: "already_active" } };
+  }
+
+  const lead = store.getLead ? await store.getLead(normalizedLeadId) : null;
+  if (!lead) throw errorWithStatus("lead_not_found", 404);
+
+  let handoff = await createOrUpdateHandoff(store, {
+    lead_id: normalizedLeadId,
+    business_unit: businessUnit || "corporate",
+    requested_capability: requestedCapability || "corporate.office_desk",
+    reason: reason || "Oyi Core recommends human review.",
+    priority: priority || "normal",
+    status: "requested",
+  });
+  await recordHandoffTimeline({ store, lead, handoff, eventType: "handoff_requested" });
+
+  const route = chooseStaffForHandoff({ staffCapabilities: [], handoff, existingOwnerId: "" });
+  if (route.status === "matched") {
+    handoff = await createOrUpdateHandoff(store, { ...handoff, status: "offered", assigned_staff_id: route.staff.staff_id });
+    await recordHandoffTimeline({ store, lead, handoff, eventType: "handoff_assigned", staffId: route.staff.staff_id, note: route.reason });
+  } else {
+    await recordHandoffTimeline({ store, lead, handoff, eventType: "handoff_unavailable", note: route.reason });
+  }
+
+  // Pauses BOTH Office's own direct-reply path and Backend's
+  // GoalRuntime/CommunicationRuntime dispatch -- reuses the exact
+  // human_status check Slice 1 already wired at both chokepoints
+  // (server.js's processWhatsAppEvent and the WhatsApp send bridge).
+  // "human_review" is an existing, already-checked value in that
+  // vocabulary that had no real producer before this -- no new flag.
+  if (store.upsertLeadChannelState) {
+    await store.upsertLeadChannelState(normalizedLeadId, "whatsapp", {
+      human_status: "human_review",
+      takeover_reason: "oyi_core_handoff_requested",
+    });
+  }
+
+  return { handoff, created: true, routing: route };
+}
+
 async function updateHandoff(store, authContext, handoffId, action, input = {}) {
   const rows = await readHandoffs(store);
   const index = rows.findIndex((row) => String(row.handoff_id || row.id) === String(handoffId));
@@ -519,6 +608,20 @@ async function updateHandoff(store, authContext, handoffId, action, input = {}) 
     patch.status = "accepted";
     patch.assigned_staff_id = text(input.staff_id || authContext.userId || authContext.email);
     patch.accepted_at = nowIso();
+    // Oyi Communications Convergence, Slice 2 -- the moment a human
+    // genuinely accepts is when they actively own the conversation
+    // ("human_active"), distinct from the "human_review" (pending
+    // attention) state requestHandoffForLead() sets when the handoff is
+    // first requested. Only meaningful for Lead-originated handoffs;
+    // Contact-originated handoffs (crm_contact_ref) have no lead_channel_states
+    // row to update and are left untouched, matching this slice's
+    // Development/JV/WhatsApp-first scope.
+    if (current.lead_id && store.upsertLeadChannelState) {
+      await store.upsertLeadChannelState(current.lead_id, "whatsapp", {
+        human_status: "human_active",
+        human_owner: patch.assigned_staff_id,
+      });
+    }
   } else if (action === "decline") {
     patch.status = "declined";
     patch.declined_at = nowIso();
@@ -554,10 +657,12 @@ module.exports = {
   createOrUpdateHandoff,
   createRelatedActivity,
   deleteCorporateRecord,
+  findActiveHandoffForLead,
   findCorporateRecord,
   listHandoffQueue,
   listRelatedActivities,
   persistCorporateRecord,
+  requestHandoffForLead,
   safeHandoffProjection,
   updateHandoff,
   updateOperationalRecord,

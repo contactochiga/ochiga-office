@@ -81,6 +81,7 @@ const {
   listHandoffQueue,
   listRelatedActivities,
   persistCorporateRecord,
+  requestHandoffForLead,
   updateHandoff,
   updateOperationalRecord,
   validateOperationalRelationships,
@@ -2226,7 +2227,13 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
         pathname === "/api/lead-agents/admin/communications/whatsapp/templates" ||
         pathname === "/api/lead-agents/admin/recipients/resolve" ||
         pathname === "/api/lead-agents/admin/communications/activity" ||
-        pathname === "/api/lead-agents/admin/communications/create-task";
+        pathname === "/api/lead-agents/admin/communications/create-task" ||
+        // Oyi Communications Convergence, Slice 2 -- Core's HANDOFF
+        // decision has no response channel back to Office on the
+        // material-event path (Office never reads that response body),
+        // so it needs its own outbound call, mirroring this same
+        // Backend->Office bridge WhatsAppAdapter already established.
+        pathname === "/api/lead-agents/admin/communications/handoff-request";
 
       if (
         pathname !== "/healthz" &&
@@ -2501,6 +2508,42 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
             json(res, 200, { ok: true, task_id: record?.id || null }, { "x-request-id": ctx.requestId });
           } catch (error) {
             json(res, 200, { ok: false, error: error?.message || "task_create_failed" }, { "x-request-id": ctx.requestId });
+          }
+          return;
+        }
+
+        // Oyi Communications Convergence, Slice 2 -- Core's HANDOFF
+        // decision (relationshipCommunicationPolicyForJv) reaches here.
+        // requestHandoffForLead() is idempotent (same lead_id with an
+        // already-active handoff returns it rather than creating a
+        // duplicate), reuses createOrUpdateHandoff/chooseStaffForHandoff
+        // unchanged, and pauses automation via the existing
+        // lead_channel_states human_status check -- no new handoff
+        // system, no new takeover flag.
+        if (pathname === "/api/lead-agents/admin/communications/handoff-request") {
+          const body = await readJsonBody(req);
+          const leadId = String(body.lead_id || "").trim();
+          if (!leadId) {
+            json(res, 200, { ok: false, error: "missing_lead_id" }, { "x-request-id": ctx.requestId });
+            return;
+          }
+          try {
+            const result = await requestHandoffForLead(store, {
+              leadId,
+              businessUnit: body.business_unit,
+              requestedCapability: body.requested_capability,
+              reason: body.reason,
+              priority: body.priority,
+            });
+            await appendAudit(store, { userId: null, email: "oyi_core", role: "system" }, "office_handoff_requested_by_core", "communications_handoff", result.handoff.handoff_id, {
+              lead_id: leadId,
+              created: result.created,
+              status: result.handoff.status,
+              routing_status: result.routing.status,
+            });
+            json(res, 200, { ok: true, handoff: result.handoff, created: result.created, routing_status: result.routing.status }, { "x-request-id": ctx.requestId });
+          } catch (error) {
+            json(res, 200, { ok: false, error: error?.message || "handoff_request_failed" }, { "x-request-id": ctx.requestId });
           }
           return;
         }
