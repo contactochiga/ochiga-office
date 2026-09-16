@@ -1,7 +1,7 @@
 const crypto = require("crypto");
 const { BUSINESS_UNITS, CORPORATE_COLLECTIONS, createCorporateRecord, listCorporateRecords } = require("./office-operating-system");
 const { normalizeText } = require("./normalize-lead");
-const { hasPermission } = require("./permissions");
+const { hasPermission, permissionsForRole } = require("./permissions");
 const { chooseStaffForHandoff, recordHandoffTimeline } = require("./communications-handoff");
 
 const FIELD_POLICY = Object.freeze({
@@ -530,26 +530,134 @@ async function findActiveHandoffForLead(store, leadId) {
   return active[0] || null;
 }
 
+// Oyi Communications Convergence, Slice 3 -- assembles chooseStaffForHandoff()'s
+// staffCapabilities input entirely from EXISTING sources, per this
+// slice's audit:
+//   staff_id            -> admin_users.email (every other cross-cutting
+//                          staff concern in this codebase already keys
+//                          on email: CRM owner/relationship_manager/
+//                          assigned_staff fields, the staff presence
+//                          endpoint, audit_events.actor_email)
+//   business_unit        -> office_staff_profiles (genuinely missing;
+//   availability             new, minimal, additive -- see schema)
+//   routing_priority         availability is a DELIBERATE, explicitly-set
+//                          operational status, never inferred from
+//                          eventBus.isOnline()/admin_users.last_login_at
+//                          -- "has Office open right now" is not "willing
+//                          to accept a handoff" (that route's own comment
+//                          already says as much).
+//   capability/specialty -> office_staff_capabilities (genuinely
+//                          missing; new, additive; a staff member can
+//                          hold more than one)
+//   active                -> DERIVED from admin_users.status
+//   active_session_count  -> DERIVED: count of this staff's own
+//                          non-declined office_handoffs rows
+//   permissions           -> DERIVED from permissionsForRole(role,
+//                          permission_scopes) -- the real authorization
+//                          system, not a second permission list. Note:
+//                          canJoinCommunications() in communications-
+//                          handoff.js checks for a "communications.join"
+//                          permission string that does not exist
+//                          anywhere in permissions.js's real
+//                          PERMISSION_KEYS -- only "office.manage" and
+//                          "support.assign" are real, so those are what
+//                          actually gate eligibility here.
+//   last_seen_at          -> DERIVED from admin_users.last_login_at
+//   relationship_owner_for -> not populated (see resolveExistingOwnerForLead
+//                          below -- chooseStaffForHandoff never actually
+//                          reads this field; it uses a separate
+//                          existingOwnerId argument instead)
+//
+// Staff with no office_staff_profiles row are excluded entirely -- no
+// profile means this codebase has no evidence they are enrolled in
+// handoff routing at all, never defaulted into eligibility.
+async function resolveEligibleStaffCapabilities(store) {
+  if (!store.listAdminUsers || !store.listStaffProfiles || !store.listStaffCapabilitiesAll) return [];
+  const [adminUsers, profiles, capabilities, handoffRows] = await Promise.all([
+    store.listAdminUsers(),
+    store.listStaffProfiles(),
+    store.listStaffCapabilitiesAll(),
+    readHandoffs(store),
+  ]);
+
+  const nonDeclinedStatuses = new Set(["requested", "offered", "accepted", "callback_requested"]);
+  const workloadByEmail = new Map();
+  for (const row of handoffRows) {
+    const staffId = text(row.assigned_staff_id).toLowerCase();
+    if (!staffId || !nonDeclinedStatuses.has(text(row.status))) continue;
+    workloadByEmail.set(staffId, (workloadByEmail.get(staffId) || 0) + 1);
+  }
+
+  const profileByEmail = new Map(profiles.map((p) => [text(p.staff_email).toLowerCase(), p]));
+  const capsByEmail = new Map();
+  for (const cap of capabilities) {
+    const email = text(cap.staff_email).toLowerCase();
+    if (!capsByEmail.has(email)) capsByEmail.set(email, []);
+    capsByEmail.get(email).push(cap);
+  }
+
+  const entries = [];
+  for (const user of adminUsers) {
+    const email = text(user.email).toLowerCase();
+    if (!email) continue;
+    const profile = profileByEmail.get(email);
+    if (!profile) continue;
+    const caps = capsByEmail.get(email) || [];
+    const permissions = permissionsForRole(user.role, user.permission_scopes);
+    for (const cap of caps) {
+      entries.push({
+        staff_id: email,
+        business_unit: profile.business_unit,
+        capability: cap.capability,
+        specialty: cap.specialty || "",
+        availability: profile.availability,
+        routing_priority: profile.routing_priority,
+        active: text(user.status) === "active",
+        active_session_count: workloadByEmail.get(email) || 0,
+        relationship_owner_for: [],
+        permissions,
+        last_seen_at: user.last_login_at || "",
+      });
+    }
+  }
+  return entries;
+}
+
+// Oyi Communications Convergence, Slice 3 -- "preserve existing owner
+// preference" per the task's explicit requirement. A Lead's own `owner`
+// column is a role bucket ("marketing_agent"/"office_triage"), never a
+// specific staff member (office-intake.js), so it is NOT the source of
+// truth for per-person ownership -- the linked crm_opportunities row's
+// `owner` field is (office-operating-system.js's normalizeCorporateRecord:
+// owner defaults to context.actorEmail, a real staff email once a human
+// has actually worked the record). A brand-new lead's linked Opportunity
+// still carries only the automated-intake placeholder actor, which will
+// correctly never match a real admin_users.email -- existingOwnerId
+// naturally comes back empty for genuinely new leads, exactly as
+// intended. Only a CURRENTLY ACTIVE staff account counts as a real
+// owner match -- a former staff member's stale ownership must not pin
+// routing to someone who can no longer accept it.
+async function resolveExistingOwnerForLead(store, leadId) {
+  const normalizedLeadId = text(leadId);
+  if (!normalizedLeadId) return "";
+  const opportunities = await listCorporateRecords(store, "opportunities");
+  const linked = opportunities.find((o) => String(o.lead_id) === normalizedLeadId);
+  if (!linked) return "";
+  const ownerEmail = text(linked.owner).toLowerCase();
+  if (!ownerEmail || !store.getAdminUserByEmail) return "";
+  const staff = await store.getAdminUserByEmail(ownerEmail);
+  return staff && text(staff.status) === "active" ? ownerEmail : "";
+}
+
 // Oyi Communications Convergence, Slice 2 -- the single entry point
 // Core's HANDOFF decision (relationshipCommunicationPolicyForJv) drives,
 // via the new Backend->Office bridge route
 // (/admin/communications/handoff-request). Reuses createOrUpdateHandoff
 // (real Supabase upsert, already existed) and chooseStaffForHandoff
-// (already existed, already correctly returns "unavailable" rather than
-// a fake match) -- no new handoff system, no new routing logic.
-//
-// Staff routing today has no real capability data source to draw on:
-// admin_users has no business_unit/capability/availability columns
-// (Team's own schema, checked as part of this slice's audit), and no
-// UI/flow currently supplies communications-handoff.js's
-// chooseStaffForHandoff() with a real staffCapabilities list either (its
-// only existing caller, this same updateHandoff()'s "assign" action, has
-// zero production callers in the Office frontend today). Passing an
-// empty list is the honest choice -- it runs chooseStaffForHandoff() for
-// real and lets it correctly report "unavailable" rather than fabricate
-// a match, exactly as Slice 2 requires. A real capability/availability
-// data source for staff is a genuinely separate, disclosed gap for a
-// future slice, not something invented here.
+// (already existed) -- no new handoff system, no new routing logic.
+// Slice 3 connects real eligible-staff data (resolveEligibleStaffCapabilities)
+// and real existing-owner preference (resolveExistingOwnerForLead) --
+// see those functions for exactly what is derived versus newly stored.
 async function requestHandoffForLead(store, { leadId, businessUnit, requestedCapability, reason, priority } = {}) {
   const normalizedLeadId = text(leadId);
   if (!normalizedLeadId) throw errorWithStatus("lead_id_required", 400);
@@ -572,7 +680,11 @@ async function requestHandoffForLead(store, { leadId, businessUnit, requestedCap
   });
   await recordHandoffTimeline({ store, lead, handoff, eventType: "handoff_requested" });
 
-  const route = chooseStaffForHandoff({ staffCapabilities: [], handoff, existingOwnerId: "" });
+  const [staffCapabilities, existingOwnerId] = await Promise.all([
+    resolveEligibleStaffCapabilities(store),
+    resolveExistingOwnerForLead(store, normalizedLeadId),
+  ]);
+  const route = chooseStaffForHandoff({ staffCapabilities, handoff, existingOwnerId });
   if (route.status === "matched") {
     handoff = await createOrUpdateHandoff(store, { ...handoff, status: "offered", assigned_staff_id: route.staff.staff_id });
     await recordHandoffTimeline({ store, lead, handoff, eventType: "handoff_assigned", staffId: route.staff.staff_id, note: route.reason });
@@ -663,6 +775,8 @@ module.exports = {
   listRelatedActivities,
   persistCorporateRecord,
   requestHandoffForLead,
+  resolveEligibleStaffCapabilities,
+  resolveExistingOwnerForLead,
   safeHandoffProjection,
   updateHandoff,
   updateOperationalRecord,
