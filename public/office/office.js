@@ -2242,6 +2242,64 @@ function isTestLead(lead) {
 function leadDisplayName(lead) {
   return lead.name || lead.company || lead.email || lead.phone || "Unnamed Lead";
 }
+// Office Intelligence Convergence, Wave 3B -- the smallest correct bridge
+// for the live Development/JV conversation path. This is deterministic
+// DOMAIN classification of an already-known field (business_unit, or a
+// fallback keyword match on inquiry_type/project_type mirroring the same
+// signal server-side classification already uses) -- NOT a second JV
+// evaluator. Whether this lead's JV merits align with Ochiga's current
+// strategy is decided entirely by Oyi Core's developmentJv.ts capability
+// server-side; this only decides whether to attach development evidence
+// at all.
+function isDevelopmentLead(lead) {
+  if (String(lead.business_unit || "").toLowerCase() === "development") return true;
+  const haystack = `${lead.inquiry_type || ""} ${lead.project_type || ""}`.toLowerCase();
+  return /development|land|jv|joint venture|offtake/.test(haystack);
+}
+// Real fields only, the SAME ones backend-events.js's buildDevelopmentEvidence()
+// already exposes to Backend via the material-event path -- reusing the
+// exact evidence shape rather than inventing a second one for the
+// conversation path. Office has no jv_structure_offered/
+// landowner_expectation/title_document_status columns yet, so those are
+// left out entirely (undefined, never guessed) -- Oyi Core's JV capability
+// reports an absent field as missing_information on its own.
+function developmentOyiSafeSummary(lead) {
+  const parts = [titleCase(lead.project_type || lead.property_type || "Development enquiry")];
+  const location = lead.location || [lead.city, lead.country].filter(Boolean).join(", ");
+  if (location) parts.push(`Location: ${location}.`);
+  if (lead.property_size) parts.push(`Size: ${lead.property_size}.`);
+  if (lead.budget_range) parts.push(`Terms: ${lead.budget_range}.`);
+  return parts.join(" ");
+}
+function developmentOyiContext(lead, id) {
+  const location = lead.location || [lead.city, lead.country].filter(Boolean).join(", ");
+  const scaleUnits = Number(lead.unit_count) > 0 ? Number(lead.unit_count) : (Number(lead.number_of_units) > 0 ? Number(lead.number_of_units) : null);
+  return {
+    opportunity_ref: id,
+    safe_summary: developmentOyiSafeSummary(lead),
+    opportunity_type: lead.project_type || lead.property_type || null,
+    location: location || null,
+    land_size: lead.property_size || null,
+    commercial_terms: lead.budget_range || null,
+    timeline: lead.timeline || null,
+    scale_units: scaleUnits,
+    source_channel: lead.source_channel || lead.primary_channel || null,
+    decision_maker_status: lead.decision_maker_status || null,
+  };
+}
+// Every other *_context slot maps one selectedObject.type to exactly one
+// request field (see SELECTED_TYPE_CONTEXT_KEY/currentSelectedObjectContext
+// below). A lead is the one case that can honestly need TWO -- the
+// existing thin crm_context (lead_ref + safe_summary, used by the general
+// CRM capability) AND, only for a genuine development/JV enquiry, the
+// richer development_context Oyi Core's JV capability reads. Returns the
+// existing flat shape unchanged for every non-development lead, so this
+// never adds a request key when there is no real evidence to attach.
+function leadOyiContext(lead, id) {
+  const crm = { lead_ref: id, safe_summary: lead.summary || lead.next_action || lead.pain_points || "" };
+  if (!isDevelopmentLead(lead)) return crm;
+  return { crm_context: crm, development_context: developmentOyiContext(lead, id) };
+}
 // Real operational criteria, not a hardcoded count: overdue next action,
 // escalated, unassigned, or genuinely no follow-up plan at all — never
 // applied to a lead that's already won/lost.
@@ -3126,7 +3184,7 @@ async function renderLeadDetail(body, id, token) {
     onBack: backToList("leads"),
     mainSections,
     railSections,
-    oyiContext: { lead_ref: id, safe_summary: record.summary || record.next_action || record.pain_points || "" },
+    oyiContext: leadOyiContext(record, id),
   });
 }
 
@@ -3455,13 +3513,22 @@ async function renderOpportunityDetail(body, id, token) {
     onBack: backToList("opportunities"),
     mainSections,
     railSections,
-    oyiContext: {
-      opportunity_ref: id,
-      contact_ref: record.contact_id || null,
-      organization_ref: record.organization_id || null,
-      lead_ref: record.lead_id || null,
-      safe_summary: `${titleCase(record.inquiry_type || "Opportunity")} · ${titleCase(record.stage || "")}`.trim(),
-    },
+    // Opportunities don't carry their own location/land-size/terms fields
+    // (this backend does not own opportunity commercial data directly --
+    // see the note above); when this opportunity originated from a
+    // development/JV lead, the SAME real evidence already resolved as
+    // originLead is reused here, not re-derived or duplicated.
+    oyiContext: (() => {
+      const crm = {
+        opportunity_ref: id,
+        contact_ref: record.contact_id || null,
+        organization_ref: record.organization_id || null,
+        lead_ref: record.lead_id || null,
+        safe_summary: `${titleCase(record.inquiry_type || "Opportunity")} · ${titleCase(record.stage || "")}`.trim(),
+      };
+      if (!originLead || !isDevelopmentLead(originLead)) return crm;
+      return { crm_context: crm, development_context: developmentOyiContext(originLead, id) };
+    })(),
   });
 }
 
@@ -10606,6 +10673,19 @@ const SELECTED_TYPE_CONTEXT_KEY = {
 function currentSelectedObjectContext() {
   const selected = state.selectedObject;
   if (!selected || !selected.extraContext) return {};
+  // Office Intelligence Convergence, Wave 3B -- a lead or opportunity is
+  // the one case that can carry TWO context slots at once: the existing
+  // crm_context every CRM capability already reads, plus (only for a
+  // real development/JV enquiry) development_context. leadOyiContext()/
+  // the Opportunity detail page's oyiContext builder return this combined
+  // { crm_context, development_context } shape specifically when that's
+  // the case; every other lead/opportunity (and every other selected
+  // type) still returns the single flat shape handled below unchanged.
+  if ((selected.type === "lead" || selected.type === "opportunity") && selected.extraContext.crm_context) {
+    const out = { crm_context: selected.extraContext.crm_context };
+    if (selected.extraContext.development_context) out.development_context = selected.extraContext.development_context;
+    return out;
+  }
   const key = SELECTED_TYPE_CONTEXT_KEY[selected.type];
   return key ? { [key]: selected.extraContext } : {};
 }
