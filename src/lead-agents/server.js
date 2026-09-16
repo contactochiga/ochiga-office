@@ -87,6 +87,11 @@ const {
   validateOperationalRelationships,
   validateRelatedObject,
 } = require("./office-operational-workflows");
+// Oyi Communications Convergence, Slice 4 -- DEFAULT_CAPABILITIES is the
+// SAME catalog chooseStaffForHandoff() already matches against (Slice
+// 3). Exposed read-only here so Team routing settings never hardcodes a
+// second copy of this vocabulary in the frontend.
+const { DEFAULT_CAPABILITIES } = require("./communications-handoff");
 const { WhatsAppCloudAdapter } = require("./whatsapp");
 const { resolveRecipient, resolveRecipientByEntity } = require("./recipient-resolution");
 const { buildCalendarLinks, parsePreferredSchedule } = require("./scheduling");
@@ -5665,7 +5670,14 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           if (!hasPermission(authContext, "office.read") && !hasPermission(authContext, "support.read")) {
             authorizePermission(authContext, "office.read");
           }
-          const queue = await listHandoffQueue(store, authContext, { status: url.searchParams.get("status") || "" });
+          // Pre-existing bug, first surfaced by Slice 4's real HTTP-level
+          // coverage (Slice 2/3 only ever called listHandoffQueue()
+          // directly, never through this route) -- `url` was never
+          // defined in this scope. Fixed with the same local-URL-parse
+          // pattern every other query-param-reading route in this file
+          // already uses.
+          const requestUrl = new URL(req.url, "http://localhost");
+          const queue = await listHandoffQueue(store, authContext, { status: requestUrl.searchParams.get("status") || "" });
           json(res, 200, { queue }, { "x-request-id": ctx.requestId });
           return;
         }
@@ -8024,6 +8036,72 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           },
           { "x-request-id": ctx.requestId }
         );
+        return;
+      }
+
+      // ---------------------------------------------------------------
+      // Oyi Communications Convergence, Slice 4 -- Team routing settings.
+      // team.manage-gated (same authority as every other org-controlled
+      // Team field) -- Slice 3's office_staff_profiles/
+      // office_staff_capabilities were real and additive but had no
+      // reader/writer until now. Staff identity stays admin_users.email
+      // (path param), matching Slice 3's own store-layer design.
+      // ---------------------------------------------------------------
+      if (pathname === "/api/lead-agents/admin/staff/capability-catalog") {
+        if (req.method !== "GET") {
+          methodNotAllowed(res, "GET");
+          return;
+        }
+        authorizePermission(authContext, "team.manage");
+        json(res, 200, { catalog: DEFAULT_CAPABILITIES }, { "x-request-id": ctx.requestId });
+        return;
+      }
+
+      const staffRoutingProfileMatch = pathname.match(/^\/api\/lead-agents\/admin\/staff\/([^/]+)\/routing-profile$/);
+      if (staffRoutingProfileMatch) {
+        authorizePermission(authContext, "team.manage");
+        const email = decodeURIComponent(staffRoutingProfileMatch[1]);
+        if (req.method === "GET") {
+          const [profile, capabilities] = await Promise.all([
+            store.getStaffProfile(email),
+            store.listStaffCapabilities(email),
+          ]);
+          json(res, 200, { profile, capabilities }, { "x-request-id": ctx.requestId });
+          return;
+        }
+        if (req.method === "PATCH") {
+          const body = await readJsonBody(req);
+          requireObject(body, "body");
+          const profile = await store.upsertStaffProfile(email, {
+            business_unit: body.business_unit,
+            availability: body.availability,
+            routing_priority: body.routing_priority,
+          });
+          // Replace the capability set -- diffed against what's
+          // currently stored so this stays a small, deliberate write
+          // (no wholesale delete-then-recreate of every row on every
+          // save), matching this codebase's established sparse-patch
+          // convention elsewhere.
+          const nextCapabilities = Array.isArray(body.capabilities) ? body.capabilities : [];
+          const nextKeys = new Set(nextCapabilities.map((c) => String(c.capability || "").trim().toLowerCase()).filter(Boolean));
+          const existing = await store.listStaffCapabilities(email);
+          const removals = existing.filter((c) => !nextKeys.has(c.capability));
+          await Promise.all([
+            ...removals.map((c) => store.deleteStaffCapability(email, c.capability)),
+            ...nextCapabilities
+              .filter((c) => c.capability)
+              .map((c) => store.upsertStaffCapability(email, { capability: c.capability, specialty: c.specialty || "" })),
+          ]);
+          const capabilities = await store.listStaffCapabilities(email);
+          await appendAudit(store, authContext, "staff_routing_profile_updated", "office_staff_profile", email, {
+            business_unit: profile.business_unit,
+            availability: profile.availability,
+            capability_count: capabilities.length,
+          });
+          json(res, 200, { profile, capabilities }, { "x-request-id": ctx.requestId });
+          return;
+        }
+        methodNotAllowed(res, "GET,PATCH");
         return;
       }
 
