@@ -234,6 +234,11 @@ class FileLeadAgentsStore {
       next_action_at: input.next_action_at || null,
       last_contact_at: input.last_contact_at || null,
       notes: input.notes || "",
+      // Oyi Communications Convergence, Slice 2.
+      contactability_status: input.contactability_status || "unknown",
+      contactability_channels: Array.isArray(input.contactability_channels) ? input.contactability_channels : [],
+      consent_source: input.consent_source || "",
+      consent_recorded_at: input.consent_recorded_at || null,
     };
   }
 

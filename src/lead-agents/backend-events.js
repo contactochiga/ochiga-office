@@ -92,18 +92,26 @@ function buildMaterialCrmEvent({ lead, envelope, timelineEvent, requestId } = {}
     // Oyi Communications Convergence, Slice 1 -- this was previously
     // captured and persisted on the Lead (primary_channel/phone/email/
     // whatsapp_phone) but silently dropped exactly at this hop (the
-    // Slice 1 audit's finding). contactability is deliberately always
-    // "unknown" here: Office's schema has no structured consent/opt-out
-    // column yet (raw JSON only), so there is no real evidence to send
-    // "allowed" or "denied" from -- never inferred from mere field
-    // presence. Backend's relationship-communication policy treats
-    // "unknown" exactly like "denied" for any autonomous send decision.
+    // Slice 1 audit's finding).
+    //
+    // Slice 2 -- contactability now reads the Lead's real, structured
+    // consent evidence (office-intake.js's deriveContactability(),
+    // built from the explicit consent checkbox every website form
+    // already requires). Historical leads created before that column
+    // existed have no value here and correctly read back as "unknown" --
+    // never silently upgraded. The literal-string check is defense in
+    // depth: normalize-lead.js's normalizeContactabilityStatus already
+    // guarantees the column can only ever hold allowed/denied/unknown,
+    // and Backend's own validateMaterialEvent() re-applies the same
+    // conservative guard independently on receipt.
     communication_context: {
       primary_channel: text(safeLead.primary_channel) || null,
       email: text(safeLead.email) || null,
       phone: text(safeLead.phone) || null,
       whatsapp_phone: text(safeLead.whatsapp_phone) || null,
-      contactability: "unknown",
+      contactability: ["allowed", "denied"].includes(text(safeLead.contactability_status))
+        ? safeLead.contactability_status
+        : "unknown",
     },
     metadata: {
       timeline_event_id: text(safeTimelineEvent.id),

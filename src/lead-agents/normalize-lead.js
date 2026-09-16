@@ -33,6 +33,27 @@ function normalizeSource(value, fallback) {
   return normalized || normalizeText(fallback);
 }
 
+// Oyi Communications Convergence, Slice 2 -- enforced at the write
+// boundary so the column can never hold anything but the tri-state
+// Backend's own conservative validateMaterialEvent() already expects.
+// Deliberately NOT routed through normalizeText: that helper strips the
+// literal word "unknown" to "", which would defeat the point here.
+// Callers must never include this key in an update patch unless they
+// have genuine new evidence -- see office-intake.js's findOrUpsertLead,
+// which only ever writes contactability_status once, on the first
+// upgrade to "allowed", never re-including the key on later repeat
+// submissions that carry no new consent.
+function normalizeContactabilityStatus(value) {
+  const normalized = normalizeText(value).toLowerCase();
+  return normalized === "allowed" || normalized === "denied" ? normalized : "unknown";
+}
+
+function normalizeContactabilityChannels(value) {
+  if (!Array.isArray(value)) return [];
+  const allowed = new Set(["email", "phone", "whatsapp"]);
+  return [...new Set(value.filter((item) => allowed.has(item)))];
+}
+
 // next_action_at/last_contact_at are `timestamptz` columns — unlike the
 // text columns normalizeText backs, an empty string is not a valid value
 // for them (Postgres/PostgREST reject "" with a 400: invalid input syntax
@@ -88,6 +109,10 @@ function normalizeLeadInput(input, fallbackSource) {
     next_action_at: normalizeTimestamp(input.next_action_at),
     last_contact_at: normalizeTimestamp(input.last_contact_at),
     notes: normalizeText(input.notes),
+    contactability_status: normalizeContactabilityStatus(input.contactability_status),
+    contactability_channels: normalizeContactabilityChannels(input.contactability_channels),
+    consent_source: normalizeText(input.consent_source),
+    consent_recorded_at: normalizeTimestamp(input.consent_recorded_at),
   };
 }
 
@@ -129,6 +154,10 @@ const PATCH_FIELDS = [
   "next_action_at",
   "last_contact_at",
   "notes",
+  "contactability_status",
+  "contactability_channels",
+  "consent_source",
+  "consent_recorded_at",
 ];
 
 function normalizeLeadPatch(patch) {
@@ -164,4 +193,6 @@ module.exports = {
   normalizeScore,
   normalizeSource,
   normalizeText,
+  normalizeContactabilityStatus,
+  normalizeContactabilityChannels,
 };
