@@ -46,6 +46,8 @@ class FileLeadAgentsStore {
       office_letterhead_config: null,
       office_support_mappings: [],
       office_handoffs: [],
+      office_staff_profiles: [],
+      office_staff_capabilities: [],
       office_files: [],
       partners: [],
       deployment_projects: [],
@@ -122,6 +124,8 @@ class FileLeadAgentsStore {
           ? parsed.office_support_mappings
           : [],
         office_handoffs: Array.isArray(parsed.office_handoffs) ? parsed.office_handoffs : [],
+        office_staff_profiles: Array.isArray(parsed.office_staff_profiles) ? parsed.office_staff_profiles : [],
+        office_staff_capabilities: Array.isArray(parsed.office_staff_capabilities) ? parsed.office_staff_capabilities : [],
         office_files: Array.isArray(parsed.office_files) ? parsed.office_files : [],
         partners: Array.isArray(parsed.partners) ? parsed.partners : [],
         deployment_projects: Array.isArray(parsed.deployment_projects) ? parsed.deployment_projects : [],
@@ -234,6 +238,11 @@ class FileLeadAgentsStore {
       next_action_at: input.next_action_at || null,
       last_contact_at: input.last_contact_at || null,
       notes: input.notes || "",
+      // Oyi Communications Convergence, Slice 2.
+      contactability_status: input.contactability_status || "unknown",
+      contactability_channels: Array.isArray(input.contactability_channels) ? input.contactability_channels : [],
+      consent_source: input.consent_source || "",
+      consent_recorded_at: input.consent_recorded_at || null,
     };
   }
 
@@ -1265,6 +1274,67 @@ class FileLeadAgentsStore {
 
   async listAdminUsers() {
     return [...this.state.admin_users].sort((a, b) => a.email.localeCompare(b.email));
+  }
+
+  // Oyi Communications Convergence, Slice 3 -- the operational-routing
+  // profile for chooseStaffForHandoff(), genuinely separate from
+  // admin_users (authentication/authorization). Keyed on email, matching
+  // every other cross-cutting staff concern in this codebase.
+  async listStaffProfiles() {
+    return [...this.state.office_staff_profiles];
+  }
+
+  async getStaffProfile(email) {
+    const normalized = normalizeEmail(email);
+    return this.state.office_staff_profiles.find((item) => item.staff_email === normalized) || null;
+  }
+
+  async upsertStaffProfile(email, patch = {}) {
+    const normalized = normalizeEmail(email);
+    if (!normalized) return null;
+    const index = this.state.office_staff_profiles.findIndex((item) => item.staff_email === normalized);
+    const now = this.nowIso();
+    const next = {
+      staff_email: normalized,
+      business_unit: patch.business_unit !== undefined ? normalizeText(patch.business_unit) || "corporate" : (index >= 0 ? this.state.office_staff_profiles[index].business_unit : "corporate"),
+      availability: patch.availability === "available" ? "available" : (patch.availability === "unavailable" ? "unavailable" : (index >= 0 ? this.state.office_staff_profiles[index].availability : "unavailable")),
+      routing_priority: Number.isFinite(Number(patch.routing_priority)) ? Number(patch.routing_priority) : (index >= 0 ? this.state.office_staff_profiles[index].routing_priority : 50),
+      updated_at: now,
+    };
+    if (index >= 0) this.state.office_staff_profiles[index] = next;
+    else this.state.office_staff_profiles.push(next);
+    await this.persist();
+    return next;
+  }
+
+  async listStaffCapabilitiesAll() {
+    return [...this.state.office_staff_capabilities];
+  }
+
+  async listStaffCapabilities(email) {
+    const normalized = normalizeEmail(email);
+    return this.state.office_staff_capabilities.filter((item) => item.staff_email === normalized);
+  }
+
+  async upsertStaffCapability(email, { capability, specialty } = {}) {
+    const normalized = normalizeEmail(email);
+    const cap = normalizeText(capability).toLowerCase();
+    if (!normalized || !cap) return null;
+    const index = this.state.office_staff_capabilities.findIndex((item) => item.staff_email === normalized && item.capability === cap);
+    const next = { id: index >= 0 ? this.state.office_staff_capabilities[index].id : crypto.randomUUID(), staff_email: normalized, capability: cap, specialty: normalizeText(specialty), created_at: index >= 0 ? this.state.office_staff_capabilities[index].created_at : this.nowIso() };
+    if (index >= 0) this.state.office_staff_capabilities[index] = next;
+    else this.state.office_staff_capabilities.push(next);
+    await this.persist();
+    return next;
+  }
+
+  async deleteStaffCapability(email, capability) {
+    const normalized = normalizeEmail(email);
+    const cap = normalizeText(capability).toLowerCase();
+    const before = this.state.office_staff_capabilities.length;
+    this.state.office_staff_capabilities = this.state.office_staff_capabilities.filter((item) => !(item.staff_email === normalized && item.capability === cap));
+    if (this.state.office_staff_capabilities.length !== before) await this.persist();
+    return this.state.office_staff_capabilities.length !== before;
   }
 
   async updateAdminUser(userId, patch) {

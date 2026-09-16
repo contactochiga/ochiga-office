@@ -105,6 +105,42 @@ function normalizeOfficeIntakeEnvelope(input = {}) {
   };
 }
 
+// Oyi Communications Convergence, Slice 2 -- the website's own lead
+// forms already require an explicit, named consent checkbox
+// (lib/leads/schemas.ts's `consent` field, mapped by
+// lib/office/intakeClient.ts's sendOfficeIntake() into
+// consent.marketing_followup). This was previously accepted onto the
+// intake envelope (normalizeOfficeIntakeEnvelope, above) and then
+// silently dropped before the Lead was created -- this function is
+// what actually turns that real evidence into structured contactability
+// instead of discarding it. Only "marketing_followup === true" (an
+// explicit, required checkbox on every current form) counts as
+// evidence; anything else stays "unknown" and channels stay empty --
+// never inferred as allowed from the mere presence of a phone/email.
+function deriveContactability(envelope) {
+  const hasMarketingConsent = Boolean(envelope.consent && envelope.consent.marketing_followup === true);
+  if (!hasMarketingConsent) {
+    return { contactability_status: "unknown", contactability_channels: [], consent_source: "", consent_recorded_at: "" };
+  }
+  const channels = [];
+  if (envelope.contact.email) channels.push("email");
+  // The form collects one phone field; whatsapp_phone is not populated
+  // at website-intake time (see backend-events.js) but Slice 1's own
+  // preferredSupportedChannel() already treats `phone` as a valid
+  // WhatsApp-reachable fallback -- this reuses that same assumption
+  // rather than introducing a stricter or looser one here.
+  if (envelope.contact.phone) {
+    channels.push("phone");
+    channels.push("whatsapp");
+  }
+  return {
+    contactability_status: "allowed",
+    contactability_channels: channels,
+    consent_source: `${envelope.source_form || envelope.source_site || "website"}_form_consent`,
+    consent_recorded_at: envelope.submitted_at || new Date().toISOString(),
+  };
+}
+
 function leadInputFromIntake(envelope) {
   const summary = [
     `Business unit: ${envelope.business_unit}`,
@@ -142,6 +178,7 @@ function leadInputFromIntake(envelope) {
       source_page: envelope.source_page,
       source_form: envelope.source_form,
     }),
+    ...deriveContactability(envelope),
   };
 }
 
@@ -194,6 +231,18 @@ async function findOrUpsertLead(store, envelope) {
     inquiry_type: envelope.inquiry_type,
     next_action: "Repeat website intake received — review the new enquiry alongside prior history.",
   });
+  // Oyi Communications Convergence, Slice 2 -- only ever included when
+  // THIS submission carries real new consent evidence. A repeat
+  // submission with no consent evidence must never re-include these
+  // keys: normalizeContactabilityStatus always resolves to a concrete
+  // value ("unknown" included), so including the key at all would
+  // overwrite an existing lead's real "allowed" back to "unknown".
+  // sparseNonEmpty's own filtering is not enough to prevent that (a
+  // real "unknown" string is not falsy) -- the guard has to be here.
+  const contactability = deriveContactability(envelope);
+  if (contactability.contactability_status === "allowed") {
+    Object.assign(patch, contactability);
+  }
   const lead = (await store.updateLead(existing.id, patch)) || existing;
   return { lead, created: false };
 }

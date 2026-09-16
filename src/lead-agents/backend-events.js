@@ -28,6 +28,30 @@ function leadPublicLabel(lead = {}, envelope = {}) {
   return text(lead.company || organization.name || envelope.source_site || "Office lead");
 }
 
+// Office Intelligence Convergence, Wave 3 -- best-effort JV evidence for
+// Backend's Development/JV capability, built ONLY from Lead fields that
+// genuinely exist today (normalize-lead.js). Office has no dedicated JV
+// schema yet (no jv_structure_offered/landowner_expectation/
+// title_document_status columns), so those are honestly omitted rather
+// than guessed from free text -- Backend's JV capability reports an
+// omitted field as missing_information, never fabricates it.
+function buildDevelopmentEvidence(lead = {}) {
+  const location = text(lead.location) || [text(lead.city), text(lead.country)].filter(Boolean).join(", ");
+  const evidence = {
+    opportunity_type: text(lead.project_type || lead.property_type) || undefined,
+    location: location || undefined,
+    land_size: text(lead.property_size) || undefined,
+    commercial_terms: text(lead.budget_range) || undefined,
+    timeline: text(lead.timeline) || undefined,
+    scale_units: Number.isFinite(Number(lead.unit_count)) && Number(lead.unit_count) > 0
+      ? Number(lead.unit_count)
+      : (Number.isFinite(Number(lead.number_of_units)) && Number(lead.number_of_units) > 0 ? Number(lead.number_of_units) : undefined),
+    source_channel: text(lead.source_channel || lead.primary_channel) || undefined,
+    decision_maker_status: text(lead.decision_maker_status) || undefined,
+  };
+  return Object.fromEntries(Object.entries(evidence).filter(([, value]) => value !== undefined));
+}
+
 function buildMaterialCrmEvent({ lead, envelope, timelineEvent, requestId } = {}) {
   const safeLead = recordOf(lead);
   const safeEnvelope = recordOf(envelope);
@@ -65,10 +89,35 @@ function buildMaterialCrmEvent({ lead, envelope, timelineEvent, requestId } = {}
       stage: text(safeLead.commercial_stage),
       owner: text(safeLead.owner),
     },
+    // Oyi Communications Convergence, Slice 1 -- this was previously
+    // captured and persisted on the Lead (primary_channel/phone/email/
+    // whatsapp_phone) but silently dropped exactly at this hop (the
+    // Slice 1 audit's finding).
+    //
+    // Slice 2 -- contactability now reads the Lead's real, structured
+    // consent evidence (office-intake.js's deriveContactability(),
+    // built from the explicit consent checkbox every website form
+    // already requires). Historical leads created before that column
+    // existed have no value here and correctly read back as "unknown" --
+    // never silently upgraded. The literal-string check is defense in
+    // depth: normalize-lead.js's normalizeContactabilityStatus already
+    // guarantees the column can only ever hold allowed/denied/unknown,
+    // and Backend's own validateMaterialEvent() re-applies the same
+    // conservative guard independently on receipt.
+    communication_context: {
+      primary_channel: text(safeLead.primary_channel) || null,
+      email: text(safeLead.email) || null,
+      phone: text(safeLead.phone) || null,
+      whatsapp_phone: text(safeLead.whatsapp_phone) || null,
+      contactability: ["allowed", "denied"].includes(text(safeLead.contactability_status))
+        ? safeLead.contactability_status
+        : "unknown",
+    },
     metadata: {
       timeline_event_id: text(safeTimelineEvent.id),
       campaign_present: Object.keys(recordOf(safeEnvelope.campaign)).length > 0,
       consent_present: Object.keys(recordOf(safeEnvelope.consent)).length > 0,
+      ...(eventType === "development_enquiry_received" ? { development: buildDevelopmentEvidence(safeLead) } : {}),
     },
   };
 }

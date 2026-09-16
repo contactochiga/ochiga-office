@@ -68,16 +68,6 @@ function createConfig() {
     ).replace(/\/$/, ""),
     defaultLeadSource: process.env.LEAD_AGENTS_DEFAULT_SOURCE || "website_chat",
     environment: process.env.NODE_ENV || "development",
-    toolsPath: path.join(cwd, "config", "openai", "lead-agent-tools.json"),
-    promptPackRoot: path.join(cwd, "prompt-packs"),
-    knowledgeDir:
-      process.env.LEAD_AGENTS_KNOWLEDGE_DIR || path.join(cwd, "knowledge"),
-    tracePath:
-      process.env.LEAD_AGENTS_TRACE_PATH ||
-      path.join(cwd, "data", "lead-agent-traces.jsonl"),
-    leadMemoryPath:
-      process.env.LEAD_AGENTS_MEMORY_PATH ||
-      path.join(cwd, "data", "lead-memory.json"),
     storeDriver: process.env.LEAD_AGENTS_STORE_DRIVER || "file",
     supabaseUrl: process.env.SUPABASE_URL || "",
     supabaseServiceRoleKey: process.env.SUPABASE_SERVICE_ROLE_KEY || "",

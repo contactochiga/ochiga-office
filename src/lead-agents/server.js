@@ -81,11 +81,17 @@ const {
   listHandoffQueue,
   listRelatedActivities,
   persistCorporateRecord,
+  requestHandoffForLead,
   updateHandoff,
   updateOperationalRecord,
   validateOperationalRelationships,
   validateRelatedObject,
 } = require("./office-operational-workflows");
+// Oyi Communications Convergence, Slice 4 -- DEFAULT_CAPABILITIES is the
+// SAME catalog chooseStaffForHandoff() already matches against (Slice
+// 3). Exposed read-only here so Team routing settings never hardcodes a
+// second copy of this vocabulary in the frontend.
+const { DEFAULT_CAPABILITIES } = require("./communications-handoff");
 const { WhatsAppCloudAdapter } = require("./whatsapp");
 const { resolveRecipient, resolveRecipientByEntity } = require("./recipient-resolution");
 const { buildCalendarLinks, parsePreferredSchedule } = require("./scheduling");
@@ -1750,7 +1756,15 @@ async function forwardCommunicationWebhookEvent(config, payload, requestId) {
       thread_reference: response.data?.thread_reference || null,
       ok: Boolean(response.data?.ok),
     });
-    return { forwarded: true, ok: Boolean(response.data?.ok) };
+    // Oyi Communications Convergence, Slice 1 -- goal_active means an
+    // existing autonomous follow-up Goal is already watching this
+    // thread on Backend. processWhatsAppEvent uses this to decide
+    // whether IT should reply directly or defer entirely to the Goal's
+    // own (event-driven) evaluation -- the single-responder rule that
+    // prevents Office's direct AI-reply path and Backend's
+    // GoalRuntime/CommunicationRuntime path from both answering the
+    // same inbound message.
+    return { forwarded: true, ok: Boolean(response.data?.ok), goalActive: Boolean(response.data?.goal_active) };
   } catch (error) {
     log("error", "whatsapp_webhook.backend_forward_failed", {
       request_id: requestId,
@@ -1815,8 +1829,9 @@ async function processWhatsAppEvent({ event, store, adapter, config, requestId }
   // Forward the inbound message itself into the Communication Runtime's
   // canonical thread (Phase 5) -- correlated by phone number so it lands
   // in the SAME thread as any prior outbound send to this person.
+  let forwardResult = { forwarded: false, goalActive: false };
   if (event.message_id) {
-    await forwardCommunicationWebhookEvent(
+    forwardResult = await forwardCommunicationWebhookEvent(
       config,
       {
         channel: "whatsapp",
@@ -1843,6 +1858,29 @@ async function processWhatsAppEvent({ event, store, adapter, config, requestId }
       kind: "message",
       lead_id: lead.id,
       paused: true,
+    };
+  }
+
+  // Oyi Communications Convergence, Slice 1 -- single-responder rule: an
+  // active Goal already watching this thread (Backend, event-driven
+  // wake) owns this reply. Deferring here means the SAME inbound message
+  // can never draw both Office's direct AI-reply AND a Goal-driven
+  // reply -- exactly the concurrency requirement this slice exists to
+  // prove. This does not change behaviour for any lead without an
+  // active goal (the vast majority of conversations today).
+  if (forwardResult.goalActive) {
+    await store.appendTimelineEvent({
+      lead_id: lead.id,
+      event_type: "oyi_core_whatsapp_deferred_to_goal",
+      actor: "ochiga_intelligence",
+      title: "WhatsApp reply deferred to an active follow-up goal",
+      body: "An autonomous follow-up goal is already watching this conversation on Backend; Office did not send a duplicate reply.",
+      metadata: { request_id: requestId },
+    });
+    return {
+      kind: "message",
+      lead_id: lead.id,
+      deferred_to_goal: true,
     };
   }
 
@@ -2194,7 +2232,13 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
         pathname === "/api/lead-agents/admin/communications/whatsapp/templates" ||
         pathname === "/api/lead-agents/admin/recipients/resolve" ||
         pathname === "/api/lead-agents/admin/communications/activity" ||
-        pathname === "/api/lead-agents/admin/communications/create-task";
+        pathname === "/api/lead-agents/admin/communications/create-task" ||
+        // Oyi Communications Convergence, Slice 2 -- Core's HANDOFF
+        // decision has no response channel back to Office on the
+        // material-event path (Office never reads that response body),
+        // so it needs its own outbound call, mirroring this same
+        // Backend->Office bridge WhatsAppAdapter already established.
+        pathname === "/api/lead-agents/admin/communications/handoff-request";
 
       if (
         pathname !== "/healthz" &&
@@ -2473,6 +2517,42 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           return;
         }
 
+        // Oyi Communications Convergence, Slice 2 -- Core's HANDOFF
+        // decision (relationshipCommunicationPolicyForJv) reaches here.
+        // requestHandoffForLead() is idempotent (same lead_id with an
+        // already-active handoff returns it rather than creating a
+        // duplicate), reuses createOrUpdateHandoff/chooseStaffForHandoff
+        // unchanged, and pauses automation via the existing
+        // lead_channel_states human_status check -- no new handoff
+        // system, no new takeover flag.
+        if (pathname === "/api/lead-agents/admin/communications/handoff-request") {
+          const body = await readJsonBody(req);
+          const leadId = String(body.lead_id || "").trim();
+          if (!leadId) {
+            json(res, 200, { ok: false, error: "missing_lead_id" }, { "x-request-id": ctx.requestId });
+            return;
+          }
+          try {
+            const result = await requestHandoffForLead(store, {
+              leadId,
+              businessUnit: body.business_unit,
+              requestedCapability: body.requested_capability,
+              reason: body.reason,
+              priority: body.priority,
+            });
+            await appendAudit(store, { userId: null, email: "oyi_core", role: "system" }, "office_handoff_requested_by_core", "communications_handoff", result.handoff.handoff_id, {
+              lead_id: leadId,
+              created: result.created,
+              status: result.handoff.status,
+              routing_status: result.routing.status,
+            });
+            json(res, 200, { ok: true, handoff: result.handoff, created: result.created, routing_status: result.routing.status }, { "x-request-id": ctx.requestId });
+          } catch (error) {
+            json(res, 200, { ok: false, error: error?.message || "handoff_request_failed" }, { "x-request-id": ctx.requestId });
+          }
+          return;
+        }
+
         const body = await readJsonBody(req);
         const to = String(body.to || "").trim();
         const text = String(body.body || "").trim();
@@ -2480,6 +2560,28 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
         if (!to || (!text && !templateName)) {
           json(res, 400, { error: "missing_to_or_body" }, { "x-request-id": ctx.requestId });
           return;
+        }
+        // Oyi Communications Convergence, Slice 1 -- CRITICAL: Office's
+        // lead_channel_states is the single authoritative human-takeover
+        // truth (never duplicated in Backend). Every Oyi-generated
+        // outbound WhatsApp send -- whether from Office's own AI-reply
+        // loop or from Backend's CommunicationRuntime/GoalRuntime -- now
+        // funnels through this one bridge route, so this is the one
+        // place that truth needs to be enforced to block ALL of them.
+        // A fresh read-through on every send, not a cached/mirrored flag.
+        const leadIdForTakeoverCheck = String(body.lead_id || "").trim();
+        if (leadIdForTakeoverCheck) {
+          const channelState = await store.getLeadChannelState(leadIdForTakeoverCheck, "whatsapp").catch(() => null);
+          if (channelState && (channelState.ai_paused || ["human_active", "human_review"].includes(channelState.human_status))) {
+            log("info", "communication_bridge_send_blocked_takeover", { request_id: ctx.requestId, lead_id: leadIdForTakeoverCheck });
+            json(
+              res,
+              200,
+              { ok: false, delivered: false, failure_reason: "human_takeover_active", failure_detail: "A human has taken over this conversation." },
+              { "x-request-id": ctx.requestId }
+            );
+            return;
+          }
         }
         if (!whatsappAdapter.isConfigured()) {
           json(
@@ -5568,7 +5670,14 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           if (!hasPermission(authContext, "office.read") && !hasPermission(authContext, "support.read")) {
             authorizePermission(authContext, "office.read");
           }
-          const queue = await listHandoffQueue(store, authContext, { status: url.searchParams.get("status") || "" });
+          // Pre-existing bug, first surfaced by Slice 4's real HTTP-level
+          // coverage (Slice 2/3 only ever called listHandoffQueue()
+          // directly, never through this route) -- `url` was never
+          // defined in this scope. Fixed with the same local-URL-parse
+          // pattern every other query-param-reading route in this file
+          // already uses.
+          const requestUrl = new URL(req.url, "http://localhost");
+          const queue = await listHandoffQueue(store, authContext, { status: requestUrl.searchParams.get("status") || "" });
           json(res, 200, { queue }, { "x-request-id": ctx.requestId });
           return;
         }
@@ -7927,6 +8036,72 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           },
           { "x-request-id": ctx.requestId }
         );
+        return;
+      }
+
+      // ---------------------------------------------------------------
+      // Oyi Communications Convergence, Slice 4 -- Team routing settings.
+      // team.manage-gated (same authority as every other org-controlled
+      // Team field) -- Slice 3's office_staff_profiles/
+      // office_staff_capabilities were real and additive but had no
+      // reader/writer until now. Staff identity stays admin_users.email
+      // (path param), matching Slice 3's own store-layer design.
+      // ---------------------------------------------------------------
+      if (pathname === "/api/lead-agents/admin/staff/capability-catalog") {
+        if (req.method !== "GET") {
+          methodNotAllowed(res, "GET");
+          return;
+        }
+        authorizePermission(authContext, "team.manage");
+        json(res, 200, { catalog: DEFAULT_CAPABILITIES }, { "x-request-id": ctx.requestId });
+        return;
+      }
+
+      const staffRoutingProfileMatch = pathname.match(/^\/api\/lead-agents\/admin\/staff\/([^/]+)\/routing-profile$/);
+      if (staffRoutingProfileMatch) {
+        authorizePermission(authContext, "team.manage");
+        const email = decodeURIComponent(staffRoutingProfileMatch[1]);
+        if (req.method === "GET") {
+          const [profile, capabilities] = await Promise.all([
+            store.getStaffProfile(email),
+            store.listStaffCapabilities(email),
+          ]);
+          json(res, 200, { profile, capabilities }, { "x-request-id": ctx.requestId });
+          return;
+        }
+        if (req.method === "PATCH") {
+          const body = await readJsonBody(req);
+          requireObject(body, "body");
+          const profile = await store.upsertStaffProfile(email, {
+            business_unit: body.business_unit,
+            availability: body.availability,
+            routing_priority: body.routing_priority,
+          });
+          // Replace the capability set -- diffed against what's
+          // currently stored so this stays a small, deliberate write
+          // (no wholesale delete-then-recreate of every row on every
+          // save), matching this codebase's established sparse-patch
+          // convention elsewhere.
+          const nextCapabilities = Array.isArray(body.capabilities) ? body.capabilities : [];
+          const nextKeys = new Set(nextCapabilities.map((c) => String(c.capability || "").trim().toLowerCase()).filter(Boolean));
+          const existing = await store.listStaffCapabilities(email);
+          const removals = existing.filter((c) => !nextKeys.has(c.capability));
+          await Promise.all([
+            ...removals.map((c) => store.deleteStaffCapability(email, c.capability)),
+            ...nextCapabilities
+              .filter((c) => c.capability)
+              .map((c) => store.upsertStaffCapability(email, { capability: c.capability, specialty: c.specialty || "" })),
+          ]);
+          const capabilities = await store.listStaffCapabilities(email);
+          await appendAudit(store, authContext, "staff_routing_profile_updated", "office_staff_profile", email, {
+            business_unit: profile.business_unit,
+            availability: profile.availability,
+            capability_count: capabilities.length,
+          });
+          json(res, 200, { profile, capabilities }, { "x-request-id": ctx.requestId });
+          return;
+        }
+        methodNotAllowed(res, "GET,PATCH");
         return;
       }
 

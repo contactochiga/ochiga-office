@@ -13,7 +13,6 @@ const {
   routeBusinessContext,
   selectAgentRole,
 } = require("../src/lead-agents/public-intelligence");
-const { runMockChatScenario } = require("../src/lead-agents/testing");
 
 async function main() {
   assert.equal(CONTRACT_VERSION, "corporate-intelligence.2026-08-11");
@@ -97,14 +96,6 @@ async function main() {
   assert.equal(voiceSession.session_id, textSession.session_id);
   assert.equal(voiceSession.conversation_thread_id, textSession.conversation_thread_id);
   assert.equal(voiceSession.voice_state, "ready");
-
-  const { result } = await runMockChatScenario({
-    agent: salesSession.runtime_agent,
-    corporate_context: salesSession,
-    message: "We manage a 240-unit estate and want a demo proposal.",
-  });
-  assert.equal(result.agent, "sales_agent");
-  assert.ok(result.assistant_message);
 
   console.log("office public intelligence smoke passed");
 }

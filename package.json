@@ -15,7 +15,7 @@
     "deployment:validate": "node scripts/validate-deployment-config.js",
     "validate:release": "node scripts/validate-release.js",
     "test": "npm run check",
-    "office:test": "node scripts/test-lead-agents.js",
+    "office:test": "node scripts/test-office-intelligence-architecture-guard.js",
     "office:intake:test": "node scripts/test-office-intake.js",
     "office:crm-intake:test": "node scripts/test-office-crm-intake.js",
     "office:backend-events:test": "node scripts/test-backend-events.js",
@@ -37,8 +37,7 @@
     "office:facility-invite-email-envelope:test": "node scripts/test-office-facility-invite-email-envelope.js",
     "office:documents-workspace:test": "node scripts/test-office-documents-workspace.js",
     "office:team-lifecycle-meetings-trash:test": "node scripts/test-office-team-lifecycle-meetings-trash.js",
-    "office:messages-workspace:test": "node scripts/test-office-messages-workspace.js",
-    "office:eval": "node scripts/run-lead-agents-evals.js"
+    "office:messages-workspace:test": "node scripts/test-office-messages-workspace.js"
   },
   "dependencies": {
     "@sanity/client": "^6.29.1",

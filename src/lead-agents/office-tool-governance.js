@@ -28,7 +28,20 @@ function leadPatchForProposal(proposal, session) {
     last_contact_at: new Date().toISOString(),
   };
 
-  if (proposal.tool === "crm.create_opportunity") {
+  // Office Intelligence Convergence, Wave 3B -- audited: this proposal
+  // (under either name) never creates an office_opportunities row. It
+  // only ever advances the EXISTING lead's own status/stage toward
+  // "opportunity qualified". A real Opportunity record is created
+  // through a completely separate, deterministic path
+  // (office-intake.js's shouldCreateOpportunity() at public-form intake
+  // time), not from this conversational tool. "crm.create_opportunity"
+  // is the original, misleadingly-named tool; "crm.qualify_opportunity"
+  // is the correctly-named replacement Backend now emits
+  // (corporatePublicConversationPolicy.ts). Both are accepted here,
+  // executing the identical patch, so this stays correct regardless of
+  // which name a given Backend deploy is currently sending -- remove the
+  // old name once no deployed Backend build can still emit it.
+  if (proposal.tool === "crm.create_opportunity" || proposal.tool === "crm.qualify_opportunity") {
     return {
       ...base,
       owner: "sales_agent",
@@ -74,6 +87,8 @@ async function appendToolTimeline({ store, lead, proposal, result, session, requ
 async function executeGovernedOfficeToolProposals({ proposals, store, lead, session, requestId } = {}) {
   const allowedTools = new Set([
     "crm.create_or_update_lead",
+    "crm.qualify_opportunity",
+    // Deprecated alias -- see the Wave 3B note in leadPatchForProposal().
     "crm.create_opportunity",
     "office.request_handoff",
   ]);
