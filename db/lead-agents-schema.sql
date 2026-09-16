@@ -56,6 +56,20 @@ alter table leads add column if not exists idempotency_key text;
 alter table leads add column if not exists organization_id uuid;
 alter table leads add column if not exists opportunity_id uuid;
 alter table leads add column if not exists metadata jsonb not null default '{}'::jsonb;
+-- Oyi Communications Convergence, Slice 2 -- structured contactability
+-- evidence. Every website lead form already collects a required, named
+-- consent checkbox (lib/leads/schemas.ts's `consent` field, sent to
+-- Office as consent.marketing_followup); Office previously accepted this
+-- on the intake envelope and then silently dropped it before creating
+-- the Lead. contactability_status is the tri-state Backend already
+-- expects (allowed/denied/unknown); historical leads created before this
+-- column existed are NULL -> read back as "unknown", never inferred as
+-- allowed. Only office-intake.js's real consent evidence ever writes
+-- "allowed" here today -- no UI/flow currently produces "denied".
+alter table leads add column if not exists contactability_status text;
+alter table leads add column if not exists contactability_channels text[];
+alter table leads add column if not exists consent_source text;
+alter table leads add column if not exists consent_recorded_at timestamptz;
 
 create index if not exists leads_updated_at_idx on leads (updated_at desc);
 create index if not exists leads_status_owner_idx on leads (status, owner);
@@ -1084,6 +1098,15 @@ create table if not exists office_handoffs (
   updated_at timestamptz not null default now()
 );
 create index if not exists office_handoffs_status_idx on office_handoffs (status, business_unit, requested_capability, created_at);
+-- Oyi Communications Convergence, Slice 2 -- office_handoffs had no
+-- Lead-linking column (crm_contact_ref links to crm_contacts.id, a
+-- different table, used by the Private/Partnerships relationship
+-- detail pages -- see public/office/office.js's renderPrivateDetail).
+-- lead_id lets Core's HANDOFF decision (a Development/JV lead, not a
+-- CRM Contact) create/look up its own handoff without overloading that
+-- unrelated column.
+alter table office_handoffs add column if not exists lead_id uuid;
+create index if not exists office_handoffs_lead_idx on office_handoffs (lead_id, status);
 
 -- crm_contacts/crm_organizations/crm_activities/crm_tasks were missing
 -- columns that office-operating-system.js's normalizeCorporateRecord()
