@@ -1750,7 +1750,15 @@ async function forwardCommunicationWebhookEvent(config, payload, requestId) {
       thread_reference: response.data?.thread_reference || null,
       ok: Boolean(response.data?.ok),
     });
-    return { forwarded: true, ok: Boolean(response.data?.ok) };
+    // Oyi Communications Convergence, Slice 1 -- goal_active means an
+    // existing autonomous follow-up Goal is already watching this
+    // thread on Backend. processWhatsAppEvent uses this to decide
+    // whether IT should reply directly or defer entirely to the Goal's
+    // own (event-driven) evaluation -- the single-responder rule that
+    // prevents Office's direct AI-reply path and Backend's
+    // GoalRuntime/CommunicationRuntime path from both answering the
+    // same inbound message.
+    return { forwarded: true, ok: Boolean(response.data?.ok), goalActive: Boolean(response.data?.goal_active) };
   } catch (error) {
     log("error", "whatsapp_webhook.backend_forward_failed", {
       request_id: requestId,
@@ -1815,8 +1823,9 @@ async function processWhatsAppEvent({ event, store, adapter, config, requestId }
   // Forward the inbound message itself into the Communication Runtime's
   // canonical thread (Phase 5) -- correlated by phone number so it lands
   // in the SAME thread as any prior outbound send to this person.
+  let forwardResult = { forwarded: false, goalActive: false };
   if (event.message_id) {
-    await forwardCommunicationWebhookEvent(
+    forwardResult = await forwardCommunicationWebhookEvent(
       config,
       {
         channel: "whatsapp",
@@ -1843,6 +1852,29 @@ async function processWhatsAppEvent({ event, store, adapter, config, requestId }
       kind: "message",
       lead_id: lead.id,
       paused: true,
+    };
+  }
+
+  // Oyi Communications Convergence, Slice 1 -- single-responder rule: an
+  // active Goal already watching this thread (Backend, event-driven
+  // wake) owns this reply. Deferring here means the SAME inbound message
+  // can never draw both Office's direct AI-reply AND a Goal-driven
+  // reply -- exactly the concurrency requirement this slice exists to
+  // prove. This does not change behaviour for any lead without an
+  // active goal (the vast majority of conversations today).
+  if (forwardResult.goalActive) {
+    await store.appendTimelineEvent({
+      lead_id: lead.id,
+      event_type: "oyi_core_whatsapp_deferred_to_goal",
+      actor: "ochiga_intelligence",
+      title: "WhatsApp reply deferred to an active follow-up goal",
+      body: "An autonomous follow-up goal is already watching this conversation on Backend; Office did not send a duplicate reply.",
+      metadata: { request_id: requestId },
+    });
+    return {
+      kind: "message",
+      lead_id: lead.id,
+      deferred_to_goal: true,
     };
   }
 
@@ -2480,6 +2512,28 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
         if (!to || (!text && !templateName)) {
           json(res, 400, { error: "missing_to_or_body" }, { "x-request-id": ctx.requestId });
           return;
+        }
+        // Oyi Communications Convergence, Slice 1 -- CRITICAL: Office's
+        // lead_channel_states is the single authoritative human-takeover
+        // truth (never duplicated in Backend). Every Oyi-generated
+        // outbound WhatsApp send -- whether from Office's own AI-reply
+        // loop or from Backend's CommunicationRuntime/GoalRuntime -- now
+        // funnels through this one bridge route, so this is the one
+        // place that truth needs to be enforced to block ALL of them.
+        // A fresh read-through on every send, not a cached/mirrored flag.
+        const leadIdForTakeoverCheck = String(body.lead_id || "").trim();
+        if (leadIdForTakeoverCheck) {
+          const channelState = await store.getLeadChannelState(leadIdForTakeoverCheck, "whatsapp").catch(() => null);
+          if (channelState && (channelState.ai_paused || ["human_active", "human_review"].includes(channelState.human_status))) {
+            log("info", "communication_bridge_send_blocked_takeover", { request_id: ctx.requestId, lead_id: leadIdForTakeoverCheck });
+            json(
+              res,
+              200,
+              { ok: false, delivered: false, failure_reason: "human_takeover_active", failure_detail: "A human has taken over this conversation." },
+              { "x-request-id": ctx.requestId }
+            );
+            return;
+          }
         }
         if (!whatsappAdapter.isConfigured()) {
           json(
