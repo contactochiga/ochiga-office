@@ -123,6 +123,12 @@ async function main() {
     status: "new",
     summary: "Technology enquiry.",
   });
+  // Wave 3B: "crm.create_opportunity" audited and renamed to
+  // "crm.qualify_opportunity" -- neither name ever creates an
+  // office_opportunities row, both only advance the lead's own
+  // status/stage (see office-tool-governance.js). The old name is kept
+  // as a deprecated, identically-behaving alias so this stays correct
+  // regardless of which name a given Backend deploy is sending.
   const governed = await executeGovernedOfficeToolProposals({
     store,
     lead,
@@ -131,7 +137,7 @@ async function main() {
     proposals: [
       {
         proposal_id: "proposal-1",
-        tool: "crm.create_opportunity",
+        tool: "crm.qualify_opportunity",
         reason: "Visitor manages six buildings and asked for a deployment proposal.",
         parameters: {
           stage: "opportunity_introduced",
@@ -143,17 +149,33 @@ async function main() {
         tool: "devices.unlock_door",
         reason: "Should be rejected.",
       },
+      {
+        proposal_id: "proposal-3",
+        tool: "crm.create_opportunity",
+        reason: "Deprecated alias must still be accepted during the migration window.",
+        parameters: { stage: "opportunity_introduced" },
+      },
     ],
   });
-  assert.equal(governed.results.length, 2);
+  assert.equal(governed.results.length, 3);
   assert.equal(governed.results[0].status, "applied");
   assert.equal(governed.results[1].status, "rejected");
   assert.equal(governed.results[1].reason, "office_tool_not_allowed_for_public_surface");
+  assert.equal(governed.results[2].status, "applied", "the deprecated crm.create_opportunity alias must still be accepted and behave identically");
   const updatedLead = await store.getLead(lead.id);
   assert.equal(updatedLead.owner, "sales_agent");
   assert.equal(updatedLead.commercial_stage, "opportunity_introduced");
   const timeline = await store.listTimelineForLead(lead.id);
   assert.ok(timeline.some((event) => event.event_type === "oyi_core_tool_proposal_applied"));
+  // Neither name ever creates an office_opportunities row -- both
+  // results only ever carry lead_id (never opportunity_id), confirming
+  // the executed effect was a Lead patch. A real Opportunity record is
+  // created through the separate, deterministic
+  // office-intake.js::shouldCreateOpportunity() path at public-form
+  // intake time, not from this conversational tool.
+  assert.equal(governed.results[0].lead_id, lead.id);
+  assert.equal(governed.results[0].opportunity_id, undefined);
+  assert.equal(governed.results[2].opportunity_id, undefined);
 
   assert.equal(detectBlockedPublicOperationalRequest({ message: "Unlock my front door." }).blocked, true);
   assert.equal(detectBlockedPublicOperationalRequest({ message: "What does Oyi do?" }).blocked, false);
