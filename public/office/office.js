@@ -279,6 +279,24 @@ async function apiUpdateProposal(id, patch) {
 async function apiListHandoffs() {
   return api("/api/lead-agents/admin/office/handoffs");
 }
+// Oyi Communications Convergence, Slice 4 -- accept/decline/assign/
+// callback reuse the SAME production route Slice 2/3 already proved;
+// no business logic lives in the frontend.
+async function apiActOnHandoff(id, action, body = {}) {
+  return api(`/api/lead-agents/admin/office/handoffs/${encodeURIComponent(id)}/${encodeURIComponent(action)}`, { method: "POST", body });
+}
+// The real chooseStaffForHandoff() vocabulary (communications-
+// handoff.js's DEFAULT_CAPABILITIES) -- fetched live, never a second
+// hardcoded copy in this file.
+async function apiGetStaffCapabilityCatalog() {
+  return cached("staffCapabilityCatalog", () => api("/api/lead-agents/admin/staff/capability-catalog"));
+}
+async function apiGetStaffRoutingProfile(email) {
+  return api(`/api/lead-agents/admin/staff/${encodeURIComponent(email)}/routing-profile`);
+}
+async function apiUpdateStaffRoutingProfile(email, body) {
+  return api(`/api/lead-agents/admin/staff/${encodeURIComponent(email)}/routing-profile`, { method: "PATCH", body });
+}
 // ---------------------------------------------------------------
 // Team / Settings / Audit — moved out of the legacy dashboard.
 // Same admin_users / integrations / audit_events contracts the
@@ -3038,7 +3056,7 @@ function renderLeadDetailGroup(title, pairs) {
 }
 
 async function renderLeadDetail(body, id, token) {
-  const [lead, timeline, proposals, conversations] = await Promise.all([
+  const [lead, timeline, proposals, conversations, handoffs] = await Promise.all([
     apiGetLead(id),
     apiGetLeadTimeline(id).then((d) => d.timeline).catch(() => []),
     hasPermission("documents.generate") ? apiGetLeadProposals(id).then((d) => d.proposals).catch(() => []) : Promise.resolve([]),
@@ -3046,6 +3064,10 @@ async function renderLeadDetail(body, id, token) {
     // backend has always had this; the previous frontend never called
     // it (Phase 6, v2 audit).
     apiGetLeadConversations(id).then((d) => d.conversations || []).catch(() => []),
+    // Oyi Communications Convergence, Slice 4 -- same read gate the
+    // Handoff Queue itself uses; a small extension of an existing
+    // section, not a second handoff display.
+    (hasPermission("office.read") || hasPermission("support.read")) ? fetchHandoffs().catch(() => []) : Promise.resolve([]),
   ]);
   if (token !== state.renderToken) return;
   const record = lead.lead;
@@ -3172,6 +3194,14 @@ async function renderLeadDetail(body, id, token) {
   }
   if (linkedProject) {
     railSections.push(railCard("Project", `<a href="#/projects/${linkedProject.id}">${escapeHtml(linkedProject.name)}</a> <span class="rail-sub">${escapeHtml(titleCase(linkedProject.stage))}</span>`));
+  }
+  // Oyi Communications Convergence, Slice 4 -- current handoff state,
+  // if one exists for this lead. A small extension of this existing
+  // rail, never a second handoff display — the Handoff Queue remains
+  // the one place to actually act on it.
+  const leadHandoff = handoffs.find((h) => h.lead_id === id && h.status !== "declined") || handoffs.find((h) => h.lead_id === id);
+  if (leadHandoff) {
+    railSections.push(railCard("Oyi Handoff", `<a href="#/support/handoffs">${badge(titleCase(leadHandoff.status), handoffStatusTone(leadHandoff.status))}</a> <span class="rail-sub">${escapeHtml(leadHandoff.assigned_staff_id || "Unassigned")}</span>`));
   }
 
   renderDetailShell(body, {
@@ -4137,7 +4167,12 @@ async function renderModuleRoute(outlet, moduleKey, rest, token) {
       if (objectId) await renderPortfolioDetail(outlet, objectId, token);
       else await renderPortfolioList(outlet, token);
     } else if (moduleKey === "support") {
-      if (objectId) await renderSupportDetail(outlet, objectId, token);
+      // Oyi Communications Convergence, Slice 4 -- Handoff Queue lives as
+      // a reserved sub-route under Support (same read gate: office.read/
+      // support.read), matching Meetings' existing "trash" reserved-id
+      // pattern exactly, rather than a new top-level nav item.
+      if (objectId === "handoffs") await renderHandoffQueue(outlet, token);
+      else if (objectId) await renderSupportDetail(outlet, objectId, token);
       else await renderSupportList(outlet, token);
     } else if (moduleKey === "meetings") {
       if (objectId === "trash") await renderMeetingsTrashList(outlet, token);
@@ -5175,6 +5210,133 @@ async function renderSupportList(outlet, token) {
     onCreate: () => openCreateSupportDialog(),
     onRowClick: (s) => navigate(`support/${s.id}`),
     emptyMessage: "No open support cases.",
+    // Oyi Communications Convergence, Slice 4 -- same reserved-sub-route
+    // toolbar-button pattern Meetings already uses for Trash, not a new
+    // top-level nav item. Same read gate as the queue route itself.
+    secondaryActions: (hasPermission("office.read") || hasPermission("support.read")) ? [{ label: "Oyi Handoffs", onClick: () => navigate("support/handoffs") }] : undefined,
+  });
+}
+
+// ---------------------------------------------------------------
+// Oyi Communications Convergence, Slice 4 -- Handoff Queue.
+// Surfaces the existing office_handoffs table through the existing
+// GET /admin/office/handoffs route (Slices 2/3) and the existing
+// accept/decline/assign/callback action route. No new handoff
+// business logic lives here — every action below is a direct call to
+// a route that already existed and was already proven by Slice 2/3's
+// tests; this page only makes it operable from the UI.
+// ---------------------------------------------------------------
+function handoffStatusTone(status) {
+  if (status === "accepted") return "green";
+  if (status === "declined") return "red";
+  // "amber" (not "yellow") matches this codebase's own tone vocabulary
+  // (toneForStatus) — requested/offered/callback_requested are all
+  // "awaiting a human", the same semantic toneForStatus already uses
+  // amber for elsewhere.
+  if (status === "requested" || status === "offered" || status === "callback_requested") return "amber";
+  return "default";
+}
+
+async function renderHandoffQueue(outlet, token, { unassignedOnly = false } = {}) {
+  setSelectedObject(null);
+  setTopbar("Oyi Handoffs", "");
+  const canManage = hasPermission("office.manage") || hasPermission("support.assign");
+  const [handoffs, leads, staffDirectory] = await Promise.all([
+    fetchHandoffs().catch(() => []),
+    hasPermission("office.read") ? fetchLeads().catch(() => []) : Promise.resolve([]),
+    canManage ? apiListStaffDirectory().then((d) => d.staff || []).catch(() => []) : Promise.resolve([]),
+  ]);
+  if (token !== state.renderToken) return;
+  const leadById = Object.fromEntries(leads.map((l) => [l.id, l]));
+  const myEmail = normalizeEmailForCompare(state.admin?.email);
+
+  const rows = handoffs.map((h) => {
+    const lead = h.lead_id ? leadById[h.lead_id] : null;
+    return {
+      ...h,
+      _lead_label: lead ? leadDisplayName(lead) : (h.lead_id ? "Lead" : "—"),
+    };
+  });
+
+  async function refresh() {
+    await renderHandoffQueue(outlet, ++state.renderToken, { unassignedOnly });
+  }
+
+  async function doAccept(h) {
+    try {
+      await apiActOnHandoff(h.handoff_id, "accept", {});
+      toast("Handoff accepted — you now own this conversation.");
+      await refresh();
+    } catch (err) {
+      toast(err.message || "Could not accept this handoff.");
+    }
+  }
+  function doDecline(h) {
+    openDialog("Decline Handoff", [
+      { name: "reason", label: "Reason (optional)", type: "textarea" },
+    ], async (data) => {
+      await apiActOnHandoff(h.handoff_id, "decline", { reason: data.reason || "" });
+      toast("Handoff declined. It stays visible, unassigned, until someone else accepts it.");
+      await refresh();
+    });
+  }
+  function doAssign(h) {
+    if (!staffDirectory.length) {
+      toast("No staff directory entries available to assign to.");
+      return;
+    }
+    openDialog("Assign Handoff", [
+      { name: "staff_email", label: "Staff member", type: "select", options: staffDirectory.map((s) => s.email), value: staffDirectory[0]?.email },
+    ], async (data) => {
+      if (!data.staff_email) throw new Error("Choose a staff member.");
+      await apiActOnHandoff(h.handoff_id, "assign", { staff_id: data.staff_email });
+      toast(`Assigned to ${data.staff_email}.`);
+      await refresh();
+    });
+  }
+
+  renderStandardList(outlet, {
+    title: "Oyi Handoffs",
+    records: rows,
+    ownerField: "assigned_staff_id",
+    columns: [
+      { label: "Lead / Relationship", width: "1.4fr", render: (h) => h.lead_id ? `<a href="#/crm/leads/${escapeHtml(h.lead_id)}">${escapeHtml(h._lead_label)}</a>` : escapeHtml(h._lead_label) },
+      { label: "Business Unit", render: (h) => escapeHtml(titleCase(h.business_unit)) },
+      { label: "Capability", render: (h) => escapeHtml(h.requested_capability) },
+      { label: "Reason", width: "1.6fr", render: (h) => escapeHtml((h.reason || "").slice(0, 140)) },
+      { label: "Status", render: (h) => badge(titleCase(h.status), handoffStatusTone(h.status)) },
+      { label: "Assigned Staff", render: (h) => escapeHtml(h.assigned_staff_id || "Unassigned") },
+      { label: "Created", render: (h) => escapeHtml(fmtRelative(h.created_at)) },
+      {
+        label: "", render: (h) => {
+          if (!canManage) return "";
+          const isMine = normalizeEmailForCompare(h.assigned_staff_id) === myEmail;
+          return buildOverflowMenu({
+            items: [
+              { label: "Accept", hidden: h.status === "accepted" || h.status === "declined" || (!isMine && Boolean(h.assigned_staff_id)), onClick: () => doAccept(h) },
+              { label: "Decline", hidden: h.status === "declined", onClick: () => doDecline(h) },
+              { label: "Assign…", onClick: () => doAssign(h) },
+            ],
+          });
+        },
+      },
+    ],
+    searchFields: ["_lead_label", "reason", "requested_capability"],
+    filters: [
+      { key: "status", label: "Status" },
+      { key: "business_unit", label: "Business Unit" },
+    ],
+    canManage: false,
+    // "Unassigned" — status === "requested" with no assigned staff is a
+    // real, already-displayed combination of existing fields, never a
+    // fabricated status. Re-renders the whole page with a preFilter,
+    // the same pattern every other mutation on this page already uses
+    // to refresh, rather than reaching into renderDataTable's markup.
+    secondaryActions: [
+      { label: "Unassigned", active: unassignedOnly, onClick: () => renderHandoffQueue(outlet, ++state.renderToken, { unassignedOnly: !unassignedOnly }) },
+    ],
+    preFilter: unassignedOnly ? (h) => h.status === "requested" && !h.assigned_staff_id : undefined,
+    emptyMessage: unassignedOnly ? "No unassigned handoffs right now." : "No Oyi handoffs yet. When Core recommends human review, it will appear here — including when nobody is currently available.",
   });
 }
 
@@ -9498,6 +9660,31 @@ async function toggleTeamEditRow(user, canonicalRoles) {
   const grantedScopes = new Set(Array.isArray(user.permission_scopes) ? user.permission_scopes : []);
   const groups = groupedPermissionKeys(allScopes);
 
+  // Oyi Communications Convergence, Slice 4 -- Team routing settings.
+  // "Who can receive which kinds of Oyi handoffs" — office_staff_profiles/
+  // office_staff_capabilities (Slice 3), never a second staff-identity or
+  // permission system. Loaded alongside the rest of this edit form so
+  // configuring routing is one Save, not a separate screen.
+  let staffCatalog = [];
+  let routingProfile = null;
+  let routingCapabilities = [];
+  try {
+    const [catalogData, routingData] = await Promise.all([
+      apiGetStaffCapabilityCatalog(),
+      apiGetStaffRoutingProfile(user.email),
+    ]);
+    staffCatalog = catalogData.catalog || [];
+    routingProfile = routingData.profile;
+    routingCapabilities = routingData.capabilities || [];
+  } catch {
+    staffCatalog = [];
+  }
+  // The real, existing business-unit vocabulary this catalog already
+  // uses — never a second typed-out list.
+  const routingBusinessUnits = [...new Set(staffCatalog.map((c) => c.business_unit))].sort();
+  const grantedCapabilityKeys = new Set(routingCapabilities.map((c) => c.capability));
+  const specialtyByCapability = Object.fromEntries(routingCapabilities.map((c) => [c.capability, c.specialty || ""]));
+
   const form = el(`
     <form class="inline-form" style="flex-direction:column;align-items:stretch;gap:14px;margin-top:14px;max-width:640px;">
       <div class="field">
@@ -9541,6 +9728,35 @@ async function toggleTeamEditRow(user, canonicalRoles) {
         <span class="hint">Checked-and-locked items come from the System Role above. Check anything else to grant it to this person specifically, on top of their role.</span>
         <div class="permission-editor" style="display:flex;flex-direction:column;gap:10px;margin-top:8px;max-height:320px;overflow-y:auto;border:1px solid var(--line);border-radius:var(--radius-sm);padding:10px;"></div>
       </div>
+      <div class="field" style="border-top:1px solid var(--line);padding-top:14px;">
+        <label>Oyi Handoff Routing</label>
+        <span class="hint">Whether this person can receive Oyi-generated communications handoffs, and what kind. Leave Availability as Unavailable if they should not receive any right now.</span>
+        <div style="display:flex;gap:14px;margin-top:10px;flex-wrap:wrap;">
+          <div class="field" style="flex:1;min-width:160px;">
+            <label for="teamRoutingBusinessUnit">Business Unit</label>
+            <select id="teamRoutingBusinessUnit">
+              ${routingBusinessUnits.map((bu) => `<option value="${escapeHtml(bu)}" ${bu === (routingProfile?.business_unit || routingBusinessUnits[0]) ? "selected" : ""}>${escapeHtml(titleCase(bu))}</option>`).join("")}
+            </select>
+          </div>
+          <div class="field" style="flex:1;min-width:160px;">
+            <label for="teamRoutingAvailability">Availability</label>
+            <select id="teamRoutingAvailability">
+              <option value="unavailable" ${(routingProfile?.availability || "unavailable") === "unavailable" ? "selected" : ""}>Unavailable</option>
+              <option value="available" ${routingProfile?.availability === "available" ? "selected" : ""}>Available</option>
+            </select>
+            <span class="hint">Available staff can receive new Oyi handoffs. This is never inferred from being signed in — it must be set here.</span>
+          </div>
+          <div class="field" style="flex:1;min-width:140px;">
+            <label for="teamRoutingPriority">Routing Priority</label>
+            <input id="teamRoutingPriority" type="number" min="1" max="100" value="${Number.isFinite(Number(routingProfile?.routing_priority)) ? Number(routingProfile.routing_priority) : 50}" />
+            <span class="hint">Lower number = offered first when more than one available person can handle it. Workload is always checked first.</span>
+          </div>
+        </div>
+        <div style="margin-top:10px;">
+          <span class="hint" style="display:block;margin-bottom:6px;">Capabilities</span>
+          <div class="routing-capability-editor" style="display:flex;flex-direction:column;gap:10px;max-height:260px;overflow-y:auto;border:1px solid var(--line);border-radius:var(--radius-sm);padding:10px;"></div>
+        </div>
+      </div>
       <div>
         <button class="btn btn-primary" type="submit">Save</button>
         ${canManageSecurity ? `<button class="btn btn-ghost" type="button" id="teamResetPassword">Reset Password</button>` : ""}
@@ -9575,6 +9791,42 @@ async function toggleTeamEditRow(user, canonicalRoles) {
   }
   renderPermissionGroups(user.role);
   form.querySelector("#teamEditRole").addEventListener("change", (event) => renderPermissionGroups(event.target.value));
+
+  // Oyi Communications Convergence, Slice 4 -- capability checkboxes
+  // grouped by business unit, straight from the real catalog
+  // (communications-handoff.js's DEFAULT_CAPABILITIES). A capability can
+  // carry an optional free-text specialty (mirrors the catalog's own
+  // shape), but never invents a second capability taxonomy — the
+  // checkbox value IS the exact stored capability string.
+  const capabilityHost = form.querySelector(".routing-capability-editor");
+  function renderCapabilityEditor() {
+    capabilityHost.innerHTML = "";
+    if (!staffCatalog.length) {
+      capabilityHost.appendChild(el(`<p class="hint" style="margin:0;">Capability catalog unavailable.</p>`));
+      return;
+    }
+    const byUnit = {};
+    staffCatalog.forEach((c) => { (byUnit[c.business_unit] = byUnit[c.business_unit] || []).push(c); });
+    Object.entries(byUnit).forEach(([unit, entries]) => {
+      const section = el(`<div></div>`);
+      section.appendChild(el(`<div style="font-size:10.5px;text-transform:uppercase;letter-spacing:0.04em;color:var(--text-tertiary);margin-bottom:4px;">${escapeHtml(titleCase(unit))}</div>`));
+      const list = el(`<div style="display:flex;flex-direction:column;gap:6px;"></div>`);
+      entries.forEach((entry) => {
+        const checked = grantedCapabilityKeys.has(entry.capability);
+        const row = el(`
+          <label style="display:flex;align-items:center;gap:8px;font-size:12px;color:var(--text-secondary);">
+            <input type="checkbox" data-capability="${escapeHtml(entry.capability)}" ${checked ? "checked" : ""} />
+            <span style="min-width:220px;">${escapeHtml(entry.capability)}</span>
+            <input type="text" data-specialty-for="${escapeHtml(entry.capability)}" placeholder="Specialty (optional)" value="${escapeHtml(specialtyByCapability[entry.capability] || "")}" style="flex:1;max-width:220px;" />
+          </label>
+        `);
+        list.appendChild(row);
+      });
+      section.appendChild(list);
+      capabilityHost.appendChild(section);
+    });
+  }
+  renderCapabilityEditor();
 
   form.querySelector("#teamEditCancel").addEventListener("click", () => { wrap.innerHTML = ""; });
   form.querySelector("#teamEditPhoto").addEventListener("change", async (event) => {
@@ -9627,6 +9879,26 @@ async function toggleTeamEditRow(user, canonicalRoles) {
         phone: form.querySelector("#teamEditPhone").value,
         permission_scopes: permissionScopes,
       });
+      // Oyi Communications Convergence, Slice 4 -- saved as a second,
+      // small write alongside the account update above (a genuinely
+      // separate record: office_staff_profiles/office_staff_capabilities,
+      // not admin_users). If the catalog failed to load, staffCatalog is
+      // empty and there is nothing to submit — never send a fabricated
+      // capability list.
+      if (staffCatalog.length) {
+        const capabilities = Array.from(capabilityHost.querySelectorAll("input[type=checkbox]"))
+          .filter((input) => input.checked)
+          .map((input) => ({
+            capability: input.dataset.capability,
+            specialty: input.closest("label")?.querySelector("input[data-specialty-for]")?.value || "",
+          }));
+        await apiUpdateStaffRoutingProfile(user.email, {
+          business_unit: form.querySelector("#teamRoutingBusinessUnit").value,
+          availability: form.querySelector("#teamRoutingAvailability").value,
+          routing_priority: Number(form.querySelector("#teamRoutingPriority").value) || 50,
+          capabilities,
+        });
+      }
       wrap.innerHTML = "";
       const token = ++state.renderToken;
       await renderTeamView(document.getElementById("viewOutlet"), token);
