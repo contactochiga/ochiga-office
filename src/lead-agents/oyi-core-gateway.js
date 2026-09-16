@@ -552,6 +552,18 @@ async function buildOyiCoreOfficeInternalRequest({ authContext, message, body, r
     partnership_context: recordOf(safeBody.partnership_context),
     document_context: recordOf(safeBody.document_context),
     content_context: recordOf(safeBody.content_context),
+    // Office Intelligence Convergence, Wave 3 -- mirrors every other
+    // *_context slot's exact passthrough pattern. office.js has no JV
+    // evidence UI/selection concept yet (no opportunity-detail page to
+    // source structured JV fields from), so this proxy forwards whatever
+    // Office sends here today (nothing) -- the wire contract and
+    // Backend's development.jv_assessment capability are ready the
+    // moment a future office.js change (a developmentOyiContext()
+    // builder mirroring taskOyiContext()/partnershipOyiContext()) starts
+    // sending it. Real JV evidence already flows end-to-end today via
+    // the material-event path (backend-events.js's
+    // metadata.development), which is this wave's actual golden journey.
+    development_context: recordOf(safeBody.development_context),
     // Oyi Office Intelligence Interaction Repositioning -- a photo or
     // file attached to this turn (mutually exclusive; the camera sheet
     // and Share file each only ever set one). Backend performs the

@@ -28,6 +28,30 @@ function leadPublicLabel(lead = {}, envelope = {}) {
   return text(lead.company || organization.name || envelope.source_site || "Office lead");
 }
 
+// Office Intelligence Convergence, Wave 3 -- best-effort JV evidence for
+// Backend's Development/JV capability, built ONLY from Lead fields that
+// genuinely exist today (normalize-lead.js). Office has no dedicated JV
+// schema yet (no jv_structure_offered/landowner_expectation/
+// title_document_status columns), so those are honestly omitted rather
+// than guessed from free text -- Backend's JV capability reports an
+// omitted field as missing_information, never fabricates it.
+function buildDevelopmentEvidence(lead = {}) {
+  const location = text(lead.location) || [text(lead.city), text(lead.country)].filter(Boolean).join(", ");
+  const evidence = {
+    opportunity_type: text(lead.project_type || lead.property_type) || undefined,
+    location: location || undefined,
+    land_size: text(lead.property_size) || undefined,
+    commercial_terms: text(lead.budget_range) || undefined,
+    timeline: text(lead.timeline) || undefined,
+    scale_units: Number.isFinite(Number(lead.unit_count)) && Number(lead.unit_count) > 0
+      ? Number(lead.unit_count)
+      : (Number.isFinite(Number(lead.number_of_units)) && Number(lead.number_of_units) > 0 ? Number(lead.number_of_units) : undefined),
+    source_channel: text(lead.source_channel || lead.primary_channel) || undefined,
+    decision_maker_status: text(lead.decision_maker_status) || undefined,
+  };
+  return Object.fromEntries(Object.entries(evidence).filter(([, value]) => value !== undefined));
+}
+
 function buildMaterialCrmEvent({ lead, envelope, timelineEvent, requestId } = {}) {
   const safeLead = recordOf(lead);
   const safeEnvelope = recordOf(envelope);
@@ -69,6 +93,7 @@ function buildMaterialCrmEvent({ lead, envelope, timelineEvent, requestId } = {}
       timeline_event_id: text(safeTimelineEvent.id),
       campaign_present: Object.keys(recordOf(safeEnvelope.campaign)).length > 0,
       consent_present: Object.keys(recordOf(safeEnvelope.consent)).length > 0,
+      ...(eventType === "development_enquiry_received" ? { development: buildDevelopmentEvidence(safeLead) } : {}),
     },
   };
 }
