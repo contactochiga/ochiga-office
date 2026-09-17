@@ -29,33 +29,48 @@ function leadPublicLabel(lead = {}, envelope = {}) {
 }
 
 // Office Intelligence Convergence, Wave 3 -- best-effort JV evidence for
-// Backend's Development/JV capability, built ONLY from Lead fields that
-// genuinely exist today (normalize-lead.js). Office has no dedicated JV
-// schema yet (no jv_structure_offered/landowner_expectation/
-// title_document_status columns), so those are honestly omitted rather
-// than guessed from free text -- Backend's JV capability reports an
-// omitted field as missing_information, never fabricates it.
-function buildDevelopmentEvidence(lead = {}) {
-  const location = text(lead.location) || [text(lead.city), text(lead.country)].filter(Boolean).join(", ");
+// Backend's Development/JV capability. Office has no dedicated JV schema
+// yet (no jv_structure_offered/landowner_expectation/title_document_status
+// columns), so those are honestly omitted rather than guessed from free
+// text -- Backend's JV capability reports an omitted field as
+// missing_information, never fabricates it.
+//
+// Production activation, PERSON/RELATIONSHIP != INDIVIDUAL OPPORTUNITY --
+// evidence belonging to a SPECIFIC opportunity (office-intake.js's
+// buildOpportunityDevelopmentEvidence(), written once at that
+// Opportunity's own creation) always wins over the Lead's own fields.
+// The Lead fields remain a compatibility fallback only -- for callers
+// that never pass an opportunity, or for whichever fields a given
+// opportunity's own metadata happens not to carry -- so a later,
+// unrelated submission from the same person (a second Opportunity, a
+// different property) can never silently overwrite what this event
+// reports for THIS Opportunity.
+function buildDevelopmentEvidence(lead = {}, opportunity = null) {
+  const fromOpportunity = recordOf(recordOf(opportunity).metadata).development;
+  const opp = recordOf(fromOpportunity);
+  const location = text(opp.location) || text(lead.location) || [text(lead.city), text(lead.country)].filter(Boolean).join(", ");
   const evidence = {
-    opportunity_type: text(lead.project_type || lead.property_type) || undefined,
+    opportunity_type: text(opp.opportunity_type) || text(lead.project_type || lead.property_type) || undefined,
     location: location || undefined,
-    land_size: text(lead.property_size) || undefined,
-    commercial_terms: text(lead.budget_range) || undefined,
-    timeline: text(lead.timeline) || undefined,
-    scale_units: Number.isFinite(Number(lead.unit_count)) && Number(lead.unit_count) > 0
-      ? Number(lead.unit_count)
-      : (Number.isFinite(Number(lead.number_of_units)) && Number(lead.number_of_units) > 0 ? Number(lead.number_of_units) : undefined),
-    source_channel: text(lead.source_channel || lead.primary_channel) || undefined,
-    decision_maker_status: text(lead.decision_maker_status) || undefined,
+    land_size: text(opp.land_size) || text(lead.property_size) || undefined,
+    commercial_terms: text(opp.commercial_terms) || text(lead.budget_range) || undefined,
+    timeline: text(opp.timeline) || text(lead.timeline) || undefined,
+    scale_units: Number.isFinite(Number(opp.scale_units)) && Number(opp.scale_units) > 0
+      ? Number(opp.scale_units)
+      : (Number.isFinite(Number(lead.unit_count)) && Number(lead.unit_count) > 0
+          ? Number(lead.unit_count)
+          : (Number.isFinite(Number(lead.number_of_units)) && Number(lead.number_of_units) > 0 ? Number(lead.number_of_units) : undefined)),
+    source_channel: text(opp.source_channel) || text(lead.source_channel || lead.primary_channel) || undefined,
+    decision_maker_status: text(opp.decision_maker_status) || text(lead.decision_maker_status) || undefined,
   };
   return Object.fromEntries(Object.entries(evidence).filter(([, value]) => value !== undefined));
 }
 
-function buildMaterialCrmEvent({ lead, envelope, timelineEvent, requestId } = {}) {
+function buildMaterialCrmEvent({ lead, envelope, timelineEvent, requestId, opportunity } = {}) {
   const safeLead = recordOf(lead);
   const safeEnvelope = recordOf(envelope);
   const safeTimelineEvent = recordOf(timelineEvent);
+  const safeOpportunity = recordOf(opportunity);
   const eventType = materialEventTypeForLead(safeLead, safeEnvelope);
   const sourceSite = text(safeEnvelope.source_site || safeLead.source);
   const idempotencyKey = text(safeEnvelope.idempotency_key)
@@ -88,6 +103,12 @@ function buildMaterialCrmEvent({ lead, envelope, timelineEvent, requestId } = {}
       status: text(safeLead.status),
       stage: text(safeLead.commercial_stage),
       owner: text(safeLead.owner),
+      // The Lead's own status/stage above describe the PERSON's overall
+      // relationship history and are never re-derived per opportunity;
+      // opportunity_id names the specific, independent Opportunity this
+      // event's evidence actually belongs to (see buildDevelopmentEvidence
+      // below) so Backend/observability never conflates the two.
+      opportunity_id: text(safeOpportunity.id) || null,
     },
     // Oyi Communications Convergence, Slice 1 -- this was previously
     // captured and persisted on the Lead (primary_channel/phone/email/
@@ -117,7 +138,7 @@ function buildMaterialCrmEvent({ lead, envelope, timelineEvent, requestId } = {}
       timeline_event_id: text(safeTimelineEvent.id),
       campaign_present: Object.keys(recordOf(safeEnvelope.campaign)).length > 0,
       consent_present: Object.keys(recordOf(safeEnvelope.consent)).length > 0,
-      ...(eventType === "development_enquiry_received" ? { development: buildDevelopmentEvidence(safeLead) } : {}),
+      ...(eventType === "development_enquiry_received" ? { development: buildDevelopmentEvidence(safeLead, safeOpportunity) } : {}),
     },
   };
 }
