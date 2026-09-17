@@ -718,7 +718,15 @@ async function updateHandoff(store, authContext, handoffId, action, input = {}) 
   if (action === "accept") {
     if (!hasPermission(authContext, "office.manage") && !hasPermission(authContext, "support.assign")) throw errorWithStatus("forbidden_handoff_accept", 403);
     patch.status = "accepted";
-    patch.assigned_staff_id = text(input.staff_id || authContext.userId || authContext.email);
+    // Production fix -- authContext.userId (admin_users.id, a UUID) is
+    // truthy for every authenticated session, so it always won the old
+    // `input.staff_id || authContext.userId || authContext.email`
+    // precedence and authContext.email was dead code. assigned_staff_id
+    // (and, below, lead_channel_states.human_owner) must stay the
+    // canonical staff identity used everywhere else in this system
+    // (office_staff_profiles, chooseStaffForHandoff, CRM ownership,
+    // audit_events.actor_email) -- a real staff email, never a UUID.
+    patch.assigned_staff_id = text(input.staff_id || authContext.email || authContext.userId);
     patch.accepted_at = nowIso();
     // Oyi Communications Convergence, Slice 2 -- the moment a human
     // genuinely accepts is when they actively own the conversation
