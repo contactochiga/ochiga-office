@@ -140,7 +140,12 @@ async function main() {
     assert.equal(accepted.status, "accepted");
     const afterAccept = await store.getLeadChannelState(lead.id, "whatsapp");
     assert.equal(afterAccept.human_status, "human_active");
-    assert.equal(afterAccept.human_owner, "staff-1");
+    // Production fix -- human_owner (and office_handoffs.assigned_staff_id)
+    // must be the canonical staff email, never authContext.userId's UUID
+    // ("staff-1" here). Every other cross-cutting staff concern in this
+    // system already keys on email (office_staff_profiles, CRM ownership,
+    // audit_events.actor_email) -- accept() must match.
+    assert.equal(afterAccept.human_owner, "staff@ochiga.com");
   }
   console.log("E. requestHandoffForLead sets human_review (reuses Slice 1's takeover gate); accept upgrades to human_active with a real owner — PASS");
 

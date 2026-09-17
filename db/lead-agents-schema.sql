@@ -1108,6 +1108,21 @@ create index if not exists office_handoffs_status_idx on office_handoffs (status
 alter table office_handoffs add column if not exists lead_id uuid;
 create index if not exists office_handoffs_lead_idx on office_handoffs (lead_id, status);
 
+-- Production activation fix -- office-operational-workflows.js's
+-- updateHandoff() has always set these fields on accept/decline/
+-- callback (accepted_at, declined_at, decline_reason,
+-- callback_requested_at), but the columns to hold them were never
+-- added to this schema. Every prior Slice 2/3/4 test exercised
+-- updateHandoff() only against FileLeadAgentsStore (a schema-less JS
+-- object store), so this never surfaced until a real accept was
+-- attempted against production Supabase -- PostgREST correctly
+-- rejects a PATCH referencing unknown columns with 400, and the
+-- entire PATCH is rejected atomically (no partial column write).
+alter table office_handoffs add column if not exists accepted_at timestamptz;
+alter table office_handoffs add column if not exists declined_at timestamptz;
+alter table office_handoffs add column if not exists decline_reason text;
+alter table office_handoffs add column if not exists callback_requested_at timestamptz;
+
 -- Oyi Communications Convergence, Slice 3 -- chooseStaffForHandoff()
 -- (communications-handoff.js) has always existed but has never had a
 -- real staffCapabilities source: admin_users has no business_unit/
