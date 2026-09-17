@@ -290,6 +290,35 @@ function intakeSummaryText(envelope) {
     `${envelope.business_unit} ${envelope.inquiry_type} enquiry from ${envelope.source_site}.`;
 }
 
+// Oyi Communications Convergence, production activation -- PERSON/
+// RELATIONSHIP != INDIVIDUAL OPPORTUNITY. The Lead row is one person's
+// relationship record and is correctly reused/patched across repeat
+// submissions (findOrUpsertLead, above); it must never become the
+// permanent storage for a SPECIFIC property's evidence, or a later,
+// unrelated submission from the same person would silently overwrite
+// an earlier open Opportunity's own facts. Each Development/JV
+// Opportunity instead carries its own evidence in its own metadata,
+// scoped to the one submission that created it -- only fields this
+// intake envelope genuinely carries are included (never invented from
+// prose); everything else stays honestly absent, same discipline as
+// backend-events.js's buildDevelopmentEvidence().
+function buildOpportunityDevelopmentEvidence(envelope) {
+  const payload = envelope.payload || {};
+  const evidence = {
+    opportunity_type: normalizeText(envelope.inquiry_type || envelope.organization.type) || undefined,
+    location: normalizeText(envelope.organization.location) || undefined,
+    land_size: normalizeText(payload.approx_land_size || payload.property_size || payload.land_size) || undefined,
+    commercial_terms: normalizeText(payload.premium_expectation || payload.commercial_terms || payload.budget_range) || undefined,
+    timeline: normalizeText(payload.expected_timeline || payload.timeline) || undefined,
+    scale_units: Number.isFinite(Number(envelope.organization.unit_count)) && Number(envelope.organization.unit_count) > 0
+      ? Number(envelope.organization.unit_count)
+      : undefined,
+    source_channel: normalizeText(envelope.source_channel) || undefined,
+    decision_maker_status: normalizeText(payload.decision_maker_status) || undefined,
+  };
+  return Object.fromEntries(Object.entries(evidence).filter(([, value]) => value !== undefined));
+}
+
 // Runs the full canonical-CRM side of a website intake: Contact identity
 // (deduped by email), Organization when real company info was given,
 // Opportunity when the business logic actually justifies one, a
@@ -330,6 +359,12 @@ async function runOfficeIntakeCrm(store, envelope, lead, context) {
         pipeline: envelope.business_unit,
         stage: "intake_received",
         source: envelope.source_site,
+        // This Opportunity's OWN evidence, scoped to this one submission
+        // — never the person's Lead record, which a later, unrelated
+        // submission from the same person would otherwise overwrite.
+        metadata: envelope.business_unit === "development"
+          ? { development: buildOpportunityDevelopmentEvidence(envelope) }
+          : undefined,
       }),
       context
     );

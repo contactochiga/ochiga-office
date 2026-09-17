@@ -3948,6 +3948,7 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           envelope,
           timelineEvent,
           requestId: ctx.requestId,
+          opportunity: crm?.opportunity || null,
         });
         const backendEventResult = await publishBackendMaterialEvent(config, materialEvent);
         if (!backendEventResult.ok && !backendEventResult.skipped) {
