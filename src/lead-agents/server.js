@@ -2,6 +2,7 @@ require("dotenv").config();
 require("dotenv").config({ path: ".env.lead-agents.local", override: true });
 const http = require("http");
 const path = require("path");
+const fs = require("fs");
 const crypto = require("crypto");
 const axios = require("axios");
 const { createConfig } = require("./config");
@@ -2256,7 +2257,14 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
         // material-event path (Office never reads that response body),
         // so it needs its own outbound call, mirroring this same
         // Backend->Office bridge WhatsAppAdapter already established.
-        pathname === "/api/lead-agents/admin/communications/handoff-request";
+        pathname === "/api/lead-agents/admin/communications/handoff-request" ||
+        // Wave 9 Slice 1 -- Core's own real knowledge retrieval contract
+        // (officeKnowledgeBridge.ts) reads Office's raw knowledge/ pack
+        // through this route. Read-only; Office remains the sole physical
+        // owner of the files, Backend owns all classification/governance
+        // (see Ochiga-backend's officeKnowledgeManifest.ts) -- this route
+        // never interprets file content, it only serves it.
+        pathname === "/api/lead-agents/admin/knowledge-pack";
 
       if (
         pathname !== "/healthz" &&
@@ -2424,8 +2432,11 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
       }
 
       if (isBackendBridgePath) {
-        if (req.method !== "POST") {
-          methodNotAllowed(res, "POST");
+        // Wave 9 Slice 1 -- the knowledge-pack route is read-only (GET);
+        // every other bridge route remains POST-only, unchanged.
+        const isKnowledgePackPath = pathname === "/api/lead-agents/admin/knowledge-pack";
+        if (req.method !== "POST" && !(isKnowledgePackPath && req.method === "GET")) {
+          methodNotAllowed(res, isKnowledgePackPath ? "GET" : "POST");
           return;
         }
         const expectedKey = config.officeBackendApiKey;
@@ -2434,6 +2445,32 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
         ).trim();
         if (!expectedKey || !providedKey || !secureCompare(providedKey, expectedKey)) {
           json(res, 401, { error: "unauthorized" }, { "x-request-id": ctx.requestId });
+          return;
+        }
+
+        if (isKnowledgePackPath) {
+          // Read-only, no interpretation: lists knowledge/*.md (top-level
+          // files only -- no subdirectories, no path traversal possible
+          // since there is no caller-supplied path input anywhere in this
+          // handler) and returns raw filename/content/mtime. Office never
+          // classifies or filters this content -- see Ochiga-backend's
+          // officeKnowledgeManifest.ts for where that governance lives.
+          try {
+            const knowledgeDir = path.join(__dirname, "..", "..", "knowledge");
+            const entries = fs.readdirSync(knowledgeDir, { withFileTypes: true });
+            const files = [];
+            for (const entry of entries) {
+              if (!entry.isFile() || !entry.name.toLowerCase().endsWith(".md")) continue;
+              const fullPath = path.join(knowledgeDir, entry.name);
+              const content = fs.readFileSync(fullPath, "utf8");
+              const stat = fs.statSync(fullPath);
+              files.push({ filename: entry.name, content, updated_at: stat.mtime.toISOString() });
+            }
+            json(res, 200, { ok: true, files }, { "x-request-id": ctx.requestId });
+          } catch (error) {
+            log("error", "knowledge_pack.read_failed", { request_id: ctx.requestId, error: error?.message || String(error) });
+            json(res, 500, { ok: false, error: "knowledge_pack_read_failed" }, { "x-request-id": ctx.requestId });
+          }
           return;
         }
 
