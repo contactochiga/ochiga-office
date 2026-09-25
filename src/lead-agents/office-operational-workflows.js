@@ -23,7 +23,48 @@ const FIELD_POLICY = Object.freeze({
   // workflow this generic PATCH's status-transition gate can govern, and
   // it was never editable before this change either.
   documents: ["title", "folder_id", "related_type", "related_id", "body"],
+  // Wave 8 Slice 4 prerequisite -- listed here for read-side consistency
+  // (findCorporateRecord/listCorporateRecords) only. Opportunity stage
+  // is NEVER reachable through updateOperationalRecord/sanitizePatch/
+  // STATUS_TRANSITIONS -- no route wires "opportunities" into either of
+  // the two generic PATCH-by-id regexes in server.js. Opportunity
+  // transitions have their own dedicated, CAS-safe, evidence-gated
+  // authority (transitionOpportunity(), below) because the generic
+  // mutation pattern here has no CAS precondition at all (a real,
+  // disclosed limitation of the existing pattern -- see the prerequisite
+  // audit's own section 11) and Opportunity stage is the one field in
+  // this codebase a later Backend evaluator will treat as factual
+  // evidence, not merely an internal bookkeeping field.
+  opportunities: ["stage", "status", "owner", "business_unit", "metadata"],
 });
+
+// Wave 8 Slice 4 prerequisite -- the smallest real Ochiga Opportunity
+// lifecycle, derived from PIPELINE_STAGES' own existing literal set
+// (commercial-ops.js) rather than an invented Salesforce-shaped one.
+// "intake_received" is crm_opportunities.stage's own real DB default
+// (office-operating-system.js's normalizeCorporateRecord) and is kept as
+// the sole entry point so existing/historical opportunity rows are never
+// silently reclassified. "lost" is reachable from every non-terminal
+// stage (a pursuit can end at any point); "won"/"lost" are terminal --
+// zero outgoing edges, enforced by transitionOpportunity() below.
+const OPPORTUNITY_STAGE_TRANSITIONS = Object.freeze({
+  intake_received: ["contacted", "qualified", "discovery_scheduled", "site_visit_scheduled", "proposal_sent", "lost"],
+  contacted: ["qualified", "discovery_scheduled", "site_visit_scheduled", "proposal_sent", "lost"],
+  qualified: ["discovery_scheduled", "site_visit_scheduled", "proposal_sent", "negotiation", "lost"],
+  discovery_scheduled: ["site_visit_scheduled", "proposal_sent", "negotiation", "lost"],
+  site_visit_scheduled: ["proposal_sent", "negotiation", "lost"],
+  proposal_sent: ["negotiation", "commercial_approved", "won", "lost"],
+  negotiation: ["commercial_approved", "won", "lost"],
+  commercial_approved: ["won", "lost"],
+  won: [],
+  lost: [],
+});
+
+function statusForOpportunityStage(stage) {
+  if (stage === "won") return "closed_won";
+  if (stage === "lost") return "closed_lost";
+  return "open";
+}
 
 const STATUS_TRANSITIONS = Object.freeze({
   tasks: {
@@ -396,6 +437,159 @@ function allowedActions(collection, record) {
 function allowedStatusTransitions(collection, record = {}) {
   const current = normalizeStatus(collection, record.review_status || record.status || defaultReviewStatus(collection));
   return STATUS_TRANSITIONS[collection]?.[current] || [];
+}
+
+// Bounded, PK-indexed lookup -- deliberately NOT findCorporateRecord
+// (which, for any collection other than leads/proposals/documents/
+// reports, fetches the ENTIRE table via listCorporateRecords and filters
+// in JS). Opportunity transitions read this twice per call (once before
+// the CAS write, once inside the idempotency check's own activity scan)
+// and must stay a fixed number of indexed round-trips regardless of how
+// many opportunities exist.
+async function findOpportunityRecord(store, id) {
+  if (!id) return null;
+  if (store?.state) {
+    return (store.state.crm_opportunities || []).find((item) => String(item.id) === String(id)) || null;
+  }
+  if (store?.client) {
+    const response = await store.client.get(`/crm_opportunities?id=eq.${encodeURIComponent(id)}&limit=1`);
+    return Array.isArray(response.data) ? response.data[0] || null : null;
+  }
+  return null;
+}
+
+// Idempotency (Section 8): the SAME evidence (evidence_type + evidence_id)
+// previously applied to reach the SAME target_stage for this Opportunity
+// is a no-op replay -- returns the activity that already recorded it,
+// never writes a second one. Scoped narrowly (activity_type +
+// related_type=opportunity + related_id + evidence identity + target
+// stage) so it can never falsely match an unrelated activity.
+async function findExistingOpportunityTransitionActivity(store, opportunityId, evidenceType, evidenceId, targetStage) {
+  if (!evidenceId) return null;
+  const rows = await listCorporateRecords(store, "activities");
+  return (
+    rows.find(
+      (activity) =>
+        activity.activity_type === "opportunity_stage_changed" &&
+        activity.related_type === "opportunity" &&
+        String(activity.related_id) === String(opportunityId) &&
+        String((activity.metadata || {}).evidence_type || "") === String(evidenceType || "") &&
+        String((activity.metadata || {}).evidence_id || "") === String(evidenceId) &&
+        (activity.metadata || {}).target_stage === targetStage
+    ) || null
+  );
+}
+
+// Wave 8 Slice 4 prerequisite -- the ONE Opportunity transition
+// authority (prerequisite audit, section 6/18). Every property the audit
+// required:
+//  - Office-owned: server-side only, gated by crm.manage, no Backend
+//    write path exists or is created by this function.
+//  - CAS-safe (section 7): the real write (store.client branch) is
+//    conditioned on `stage=eq.<currentStage>` in the same request that
+//    sets the new stage -- a concurrent contradictory transition's own
+//    UPDATE targets the same precondition and gets zero rows back,
+//    never a silent overwrite. This is a deliberate improvement over
+//    updateOperationalRecord's own PATCH-by-id-only pattern (which has
+//    no CAS precondition at all -- disclosed limitation, prerequisite
+//    audit section 11), not a copy of it.
+//  - Idempotent (section 8): see findExistingOpportunityTransitionActivity.
+//  - Evidence-backed (section 9): evidenceType/evidenceId are required
+//    parameters, not optional -- there is no code path in this function
+//    that can transition a stage without them.
+//  - Auditable (section 10): exactly one crm_activities row per genuinely
+//    applied transition, opportunity_id-scoped, reusing the same
+//    createCorporateRecord("activities", ...) primitive every other
+//    collection's own activity trail already uses.
+//  - Multi-opportunity-safe (section 12/15): keyed by opportunityId only
+//    -- never leadId, never an inference from it.
+//  - Terminal-state-safe (section 19): OPPORTUNITY_STAGE_TRANSITIONS has
+//    zero outgoing edges from won/lost -- a delayed/stale event arriving
+//    after a terminal stage is rejected (`terminal_stage_protected`),
+//    never reopens or regresses it.
+async function transitionOpportunity(store, input = {}, context = {}) {
+  const opportunityId = text(input.opportunityId);
+  const targetStage = text(input.targetStage).toLowerCase();
+  const expectedStage = text(input.expectedStage).toLowerCase();
+  const evidenceType = text(input.evidenceType);
+  const evidenceId = text(input.evidenceId);
+  const actorEmail = text(context.actorEmail, "office");
+
+  if (!opportunityId) throw errorWithStatus("opportunity_id_required", 400);
+  if (!targetStage) throw errorWithStatus("target_stage_required", 400);
+  if (!evidenceType || !evidenceId) throw errorWithStatus("transition_evidence_required", 400);
+
+  const current = await findOpportunityRecord(store, opportunityId);
+  if (!current) throw errorWithStatus("opportunity_not_found", 404);
+
+  const existingActivity = await findExistingOpportunityTransitionActivity(store, opportunityId, evidenceType, evidenceId, targetStage);
+  if (existingActivity) {
+    return { opportunity: current, activity: existingActivity, applied: false, reason: "idempotent_replay" };
+  }
+
+  const currentStage = text(current.stage, "intake_received").toLowerCase();
+  const allowedTargets = OPPORTUNITY_STAGE_TRANSITIONS[currentStage] || [];
+  if (!allowedTargets.length) {
+    return { opportunity: current, activity: null, applied: false, reason: "terminal_stage_protected" };
+  }
+  if (expectedStage && expectedStage !== currentStage) {
+    return { opportunity: current, activity: null, applied: false, reason: "stale_expected_stage" };
+  }
+  if (!allowedTargets.includes(targetStage)) {
+    throw errorWithStatus("invalid_opportunity_stage_transition", 400);
+  }
+
+  const patch = { stage: targetStage, status: statusForOpportunityStage(targetStage), updated_at: nowIso() };
+
+  let record;
+  if (store?.client) {
+    const response = await store.client.patch(
+      `/crm_opportunities?id=eq.${encodeURIComponent(opportunityId)}&stage=eq.${encodeURIComponent(currentStage)}`,
+      patch,
+      { headers: store.selectHeaders ? store.selectHeaders() : undefined }
+    );
+    const rows = Array.isArray(response.data) ? response.data : [];
+    if (!rows.length) {
+      return { opportunity: current, activity: null, applied: false, reason: "concurrent_transition_conflict" };
+    }
+    record = rows[0];
+  } else if (store?.state) {
+    const list = store.state.crm_opportunities || [];
+    const index = list.findIndex((item) => String(item.id) === String(opportunityId));
+    if (index < 0) throw errorWithStatus("opportunity_not_found", 404);
+    if (String(list[index].stage || "intake_received").toLowerCase() !== currentStage) {
+      return { opportunity: current, activity: null, applied: false, reason: "concurrent_transition_conflict" };
+    }
+    list[index] = { ...list[index], ...patch };
+    record = list[index];
+    if (store.persist) await store.persist();
+  } else {
+    record = { ...current, ...patch };
+  }
+
+  const activity = await createCorporateRecord(
+    store,
+    "activities",
+    {
+      activity_type: "opportunity_stage_changed",
+      title: "Opportunity stage changed",
+      body: `${currentStage} → ${targetStage}`,
+      related_type: "opportunity",
+      related_id: opportunityId,
+      opportunity_id: opportunityId,
+      business_unit: record.business_unit,
+      actor: actorEmail,
+      metadata: {
+        previous_stage: currentStage,
+        target_stage: targetStage,
+        evidence_type: evidenceType,
+        evidence_id: evidenceId,
+      },
+    },
+    { actorEmail }
+  );
+
+  return { opportunity: record, activity, applied: true, reason: "applied" };
 }
 
 async function createRelatedActivity(store, input = {}, context = {}) {
@@ -773,12 +967,14 @@ async function updateHandoff(store, authContext, handoffId, action, input = {}) 
 module.exports = {
   FIELD_POLICY,
   STATUS_TRANSITIONS,
+  OPPORTUNITY_STAGE_TRANSITIONS,
   canCreateActivityForRelatedObject,
   createOrUpdateHandoff,
   createRelatedActivity,
   deleteCorporateRecord,
   findActiveHandoffForLead,
   findCorporateRecord,
+  findOpportunityRecord,
   listHandoffQueue,
   listRelatedActivities,
   persistCorporateRecord,
@@ -786,6 +982,8 @@ module.exports = {
   resolveEligibleStaffCapabilities,
   resolveExistingOwnerForLead,
   safeHandoffProjection,
+  statusForOpportunityStage,
+  transitionOpportunity,
   updateHandoff,
   updateOperationalRecord,
   validateOperationalRelationships,

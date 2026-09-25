@@ -299,6 +299,12 @@ class SupabaseLeadAgentsStore {
       "/proposals",
       {
         lead_id: input.lead_id,
+        // Wave 8 Slice 4 prerequisite -- explicit only, never inferred
+        // from lead_id (a lead can have several simultaneous
+        // Opportunities; guessing among them would be dishonest). NULL
+        // is the correct, honest value when the caller doesn't know
+        // which Opportunity this proposal concerns.
+        opportunity_id: input.opportunity_id || null,
         title: input.title,
         tier_name: input.tier_name || "",
         unit_count: input.unit_count === undefined ? null : input.unit_count,

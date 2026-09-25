@@ -446,6 +446,10 @@ class FileLeadAgentsStore {
     const proposal = {
       id: crypto.randomUUID(),
       lead_id: input.lead_id,
+      // Wave 8 Slice 4 prerequisite -- see the matching comment in
+      // store-supabase.js's own createProposal(): explicit only, never
+      // inferred from lead_id.
+      opportunity_id: input.opportunity_id || null,
       title: input.title || "Proposal",
       tier_name: input.tier_name || "",
       unit_count:
