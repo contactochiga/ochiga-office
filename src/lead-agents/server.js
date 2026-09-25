@@ -78,10 +78,12 @@ const {
   createRelatedActivity,
   deleteCorporateRecord,
   findCorporateRecord,
+  findOpportunityRecord,
   listHandoffQueue,
   listRelatedActivities,
   persistCorporateRecord,
   requestHandoffForLead,
+  transitionOpportunity,
   updateHandoff,
   updateOperationalRecord,
   validateOperationalRelationships,
@@ -179,6 +181,22 @@ function requireObject(body, name) {
     const error = new Error(`${name} must be an object`);
     error.statusCode = 400;
     throw error;
+  }
+}
+
+// Wave 8 Slice 4 prerequisite -- the Opportunity transition authority is
+// wired into three EXISTING Lead-scoped routes as a purely additive side
+// effect. An Opportunity-side rejection (an invalid stage transition,
+// e.g. a caller marking "commercial_approved" before "proposal_sent" was
+// ever reached) must never fail the underlying Lead write these routes
+// already perform -- that write is the one this task explicitly requires
+// to keep working unchanged (Section 14). Failures here are surfaced in
+// the response's own opportunity_transition field, not thrown.
+async function safeTransitionOpportunity(store, input, context) {
+  try {
+    return await transitionOpportunity(store, input, context);
+  } catch (error) {
+    return { opportunity: null, activity: null, applied: false, reason: "error", error: error.message };
   }
 }
 
@@ -4185,7 +4203,28 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
               next_action: qualification.recommended_next_action,
             });
         await appendAudit(store, authContext, "lead_qualified", "lead", lead.id, qualification);
-        json(res, 200, { lead: updated, qualification }, { "x-request-id": ctx.requestId });
+        // Wave 8 Slice 4 prerequisite (Section 16) -- only when the
+        // caller explicitly names a real Opportunity AND this call
+        // actually produced a "qualified" outcome (never guessed among
+        // this lead's possibly-several opportunities; legacy Lead-only
+        // behavior above is completely unaffected either way). Evidence
+        // identity is this specific HTTP request's own id -- a real,
+        // stable identity for THIS write, though it does not (and is not
+        // claimed to) dedupe genuinely separate re-qualification calls
+        // for the same lead/opportunity over time -- disclosed limitation,
+        // see the implementation doc's Section 10.
+        let opportunityTransition = null;
+        if (body.opportunity_id && qualification.qualification_status === "qualified") {
+          const opportunityRecord = await findOpportunityRecord(store, String(body.opportunity_id));
+          if (opportunityRecord) {
+            opportunityTransition = await safeTransitionOpportunity(
+              store,
+              { opportunityId: opportunityRecord.id, targetStage: "qualified", evidenceType: "qualification_completed", evidenceId: ctx.requestId },
+              { actorEmail: authContext?.email || "office" }
+            );
+          }
+        }
+        json(res, 200, { lead: updated, qualification, opportunity_transition: opportunityTransition }, { "x-request-id": ctx.requestId });
         return;
       }
 
@@ -4268,7 +4307,32 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           approved: body.approved !== false,
           notes: body.notes || "",
         });
-        json(res, 200, { lead: updatedLead }, { "x-request-id": ctx.requestId });
+        // Wave 8 Slice 4 prerequisite (Section 17) -- same treatment as
+        // qualification (Section 16): only when the caller explicitly
+        // names a real Opportunity, no fuzzy resolution among a lead's
+        // possibly-several opportunities. body.approved === false targets
+        // "negotiation" (an unblocking step, not a loss); true targets
+        // "commercial_approved" -- both real OPPORTUNITY_STAGE_TRANSITIONS
+        // edges, but only reachable from proposal_sent/negotiation, so a
+        // premature approval call honestly fails (safeTransitionOpportunity
+        // reports it, never breaks the Lead write above).
+        let opportunityTransition = null;
+        if (body.opportunity_id) {
+          const opportunityRecord = await findOpportunityRecord(store, String(body.opportunity_id));
+          if (opportunityRecord) {
+            opportunityTransition = await safeTransitionOpportunity(
+              store,
+              {
+                opportunityId: opportunityRecord.id,
+                targetStage: body.approved === false ? "negotiation" : "commercial_approved",
+                evidenceType: "commercial_approval",
+                evidenceId: ctx.requestId,
+              },
+              { actorEmail: authContext?.email || "office" }
+            );
+          }
+        }
+        json(res, 200, { lead: updatedLead, opportunity_transition: opportunityTransition }, { "x-request-id": ctx.requestId });
         return;
       }
 
@@ -4567,8 +4631,25 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
             painPoints: body.pain_points || lead.pain_points || lead.summary,
             timeline: body.timeline || lead.timeline,
           });
+          // Wave 8 Slice 4 prerequisite -- explicit only (Section 11):
+          // opportunity_id is accepted from the caller's own request
+          // body, never inferred from leadId (a lead can have several
+          // simultaneous Opportunities -- guessing among them would be
+          // dishonest). Validated against a real row when supplied so a
+          // typo/stale id can't silently create an orphaned reference.
+          let opportunityId = null;
+          if (body.opportunity_id) {
+            const opportunityRecord = await findOpportunityRecord(store, String(body.opportunity_id));
+            if (!opportunityRecord) {
+              const error = new Error("opportunity_not_found");
+              error.statusCode = 404;
+              throw error;
+            }
+            opportunityId = opportunityRecord.id;
+          }
           const proposal = await store.createProposal({
             lead_id: leadId,
+            opportunity_id: opportunityId,
             ...proposalPayload,
             status: body.status || "draft",
             actor: authContext?.email || "system",
@@ -4608,7 +4689,32 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
             tier_name: proposal.tier_name,
             status: proposal.status,
           });
-          json(res, 201, { proposal, lead: updatedLead }, { "x-request-id": ctx.requestId });
+          // Wave 8 Slice 4 prerequisite -- additive alongside the
+          // existing Lead-level write above (Section 14: preserve Lead
+          // compatibility, never remove it). Only fires when this
+          // proposal is explicitly linked to a real Opportunity (Section
+          // 12/16) -- never inferred, never applied to "the lead's
+          // opportunities" as a group. "sent"/"accepted"/"declined" are
+          // the same three proposal states the EXISTING Lead-level write
+          // above already treats as real business events; "declined" ->
+          // "lost" mirrors that exact existing judgment (lost_reason:
+          // "proposal_declined" above), not an invented new semantic
+          // (Section 13).
+          let opportunityTransition = null;
+          if (opportunityId && ["sent", "accepted", "declined"].includes(proposalStatus)) {
+            const targetStage = proposalStatus === "accepted" ? "won" : proposalStatus === "declined" ? "lost" : "proposal_sent";
+            opportunityTransition = await safeTransitionOpportunity(
+              store,
+              {
+                opportunityId,
+                targetStage,
+                evidenceType: `proposal_${proposalStatus}`,
+                evidenceId: proposal.id,
+              },
+              { actorEmail: authContext?.email || "office" }
+            );
+          }
+          json(res, 201, { proposal, lead: updatedLead, opportunity_transition: opportunityTransition }, { "x-request-id": ctx.requestId });
           return;
         }
         methodNotAllowed(res, "GET,POST");

@@ -25,6 +25,8 @@
     "office:contract-hardening:test": "node scripts/test-office-contract-hardening.js",
     "office:rate-limit:test": "node scripts/test-office-rate-limit.js",
     "office:operational-mutations:test": "node scripts/test-office-operational-mutations.js",
+    "office:opportunity-outcome-authority:test": "node scripts/test-office-opportunity-outcome-authority.js",
+    "office:opportunity-outcome-authority-sql:test": "node scripts/test-office-opportunity-outcome-authority-sql.js",
     "office:operating-system:test": "node scripts/test-office-operating-system.js",
     "office:team-settings-audit:test": "node scripts/test-office-team-settings-audit.js",
     "office:staff-onboarding:test": "node scripts/test-staff-onboarding.js",
