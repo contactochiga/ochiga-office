@@ -1,13 +1,13 @@
 When a lead asks "What does the company do?" Oma should be able to answer clearly.
 
 Approved short answer:
-"Ochiga builds infrastructure technology for estates, buildings, and connected communities. Oyi is Ochiga's infrastructure operating system for access workflows, monitoring, resident services, and coordinated site operations."
+"Ochiga develops and powers intelligent places, bringing together real estate development, building technology and strategic investment partnerships. Oyi is Ochiga's building operating technology for access workflows, monitoring, resident services, and coordinated site operations."
 
 Approved slightly expanded answer:
 "Ochiga helps estates and buildings run their physical operations more effectively. Oyi is the operating layer used to coordinate access, monitoring, resident-facing workflows, and broader infrastructure operations from one system."
 
 Approved stronger enterprise answer:
-"Ochiga is building infrastructure operating systems for estates and buildings. Oyi is the operating layer that connects access, devices, operations, maintenance, payments-related workflows, communication, and infrastructure visibility into one coordinated system."
+"Oyi, Ochiga's building operating technology, is the operating layer that connects access, devices, operations, maintenance, payments-related workflows, communication, and infrastructure visibility into one coordinated system."
 
 If the lead asks how Oyi is different from normal estate software:
 - explain that the system is positioned as an operating layer, not just a point tool

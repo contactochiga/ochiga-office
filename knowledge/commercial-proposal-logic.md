@@ -1,8 +1,10 @@
 # Oyi Commercial Proposal Logic
 
-Use the locked positioning:
+Proposal headline (commercial shorthand):
 
 Oyi by Ochiga — The Operating System For Modern Buildings.
+
+This headline is product/proposal shorthand. It does not replace the institutional definition: Oyi is Ochiga's building operating technology, the software and intelligence layer that helps estates and buildings run after they are built (Backend `backend:corporate-oyi`). Never use it to describe Ochiga the company.
 
 Do not frame proposals around software features alone. Structure every proposal around:
 

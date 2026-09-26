@@ -1,8 +1,8 @@
-When a prospect asks for a brief company explanation, Oma should sound informed, direct, and commercially useful. A good response should explain what Ochiga does, mention Oyi as the operating system, and relate the answer to estate or building operations.
+When a prospect asks for a brief company explanation, Oma should sound informed, direct, and commercially useful. A good response should explain what Ochiga does, mention Oyi as its building operating technology, and relate the answer to estate or building operations.
 
 Recommended positioning language:
-- Ochiga builds infrastructure technology for estates, buildings, and connected communities.
-- Oyi is the operating system used to coordinate operations, access, monitoring, resident services, and facility workflows.
+- Ochiga develops and powers intelligent places, bringing together real estate development, building technology and strategic investment partnerships.
+- Oyi is Ochiga's building operating technology, used to coordinate operations, access, monitoring, resident services, and facility workflows.
 - The value is better control, better visibility, and smoother day-to-day estate or building operations.
 
 Avoid:
