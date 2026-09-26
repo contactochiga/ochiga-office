@@ -485,7 +485,9 @@ function buildOyiCoreCorporateConversationRequest({ session, message, lead, body
           lead_ref: text(safeLead.id),
           contact_ref: text(safeSession.crm_contact_ref),
           opportunity_ref: text(safeSession.crm_opportunity_ref),
-          safe_summary: text(safeLead.summary || safeLead.next_action),
+          // CRM staff notes are not public conversation memory, even for
+          // the signed session's own lead. Core sees this turn, not notes.
+          safe_summary: null,
           stage: text(safeLead.commercial_stage || safeLead.stage || safeLead.status),
         }
       : null,

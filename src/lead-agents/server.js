@@ -23,6 +23,7 @@ const {
   verifyPassword,
 } = require("./auth");
 const { MemoryRateLimiter } = require("./rate-limit");
+const { issuePublicSession, publicRequestIdentity } = require("./public-session-authority");
 const { PATCH_FIELDS, normalizeEmail, normalizeLeadInput, normalizeText } = require("./normalize-lead");
 const {
   findExistingIntakeLead,
@@ -1696,15 +1697,9 @@ async function ensurePublicFallbackLead(store, body) {
       : null;
   const patch = extractPublicLeadPatch(body.message);
 
-  const existingByEmail =
-    !existing && body.profile?.email && store.findLeadByEmail
-      ? await store.findLeadByEmail(body.profile.email)
-      : null;
-  const existingByPhone =
-    !existing && !existingByEmail && body.profile?.phone && store.findLeadByPhone
-      ? await store.findLeadByPhone(body.profile.phone)
-      : null;
-  const matchedLead = existing || existingByEmail || existingByPhone;
+  // Unverified email/phone is not CRM ownership. This body has passed
+  // publicRequestIdentity and only a signed session can supply lead_id.
+  const matchedLead = existing;
 
   if (matchedLead) {
     return store.updateLead(matchedLead.id, {
@@ -3298,7 +3293,7 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           return;
         }
 
-        const body = await readJsonBody(req, 32 * 1024);
+        const body = publicRequestIdentity(config, await readJsonBody(req, 32 * 1024));
         const session = buildPublicIntelligenceSession({
           ...body,
           source_site: body.source_site || body.source || config.defaultLeadSource,
@@ -3313,7 +3308,7 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
         }, req);
         json(res, 201, {
           ok: true,
-          session,
+          session: { ...session, session_token: issuePublicSession(config, session, body.lead_id) },
           public_identity: session.public_identity,
           oyi_core_request: buildOyiCoreCorporateRequest(session, body.message || ""),
         }, { "x-request-id": ctx.requestId });
@@ -3609,7 +3604,7 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           return;
         }
 
-        const body = await readJsonBody(req);
+        const body = publicRequestIdentity(config, await readJsonBody(req));
         if (body.website || body.company_url === "http://") {
           json(res, 400, { error: "request_rejected" });
           return;
@@ -3648,6 +3643,7 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
         await appendAudit(store, { userId: null, email: "", role: "guest" }, "oyi_core.public_command.received", "public_widget", body.lead_id || session.session_id, { source: body.source || config.defaultLeadSource, prompt_excerpt: body.message.slice(0, 240), agent_role: session.active_agent_role, business_unit: session.business_unit }, req);
 
         const lead = await ensurePublicFallbackLead(store, body);
+        session.session_token = issuePublicSession(config, session, lead.id);
         const oyiCoreRequest = buildOyiCoreCorporateConversationRequest({
           session,
           message: body.message,
@@ -3680,14 +3676,14 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           json(res, 503, {
             error: "oyi_core_unavailable",
             message: "Ochiga Intelligence is temporarily unavailable. Your enquiry context is saved in Office, but I cannot continue the conversation right now.",
-            lead,
+            lead: { id: lead.id },
             public_intelligence: {
               session: {
                 ...session,
                 known_contact: Boolean(lead.id),
                 crm_contact_ref: lead.id ? "office_lead_record" : null,
               },
-              oyi_core_request: oyiCoreRequest,
+              oyi_core_request: { request_id: ctx.requestId, public_session_id: session.session_id },
             },
             degraded: true,
             intelligence_available: false,
@@ -3724,13 +3720,13 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
 
         const result = {
           agent: session.active_agent_role === "osa" ? "sales_agent" : "marketing_agent",
-          lead: finalLead,
+          lead: { id: finalLead.id },
           trace_id: ctx.requestId,
           lead_memory: null,
           knowledge_hits: Array.isArray(oyiCoreResponse.knowledge_references) ? oyiCoreResponse.knowledge_references : [],
           assistant_message: oyiCoreResponse.answer || "",
           tools: governedTools.results,
-          conversations: await store.listConversationsForLead(finalLead.id, config.maxConversationMessages),
+          conversations: [], // CRM history may contain staff-private notes.
           oyi_core: {
             ok: true,
             canonical: Boolean(oyiCoreResponse.canonical),
@@ -3747,11 +3743,12 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
             session: {
               ...session,
               conversation_thread_id: oyiCoreResponse.conversation_thread_id || session.conversation_thread_id,
+              session_token: issuePublicSession(config, { ...session, conversation_thread_id: oyiCoreResponse.conversation_thread_id || session.conversation_thread_id }, finalLead.id),
               active_agent_role: oyiCoreResponse.recommended_internal_role || session.active_agent_role,
               known_contact: Boolean(result.lead?.id),
               crm_contact_ref: result.lead?.id ? "office_lead_record" : null,
             },
-            oyi_core_request: oyiCoreRequest,
+            oyi_core_request: { request_id: ctx.requestId, public_session_id: session.session_id },
             oyi_core_response: {
               conversation_thread_id: oyiCoreResponse.conversation_thread_id || "",
               understood_intent: oyiCoreResponse.understood_intent || "",

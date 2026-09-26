@@ -19,6 +19,7 @@
   const source = (script && script.dataset.source) || "website_widget";
   const storageKey = "oyi_widget_lead_id";
   const legacyStorageKey = "oma_widget_lead_id";
+  const sessionTokenKey = "oyi_widget_session_token_v1";
 
   let isOpen = false;
   let isSending = false;
@@ -1346,6 +1347,7 @@
       },
       body: JSON.stringify({
         lead_id: leadIdOverride || undefined,
+        session_token: window.localStorage.getItem(sessionTokenKey) || undefined,
         source,
         message: text,
         profile: {
@@ -1370,6 +1372,9 @@
       data = {};
     }
 
+    const returnedToken = data.public_intelligence?.session?.session_token;
+    if (returnedToken) window.localStorage.setItem(sessionTokenKey, returnedToken);
+    if (response.status === 401) window.localStorage.removeItem(sessionTokenKey);
     if (!response.ok) {
       const err = new Error(data.error || "Unable to reach Oyi right now.");
       err.status = response.status;
