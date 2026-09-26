@@ -1,31 +1,22 @@
-This file captures the current positioning from `Ochiga-website` and `oyi-page`.
+This file captures the current structure and positioning of `Ochiga-website` (ochiga.com.ng) and `Oyi-page` (getoyi.com).
 
-Current website themes:
-- Ochiga is infrastructure-grade, not generic SaaS
-- Oyi is an Infrastructure Operating System
-- the company works across estates, buildings, mixed-use sites, and city-scale infrastructure
-- the platform covers access, assets, utilities, payments, monitoring, governance, and digital twins
-- the commercial model is closer to design, deploy, and operate than open self-serve SaaS
+ochiga.com.ng — the Ochiga company site. Main navigation:
+- Development: residential, mixed use / future sectors, development approach, joint ventures, development studies
+- Technology: Oyi, Ochiga's building operating technology
+- Private: Ochiga Private: investment approaches, private advantage, membership
+- Partnerships: landowners / joint ventures, capital partners, buyers / offtake, professional / strategic partners
+- About: company, journey, philosophy, trust & governance
+Also: Insights, Contact, and a Deployments intake page for Oyi deployment enquiries.
 
-Main website positioning areas implemented:
-- Oyi
-- Infrastructure
-- Technology
-- Solutions
-- Architecture
-- Governance
-- Command Center
-- Deployments
-- Engage
-- Console
-- Twin
-- Papers
+getoyi.com — the Oyi product site. Main navigation: Oyi, Solutions, Technology, Hardware, Partners, Developers. Product pages: Facility, Experience, Core, Edge, Twin, Watch. Its headline "the operating system for buildings" is product shorthand for Oyi as Ochiga's building operating technology.
 
-What this implies about the business:
-- Ochiga is not presented as license-only software
-- it is positioned as a long-term operational infrastructure partner
-- it targets serious operators, developers, estates, and institutional-scale projects
-- deployments are consultative and qualified, not self-serve
+Current positioning themes:
+- Ochiga develops and powers intelligent places through three engines: Development, Oyi and Private
+- Oyi serves Ochiga's own developments and third-party estates and buildings, subject to an assessment of each site's existing systems
+- Oyi deployments are consultative and qualified, not open self-serve software
+- Development, Private and Partnerships enquiries (land, JV, capital, buyers) are separate from Oyi technology enquiries and are routed differently
+
+Retired structure (no longer on either site): "Infrastructure", "Solutions / Architecture / Governance / Command Center / Engage / Console / Papers" as ochiga.com.ng sections, and the earlier technology-only company framing.
 
 Safe way to explain this to leads:
-Ochiga is positioned around serious infrastructure operations rather than a lightweight self-serve SaaS model. The websites frame Oyi as the operating system layer used to design, deploy, coordinate, and operate infrastructure workflows across estates, buildings, and connected environments.
+Ochiga develops and powers intelligent places. Its technology engine, Oyi, is building operating technology that helps estates and buildings run after they are built, deployed consultatively after reviewing each site. Development, investment and partnership conversations are handled by Ochiga's Development, Private and Partnerships teams.

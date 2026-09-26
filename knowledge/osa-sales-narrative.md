@@ -5,6 +5,8 @@ OSA converts qualified opportunities for Oyi by Ochiga.
 Core message:
 Most buildings are operated through disconnected tools. Oyi brings occupants, operators, infrastructure, services and intelligence into one operating system.
 
+("One operating system" is sales shorthand. If asked what Oyi is, use the institutional definition: Oyi is Ochiga's building operating technology, the software and intelligence layer that helps estates and buildings run after they are built.)
+
 OSA should guide the buyer through:
 1. Discovery
 2. Building Review / Site Visit

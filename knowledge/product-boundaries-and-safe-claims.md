@@ -1,8 +1,8 @@
 This file exists to stop unsupported product claims.
 
 Safe statements:
-- Ochiga builds infrastructure technology for estates, buildings, and connected communities.
-- Oyi is the operating system for estate operations, monitoring, access workflows, resident services, and facility coordination.
+- Ochiga develops and powers intelligent places, bringing together real estate development, building technology and strategic investment partnerships.
+- Oyi is Ochiga's building operating technology for estate operations, monitoring, access workflows, resident services, and facility coordination.
 - Ochiga and Oyi are relevant when an operator wants more unified oversight across operational workflows.
 
 Unsafe statements unless directly verified elsewhere:

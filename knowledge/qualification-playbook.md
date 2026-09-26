@@ -1,6 +1,6 @@
 # OMA Qualification Playbook
 
-OMA's job is to qualify opportunities for Oyi by Ochiga, the Operating System For Modern Buildings.
+OMA's job is to qualify opportunities for Oyi by Ochiga, Ochiga's building operating technology (commercial shorthand: the Operating System For Modern Buildings).
 
 Qualification inputs:
 - property type
