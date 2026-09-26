@@ -20,7 +20,7 @@ async function main() {
   const server = buildServer({ config, store, rateLimiter: new MemoryRateLimiter({ windowMs: 60_000, maxRequests: 100 }), whatsappAdapter: {}, openaiClient: {}, toolExecutor: {} });
   await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
   try {
-    for (const path of ["/api/plan-studio/projects", "/api/plan-studio/project?id=private-project"]) {
+    for (const path of ["/api/plan-studio/projects", "/api/plan-studio/project?id=private-project", "/api/lead-agents/leads/private-lead/memory"]) {
       const response = await fetch(`http://127.0.0.1:${server.address().port}${path}`);
       assert.equal(response.status, 401, path);
       assert.doesNotMatch(await response.text(), /image_data_url/);
@@ -28,6 +28,6 @@ async function main() {
   } finally {
     await new Promise(resolve => server.close(resolve));
   }
-  console.log("PASS Wave 9: staff spoofing rejected; unauthenticated plan metadata/media denied");
+  console.log("PASS Wave 9: staff spoofing rejected; unauthenticated plan metadata/media and CRM memory denied");
 }
 main().catch(error => { console.error(error); process.exitCode = 1; });
