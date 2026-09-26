@@ -2198,9 +2198,7 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
       const isPublicPlanStudioPath =
         pathname === "/plan-studio" ||
         pathname === "/plan-studio/" ||
-        pathname === "/plan-studio/app.js" ||
-        (pathname === "/api/plan-studio/projects" && req.method === "GET") ||
-        (pathname === "/api/plan-studio/project" && req.method === "GET");
+        pathname === "/plan-studio/app.js";
       const isPublicDashboardPath =
         pathname === "/dashboard" ||
         pathname === "/dashboard/" ||
@@ -3439,6 +3437,7 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
 
       if (pathname === "/api/plan-studio/projects") {
         if (req.method === "GET") {
+          authorizePermission(authContext, "planstudio.read");
           const projects = await planStudioRuntime.listProjects();
           json(res, 200, { projects }, { "x-request-id": ctx.requestId });
           return;
@@ -3467,6 +3466,7 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           methodNotAllowed(res, "GET");
           return;
         }
+        authorizePermission(authContext, "planstudio.read");
         const url = new URL(req.url, "http://localhost");
         const projectId = url.searchParams.get("id");
         if (!projectId) {
