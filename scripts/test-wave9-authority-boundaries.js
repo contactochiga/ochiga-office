@@ -4,6 +4,7 @@ const { buildServer } = require("../src/lead-agents/server");
 const { MemoryRateLimiter } = require("../src/lead-agents/rate-limit");
 const { createTempStore } = require("../src/lead-agents/testing");
 const { buildOyiCoreOfficeInternalRequest } = require("../src/lead-agents/oyi-core-gateway");
+const { createAdminSessionToken } = require("../src/lead-agents/auth");
 
 async function main() {
   const { store } = await createTempStore();
@@ -24,6 +25,17 @@ async function main() {
       const response = await fetch(`http://127.0.0.1:${server.address().port}${path}`);
       assert.equal(response.status, 401, path);
       assert.doesNotMatch(await response.text(), /image_data_url/);
+    }
+    store.getLead = async id => ({ id, owner: "actual-staff" });
+    store.getAdminUserByEmail = async email => ({ id: email.split("@")[0], email, role: "ochiga_staff", status: "active", permission_scopes: [] });
+    store.getLeadMemory = async id => ({ lead_id: id, updated_at: new Date().toISOString(), known_fields: { project_type: "residential", email: "private@example.invalid" }, last_summary: "staff-private-note" });
+    for (const [id, status] of [["actual-staff", 200], ["other-staff", 403]]) {
+      const token = createAdminSessionToken({ id, email: `${id}@example.invalid`, role: "ochiga_staff" }, config);
+      const response = await fetch(`http://127.0.0.1:${server.address().port}/api/lead-agents/leads/private-lead/memory`, { headers: { cookie: `${config.sessionCookieName}=${token}` } });
+      assert.equal(response.status, status);
+      const body = await response.text();
+      assert.doesNotMatch(body, /private@example.invalid|staff-private-note/);
+      if (status === 200) assert.match(body, /residential/);
     }
   } finally {
     await new Promise(resolve => server.close(resolve));

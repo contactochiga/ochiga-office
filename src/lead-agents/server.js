@@ -106,6 +106,7 @@ const { createPlanStudioRuntime } = require("./plan-studio");
 const { createOfficeSyncService } = require("./office-sync");
 const { appendAuditRecord } = require("./audit");
 const { PERMISSION_KEYS, ROLE_PERMISSIONS, hasPermission } = require("./permissions");
+const { recallCrmMemory } = require("./crm-memory-access");
 const { createRealtimeHub } = require("./realtime");
 const { createStorageService } = require("./storage");
 const {
@@ -4028,8 +4029,7 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           methodNotAllowed(res, "GET");
           return;
         }
-        authorizePermission(authContext, "view_dashboard");
-        const memory = await store.getLeadMemory(memoryMatch[1]);
+        const memory = await recallCrmMemory({ store, actor: authContext, leadId: memoryMatch[1] });
         json(res, 200, { memory }, { "x-request-id": ctx.requestId });
         return;
       }
