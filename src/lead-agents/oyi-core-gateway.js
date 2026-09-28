@@ -552,6 +552,7 @@ async function buildOyiCoreOfficeInternalRequest({ authContext, message, body, r
     partnership_context: recordOf(safeBody.partnership_context),
     document_context: recordOf(safeBody.document_context),
     content_context: recordOf(safeBody.content_context),
+    plan_review_context: recordOf(safeBody.plan_review_context),
     // Office Intelligence Convergence, Wave 3 -- mirrors every other
     // *_context slot's exact passthrough pattern. office.js has no JV
     // evidence UI/selection concept yet (no opportunity-detail page to

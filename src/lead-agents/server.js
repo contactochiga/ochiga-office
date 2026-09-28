@@ -1390,89 +1390,35 @@ async function enhancePlanStudioGeometry({ openaiClient, config, imageDataUrl, h
   return structured;
 }
 
-function fallbackPlanStudioReply(project, question) {
-  const geometry = project.analysis?.geometry || {};
-  const summary = project.analysis?.summary || {};
-  const zones = Array.isArray(geometry.zones) ? geometry.zones : [];
-  const openings = Array.isArray(geometry.openings) ? geometry.openings : [];
-  const pathways = Array.isArray(geometry.pathways) ? geometry.pathways : [];
-  const importantZones = zones
-    .slice(0, 6)
-    .map((zone) => `${zone.label} (${zone.kind})`)
-    .join(", ");
-  const prompt = String(question || "").toLowerCase();
-
-  if (prompt.includes("opportunit") || prompt.includes("smart")) {
-    return [
-      `This plan currently exposes ${summary.cctv || 0} CCTV points, ${summary.access_points || 0} access points, ${summary.sensors || 0} sensors, and ${summary.power_outlets || 0} power outlets in the draft smart layer.`,
-      `The strongest smart-building opportunities are access control around the detected entry/core zones, CCTV on circulation junctions, occupancy-driven lighting, and structured network/PoE along the ${pathways.length} detected path${pathways.length === 1 ? "" : "s"}.`,
-      importantZones ? `The main parsed spaces are ${importantZones}.` : "",
-    ]
-      .filter(Boolean)
-      .join(" ");
-  }
-
-  if (prompt.includes("decision")) {
-    return [
-      `The next design decisions are to validate room names, confirm the ${openings.length} detected opening${openings.length === 1 ? "" : "s"}, approve corridor/core geometry, and decide which smart layers should be prioritized first for the project.`,
-      `After that, the team should lock device density for security, electrical, fire safety, HVAC, and network disciplines.`,
-    ].join(" ");
-  }
-
-  return [
-    `This uploaded plan has been parsed into ${zones.length} space zone${zones.length === 1 ? "" : "s"}, ${pathways.length} circulation path${pathways.length === 1 ? "" : "s"}, and ${openings.length} opening${openings.length === 1 ? "" : "s"}.`,
-    importantZones ? `The main detected spaces are ${importantZones}.` : "",
-    `The current smart-infrastructure draft suggests ${summary.cctv || 0} CCTV points, ${summary.access_points || 0} access points, ${summary.sensors || 0} sensors, and ${summary.power_outlets || 0} power outlets.`,
-  ]
-    .filter(Boolean)
-    .join(" ");
-}
-
-async function answerPlanStudioQuestion({ openaiClient, config, project, question }) {
-  const fallback = fallbackPlanStudioReply(project, question);
-  try {
-    const response = await openaiClient.createResponse({
-      model: config.openaiModel,
-      input: [
-        {
-          role: "system",
-          content: [
-            {
-              type: "input_text",
-              text:
-                "You are an expert smart-building planning agent. Explain plans in plain English, identify spaces, call out geometry uncertainty, and recommend realistic smart infrastructure layers. Keep answers concise but concrete.",
-            },
-          ],
-        },
-        {
-          role: "user",
-          content: [
-            {
-              type: "input_text",
-              text: [
-                `Project: ${project.name}`,
-                `Question: ${question}`,
-                `Geometry: ${JSON.stringify(project.analysis?.geometry || {})}`,
-                `Summary: ${JSON.stringify(project.analysis?.summary || {})}`,
-                `Recommendations: ${JSON.stringify(project.analysis?.recommendations || [])}`,
-                `Discipline reviews: ${JSON.stringify(project.discipline_reviews || {})}`,
-              ].join("\n"),
-            },
-            project.image_data_url
-              ? {
-                  type: "input_image",
-                  image_url: project.image_data_url,
-                  detail: "high",
-                }
-              : null,
-          ].filter(Boolean),
-        },
-      ],
-    });
-    return extractTextFromResponse(response) || fallback;
-  } catch (error) {
-    return fallback;
-  }
+async function answerPlanStudioQuestion({ config, project, question, authContext, store, requestId }) {
+  // Plan Studio owns its project record and deterministic geometry, but Core
+  // owns the cross-domain planning/reasoning response. Do not substitute a
+  // local model or deterministic answer when the governed Core is unavailable.
+  const request = await buildOyiCoreOfficeInternalRequest({
+    authContext,
+    message: question,
+    body: {
+      request_id: requestId,
+      requested_capability: "office.plan_studio.review",
+      page_context: { page: "plan-studio", selected_type: "plan_project", selected_id: project.id },
+      plan_review_context: {
+        project_id: project.id,
+        name: project.name,
+        updated_at: project.updated_at || project.updatedAt || null,
+        zones: Array.isArray(project.analysis?.geometry?.zones) ? project.analysis.geometry.zones : [],
+        pathway_count: Array.isArray(project.analysis?.geometry?.pathways) ? project.analysis.geometry.pathways.length : null,
+        opening_count: Array.isArray(project.analysis?.geometry?.openings) ? project.analysis.geometry.openings.length : null,
+        draft_counts: project.analysis?.summary || {},
+      },
+      metadata: { surface: "office_internal", plan_studio: true },
+    },
+    requestId,
+    store,
+    config,
+  });
+  const result = await callOyiCoreOfficeInternalConversation(config, request);
+  if (!result.ok) return { ok: false, reason: result.reason || "oyi_core_unavailable", status: result.status || 503 };
+  return { ok: true, reply: String(result.response?.answer || "") };
 }
 
 async function buildChannelOverview(store, config) {
@@ -3542,13 +3488,19 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           notFound(res);
           return;
         }
-        const reply = await answerPlanStudioQuestion({
-          openaiClient,
+        const planAnswer = await answerPlanStudioQuestion({
           config,
           project,
           question: body.question,
+          authContext,
+          store,
+          requestId: ctx.requestId,
         });
-        json(res, 200, { reply }, { "x-request-id": ctx.requestId });
+        if (!planAnswer.ok) {
+          json(res, 503, { error: "oyi_core_unavailable", message: "Oyi Core could not answer this planning question right now.", reason: planAnswer.reason }, { "x-request-id": ctx.requestId });
+          return;
+        }
+        json(res, 200, { reply: planAnswer.reply, canonical: true }, { "x-request-id": ctx.requestId });
         return;
       }
 

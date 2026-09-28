@@ -3,12 +3,10 @@
 // and its exclusively-owned helpers were retired after static
 // caller/import/script tracing proved zero production callers. This test
 // makes it hard to accidentally recreate a second Office intelligence
-// brain: live CRM/lead conversation routes must keep delegating to
-// Backend Oyi Core via oyi-core-gateway.js, and the retired files must
-// not come back. Plan Studio's own OpenAI usage and the Office-local
-// Digital Twin are explicitly untouched by this guard -- neither is
-// CRM/lead reasoning, and both remain legitimate, separately-tracked AI
-// surfaces.
+// brain: live CRM/lead and Plan Studio reasoning routes must keep
+// delegating to Backend Oyi Core via oyi-core-gateway.js, and the retired
+// files must not come back. Plan Studio's bounded image-geometry parser and
+// the Office-local Digital Twin remain domain tools, not response authorities.
 const assert = require("assert/strict");
 const fs = require("fs");
 const path = require("path");
@@ -28,6 +26,24 @@ assert.ok(
 assert.ok(
   serverSource.includes("callOyiCoreCorporateConversation"),
   "the public corporate chat route must delegate to Oyi Core"
+);
+const planStudioAnswer = serverSource.match(/async function answerPlanStudioQuestion[\s\S]*?\n}\n\nasync function buildChannelOverview/);
+assert.ok(planStudioAnswer, "Plan Studio agent response helper must remain identifiable for its Core-authority guard");
+assert.ok(
+  planStudioAnswer[0].includes("callOyiCoreOfficeInternalConversation"),
+  "Plan Studio planning responses must delegate to the authenticated Oyi Core office-internal transport"
+);
+assert.ok(
+  planStudioAnswer[0].includes('requested_capability: "office.plan_studio.review"'),
+  "Plan Studio must request the registered Core plan-review capability"
+);
+assert.ok(
+  planStudioAnswer[0].includes("plan_review_context"),
+  "Plan Studio must pass the bounded Core plan-review evidence projection"
+);
+assert.ok(
+  !planStudioAnswer[0].includes("openaiClient.createResponse"),
+  "Plan Studio must not locally generate planning responses with a provider client"
 );
 
 // --- Negative: no local LLM reasoning runtime for CRM/lead intelligence.
@@ -57,10 +73,8 @@ for (const retired of [
   );
 }
 
-// --- Scope check: this guard is specific to Office CRM/lead intelligence.
-// Plan Studio's own OpenAI usage and the Office-local Digital Twin
-// (presentation/demo only, separately convergence-tracked) are
-// legitimate and must remain unaffected.
+// --- Scope check: the bounded geometry parser and Office-local Digital Twin
+// remain domain tools. They are not permitted to become local answer engines.
 assert.ok(
   fs.existsSync(path.join(root, "src/lead-agents/plan-studio.js")),
   "Plan Studio remains a separate, legitimate AI surface -- not retired by this guard"
@@ -71,5 +85,5 @@ assert.ok(
 );
 
 console.log(
-  "office intelligence architecture guard: PASS (CRM/lead conversation delegates to Oyi Core; no local reasoning runtime; Plan Studio and Digital Twin unaffected)"
+  "office intelligence architecture guard: PASS (Office CRM/lead and Plan Studio responses delegate to Oyi Core; no local reasoning runtime)"
 );
