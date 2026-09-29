@@ -23,6 +23,7 @@ const {
   verifyPassword,
 } = require("./auth");
 const { MemoryRateLimiter } = require("./rate-limit");
+const { issuePublicSession, publicRequestIdentity } = require("./public-session-authority");
 const { PATCH_FIELDS, normalizeEmail, normalizeLeadInput, normalizeText } = require("./normalize-lead");
 const {
   findExistingIntakeLead,
@@ -105,6 +106,7 @@ const { createPlanStudioRuntime } = require("./plan-studio");
 const { createOfficeSyncService } = require("./office-sync");
 const { appendAuditRecord } = require("./audit");
 const { PERMISSION_KEYS, ROLE_PERMISSIONS, hasPermission } = require("./permissions");
+const { recallCrmMemory } = require("./crm-memory-access");
 const { createRealtimeHub } = require("./realtime");
 const { createStorageService } = require("./storage");
 const {
@@ -1390,90 +1392,6 @@ async function enhancePlanStudioGeometry({ openaiClient, config, imageDataUrl, h
   return structured;
 }
 
-function fallbackPlanStudioReply(project, question) {
-  const geometry = project.analysis?.geometry || {};
-  const summary = project.analysis?.summary || {};
-  const zones = Array.isArray(geometry.zones) ? geometry.zones : [];
-  const openings = Array.isArray(geometry.openings) ? geometry.openings : [];
-  const pathways = Array.isArray(geometry.pathways) ? geometry.pathways : [];
-  const importantZones = zones
-    .slice(0, 6)
-    .map((zone) => `${zone.label} (${zone.kind})`)
-    .join(", ");
-  const prompt = String(question || "").toLowerCase();
-
-  if (prompt.includes("opportunit") || prompt.includes("smart")) {
-    return [
-      `This plan currently exposes ${summary.cctv || 0} CCTV points, ${summary.access_points || 0} access points, ${summary.sensors || 0} sensors, and ${summary.power_outlets || 0} power outlets in the draft smart layer.`,
-      `The strongest smart-building opportunities are access control around the detected entry/core zones, CCTV on circulation junctions, occupancy-driven lighting, and structured network/PoE along the ${pathways.length} detected path${pathways.length === 1 ? "" : "s"}.`,
-      importantZones ? `The main parsed spaces are ${importantZones}.` : "",
-    ]
-      .filter(Boolean)
-      .join(" ");
-  }
-
-  if (prompt.includes("decision")) {
-    return [
-      `The next design decisions are to validate room names, confirm the ${openings.length} detected opening${openings.length === 1 ? "" : "s"}, approve corridor/core geometry, and decide which smart layers should be prioritized first for the project.`,
-      `After that, the team should lock device density for security, electrical, fire safety, HVAC, and network disciplines.`,
-    ].join(" ");
-  }
-
-  return [
-    `This uploaded plan has been parsed into ${zones.length} space zone${zones.length === 1 ? "" : "s"}, ${pathways.length} circulation path${pathways.length === 1 ? "" : "s"}, and ${openings.length} opening${openings.length === 1 ? "" : "s"}.`,
-    importantZones ? `The main detected spaces are ${importantZones}.` : "",
-    `The current smart-infrastructure draft suggests ${summary.cctv || 0} CCTV points, ${summary.access_points || 0} access points, ${summary.sensors || 0} sensors, and ${summary.power_outlets || 0} power outlets.`,
-  ]
-    .filter(Boolean)
-    .join(" ");
-}
-
-async function answerPlanStudioQuestion({ openaiClient, config, project, question }) {
-  const fallback = fallbackPlanStudioReply(project, question);
-  try {
-    const response = await openaiClient.createResponse({
-      model: config.openaiModel,
-      input: [
-        {
-          role: "system",
-          content: [
-            {
-              type: "input_text",
-              text:
-                "You are an expert smart-building planning agent. Explain plans in plain English, identify spaces, call out geometry uncertainty, and recommend realistic smart infrastructure layers. Keep answers concise but concrete.",
-            },
-          ],
-        },
-        {
-          role: "user",
-          content: [
-            {
-              type: "input_text",
-              text: [
-                `Project: ${project.name}`,
-                `Question: ${question}`,
-                `Geometry: ${JSON.stringify(project.analysis?.geometry || {})}`,
-                `Summary: ${JSON.stringify(project.analysis?.summary || {})}`,
-                `Recommendations: ${JSON.stringify(project.analysis?.recommendations || [])}`,
-                `Discipline reviews: ${JSON.stringify(project.discipline_reviews || {})}`,
-              ].join("\n"),
-            },
-            project.image_data_url
-              ? {
-                  type: "input_image",
-                  image_url: project.image_data_url,
-                  detail: "high",
-                }
-              : null,
-          ].filter(Boolean),
-        },
-      ],
-    });
-    return extractTextFromResponse(response) || fallback;
-  } catch (error) {
-    return fallback;
-  }
-}
 
 async function buildChannelOverview(store, config) {
   const [leads, notifications] = await Promise.all([
@@ -1696,15 +1614,9 @@ async function ensurePublicFallbackLead(store, body) {
       : null;
   const patch = extractPublicLeadPatch(body.message);
 
-  const existingByEmail =
-    !existing && body.profile?.email && store.findLeadByEmail
-      ? await store.findLeadByEmail(body.profile.email)
-      : null;
-  const existingByPhone =
-    !existing && !existingByEmail && body.profile?.phone && store.findLeadByPhone
-      ? await store.findLeadByPhone(body.profile.phone)
-      : null;
-  const matchedLead = existing || existingByEmail || existingByPhone;
+  // Unverified email/phone is not CRM ownership. This body has passed
+  // publicRequestIdentity and only a signed session can supply lead_id.
+  const matchedLead = existing;
 
   if (matchedLead) {
     return store.updateLead(matchedLead.id, {
@@ -2198,9 +2110,7 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
       const isPublicPlanStudioPath =
         pathname === "/plan-studio" ||
         pathname === "/plan-studio/" ||
-        pathname === "/plan-studio/app.js" ||
-        (pathname === "/api/plan-studio/projects" && req.method === "GET") ||
-        (pathname === "/api/plan-studio/project" && req.method === "GET");
+        pathname === "/plan-studio/app.js";
       const isPublicDashboardPath =
         pathname === "/dashboard" ||
         pathname === "/dashboard/" ||
@@ -3300,7 +3210,7 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           return;
         }
 
-        const body = await readJsonBody(req, 32 * 1024);
+        const body = publicRequestIdentity(config, await readJsonBody(req, 32 * 1024));
         const session = buildPublicIntelligenceSession({
           ...body,
           source_site: body.source_site || body.source || config.defaultLeadSource,
@@ -3315,7 +3225,7 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
         }, req);
         json(res, 201, {
           ok: true,
-          session,
+          session: { ...session, session_token: issuePublicSession(config, session, body.lead_id) },
           public_identity: session.public_identity,
           oyi_core_request: buildOyiCoreCorporateRequest(session, body.message || ""),
         }, { "x-request-id": ctx.requestId });
@@ -3439,6 +3349,7 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
 
       if (pathname === "/api/plan-studio/projects") {
         if (req.method === "GET") {
+          authorizePermission(authContext, "planstudio.read");
           const projects = await planStudioRuntime.listProjects();
           json(res, 200, { projects }, { "x-request-id": ctx.requestId });
           return;
@@ -3467,6 +3378,7 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           methodNotAllowed(res, "GET");
           return;
         }
+        authorizePermission(authContext, "planstudio.read");
         const url = new URL(req.url, "http://localhost");
         const projectId = url.searchParams.get("id");
         if (!projectId) {
@@ -3542,13 +3454,29 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           notFound(res);
           return;
         }
-        const reply = await answerPlanStudioQuestion({
-          openaiClient,
-          config,
-          project,
-          question: body.question,
+        const coreRequest = await buildOyiCoreOfficeInternalRequest({
+          authContext, message: String(body.question).slice(0, 2000),
+          body: {}, requestId: ctx.requestId, config,
         });
-        json(res, 200, { reply }, { "x-request-id": ctx.requestId });
+        const geometry = project.analysis?.geometry || {};
+        // Only this authenticated server-loaded project path supplies plan
+        // evidence. The generic chat proxy does not forward a browser slot.
+        coreRequest.plan_review_context = {
+          project_id: project.id, name: project.name, updated_at: project.updated_at || null,
+          zones: (Array.isArray(geometry.zones) ? geometry.zones : []).slice(0, 80).map(zone => ({ label: zone.label, kind: zone.kind })),
+          pathway_count: Array.isArray(geometry.pathways) ? geometry.pathways.length : null,
+          opening_count: Array.isArray(geometry.openings) ? geometry.openings.length : null,
+          draft_counts: Object.fromEntries(["cctv", "access_points", "sensors", "power_outlets"].map(key => [key, project.analysis?.summary?.[key]])),
+        };
+        const result = await callOyiCoreOfficeInternalConversation(config, coreRequest);
+        const acknowledgement = result.response?.safe_metadata?.plan_review;
+        if (!result.ok || !result.response?.answer || acknowledgement?.version !== 1
+          || acknowledgement.capability !== "office.plan_studio.review"
+          || acknowledgement.result !== "answered" || acknowledgement.advisory_only !== true) {
+          json(res, 503, { error: "oyi_core_unavailable", reply: "Oyi Core plan review is unavailable. No local assessment was generated." });
+          return;
+        }
+        json(res, 200, { reply: result.response.answer, intelligence_authority: "ochiga-backend", advisory_only: true }, { "x-request-id": ctx.requestId });
         return;
       }
 
@@ -3609,7 +3537,7 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           return;
         }
 
-        const body = await readJsonBody(req);
+        const body = publicRequestIdentity(config, await readJsonBody(req));
         if (body.website || body.company_url === "http://") {
           json(res, 400, { error: "request_rejected" });
           return;
@@ -3648,6 +3576,7 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
         await appendAudit(store, { userId: null, email: "", role: "guest" }, "oyi_core.public_command.received", "public_widget", body.lead_id || session.session_id, { source: body.source || config.defaultLeadSource, prompt_excerpt: body.message.slice(0, 240), agent_role: session.active_agent_role, business_unit: session.business_unit }, req);
 
         const lead = await ensurePublicFallbackLead(store, body);
+        session.session_token = issuePublicSession(config, session, lead.id);
         const oyiCoreRequest = buildOyiCoreCorporateConversationRequest({
           session,
           message: body.message,
@@ -3680,14 +3609,14 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           json(res, 503, {
             error: "oyi_core_unavailable",
             message: "Ochiga Intelligence is temporarily unavailable. Your enquiry context is saved in Office, but I cannot continue the conversation right now.",
-            lead,
+            lead: { id: lead.id },
             public_intelligence: {
               session: {
                 ...session,
                 known_contact: Boolean(lead.id),
                 crm_contact_ref: lead.id ? "office_lead_record" : null,
               },
-              oyi_core_request: oyiCoreRequest,
+              oyi_core_request: { request_id: ctx.requestId, public_session_id: session.session_id },
             },
             degraded: true,
             intelligence_available: false,
@@ -3724,13 +3653,13 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
 
         const result = {
           agent: session.active_agent_role === "osa" ? "sales_agent" : "marketing_agent",
-          lead: finalLead,
+          lead: { id: finalLead.id },
           trace_id: ctx.requestId,
           lead_memory: null,
           knowledge_hits: Array.isArray(oyiCoreResponse.knowledge_references) ? oyiCoreResponse.knowledge_references : [],
           assistant_message: oyiCoreResponse.answer || "",
           tools: governedTools.results,
-          conversations: await store.listConversationsForLead(finalLead.id, config.maxConversationMessages),
+          conversations: [], // CRM history may contain staff-private notes.
           oyi_core: {
             ok: true,
             canonical: Boolean(oyiCoreResponse.canonical),
@@ -3747,11 +3676,12 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
             session: {
               ...session,
               conversation_thread_id: oyiCoreResponse.conversation_thread_id || session.conversation_thread_id,
+              session_token: issuePublicSession(config, { ...session, conversation_thread_id: oyiCoreResponse.conversation_thread_id || session.conversation_thread_id }, finalLead.id),
               active_agent_role: oyiCoreResponse.recommended_internal_role || session.active_agent_role,
               known_contact: Boolean(result.lead?.id),
               crm_contact_ref: result.lead?.id ? "office_lead_record" : null,
             },
-            oyi_core_request: oyiCoreRequest,
+            oyi_core_request: { request_id: ctx.requestId, public_session_id: session.session_id },
             oyi_core_response: {
               conversation_thread_id: oyiCoreResponse.conversation_thread_id || "",
               understood_intent: oyiCoreResponse.understood_intent || "",
@@ -4099,8 +4029,7 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           methodNotAllowed(res, "GET");
           return;
         }
-        authorizePermission(authContext, "view_dashboard");
-        const memory = await store.getLeadMemory(memoryMatch[1]);
+        const memory = await recallCrmMemory({ store, actor: authContext, leadId: memoryMatch[1] });
         json(res, 200, { memory }, { "x-request-id": ctx.requestId });
         return;
       }

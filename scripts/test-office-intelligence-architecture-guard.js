@@ -5,10 +5,8 @@
 // makes it hard to accidentally recreate a second Office intelligence
 // brain: live CRM/lead conversation routes must keep delegating to
 // Backend Oyi Core via oyi-core-gateway.js, and the retired files must
-// not come back. Plan Studio's own OpenAI usage and the Office-local
-// Digital Twin are explicitly untouched by this guard -- neither is
-// CRM/lead reasoning, and both remain legitimate, separately-tracked AI
-// surfaces.
+// not come back. Wave 9 also converges Plan Studio advisory reasoning;
+// bounded image extraction and deterministic Twin simulation remain hosts.
 const assert = require("assert/strict");
 const fs = require("fs");
 const path = require("path");
@@ -57,13 +55,14 @@ for (const retired of [
   );
 }
 
-// --- Scope check: this guard is specific to Office CRM/lead intelligence.
-// Plan Studio's own OpenAI usage and the Office-local Digital Twin
-// (presentation/demo only, separately convergence-tracked) are
-// legitimate and must remain unaffected.
+assert.ok(!serverSource.includes("answerPlanStudioQuestion"), "Plan Studio must not retain a local reasoning function");
+const planRoute = serverSource.slice(serverSource.indexOf('pathname === "/api/plan-studio/agent"'), serverSource.indexOf('pathname === "/api/plan-studio/discipline"'));
+assert.ok(planRoute.includes("callOyiCoreOfficeInternalConversation"));
+assert.ok(!planRoute.includes("createResponse"));
+// Deterministic geometry and simulation are not competing intelligence.
 assert.ok(
   fs.existsSync(path.join(root, "src/lead-agents/plan-studio.js")),
-  "Plan Studio remains a separate, legitimate AI surface -- not retired by this guard"
+  "Plan Studio domain geometry/storage remains a legitimate host"
 );
 assert.ok(
   fs.existsSync(path.join(root, "src/lead-agents/digital-twin.js")),
@@ -71,5 +70,5 @@ assert.ok(
 );
 
 console.log(
-  "office intelligence architecture guard: PASS (CRM/lead conversation delegates to Oyi Core; no local reasoning runtime; Plan Studio and Digital Twin unaffected)"
+  "office intelligence architecture guard: PASS (CRM and Plan Studio reasoning delegate to Core; geometry and simulation remain host-owned)"
 );

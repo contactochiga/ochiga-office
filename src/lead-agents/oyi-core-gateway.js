@@ -485,7 +485,9 @@ function buildOyiCoreCorporateConversationRequest({ session, message, lead, body
           lead_ref: text(safeLead.id),
           contact_ref: text(safeSession.crm_contact_ref),
           opportunity_ref: text(safeSession.crm_opportunity_ref),
-          safe_summary: text(safeLead.summary || safeLead.next_action),
+          // CRM staff notes are not public conversation memory, even for
+          // the signed session's own lead. Core sees this turn, not notes.
+          safe_summary: null,
           stage: text(safeLead.commercial_stage || safeLead.stage || safeLead.status),
         }
       : null,
@@ -507,7 +509,6 @@ function buildOyiCoreCorporateConversationRequest({ session, message, lead, body
 async function buildOyiCoreOfficeInternalRequest({ authContext, message, body, requestId, store, config, onStage } = {}) {
   const safeBody = recordOf(body);
   const page = recordOf(safeBody.page_context);
-  const staff = recordOf(safeBody.staff);
   const operationalSnapshot = await buildOperationalSnapshot({ authContext, store, config, message, onStage });
   return {
     request_id: text(requestId || safeBody.request_id),
@@ -515,14 +516,12 @@ async function buildOyiCoreOfficeInternalRequest({ authContext, message, body, r
     office_session_id: text(safeBody.office_session_id || safeBody.session_id || `office_session_${requestId || Date.now()}`),
     conversation_thread_id: text(safeBody.conversation_thread_id || safeBody.thread_id),
     staff: {
-      staff_id: text(staff.staff_id || staff.id || authContext?.userId),
-      email: text(staff.email || authContext?.email),
-      role: text(staff.role || authContext?.role || "ochiga_staff"),
-      permissions: Array.isArray(staff.permissions)
-        ? staff.permissions
-        : Array.isArray(authContext?.permissions)
-        ? authContext.permissions
-        : [],
+      // Browser context is not an identity or permission grant. The Office
+      // authentication boundary is the sole authority for the bridge actor.
+      staff_id: text(authContext?.userId),
+      email: text(authContext?.email),
+      role: text(authContext?.role || "ochiga_staff"),
+      permissions: Array.isArray(authContext?.permissions) ? authContext.permissions : [],
     },
     page_context: {
       page: text(page.page || safeBody.page),
