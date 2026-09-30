@@ -204,6 +204,10 @@ function createConfig() {
       process.env.OFFICE_INTELLIGENCE_DECISIONS_PATH || "/office/intelligence/decisions",
     officeIntelligenceActionsPath:
       process.env.OFFICE_INTELLIGENCE_ACTIONS_PATH || "/office/intelligence/actions",
+    // Intelligence System Visibility, Slice 5 — Governed Knowledge. Same
+    // safety boundary as the Slice 1-4 paths above.
+    officeIntelligenceKnowledgePath:
+      process.env.OFFICE_INTELLIGENCE_KNOWLEDGE_PATH || "/office/intelligence/knowledge",
     // Oyi Runtime Contract, Domain 3 (Task) — additive projection of the
     // 4 genuine overlapping commercial workflow types into Backend's
     // ochiga_workflows. Default ON, but a single env flag disables the

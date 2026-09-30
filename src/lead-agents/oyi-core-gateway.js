@@ -984,6 +984,25 @@ async function callOyiCoreIntelligenceActionDetail(config = {}, actionId, option
   return callOyiCoreIntelligenceGet(config, `${basePath}/${encodeURIComponent(String(actionId || ""))}`, options);
 }
 
+// Intelligence System Visibility, Slice 5 — Governed Knowledge. The list
+// call forwards only Backend's own known filter/pagination params (never
+// an arbitrary caller-supplied query string).
+const KNOWLEDGE_QUERY_KEYS = ["domain", "authority_class", "audience", "freshness", "claim_boundary", "worker", "page", "page_size"];
+async function callOyiCoreIntelligenceKnowledge(config = {}, query = {}, options = {}) {
+  const basePath = config.officeIntelligenceKnowledgePath || "/office/intelligence/knowledge";
+  const params = new URLSearchParams();
+  for (const key of KNOWLEDGE_QUERY_KEYS) {
+    const values = Array.isArray(query[key]) ? query[key] : query[key] != null && query[key] !== "" ? [query[key]] : [];
+    values.forEach((value) => params.append(key, String(value)));
+  }
+  const qs = params.toString();
+  return callOyiCoreIntelligenceGet(config, qs ? `${basePath}?${qs}` : basePath, options);
+}
+async function callOyiCoreIntelligenceKnowledgeDetail(config = {}, canonicalKey, options = {}) {
+  const basePath = config.officeIntelligenceKnowledgePath || "/office/intelligence/knowledge";
+  return callOyiCoreIntelligenceGet(config, `${basePath}/${encodeURIComponent(String(canonicalKey || ""))}`, options);
+}
+
 // Oyi Runtime Contract, Domain 3 (Task) — Backend's additive
 // office-backend-intelligence-events projection into ochiga_workflows.
 // Same credential/timeout convention as every other Backend call here.
@@ -1137,6 +1156,8 @@ module.exports = {
   callOyiCoreIntelligenceDecisionDetail,
   callOyiCoreIntelligenceActions,
   callOyiCoreIntelligenceActionDetail,
+  callOyiCoreIntelligenceKnowledge,
+  callOyiCoreIntelligenceKnowledgeDetail,
   callOyiCoreCreateWorkflow,
   callOyiCoreTransitionWorkflow,
   callOyiCoreListAutomations,

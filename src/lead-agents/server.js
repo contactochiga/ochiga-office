@@ -60,6 +60,8 @@ const {
   callOyiCoreIntelligenceDecisionDetail,
   callOyiCoreIntelligenceActions,
   callOyiCoreIntelligenceActionDetail,
+  callOyiCoreIntelligenceKnowledge,
+  callOyiCoreIntelligenceKnowledgeDetail,
   callOyiCoreListAutomations,
   callOyiCoreGetAutomation,
   callOyiCoreCreateAutomation,
@@ -5287,6 +5289,51 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
         // finds no real colon at all, 400ing as "Invalid action id".
         const actionId = decodeURIComponent(pathname.slice("/api/lead-agents/admin/intelligence/actions/".length));
         const result = await callOyiCoreIntelligenceActionDetail(config, actionId);
+        json(
+          res,
+          result.ok ? 200 : (result.status === 404 ? 404 : 200),
+          result.ok
+            ? { ...result.data, available: true }
+            : { ok: false, available: false, reason: result.reason || "unavailable" },
+          { "x-request-id": ctx.requestId }
+        );
+        return;
+      }
+
+      // Intelligence System Visibility, Slice 5 -- Governed Knowledge. Same
+      // "view_traces" gate and honest-degradation shape as Slice 4 above.
+      // Canonical keys are colon-joined ("office:<stem>"), so the detail
+      // key is decodeURIComponent()-ed first -- same double-encoding fix
+      // as the Slice 4 action-detail route.
+      if (pathname === "/api/lead-agents/admin/intelligence/knowledge") {
+        if (req.method !== "GET") {
+          methodNotAllowed(res, "GET");
+          return;
+        }
+        authorizePermission(authContext, "view_traces");
+        const knowledgeUrl = new URL(req.url, "http://localhost");
+        const query = {};
+        for (const key of new Set(knowledgeUrl.searchParams.keys())) query[key] = knowledgeUrl.searchParams.getAll(key);
+        const result = await callOyiCoreIntelligenceKnowledge(config, query);
+        json(
+          res,
+          200,
+          result.ok
+            ? { ...result.data, available: true }
+            : { ok: false, available: false, reason: result.reason || "unavailable" },
+          { "x-request-id": ctx.requestId }
+        );
+        return;
+      }
+
+      if (pathname.startsWith("/api/lead-agents/admin/intelligence/knowledge/")) {
+        if (req.method !== "GET") {
+          methodNotAllowed(res, "GET");
+          return;
+        }
+        authorizePermission(authContext, "view_traces");
+        const canonicalKey = decodeURIComponent(pathname.slice("/api/lead-agents/admin/intelligence/knowledge/".length));
+        const result = await callOyiCoreIntelligenceKnowledgeDetail(config, canonicalKey);
         json(
           res,
           result.ok ? 200 : (result.status === 404 ? 404 : 200),

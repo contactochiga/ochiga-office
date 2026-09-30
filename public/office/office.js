@@ -10175,6 +10175,12 @@ async function apiGetIntelligenceActions() {
 async function apiGetIntelligenceActionDetail(id) {
   return api(`/api/lead-agents/admin/intelligence/actions/${encodeURIComponent(id)}`);
 }
+async function apiGetIntelligenceKnowledge(page = 1) {
+  return api(`/api/lead-agents/admin/intelligence/knowledge?page=${page}&page_size=50`);
+}
+async function apiGetIntelligenceKnowledgeDetail(key) {
+  return api(`/api/lead-agents/admin/intelligence/knowledge/${encodeURIComponent(key)}`);
+}
 
 // Canonical cross-surface list — the ONE place Office declares which
 // surfaces are real and observable. "Oyi Core / Direct" is deliberately
@@ -11415,6 +11421,11 @@ async function renderIntelligenceWorkerDetail(body, identity, token) {
   const linkBtn = el(`<button type="button" class="btn btn-ghost btn-sm" style="margin-top:var(--space-4);">View Oyi Capabilities filtered to ${escapeHtml(displayName)} →</button>`);
   linkBtn.addEventListener("click", () => navigate(`observatory/capabilities/worker/${encodeURIComponent(capabilityFilterLabel)}`));
   body.appendChild(linkBtn);
+
+  // Slice 5 -- same deep-link pattern into governed Knowledge.
+  const knowledgeLinkBtn = el(`<button type="button" class="btn btn-ghost btn-sm" style="margin-top:var(--space-4);margin-left:var(--space-2);">View Knowledge visible to ${escapeHtml(displayName)} →</button>`);
+  knowledgeLinkBtn.addEventListener("click", () => navigate(`observatory/knowledge/worker/${encodeURIComponent(capabilityFilterLabel)}`));
+  body.appendChild(knowledgeLinkBtn);
 }
 
 // ---------------------------------------------------------------
@@ -12047,9 +12058,17 @@ async function renderActionsWorkflowsSection(body, token) {
   }
 
   // ---- A. KPI Strip ----
+  // Slice 4 polish: the original 5 cards (Waiting Confirmation/Executing/
+  // Verified/Failed/Timed Out) can all honestly read zero on a real
+  // corpus dominated by "proposed" work (e.g. a workflow still
+  // collecting_inputs/awaiting_clarification) -- that isn't a bug, but it
+  // makes real, present work invisible. Adds a Proposed card (a real
+  // presentation_stage value, not a manufactured "active" bucket) rather
+  // than touching the canonical_status/presentation_stage mapping itself.
   const stageCounts = {};
   items.forEach((i) => { stageCounts[i.presentation_stage] = (stageCounts[i.presentation_stage] || 0) + 1; });
   const kpiGroup = KPIGroup([
+    { label: "Proposed", value: stageCounts.proposed || 0, icon: iconSvg("briefing", "kpi-icon"), tone: "blue" },
     { label: "Waiting Confirmation", value: stageCounts.waiting_confirmation || 0, icon: iconSvg("attention", "kpi-icon"), tone: "amber" },
     { label: "Executing", value: stageCounts.executing || 0, icon: iconSvg("lightning", "kpi-icon"), tone: "violet" },
     { label: "Verified", value: stageCounts.verified || 0, icon: iconSvg("audit", "kpi-icon"), tone: "green" },
@@ -12284,6 +12303,234 @@ async function renderActionDetail(body, actionId, token) {
   body.appendChild(el(`<p class="home-panel-empty" style="margin-top:var(--space-3);">This is a visibility-only view. Use the existing approval/confirmation surface for this item to take action.</p>`));
 }
 
+// ---------------------------------------------------------------
+// Intelligence System Visibility, Slice 5 -- Governed Knowledge.
+//
+// Read-only view of Backend's canonical knowledge index (the same
+// snapshot live retrieval uses). Every governance label -- authority
+// class, audience, claim boundary, freshness, worker visibility -- is
+// Backend's own real value; Office only maps it to display text. The
+// list never carries item content; the detail view shows the governed
+// statement plus a safe source label (bare filename or source family,
+// never a repo path). No edit/publish/retire controls -- visibility only.
+// ---------------------------------------------------------------
+const KNOWLEDGE_AUTHORITY_LABEL = {
+  APPROVED_INSTITUTIONAL: "Approved Institutional",
+  TECHNICAL_SOURCE: "Technical Source",
+  APPROVED_COMMERCIAL: "Approved Commercial",
+  PRODUCT_SOURCE: "Product Source",
+  PROJECT_SOURCE: "Project Source",
+  MARKETING_REFERENCE: "Marketing Reference",
+  UNVERIFIED_REFERENCE: "Unverified Reference",
+};
+const KNOWLEDGE_AUTHORITY_TONE = {
+  APPROVED_INSTITUTIONAL: "green",
+  TECHNICAL_SOURCE: "green",
+  APPROVED_COMMERCIAL: "blue",
+  PRODUCT_SOURCE: "blue",
+  PROJECT_SOURCE: "blue",
+  MARKETING_REFERENCE: "amber",
+  UNVERIFIED_REFERENCE: "red",
+};
+const KNOWLEDGE_AUDIENCE_LABEL = { PUBLIC: "Public", INTERNAL_COMMERCIAL: "Internal Commercial", INTERNAL_ONLY: "Internal Only" };
+const KNOWLEDGE_AUDIENCE_TONE = { PUBLIC: "green", INTERNAL_COMMERCIAL: "amber", INTERNAL_ONLY: "red" };
+const KNOWLEDGE_CLAIM_LABEL = {
+  safe_to_state: "Safe to State",
+  requires_qualification: "Requires Qualification",
+  requires_human_confirmation: "Requires Human Confirmation",
+  do_not_state_verbatim: "Do Not State Verbatim",
+};
+const KNOWLEDGE_CLAIM_TONE = { safe_to_state: "green", requires_qualification: "amber", requires_human_confirmation: "amber", do_not_state_verbatim: "red" };
+const KNOWLEDGE_WORKER_ORDER = ["Oma", "Osa", "Facility", "Consumer"];
+
+async function fetchAllKnowledgePages() {
+  const first = await apiGetIntelligenceKnowledge(1);
+  if (first?.available === false) return first;
+  const totalPages = Math.min(first?.pagination?.total_pages || 1, 20);
+  const items = [...(first.items || [])];
+  for (let page = 2; page <= totalPages; page += 1) {
+    const next = await apiGetIntelligenceKnowledge(page);
+    items.push(...(next.items || []));
+  }
+  return { ...first, items };
+}
+
+async function renderKnowledgeSection(body, token, initialWorker) {
+  body.innerHTML = "";
+  body.appendChild(skeletonPanel(3));
+  let data;
+  try {
+    data = await fetchAllKnowledgePages();
+  } catch (err) {
+    data = { available: false };
+  }
+  if (token !== state.renderToken) return;
+  body.innerHTML = "";
+
+  if (!data || data.available === false) {
+    body.appendChild(el(`<div class="status-callout status-callout-amber">Knowledge data is temporarily unavailable.</div>`));
+    return;
+  }
+  if (data.source && data.source.available === false) {
+    body.appendChild(el(`<div class="status-callout status-callout-amber" style="margin-bottom:var(--space-4);">The Office Knowledge Pack could not be loaded (${escapeHtml(titleCase(data.source.reason || "unavailable"))}) -- only Backend institutional knowledge is shown. This is a partial corpus, not the complete picture.</div>`));
+  }
+
+  const summary = data.summary || {};
+  const kpiGroup = KPIGroup([
+    { label: "Governed Items", value: summary.total || 0, icon: iconSvg("briefing", "kpi-icon"), tone: "blue" },
+    { label: "High Authority", value: summary.high_authority || 0, icon: iconSvg("audit", "kpi-icon"), tone: "green" },
+    { label: "Volatile (Check Freshness)", value: summary.potentially_stale || 0, icon: iconSvg("attention", "kpi-icon"), tone: summary.potentially_stale ? "amber" : "green" },
+    { label: "Workers Covered", value: `${summary.workers_covered || 0} / 4`, icon: iconSvg("observatory", "kpi-icon"), tone: "violet" },
+  ]);
+  kpiGroup.style.marginBottom = "var(--space-5)";
+  body.appendChild(kpiGroup);
+
+  // Authority distribution in Backend's own canonical rank order.
+  const authorityPanel = homePanel("By Authority Class");
+  authorityPanel.classList.add("intelligence-bar-wide-labels");
+  const order = data.authority_class_order || Object.keys(KNOWLEDGE_AUTHORITY_LABEL);
+  authorityPanel.appendChild(barDistribution(
+    order.filter((c) => summary.by_authority_class?.[c]).map((c) => ({ label: KNOWLEDGE_AUTHORITY_LABEL[c] || c, count: summary.by_authority_class[c], tone: KNOWLEDGE_AUTHORITY_TONE[c] || "default" })),
+    "No governed knowledge items."
+  ));
+  body.appendChild(authorityPanel);
+
+  const domainPanel = homePanel("By Domain");
+  domainPanel.style.marginTop = "var(--space-4)";
+  domainPanel.classList.add("intelligence-bar-wide-labels");
+  const domainLabels = {};
+  (data.items || []).forEach((i) => { domainLabels[i.domain] = i.domain_label || titleCase(i.domain); });
+  domainPanel.appendChild(barDistribution(
+    Object.entries(summary.by_domain || {}).sort((a, b) => b[1] - a[1]).map(([d, count]) => ({ label: domainLabels[d] || titleCase(d), count, tone: "default" })),
+    "No governed knowledge items."
+  ));
+  body.appendChild(domainPanel);
+
+  // Worker visibility is an array per item, so it filters via chips +
+  // preFilter rather than renderStandardList's single-value selects.
+  const records = (data.items || []).map((i) => ({
+    ...i,
+    authority_label: KNOWLEDGE_AUTHORITY_LABEL[i.authority_class] || i.authority_class,
+    audience_label: KNOWLEDGE_AUDIENCE_LABEL[i.audience] || i.audience,
+    claim_label: KNOWLEDGE_CLAIM_LABEL[i.claim_boundary] || i.claim_boundary,
+    freshness_label: titleCase(i.freshness_class),
+  }));
+  let workerFilter = KNOWLEDGE_WORKER_ORDER.includes(initialWorker) ? initialWorker : "";
+  const chipRow = el(`<div class="crm-tabs" style="margin-top:var(--space-4);" aria-label="Filter by worker visibility"></div>`);
+  const listHost = el(`<div style="margin-top:var(--space-3);"></div>`);
+  const drawList = () => {
+    chipRow.innerHTML = "";
+    ["", ...KNOWLEDGE_WORKER_ORDER].forEach((w) => {
+      const count = w ? records.filter((r) => (r.worker_visibility || []).includes(w)).length : records.length;
+      const chip = el(`<button type="button" class="crm-tab ${w === workerFilter ? "active" : ""}" title="${escapeHtml(w ? `Items visible to ${w}` : "All governed items")}">${escapeHtml(w || "All Workers")} (${count})</button>`);
+      chip.addEventListener("click", () => { workerFilter = w; drawList(); });
+      chipRow.appendChild(chip);
+    });
+    listHost.innerHTML = "";
+    renderStandardList(listHost, {
+      title: "Governed Knowledge",
+      records,
+      preFilter: workerFilter ? (r) => (r.worker_visibility || []).includes(workerFilter) : null,
+      columns: [
+        { key: "title", label: "Item" },
+        { key: "domain_label", label: "Domain" },
+        { key: "authority_label", label: "Authority", render: (r) => badge(r.authority_label, KNOWLEDGE_AUTHORITY_TONE[r.authority_class] || "default") },
+        { key: "audience_label", label: "Audience", render: (r) => badge(r.audience_label, KNOWLEDGE_AUDIENCE_TONE[r.audience] || "default") },
+        { key: "claim_label", label: "Claim Boundary", render: (r) => badge(r.claim_label, KNOWLEDGE_CLAIM_TONE[r.claim_boundary] || "default") },
+        { key: "worker_visibility", label: "Workers", render: (r) => ((r.worker_visibility || []).length ? r.worker_visibility.map((w) => badge(w, "default")).join(" ") : "—") },
+        { key: "freshness_label", label: "Freshness" },
+      ],
+      searchFields: ["title", "canonical_key"],
+      filters: [
+        { key: "domain_label", label: "Domain" },
+        { key: "authority_label", label: "Authority" },
+        { key: "audience_label", label: "Audience" },
+        { key: "claim_label", label: "Claim Boundary" },
+        { key: "freshness_label", label: "Freshness" },
+        { key: "source_family", label: "Source" },
+      ],
+      canManage: false,
+      secondaryAction: null,
+      onRowClick: (r) => navigate(`observatory/knowledge/item/${encodeURIComponent(r.canonical_key)}`),
+      emptyMessage: "No governed knowledge items.",
+    });
+  };
+  body.appendChild(chipRow);
+  body.appendChild(listHost);
+  drawList();
+
+  body.appendChild(el(`<p class="home-panel-empty" style="margin-top:var(--space-3);">Governance labels are shown exactly as the knowledge index records them. Seeing an item here does not mean every worker may use it -- live retrieval still applies each item's own audience and worker visibility.</p>`));
+}
+
+async function renderKnowledgeDetail(body, canonicalKey, token) {
+  body.innerHTML = "";
+  body.appendChild(skeletonPanel(2));
+  let data;
+  try {
+    data = await apiGetIntelligenceKnowledgeDetail(canonicalKey);
+  } catch (err) {
+    if (token !== state.renderToken) return;
+    if (err?.status !== 404) {
+      body.innerHTML = "";
+      body.appendChild(errorPanel(err?.message || "Could not load this knowledge item."));
+      return;
+    }
+    data = { item: null };
+  }
+  if (token !== state.renderToken) return;
+  body.innerHTML = "";
+
+  const backBtn = el(`<button type="button" class="btn btn-ghost btn-sm" style="margin-bottom:var(--space-3);">← Knowledge</button>`);
+  backBtn.addEventListener("click", () => navigate("observatory/knowledge"));
+  body.appendChild(backBtn);
+
+  if (data?.available === false) {
+    body.appendChild(el(`<div class="status-callout status-callout-amber">Knowledge data is temporarily unavailable.</div>`));
+    return;
+  }
+  const k = data.item;
+  if (!k) {
+    body.appendChild(errorPanel("This knowledge item was not found -- it may have been removed from the governed corpus."));
+    return;
+  }
+
+  body.appendChild(el(`<div class="view-heading"><h1>${escapeHtml(k.title)}</h1></div>`));
+
+  const govPanel = homePanel("Governance");
+  govPanel.appendChild(FactGrid([
+    { label: "Authority Class", html: `${badge(KNOWLEDGE_AUTHORITY_LABEL[k.authority_class] || k.authority_class, KNOWLEDGE_AUTHORITY_TONE[k.authority_class] || "default")}${k.authority_explanation ? ` <span style="color:var(--text-tertiary);">${escapeHtml(k.authority_explanation)}</span>` : ""}` },
+    { label: "Audience", html: badge(KNOWLEDGE_AUDIENCE_LABEL[k.audience] || k.audience, KNOWLEDGE_AUDIENCE_TONE[k.audience] || "default") },
+    { label: "Claim Boundary", html: `${badge(KNOWLEDGE_CLAIM_LABEL[k.claim_boundary] || k.claim_boundary, KNOWLEDGE_CLAIM_TONE[k.claim_boundary] || "default")}${k.claim_boundary_explanation ? ` <span style="color:var(--text-tertiary);">${escapeHtml(k.claim_boundary_explanation)}</span>` : ""}` },
+    { label: "Freshness", html: escapeHtml(titleCase(k.freshness_class)) },
+    { label: "Domain", html: escapeHtml(k.domain_label || titleCase(k.domain)) },
+    { label: "Worker Visibility", html: (k.worker_visibility || []).length ? k.worker_visibility.map((w) => badge(w, "default")).join(" ") : "No worker" },
+    { label: "Other Roles", html: (k.other_role_visibility || []).length ? k.other_role_visibility.map((w) => badge(w, "default")).join(" ") : "None" },
+  ]));
+  body.appendChild(govPanel);
+
+  const provPanel = homePanel("Provenance");
+  provPanel.style.marginTop = "var(--space-4)";
+  provPanel.appendChild(FactGrid([
+    { label: "Source", html: escapeHtml(k.source_family) },
+    { label: "Safe Source Identifier", html: `<code style="font-size:11px;">${escapeHtml(k.safe_source_identifier)}</code>` },
+    { label: "Canonical Key", html: `<code style="font-size:11px;">${escapeHtml(k.canonical_key)}</code>` },
+    { label: "Version", html: `<code style="font-size:11px;">${escapeHtml(k.version_summary || "—")}</code>` },
+    { label: "Updated", html: k.updated_at ? escapeHtml(fmtDateTime(k.updated_at)) : "Not recorded" },
+    { label: "Tags", html: (k.tags || []).length ? k.tags.map((t) => badge(t, "default")).join(" ") : "None" },
+  ]));
+  body.appendChild(provPanel);
+
+  const contentPanel = homePanel("Governed Statement");
+  contentPanel.style.marginTop = "var(--space-4)";
+  if (k.claim_boundary === "do_not_state_verbatim") {
+    contentPanel.appendChild(el(`<div class="status-callout status-callout-amber" style="margin-bottom:var(--space-3);">Internal reasoning only -- workers must never quote or paraphrase this to an external party.</div>`));
+  }
+  contentPanel.appendChild(el(`<div style="white-space:pre-wrap;overflow-wrap:anywhere;font-size:13px;line-height:1.55;">${escapeHtml(k.content || "")}</div>`));
+  body.appendChild(contentPanel);
+
+  body.appendChild(el(`<p class="home-panel-empty" style="margin-top:var(--space-3);">This is a visibility-only view. Knowledge is edited in the Office Knowledge Pack or Backend source, not here.</p>`));
+}
+
 async function renderObservatoryView(outlet, rest, token) {
   const [sectionKey = "overview", detailKind, detailKey] = rest;
   setTopbar("Intelligence", "");
@@ -12361,6 +12608,16 @@ async function renderObservatoryView(outlet, rest, token) {
       await renderDecisionDetail(body, decodeURIComponent(detailKey), token);
     } else {
       await renderGoalsDecisionsSection(body, token);
+    }
+  } else if (sectionKey === "knowledge") {
+    // Canonical keys are colon-joined ("office:<stem>") with no slash,
+    // so they land whole in detailKey under the "item" sub-route.
+    if (detailKind === "item" && detailKey) {
+      await renderKnowledgeDetail(body, decodeURIComponent(detailKey), token);
+    } else if (detailKind === "worker" && detailKey) {
+      await renderKnowledgeSection(body, token, decodeURIComponent(detailKey));
+    } else {
+      await renderKnowledgeSection(body, token);
     }
   } else if (sectionKey === "actions-workflows") {
     // Action ids are compound ("source_type:source_id", colon-joined --
