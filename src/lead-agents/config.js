@@ -184,6 +184,13 @@ function createConfig() {
       process.env.OFFICE_INTELLIGENCE_CAPABILITIES_PATH || "/office/intelligence/capabilities",
     officeIntelligenceSummaryPath:
       process.env.OFFICE_INTELLIGENCE_SUMMARY_PATH || "/office/intelligence/summary",
+    // Intelligence System Visibility, Slice 2 — Overview + Attention/
+    // Human Intervention. Same safety boundary as the Slice 1 paths
+    // above.
+    officeIntelligenceOverviewPath:
+      process.env.OFFICE_INTELLIGENCE_OVERVIEW_PATH || "/office/intelligence/overview",
+    officeIntelligenceInterventionsPath:
+      process.env.OFFICE_INTELLIGENCE_INTERVENTIONS_PATH || "/office/intelligence/interventions",
     // Oyi Runtime Contract, Domain 3 (Task) — additive projection of the
     // 4 genuine overlapping commercial workflow types into Backend's
     // ochiga_workflows. Default ON, but a single env flag disables the

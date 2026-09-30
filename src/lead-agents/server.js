@@ -50,6 +50,8 @@ const {
   callOyiCoreObservabilityEvents,
   callOyiCoreIntelligenceCapabilities,
   callOyiCoreIntelligenceSummary,
+  callOyiCoreIntelligenceOverview,
+  callOyiCoreIntelligenceInterventions,
   callOyiCoreListAutomations,
   callOyiCoreGetAutomation,
   callOyiCoreCreateAutomation,
@@ -5065,6 +5067,49 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
         }
         authorizePermission(authContext, "view_traces");
         const result = await callOyiCoreIntelligenceSummary(config);
+        json(
+          res,
+          200,
+          result.ok
+            ? { ...result.data, available: true }
+            : { ok: false, available: false, reason: result.reason || "unavailable" },
+          { "x-request-id": ctx.requestId }
+        );
+        return;
+      }
+
+      // Intelligence System Visibility, Slice 2 -- same "view_traces" read
+      // gate as the two Slice 1 routes above (same Intelligence area, not
+      // a new permission surface). Thin pass-through to Backend's Overview
+      // read model; never fabricates data when Backend is unreachable.
+      if (pathname === "/api/lead-agents/admin/intelligence/overview") {
+        if (req.method !== "GET") {
+          methodNotAllowed(res, "GET");
+          return;
+        }
+        authorizePermission(authContext, "view_traces");
+        const result = await callOyiCoreIntelligenceOverview(config);
+        json(
+          res,
+          200,
+          result.ok
+            ? { ...result.data, available: true }
+            : { ok: false, available: false, reason: result.reason || "unavailable" },
+          { "x-request-id": ctx.requestId }
+        );
+        return;
+      }
+
+      if (pathname === "/api/lead-agents/admin/intelligence/interventions") {
+        if (req.method !== "GET") {
+          methodNotAllowed(res, "GET");
+          return;
+        }
+        authorizePermission(authContext, "view_traces");
+        const interventionsUrl = new URL(req.url, "http://localhost");
+        const requestedLimit = Number(interventionsUrl.searchParams.get("limit"));
+        const limit = Number.isFinite(requestedLimit) && requestedLimit > 0 ? Math.min(Math.floor(requestedLimit), 200) : 50;
+        const result = await callOyiCoreIntelligenceInterventions(config, { limit });
         json(
           res,
           200,

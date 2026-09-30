@@ -10139,6 +10139,14 @@ async function apiGetIntelligenceCapabilities() {
 async function apiGetIntelligenceSummary() {
   return api("/api/lead-agents/admin/intelligence/summary");
 }
+// Intelligence System Visibility, Slice 2 -- Overview + Attention/Human
+// Intervention read models. Same honest-unavailable convention as above.
+async function apiGetIntelligenceOverview() {
+  return api("/api/lead-agents/admin/intelligence/overview");
+}
+async function apiGetIntelligenceInterventions(limit) {
+  return api(`/api/lead-agents/admin/intelligence/interventions${limit ? `?limit=${encodeURIComponent(limit)}` : ""}`);
+}
 
 // Canonical cross-surface list — the ONE place Office declares which
 // surfaces are real and observable. "Oyi Core / Direct" is deliberately
@@ -10786,12 +10794,20 @@ const INTELLIGENCE_SECTIONS = [
 // One Oyi Core, four governed worker/surface manifestations -- never four
 // independent brains. Compact, uses only existing Office visual language
 // (CSS vars, existing badge tones) -- no new design system.
-function renderOneCoreVisual() {
+//
+// Intelligence Visibility, Slice 2 -- workerStats (optional) carries real
+// per-worker numbers from /intelligence/overview: { capability_count,
+// pending_intervention_count }, keyed by oma/osa/facility/consumer. When
+// omitted (every pre-Slice-2 call site), this renders byte-identical to
+// Slice 1 -- purely additive, no composition change. Never fabricates a
+// number: a worker with no entry in workerStats shows no count line at
+// all, not a "0".
+function renderOneCoreVisual(workerStats) {
   const workers = [
-    { label: "Oma", sub: "Office", tone: "red" },
-    { label: "Osa", sub: "Public / Ochiga Website", tone: "blue" },
-    { label: "Facility", sub: "Estate", tone: "amber" },
-    { label: "Consumer", sub: "Home", tone: "green" },
+    { key: "oma", label: "Oma", sub: "Office", tone: "red" },
+    { key: "osa", label: "Osa", sub: "Public / Ochiga Website", tone: "blue" },
+    { key: "facility", label: "Facility", sub: "Estate", tone: "amber" },
+    { key: "consumer", label: "Consumer", sub: "Home", tone: "green" },
   ];
   const wrap = el(`
     <div class="one-core-visual" style="display:flex;align-items:center;justify-content:center;gap:var(--space-4);flex-wrap:wrap;padding:var(--space-4) 0;">
@@ -10803,11 +10819,16 @@ function renderOneCoreVisual() {
   `);
   const spokes = el(`<div style="display:flex;gap:var(--space-3);flex-wrap:wrap;justify-content:center;margin-top:var(--space-3);"></div>`);
   workers.forEach((w) => {
+    const stats = workerStats ? workerStats[w.key] : null;
+    const statsLine = stats
+      ? `<span style="font-size:10px;color:var(--text-tertiary);">${stats.capability_count} caps${Number.isFinite(stats.pending_intervention_count) ? ` · ${stats.pending_intervention_count} pending` : ""}</span>`
+      : "";
     spokes.appendChild(el(`
       <div style="display:flex;flex-direction:column;align-items:center;gap:4px;min-width:96px;">
         <span style="font-size:11px;color:var(--text-tertiary);">↑ governed worker</span>
         ${badge(w.label, w.tone)}
         <span style="font-size:10.5px;color:var(--text-tertiary);text-align:center;">${escapeHtml(w.sub)}</span>
+        ${statsLine}
       </div>
     `));
   });
@@ -11031,8 +11052,212 @@ function renderIntelligencePlaceholderSection(body, label) {
 // Overview keeps the pre-existing AI Agents content as an intentional
 // transitional state; every other section is an honest placeholder.
 // ---------------------------------------------------------------
+// Intelligence Visibility, Slice 2 -- a block from /intelligence/overview
+// always has the explicit { available, count? } shape; this never
+// silently turns "not available" into "0". Returns null (render "—")
+// when the block itself is missing or unavailable.
+function overviewCount(block) {
+  if (!block || block.available !== true || !Number.isFinite(block.count)) return null;
+  return block.count;
+}
+function overviewCountText(block) {
+  const value = overviewCount(block);
+  return value === null ? "—" : String(value);
+}
+
+const INTERVENTION_TYPE_TONE = { AUTHORIZATION: "amber", CONFIRMATION: "blue", INPUT_REQUIRED: "violet", ESCALATION: "red" };
+const INTERVENTION_SOURCE_LABEL = {
+  automation_approval: "Automation Approval",
+  goal_escalation: "Goal Escalation",
+  decision: "Decision",
+  workflow: "Device Action",
+  communication_confirmation: "Communication",
+};
+
+// B/C/D/E of the locked Overview hierarchy (Section 8): primary KPI
+// strip, Needs Your Attention, Goals & Decisions summary, Worker
+// summary. Takes the already-fetched /intelligence/overview result (see
+// renderObservatoryView -- fetched once, reused by the One-Core visual
+// too) and independently fetches /intelligence/interventions for the
+// full attention list (the overview contract only carries per-source
+// counts, not the list itself). F (Recent Activity) and G (System
+// Health) remain owned by the preserved renderIntelligenceOverviewSection
+// below this, unchanged.
+async function renderIntelligenceOverviewSummary(body, overviewFetch, token) {
+  body.innerHTML = "";
+  body.appendChild(skeletonPanel(3));
+  let interventionsFetch;
+  try {
+    interventionsFetch = { ok: true, data: await apiGetIntelligenceInterventions(20) };
+  } catch (err) {
+    interventionsFetch = { ok: false, error: err?.message || "unavailable" };
+  }
+  if (token !== state.renderToken) return;
+  body.innerHTML = "";
+
+  if (!overviewFetch.ok || overviewFetch.data?.available === false) {
+    body.appendChild(el(`<div class="status-callout status-callout-amber" style="margin-bottom:var(--space-4);">Oyi Core Intelligence Overview is temporarily unavailable.</div>`));
+    return;
+  }
+  const ov = overviewFetch.data;
+
+  // ---- B. Primary KPI Strip ----
+  const health = ov.system?.health;
+  const enabledCaps = ov.capabilities?.available ? ov.capabilities.by_rollout_status?.enabled : null;
+  const attentionTotal = ov.attention?.available ? ov.attention.total : null;
+  const pendingConfirmCount = (() => {
+    const a = overviewCount(ov.workflows_actions?.pending_confirmation);
+    const b = overviewCount(ov.workflows_actions?.communication_awaiting_confirmation);
+    return a === null && b === null ? null : (a || 0) + (b || 0);
+  })();
+  const kpiGroup = KPIGroup([
+    {
+      label: "Core Status",
+      value: health?.available ? titleCase(health.status) : "Unavailable",
+      icon: iconSvg("observatory", "kpi-icon"),
+      tone: health?.available ? (health.status === "ok" ? "green" : "amber") : "default",
+      alert: Boolean(health?.available && health.status !== "ok"),
+    },
+    { label: "Enabled Capabilities", value: enabledCaps === null ? "—" : enabledCaps, icon: iconSvg("audit", "kpi-icon"), tone: "blue" },
+    {
+      label: "Needs Human",
+      value: attentionTotal === null ? "—" : attentionTotal,
+      icon: iconSvg("attention", "kpi-icon"),
+      tone: attentionTotal ? "red" : "green",
+      alert: Boolean(attentionTotal),
+      sub: ov.attention?.available ? (ov.attention.complete ? undefined : "Partial -- one or more sources unavailable") : undefined,
+    },
+    { label: "Active Goals", value: overviewCountText(ov.goals?.active), icon: iconSvg("briefing", "kpi-icon"), tone: "violet" },
+    { label: "Pending Confirmations", value: pendingConfirmCount === null ? "—" : pendingConfirmCount, icon: iconSvg("lightning", "kpi-icon"), tone: "amber" },
+  ]);
+  kpiGroup.style.marginBottom = "var(--space-5)";
+  body.appendChild(kpiGroup);
+
+  // ---- C. Needs Your Attention ----
+  const attentionPanel = homePanel("Needs Your Attention");
+  if (!interventionsFetch.ok || interventionsFetch.data?.available === false) {
+    attentionPanel.appendChild(el(`<p class="home-panel-empty">Human intervention data is temporarily unavailable.</p>`));
+  } else {
+    const items = (interventionsFetch.data.interventions || [])
+      .slice()
+      // Real time semantic (oldest-outstanding first), not an invented
+      // priority score -- no source here carries a real priority/severity
+      // field (confirmed during this slice's own audit of every source).
+      .sort((a, b) => String(a.created_at).localeCompare(String(b.created_at)));
+    if (!interventionsFetch.data.complete) {
+      attentionPanel.appendChild(el(`<div class="status-callout status-callout-amber" style="margin-bottom:var(--space-3);">One or more intervention sources did not respond -- this list is a lower bound, not the complete picture.</div>`));
+    }
+    if (!items.length) {
+      attentionPanel.appendChild(el(`<p class="home-panel-empty">No human intervention currently required.</p>`));
+    } else {
+      const list = el(`<div class="attention-list"></div>`);
+      items.forEach((item) => {
+        const row = el(`
+          <div class="attention-row" style="cursor:pointer;">
+            <span class="attention-type">${badge(INTERVENTION_SOURCE_LABEL[item.source_type] || item.source_type, INTERVENTION_TYPE_TONE[item.intervention_type] || "default")}</span>
+            <span class="attention-title">${escapeHtml(item.title)}${item.worker ? ` <span style="color:var(--text-tertiary);">(${escapeHtml(item.worker)})</span>` : ""}</span>
+            <span class="attention-owner">${escapeHtml(item.required_human_step)}</span>
+            <span class="attention-owner">${escapeHtml(fmtRelative(item.created_at))}</span>
+          </div>
+        `);
+        row.addEventListener("click", () => navigate(`observatory/overview/intervention/${encodeURIComponent(item.id)}`));
+        list.appendChild(row);
+      });
+      attentionPanel.appendChild(list);
+    }
+  }
+  body.appendChild(attentionPanel);
+
+  // ---- D. Goals & Decisions summary ----
+  const rowGD = el(`<div class="home-grid" style="margin-top:var(--space-4);"></div>`);
+  body.appendChild(rowGD);
+  const goalsPanel = homePanel("Goals");
+  goalsPanel.appendChild(FactGrid([
+    { label: "Active", html: overviewCountText(ov.goals?.active) },
+    { label: "Needs Human", html: overviewCountText(ov.goals?.needs_human) },
+    { label: "Blocked / Waiting", html: overviewCountText(ov.goals?.blocked_or_waiting) },
+  ]));
+  rowGD.appendChild(homePanelWrap("span-6", goalsPanel));
+  const decisionsPanel = homePanel("Decisions");
+  decisionsPanel.appendChild(FactGrid([
+    { label: "Active", html: overviewCountText(ov.decisions?.active) },
+    { label: "Awaiting Human", html: overviewCountText(ov.decisions?.awaiting_human) },
+    { label: "Recently Resolved (24h)", html: overviewCountText(ov.decisions?.recently_resolved) },
+  ]));
+  rowGD.appendChild(homePanelWrap("span-6", decisionsPanel));
+
+  // ---- E. Worker summary ----
+  const workerPanel = homePanel("Worker Summary");
+  workerPanel.style.marginTop = "var(--space-4)";
+  const workers = ov.workers || [];
+  if (!workers.length) {
+    workerPanel.appendChild(el(`<p class="home-panel-empty">Worker summary is temporarily unavailable.</p>`));
+  } else {
+    workerPanel.appendChild(FactGrid(workers.map((w) => ({
+      label: w.label,
+      html: `${w.capability_count} capabilities${Number.isFinite(w.pending_intervention_count) ? ` &nbsp;·&nbsp; ${w.pending_intervention_count} pending intervention${w.pending_intervention_count === 1 ? "" : "s"}` : ""}`,
+    }))));
+  }
+  body.appendChild(workerPanel);
+}
+
+// Section 9 -- intervention detail. Visibility only: no approve/reject
+// here (existing action/approval surfaces remain authoritative for
+// mutation). Re-fetches the live list and finds the matching id rather
+// than caching the row client-side, so the detail always reflects
+// current state, same pattern as the Slice 1 capability detail view.
+async function renderInterventionDetail(body, interventionId, token) {
+  body.innerHTML = "";
+  body.appendChild(skeletonPanel(2));
+  let data;
+  try {
+    data = await apiGetIntelligenceInterventions(200);
+  } catch (err) {
+    if (token !== state.renderToken) return;
+    body.innerHTML = "";
+    body.appendChild(errorPanel(err?.message || "Could not load this intervention."));
+    return;
+  }
+  if (token !== state.renderToken) return;
+  body.innerHTML = "";
+
+  if (data?.available === false) {
+    body.appendChild(el(`<div class="status-callout status-callout-amber">Human intervention data is temporarily unavailable.</div>`));
+    return;
+  }
+
+  const item = (data.interventions || []).find((i) => i.id === interventionId);
+  if (!item) {
+    body.appendChild(errorPanel("This intervention was not found -- it may have already been resolved."));
+    return;
+  }
+
+  const backBtn = el(`<button type="button" class="btn btn-ghost btn-sm" style="margin-bottom:var(--space-3);">← Overview</button>`);
+  backBtn.addEventListener("click", () => navigate("observatory/overview"));
+  body.appendChild(backBtn);
+
+  body.appendChild(el(`<div class="view-heading"><h1>${escapeHtml(item.title)}</h1></div>`));
+
+  const panel = homePanel(INTERVENTION_SOURCE_LABEL[item.source_type] || item.source_type);
+  panel.appendChild(FactGrid([
+    { label: "What Requires Attention", html: escapeHtml(item.title) },
+    { label: "Source Type", html: badge(INTERVENTION_SOURCE_LABEL[item.source_type] || item.source_type, "default") },
+    { label: "Intervention Type", html: badge(titleCase(item.intervention_type), INTERVENTION_TYPE_TONE[item.intervention_type] || "default") },
+    { label: "Status", html: badge(titleCase(item.status || "unknown"), "default") },
+    { label: "Stage", html: titleCase(item.stage || "unknown") },
+    { label: "Worker", html: item.worker ? badge(item.worker, "default") : "Unknown" },
+    { label: "Created", html: `${escapeHtml(fmtDateTime(item.created_at))} <span style="color:var(--text-tertiary);">(${escapeHtml(fmtRelative(item.created_at))})</span>` },
+    { label: "Due", html: item.due_at ? escapeHtml(fmtDateTime(item.due_at)) : "No deadline recorded" },
+    { label: "Reason", html: item.reason ? escapeHtml(item.reason) : "Not recorded" },
+    { label: "Safe Source Identifier", html: `<code style="font-size:11px;">${escapeHtml(item.source_id)}</code>` },
+    { label: "Required Human Step", html: `<strong>${escapeHtml(item.required_human_step)}</strong>` },
+  ]));
+  body.appendChild(panel);
+  body.appendChild(el(`<p class="home-panel-empty" style="margin-top:var(--space-3);">This is a visibility-only view. Use the existing approval/confirmation surface for this item to take action.</p>`));
+}
+
 async function renderObservatoryView(outlet, rest, token) {
-  const [sectionKey = "overview", detailKey] = rest;
+  const [sectionKey = "overview", detailKind, detailKey] = rest;
   setTopbar("Intelligence", "");
   setSelectedObject(null);
   outlet.innerHTML = "";
@@ -11049,7 +11274,32 @@ async function renderObservatoryView(outlet, rest, token) {
   outlet.appendChild(body);
 
   if (sectionKey === "overview") {
-    body.appendChild(renderOneCoreVisual());
+    if (detailKind === "intervention" && detailKey) {
+      await renderInterventionDetail(body, decodeURIComponent(detailKey), token);
+      return;
+    }
+    // Slice 2 -- Overview fetched ONCE here and reused by both the
+    // One-Core visual's per-worker counts and the new summary panels
+    // below, so this section issues exactly one /intelligence/overview
+    // request, not two.
+    let overviewFetch;
+    try {
+      overviewFetch = { ok: true, data: await apiGetIntelligenceOverview() };
+    } catch (err) {
+      overviewFetch = { ok: false, error: err?.message || "unavailable" };
+    }
+    if (token !== state.renderToken) return;
+    const overviewAvailable = overviewFetch.ok && overviewFetch.data?.available !== false;
+    const workerStats = overviewAvailable
+      ? Object.fromEntries((overviewFetch.data.workers || []).map((w) => [w.key, w]))
+      : null;
+    body.appendChild(renderOneCoreVisual(workerStats));
+
+    const summaryContent = el(`<div></div>`);
+    summaryContent.appendChild(skeletonPanel(2));
+    body.appendChild(summaryContent);
+    await renderIntelligenceOverviewSummary(summaryContent, overviewFetch, token);
+
     const overviewContent = el(`<div></div>`);
     overviewContent.appendChild(skeletonPanel(4));
     body.appendChild(overviewContent);
