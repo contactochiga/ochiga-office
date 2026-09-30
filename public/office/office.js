@@ -10795,9 +10795,9 @@ function renderOneCoreVisual() {
   ];
   const wrap = el(`
     <div class="one-core-visual" style="display:flex;align-items:center;justify-content:center;gap:var(--space-4);flex-wrap:wrap;padding:var(--space-4) 0;">
-      <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;width:112px;height:112px;border-radius:50%;background:var(--surface-secondary,#f4f4f7);border:2px solid var(--border-strong,#d8d8e0);text-align:center;">
-        <span style="font-weight:700;font-size:13px;letter-spacing:0.02em;">OYI CORE</span>
-        <span style="font-size:10.5px;color:var(--text-tertiary);margin-top:2px;">One Intelligence</span>
+      <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;width:112px;height:112px;border-radius:50%;background:var(--grey-100);border:2px solid var(--grey-300);text-align:center;">
+        <span style="font-weight:700;font-size:13px;letter-spacing:0.02em;color:var(--black);">OYI CORE</span>
+        <span style="font-size:10.5px;color:var(--grey-700);margin-top:2px;">One Intelligence</span>
       </div>
     </div>
   `);
@@ -10864,6 +10864,7 @@ async function renderIntelligenceCapabilitiesSection(body, token) {
   rowA.appendChild(homePanelWrap("span-4", workerPanel));
 
   const riskPanel = homePanel("By Risk");
+  riskPanel.classList.add("intelligence-bar-wide-labels");
   const riskEntries = Object.entries(data.by_risk_class || {});
   riskPanel.appendChild(barDistribution(
     riskEntries.map(([key, count]) => ({ label: titleCase(key), count, tone: key === "read" ? "green" : key === "consequential_action" ? "red" : "amber" })),
@@ -10872,6 +10873,7 @@ async function renderIntelligenceCapabilitiesSection(body, token) {
   rowA.appendChild(homePanelWrap("span-4", riskPanel));
 
   const confirmPanel = homePanel("By Confirmation");
+  confirmPanel.classList.add("intelligence-bar-wide-labels");
   const confirmEntries = Object.entries(data.by_confirmation_policy || {});
   confirmPanel.appendChild(barDistribution(
     confirmEntries.map(([key, count]) => ({ label: titleCase(key), count, tone: key === "none" ? "green" : "amber" })),
@@ -10950,6 +10952,17 @@ async function renderIntelligenceCapabilitiesSection(body, token) {
   drawList();
 }
 
+// The live capability contract returns required_scope as structured
+// { scope, required } entries (never bare strings) -- joining them
+// directly renders "[object Object]". Reads the real field names rather
+// than reshaping the contract to fit a simpler display.
+function formatIntelligenceRequiredScope(entries) {
+  if (!Array.isArray(entries) || !entries.length) return "None";
+  return entries
+    .map((entry) => `${escapeHtml(entry?.scope ?? "unknown")}${entry?.required === false ? " (optional)" : " (required)"}`)
+    .join(", ");
+}
+
 async function renderIntelligenceCapabilityDetail(body, key, token) {
   body.innerHTML = "";
   body.appendChild(skeletonPanel(2));
@@ -10991,7 +11004,7 @@ async function renderIntelligenceCapabilityDetail(body, key, token) {
     { label: "Rollout", html: badge(titleCase(capability.rollout_status || "unknown"), capability.rollout_status === "enabled" ? "green" : "default") },
     { label: "Type", html: badge(titleCase(capability.classification || "read"), capability.classification === "action" ? "violet" : "default") },
     { label: "Required Permissions", html: (capability.required_permissions || []).join(", ") || "None" },
-    { label: "Required Scope", html: (capability.required_scope || []).join(", ") || "None" },
+    { label: "Required Scope", html: formatIntelligenceRequiredScope(capability.required_scope) },
     { label: "Evidence Requirements", html: (capability.evidence_requirement_summary || []).join("; ") || "None" },
   ]));
   body.appendChild(panel);
@@ -11024,7 +11037,7 @@ async function renderObservatoryView(outlet, rest, token) {
   setSelectedObject(null);
   outlet.innerHTML = "";
 
-  const tabs = el(`<div class="crm-tabs"></div>`);
+  const tabs = el(`<div class="crm-tabs intelligence-tab-rail"></div>`);
   INTELLIGENCE_SECTIONS.forEach((section) => {
     const tabBtn = el(`<button type="button" class="crm-tab ${section.key === sectionKey ? "active" : ""}">${escapeHtml(section.label)}</button>`);
     tabBtn.addEventListener("click", () => navigate(`observatory/${section.key}`));
