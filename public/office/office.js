@@ -10147,6 +10147,14 @@ async function apiGetIntelligenceOverview() {
 async function apiGetIntelligenceInterventions(limit) {
   return api(`/api/lead-agents/admin/intelligence/interventions${limit ? `?limit=${encodeURIComponent(limit)}` : ""}`);
 }
+// Intelligence System Visibility, Slice 3 -- Worker Visibility read
+// models. Same honest-unavailable convention as above.
+async function apiGetIntelligenceWorkers() {
+  return api("/api/lead-agents/admin/intelligence/workers");
+}
+async function apiGetIntelligenceWorkerDetail(identity) {
+  return api(`/api/lead-agents/admin/intelligence/workers/${encodeURIComponent(identity)}`);
+}
 
 // Canonical cross-surface list — the ONE place Office declares which
 // surfaces are real and observable. "Oyi Core / Direct" is deliberately
@@ -10802,7 +10810,15 @@ const INTELLIGENCE_SECTIONS = [
 // Slice 1 -- purely additive, no composition change. Never fabricates a
 // number: a worker with no entry in workerStats shows no count line at
 // all, not a "0".
-function renderOneCoreVisual(workerStats) {
+//
+// Intelligence Visibility, Slice 3 -- selectedKey/onSelect (both
+// optional) turn the same four spokes into the Workers page's topology
+// selector: selecting Oma/Osa/Facility/Consumer highlights that spoke
+// while the OTHER THREE STAY VISIBLE (never hidden/replaced) -- the
+// visual must read as "one core, looking at one of its governed
+// surfaces," never "switching to a different agent." Omitted at every
+// other call site (Overview), so those render exactly as before.
+function renderOneCoreVisual(workerStats, selectedKey, onSelect) {
   const workers = [
     { key: "oma", label: "Oma", sub: "Office", tone: "red" },
     { key: "osa", label: "Osa", sub: "Public / Ochiga Website", tone: "blue" },
@@ -10823,23 +10839,31 @@ function renderOneCoreVisual(workerStats) {
     const statsLine = stats
       ? `<span style="font-size:10px;color:var(--text-tertiary);">${stats.capability_count} caps${Number.isFinite(stats.pending_intervention_count) ? ` · ${stats.pending_intervention_count} pending` : ""}</span>`
       : "";
-    spokes.appendChild(el(`
-      <div style="display:flex;flex-direction:column;align-items:center;gap:4px;min-width:96px;">
+    const isSelected = selectedKey === w.key;
+    const spoke = el(`
+      <div style="display:flex;flex-direction:column;align-items:center;gap:4px;min-width:96px;padding:6px;border-radius:var(--radius);${isSelected ? "background:rgba(255,255,255,0.04);border:1px solid var(--line-strong);" : "border:1px solid transparent;"}${onSelect ? "cursor:pointer;" : ""}">
         <span style="font-size:11px;color:var(--text-tertiary);">↑ governed worker</span>
         ${badge(w.label, w.tone)}
         <span style="font-size:10.5px;color:var(--text-tertiary);text-align:center;">${escapeHtml(w.sub)}</span>
         ${statsLine}
       </div>
-    `));
+    `);
+    if (onSelect) spoke.addEventListener("click", () => onSelect(w.key));
+    spokes.appendChild(spoke);
   });
   const outer = el(`<div></div>`);
   outer.appendChild(wrap);
   outer.appendChild(spokes);
-  outer.appendChild(el(`<p class="home-panel-empty" style="text-align:center;margin-top:var(--space-3);">One Oyi Core, four governed workers -- not four independent AI systems.</p>`));
+  const selectedWorkerDef = selectedKey ? workers.find((w) => w.key === selectedKey) : null;
+  outer.appendChild(el(`<p class="home-panel-empty" style="text-align:center;margin-top:var(--space-3);">${
+    selectedWorkerDef
+      ? `ONE CORE → viewing the <strong style="color:var(--text-secondary);">${escapeHtml(selectedWorkerDef.label)}</strong> governed surface`
+      : "One Oyi Core, four governed workers -- not four independent AI systems."
+  }</p>`));
   return outer;
 }
 
-async function renderIntelligenceCapabilitiesSection(body, token) {
+async function renderIntelligenceCapabilitiesSection(body, token, initialWorker) {
   body.innerHTML = "";
   body.appendChild(skeletonPanel(3));
   let data;
@@ -10916,7 +10940,12 @@ async function renderIntelligenceCapabilitiesSection(body, token) {
   const listSection = el(`<div style="margin-top:var(--space-4);"></div>`);
   body.appendChild(listSection);
 
-  let selectedWorker = "";
+  const ALL_WORKERS = ["Oma", "Osa", "Facility", "Consumer"];
+  // Slice 3 -- Workers' detail view links here with
+  // observatory/capabilities/worker/<Label> to pre-filter this exact
+  // list, rather than duplicating the capability list UI on the Workers
+  // page itself.
+  let selectedWorker = ALL_WORKERS.includes(initialWorker) ? initialWorker : "";
   const workerToggleRow = el(`<div class="list-toolbar" style="border:none;padding:0 0 var(--space-2);display:flex;gap:6px;flex-wrap:wrap;align-items:center;"><span style="font-size:11.5px;color:var(--text-tertiary);margin-right:4px;">Worker:</span></div>`);
   const listHost = el(`<div></div>`);
 
@@ -10948,8 +10977,7 @@ async function renderIntelligenceCapabilitiesSection(body, token) {
     });
   }
 
-  const ALL_WORKERS = ["Oma", "Osa", "Facility", "Consumer"];
-  const allBtn = el(`<button type="button" class="btn btn-ghost btn-sm active">All</button>`);
+  const allBtn = el(`<button type="button" class="btn btn-ghost btn-sm${selectedWorker ? "" : " active"}">All</button>`);
   allBtn.addEventListener("click", () => {
     selectedWorker = "";
     [...workerToggleRow.querySelectorAll("button")].forEach((b) => b.classList.remove("active"));
@@ -10958,7 +10986,7 @@ async function renderIntelligenceCapabilitiesSection(body, token) {
   });
   workerToggleRow.appendChild(allBtn);
   ALL_WORKERS.forEach((w) => {
-    const btn = el(`<button type="button" class="btn btn-ghost btn-sm">${escapeHtml(w)}</button>`);
+    const btn = el(`<button type="button" class="btn btn-ghost btn-sm${selectedWorker === w ? " active" : ""}">${escapeHtml(w)}</button>`);
     btn.addEventListener("click", () => {
       selectedWorker = w;
       [...workerToggleRow.querySelectorAll("button")].forEach((b) => b.classList.remove("active"));
@@ -11041,6 +11069,331 @@ function renderIntelligencePlaceholderSection(body, label) {
       <p class="home-panel-empty">Not yet exposed in this release. This section is part of the locked Intelligence information architecture and will be built in a later slice.</p>
     </div>
   `));
+}
+
+// ---------------------------------------------------------------
+// Intelligence System Visibility, Slice 3 -- Workers.
+//
+// Section 10's locked presentation terminology. Machine identifiers
+// (oma/osa/facility/consumer) remain the only authority identifiers --
+// these are display-only, matching the exact strings Backend's
+// WORKER_DEFINITIONS already uses for display_name (kept here too so
+// the landing page's cards don't wait on a round-trip before painting
+// a label).
+// ---------------------------------------------------------------
+const WORKER_DISPLAY_NAME = {
+  oma: "Office Intelligence",
+  osa: "Public / Ochiga Website",
+  facility: "Operational Intelligence",
+  consumer: "Home Intelligence",
+};
+
+function workerAvailabilityBadge(w) {
+  const allAvailable = Boolean(w.capabilities?.available && w.attention?.available);
+  return allAvailable ? badge("Available", "green") : badge("Partial", "amber");
+}
+
+// Domain x worker capability matrix -- built entirely from the SAME full
+// capability list Slice 1's Oyi Capabilities page already fetches (
+// apiGetIntelligenceCapabilities). No new Backend aggregate: Section 4's
+// own "reuse... do not duplicate" instruction, and it keeps this matrix
+// trivially consistent with the Capabilities page by construction.
+function buildWorkerCapabilityMatrix(capabilities, classificationFilter) {
+  const filtered = classificationFilter ? capabilities.filter((c) => c.classification === classificationFilter) : capabilities;
+  const domainRows = new Map();
+  for (const cap of filtered) {
+    const key = cap.domain_label || cap.domain;
+    if (!domainRows.has(key)) domainRows.set(key, { domain_label: key, oma: 0, osa: 0, facility: 0, consumer: 0, total: 0 });
+    const row = domainRows.get(key);
+    (cap.supported_workers || []).forEach((label) => {
+      const workerKey = String(label).toLowerCase();
+      if (workerKey in row) {
+        row[workerKey] += 1;
+        row.total += 1;
+      }
+    });
+  }
+  return Array.from(domainRows.values()).sort((a, b) => b.total - a.total);
+}
+
+// Workers landing -- Section 8's A-E hierarchy. One-Core topology,
+// worker summary cards, domain/authority matrix, recent safe activity,
+// authority boundary summary.
+async function renderIntelligenceWorkersSection(body, token) {
+  body.innerHTML = "";
+  body.appendChild(skeletonPanel(3));
+
+  const [workersOutcome, capsOutcome] = await Promise.all([
+    apiGetIntelligenceWorkers().then((data) => ({ ok: true, data })).catch((err) => ({ ok: false, error: err?.message || "unavailable" })),
+    apiGetIntelligenceCapabilities().then((data) => ({ ok: true, data })).catch((err) => ({ ok: false, error: err?.message || "unavailable" })),
+  ]);
+  if (token !== state.renderToken) return;
+  body.innerHTML = "";
+
+  if (!workersOutcome.ok || workersOutcome.data?.available === false) {
+    body.appendChild(el(`<div class="status-callout status-callout-amber">Oyi Core worker intelligence is not reachable right now.</div>`));
+    return;
+  }
+  const workers = workersOutcome.data.workers || [];
+  const workerStats = Object.fromEntries(workers.map((w) => [
+    w.identity,
+    {
+      capability_count: w.capabilities?.available ? w.capabilities.total : null,
+      pending_intervention_count: w.attention?.available ? w.attention.pending_intervention_count : null,
+    },
+  ]));
+
+  // ---- A. One-Core topology ----
+  // Selecting a spoke navigates to that worker's detail -- "viewing a
+  // governed surface," never "opening a different agent" (no spoke is
+  // ever hidden or replaced; all four stay visible on this page).
+  body.appendChild(renderOneCoreVisual(workerStats, null, (key) => navigate(`observatory/workers/${key}`)));
+
+  // ---- B. Worker summary cards ----
+  const cardsRow = el(`<div class="home-grid" style="margin-top:var(--space-4);"></div>`);
+  body.appendChild(cardsRow);
+  workers.forEach((w) => {
+    const panel = homePanel(WORKER_DISPLAY_NAME[w.identity] || w.display_name, "Open", () => navigate(`observatory/workers/${w.identity}`));
+    const rows = [];
+    if (w.capabilities?.available) {
+      rows.push({ label: "Capabilities", html: `${w.capabilities.total} total <span style="color:var(--text-tertiary);">(${w.capabilities.read} read / ${w.capabilities.action} action)</span>` });
+      const topDomains = (w.capabilities.domains || []).slice(0, 3).map((d) => d.domain_label).join(", ");
+      rows.push({ label: "Primary Domains", html: topDomains ? escapeHtml(topDomains) : "None recorded" });
+    } else {
+      rows.push({ label: "Capabilities", html: "Unavailable" });
+    }
+    rows.push({ label: "Pending Intervention", html: w.attention?.available ? String(w.attention.pending_intervention_count) : "Unavailable" });
+    rows.push({ label: "Availability", html: workerAvailabilityBadge(w) });
+    panel.appendChild(FactGrid(rows));
+    cardsRow.appendChild(homePanelWrap("span-3", panel));
+  });
+
+  // ---- C. Domain / Authority matrix ----
+  const matrixPanel = homePanel("Domain / Authority Matrix");
+  matrixPanel.style.marginTop = "var(--space-4)";
+  if (!capsOutcome.ok || capsOutcome.data?.available === false) {
+    matrixPanel.appendChild(el(`<p class="home-panel-empty">Capability registry is temporarily unavailable -- the matrix needs live capability data.</p>`));
+  } else {
+    const capabilities = capsOutcome.data.capabilities || [];
+    const toolbar = el(`<div class="list-toolbar" style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;"></div>`);
+    const domainSearch = el(`<input type="search" class="toolbar-search" placeholder="Filter domain..." style="max-width:220px;" />`);
+    const classificationSelect = el(`<select class="toolbar-filter"><option value="">All Types</option><option value="read">Read</option><option value="action">Action</option></select>`);
+    toolbar.appendChild(domainSearch);
+    toolbar.appendChild(classificationSelect);
+    matrixPanel.appendChild(toolbar);
+    const matrixHost = el(`<div style="overflow-x:auto;margin-top:var(--space-2);"></div>`);
+    matrixPanel.appendChild(matrixHost);
+
+    function drawMatrix() {
+      const rows = buildWorkerCapabilityMatrix(capabilities, classificationSelect.value)
+        .filter((r) => !domainSearch.value || r.domain_label.toLowerCase().includes(domainSearch.value.toLowerCase()));
+      matrixHost.innerHTML = "";
+      matrixHost.appendChild(renderDataTable({
+        columns: [
+          { key: "domain_label", label: "Domain / Capability" },
+          { key: "oma", label: "Oma", render: (r) => (r.oma ? String(r.oma) : "—") },
+          { key: "osa", label: "Osa", render: (r) => (r.osa ? String(r.osa) : "—") },
+          { key: "facility", label: "Facility", render: (r) => (r.facility ? String(r.facility) : "—") },
+          { key: "consumer", label: "Consumer", render: (r) => (r.consumer ? String(r.consumer) : "—") },
+        ],
+        rows,
+        emptyMessage: "No domains match this filter.",
+      }));
+    }
+    domainSearch.addEventListener("input", drawMatrix);
+    classificationSelect.addEventListener("change", drawMatrix);
+    drawMatrix();
+  }
+  body.appendChild(matrixPanel);
+
+  // ---- D. Recent safe activity ----
+  // Durable Trace is deliberately deferred -- this only ever shows what
+  // the existing cross-surface observability/events contract can
+  // truthfully attribute to a surface today; no invented turn counts,
+  // uptime, or success rates.
+  const activityPanel = homePanel("Recent Safe Activity");
+  activityPanel.style.marginTop = "var(--space-4)";
+  const anyActivityAvailable = workers.some((w) => w.activity?.available);
+  if (!anyActivityAvailable) {
+    activityPanel.appendChild(el(`<p class="home-panel-empty">Detailed worker activity becomes available with durable Intelligence Trace.</p>`));
+  } else {
+    activityPanel.appendChild(FactGrid(workers.map((w) => ({
+      label: WORKER_DISPLAY_NAME[w.identity] || w.display_name,
+      html: w.activity?.available
+        ? `${w.activity.recent_count} event${w.activity.recent_count === 1 ? "" : "s"} in the last 24h${w.failures?.available && w.failures.recent_count ? ` <span style="color:var(--red-bright);">(${w.failures.recent_count} failed)</span>` : ""}`
+        : "Activity unavailable",
+    }))));
+  }
+  body.appendChild(activityPanel);
+
+  // ---- E. Authority boundary summary ----
+  const authorityPanel = homePanel("Authority Boundary Summary");
+  authorityPanel.style.marginTop = "var(--space-4)";
+  const authorityRows = [];
+  workers.forEach((w) => {
+    const canList = w.capabilities?.available ? (w.capabilities.domains || []).slice(0, 4).map((d) => d.domain_label).join(", ") : "";
+    const cannotList = (w.authority?.known_restrictions || []).join(" ");
+    authorityRows.push({ label: `${WORKER_DISPLAY_NAME[w.identity] || w.display_name} — Can`, html: escapeHtml(canList || "Unavailable") });
+    authorityRows.push({ label: `${WORKER_DISPLAY_NAME[w.identity] || w.display_name} — Cannot`, html: escapeHtml(cannotList || "Not recorded") });
+  });
+  authorityPanel.appendChild(FactGrid(authorityRows));
+  body.appendChild(authorityPanel);
+}
+
+// Section 9 -- Worker detail. Identity/surface/role, capability summary,
+// primary domains, governed actions, confirmation requirements,
+// authority/scope, pending interventions (reusing Slice 2's own list +
+// detail route -- no worker-specific intervention state), recent safe
+// activity, known restrictions, then a direct link into Oyi Capabilities
+// pre-filtered to this worker.
+async function renderIntelligenceWorkerDetail(body, identity, token) {
+  body.innerHTML = "";
+  body.appendChild(skeletonPanel(3));
+
+  const [workerOutcome, interventionsOutcome] = await Promise.all([
+    apiGetIntelligenceWorkerDetail(identity).then((data) => ({ ok: true, data })).catch((err) => ({ ok: false, status: err?.status, error: err?.message || "unavailable" })),
+    apiGetIntelligenceInterventions(200).then((data) => ({ ok: true, data })).catch((err) => ({ ok: false, error: err?.message || "unavailable" })),
+  ]);
+  if (token !== state.renderToken) return;
+  body.innerHTML = "";
+
+  const backBtn = el(`<button type="button" class="btn btn-ghost btn-sm" style="margin-bottom:var(--space-3);">← Workers</button>`);
+  backBtn.addEventListener("click", () => navigate("observatory/workers"));
+  body.appendChild(backBtn);
+
+  if (!workerOutcome.ok && workerOutcome.status === 404) {
+    body.appendChild(errorPanel(`"${identity}" is not a recognized governed worker. Valid workers: oma, osa, facility, consumer.`));
+    return;
+  }
+  if (!workerOutcome.ok || workerOutcome.data?.available === false) {
+    body.appendChild(el(`<div class="status-callout status-callout-amber">Oyi Core worker intelligence is not reachable right now.</div>`));
+    return;
+  }
+
+  const w = workerOutcome.data.worker;
+  const displayName = WORKER_DISPLAY_NAME[w.identity] || w.display_name;
+
+  body.appendChild(el(`<div class="view-heading"><h1>${escapeHtml(displayName)}</h1></div>`));
+  body.appendChild(renderOneCoreVisual(null, w.identity, null));
+
+  const identityPanel = homePanel("Identity");
+  identityPanel.appendChild(FactGrid([
+    { label: "Identity", html: `<code>${escapeHtml(w.identity)}</code>` },
+    { label: "Surface", html: `<code>${escapeHtml(w.surface)}</code>` },
+    { label: "Role in One-Core", html: "One of four governed surfaces of the same Oyi Core — not an independent AI." },
+    { label: "Purpose", html: escapeHtml(w.purpose || "") },
+  ]));
+  body.appendChild(identityPanel);
+
+  const rowCap = el(`<div class="home-grid" style="margin-top:var(--space-4);"></div>`);
+  body.appendChild(rowCap);
+
+  const capPanel = homePanel("Capability Summary");
+  if (w.capabilities?.available) {
+    capPanel.appendChild(FactGrid([
+      { label: "Total", html: String(w.capabilities.total) },
+      { label: "Enabled", html: String(w.capabilities.enabled) },
+      { label: "Read / Action", html: `${w.capabilities.read} / ${w.capabilities.action}` },
+      { label: "By Risk", html: Object.entries(w.capabilities.by_risk_class || {}).map(([k, n]) => `${titleCase(k)}: ${n}`).join(", ") || "None" },
+      { label: "By Confirmation", html: Object.entries(w.capabilities.by_confirmation_policy || {}).map(([k, n]) => `${titleCase(k)}: ${n}`).join(", ") || "None" },
+    ]));
+  } else {
+    capPanel.appendChild(el(`<p class="home-panel-empty">Capability summary unavailable.</p>`));
+  }
+  rowCap.appendChild(homePanelWrap("span-6", capPanel));
+
+  const authPanel = homePanel("Authority / Scope");
+  authPanel.appendChild(FactGrid([
+    { label: "Scope Model", html: escapeHtml(w.authority?.scope_model || "Unknown") },
+    { label: "Permission Model", html: escapeHtml(w.authority?.permission_model || "Unknown") },
+    {
+      label: "Governed Action Systems",
+      html: (w.authority?.governed_action_systems || []).length
+        ? w.authority.governed_action_systems.map((s) => badge(s.label, "amber")).join(" ")
+        : "None for this worker",
+    },
+  ]));
+  rowCap.appendChild(homePanelWrap("span-6", authPanel));
+
+  // Primary domains + governed actions
+  const domainsPanel = homePanel("Primary Domains");
+  domainsPanel.style.marginTop = "var(--space-4)";
+  if (w.capabilities?.available && (w.capabilities.domains || []).length) {
+    domainsPanel.appendChild(barDistribution(
+      w.capabilities.domains.map((d) => ({ label: d.domain_label, count: d.count, tone: "blue" })),
+      "No domains recorded."
+    ));
+  } else {
+    domainsPanel.appendChild(el(`<p class="home-panel-empty">No domains recorded.</p>`));
+  }
+  body.appendChild(domainsPanel);
+
+  // Known restrictions -- CANNOT DO, paired with the live-derived CAN
+  // above (Section 3's own "both CAN and CANNOT" requirement).
+  const restrictionsPanel = homePanel("Known Restrictions");
+  restrictionsPanel.style.marginTop = "var(--space-4)";
+  const restrictions = w.authority?.known_restrictions || [];
+  if (restrictions.length) {
+    const list = el(`<ul style="margin:0;padding-left:18px;color:var(--text-secondary);font-size:12.5px;line-height:1.7;"></ul>`);
+    restrictions.forEach((r) => list.appendChild(el(`<li>${escapeHtml(r)}</li>`)));
+    restrictionsPanel.appendChild(list);
+  } else {
+    restrictionsPanel.appendChild(el(`<p class="home-panel-empty">Not recorded.</p>`));
+  }
+  body.appendChild(restrictionsPanel);
+
+  // Pending interventions -- reuses Slice 2's own list + detail route,
+  // filtered client-side by this worker's display label. No
+  // worker-specific intervention state is created here.
+  const attentionPanel = homePanel("Pending Interventions");
+  attentionPanel.style.marginTop = "var(--space-4)";
+  if (!w.attention?.available) {
+    attentionPanel.appendChild(el(`<p class="home-panel-empty">Intervention status unavailable.</p>`));
+  } else if (!interventionsOutcome.ok || interventionsOutcome.data?.available === false) {
+    attentionPanel.appendChild(el(`<p class="home-panel-empty">Intervention list unavailable, though the count above (${w.attention.pending_intervention_count}) is live.</p>`));
+  } else {
+    const shortLabel = INTELLIGENCE_WORKER_LABELS[w.identity] || titleCase(w.identity);
+    const items = (interventionsOutcome.data.interventions || []).filter((i) => i.worker === shortLabel);
+    if (!items.length) {
+      attentionPanel.appendChild(el(`<p class="home-panel-empty">No human intervention currently required for this worker.</p>`));
+    } else {
+      const list = el(`<div class="attention-list"></div>`);
+      items.forEach((item) => {
+        const row = el(`
+          <div class="attention-row" style="cursor:pointer;">
+            <span class="attention-type">${badge(titleCase(item.intervention_type), "amber")}</span>
+            <span class="attention-title">${escapeHtml(item.title)}</span>
+            <span class="attention-owner">${escapeHtml(item.required_human_step)}</span>
+            <span class="attention-owner">${escapeHtml(fmtRelative(item.created_at))}</span>
+          </div>
+        `);
+        row.addEventListener("click", () => navigate(`observatory/overview/intervention/${encodeURIComponent(item.id)}`));
+        list.appendChild(row);
+      });
+      attentionPanel.appendChild(list);
+    }
+  }
+  body.appendChild(attentionPanel);
+
+  // Recent safe activity
+  const activityPanel = homePanel("Recent Safe Activity");
+  activityPanel.style.marginTop = "var(--space-4)";
+  if (w.activity?.available) {
+    activityPanel.appendChild(FactGrid([
+      { label: "Last 24h", html: `${w.activity.recent_count} event${w.activity.recent_count === 1 ? "" : "s"}` },
+      { label: "Failures (24h)", html: w.failures?.available ? String(w.failures.recent_count) : "Unavailable" },
+    ]));
+  } else {
+    activityPanel.appendChild(el(`<p class="home-panel-empty">${escapeHtml(w.activity?.note || "Detailed worker activity becomes available with durable Intelligence Trace.")}</p>`));
+  }
+  body.appendChild(activityPanel);
+
+  // Direct link into Oyi Capabilities, pre-filtered to this worker --
+  // does not duplicate the capability list/detail UI.
+  const capabilityFilterLabel = INTELLIGENCE_WORKER_LABELS[w.identity] || titleCase(w.identity);
+  const linkBtn = el(`<button type="button" class="btn btn-ghost btn-sm" style="margin-top:var(--space-4);">View Oyi Capabilities filtered to ${escapeHtml(displayName)} →</button>`);
+  linkBtn.addEventListener("click", () => navigate(`observatory/capabilities/worker/${encodeURIComponent(capabilityFilterLabel)}`));
+  body.appendChild(linkBtn);
 }
 
 // ---------------------------------------------------------------
@@ -11305,10 +11658,26 @@ async function renderObservatoryView(outlet, rest, token) {
     body.appendChild(overviewContent);
     await renderIntelligenceOverviewSection(overviewContent, token);
   } else if (sectionKey === "capabilities") {
-    if (detailKey) {
-      await renderIntelligenceCapabilityDetail(body, decodeURIComponent(detailKey), token);
+    // Fix (Slice 3): destructuring above is [sectionKey, detailKind,
+    // detailKey] (added in Slice 2 for the overview/intervention
+    // sub-route) -- for observatory/capabilities/<key>, the capability
+    // key lands in detailKind (rest[1]), not detailKey (rest[2]), which
+    // this branch was still checking. A worker-filter deep link
+    // (observatory/capabilities/worker/<Label>, from Workers' detail
+    // view) uses the same rest[1]/rest[2] pair deliberately so both
+    // route shapes share one consistent pattern.
+    if (detailKind === "worker" && detailKey) {
+      await renderIntelligenceCapabilitiesSection(body, token, decodeURIComponent(detailKey));
+    } else if (detailKind) {
+      await renderIntelligenceCapabilityDetail(body, decodeURIComponent(detailKind), token);
     } else {
       await renderIntelligenceCapabilitiesSection(body, token);
+    }
+  } else if (sectionKey === "workers") {
+    if (detailKind) {
+      await renderIntelligenceWorkerDetail(body, decodeURIComponent(detailKind), token);
+    } else {
+      await renderIntelligenceWorkersSection(body, token);
     }
   } else {
     const found = INTELLIGENCE_SECTIONS.find((s) => s.key === sectionKey);

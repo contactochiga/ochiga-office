@@ -52,6 +52,8 @@ const {
   callOyiCoreIntelligenceSummary,
   callOyiCoreIntelligenceOverview,
   callOyiCoreIntelligenceInterventions,
+  callOyiCoreIntelligenceWorkers,
+  callOyiCoreIntelligenceWorkerDetail,
   callOyiCoreListAutomations,
   callOyiCoreGetAutomation,
   callOyiCoreCreateAutomation,
@@ -5113,6 +5115,51 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
         json(
           res,
           200,
+          result.ok
+            ? { ...result.data, available: true }
+            : { ok: false, available: false, reason: result.reason || "unavailable" },
+          { "x-request-id": ctx.requestId }
+        );
+        return;
+      }
+
+      // Intelligence System Visibility, Slice 3 -- same "view_traces" read
+      // gate as the Slice 1/2 Intelligence routes above (same Intelligence
+      // area, not a new permission surface). Thin pass-through to
+      // Backend's per-worker read model; never fabricates data when
+      // Backend is unreachable. The detail route is matched by prefix
+      // (this server uses plain pathname equality elsewhere, but a path
+      // param is unavoidable here -- the workerKey segment is never used
+      // for anything but a single encodeURIComponent'd path append).
+      if (pathname === "/api/lead-agents/admin/intelligence/workers") {
+        if (req.method !== "GET") {
+          methodNotAllowed(res, "GET");
+          return;
+        }
+        authorizePermission(authContext, "view_traces");
+        const result = await callOyiCoreIntelligenceWorkers(config);
+        json(
+          res,
+          200,
+          result.ok
+            ? { ...result.data, available: true }
+            : { ok: false, available: false, reason: result.reason || "unavailable" },
+          { "x-request-id": ctx.requestId }
+        );
+        return;
+      }
+
+      if (pathname.startsWith("/api/lead-agents/admin/intelligence/workers/")) {
+        if (req.method !== "GET") {
+          methodNotAllowed(res, "GET");
+          return;
+        }
+        authorizePermission(authContext, "view_traces");
+        const workerKey = pathname.slice("/api/lead-agents/admin/intelligence/workers/".length);
+        const result = await callOyiCoreIntelligenceWorkerDetail(config, workerKey);
+        json(
+          res,
+          result.ok ? 200 : (result.status === 404 ? 404 : 200),
           result.ok
             ? { ...result.data, available: true }
             : { ok: false, available: false, reason: result.reason || "unavailable" },

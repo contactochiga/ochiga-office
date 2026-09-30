@@ -851,6 +851,77 @@ async function callOyiCoreIntelligenceInterventions(config = {}, options = {}) {
   }
 }
 
+// Intelligence System Visibility, Slice 3 — Worker Visibility. Same
+// credential/timeout/honest-failure convention as every other Backend
+// read call in this file.
+async function callOyiCoreIntelligenceWorkers(config = {}, options = {}) {
+  const baseUrl = String(config.officeBackendBaseUrl || "").replace(/\/+$/, "");
+  const path = config.officeIntelligenceWorkersPath || "/office/intelligence/workers";
+  if (!baseUrl) {
+    return { ok: false, unavailable: true, reason: "not_configured" };
+  }
+  const headers = {};
+  if (config.officeBackendApiKey) headers["x-office-api-key"] = config.officeBackendApiKey;
+  if (config.officeBackendBearerToken) headers.authorization = `Bearer ${config.officeBackendBearerToken}`;
+
+  const get = options.httpGet || ((targetUrl, requestConfig) => axios.get(targetUrl, requestConfig));
+  try {
+    const response = await get(`${baseUrl}${path}`, {
+      timeout: config.officeBackendEventTimeoutMs || 10_000,
+      headers,
+      validateStatus: () => true,
+    });
+    const status = Number(response && response.status) || 0;
+    const body = response && response.data && typeof response.data === "object" ? response.data : {};
+    if (status >= 200 && status < 300 && body.ok !== false) {
+      return { ok: true, unavailable: false, status, data: body };
+    }
+    return { ok: false, unavailable: true, status, reason: text(body.error || "backend_rejected") };
+  } catch (error) {
+    return {
+      ok: false,
+      unavailable: true,
+      status: 0,
+      reason: "network_error",
+      error: error && error.code ? String(error.code) : "request_failed",
+    };
+  }
+}
+
+async function callOyiCoreIntelligenceWorkerDetail(config = {}, workerKey, options = {}) {
+  const baseUrl = String(config.officeBackendBaseUrl || "").replace(/\/+$/, "");
+  const basePath = config.officeIntelligenceWorkersPath || "/office/intelligence/workers";
+  if (!baseUrl) {
+    return { ok: false, unavailable: true, reason: "not_configured" };
+  }
+  const headers = {};
+  if (config.officeBackendApiKey) headers["x-office-api-key"] = config.officeBackendApiKey;
+  if (config.officeBackendBearerToken) headers.authorization = `Bearer ${config.officeBackendBearerToken}`;
+
+  const get = options.httpGet || ((targetUrl, requestConfig) => axios.get(targetUrl, requestConfig));
+  try {
+    const response = await get(`${baseUrl}${basePath}/${encodeURIComponent(String(workerKey || ""))}`, {
+      timeout: config.officeBackendEventTimeoutMs || 10_000,
+      headers,
+      validateStatus: () => true,
+    });
+    const status = Number(response && response.status) || 0;
+    const body = response && response.data && typeof response.data === "object" ? response.data : {};
+    if (status >= 200 && status < 300 && body.ok !== false) {
+      return { ok: true, unavailable: false, status, data: body };
+    }
+    return { ok: false, unavailable: true, status, reason: text(body.error || "backend_rejected") };
+  } catch (error) {
+    return {
+      ok: false,
+      unavailable: true,
+      status: 0,
+      reason: "network_error",
+      error: error && error.code ? String(error.code) : "request_failed",
+    };
+  }
+}
+
 // Oyi Runtime Contract, Domain 3 (Task) — Backend's additive
 // office-backend-intelligence-events projection into ochiga_workflows.
 // Same credential/timeout convention as every other Backend call here.
@@ -996,6 +1067,8 @@ module.exports = {
   callOyiCoreIntelligenceSummary,
   callOyiCoreIntelligenceOverview,
   callOyiCoreIntelligenceInterventions,
+  callOyiCoreIntelligenceWorkers,
+  callOyiCoreIntelligenceWorkerDetail,
   callOyiCoreCreateWorkflow,
   callOyiCoreTransitionWorkflow,
   callOyiCoreListAutomations,
