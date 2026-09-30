@@ -176,6 +176,14 @@ function createConfig() {
     // own local traces table has no visibility into).
     officeObservabilityEventsPath:
       process.env.OFFICE_OBSERVABILITY_EVENTS_PATH || "/office/observability/events",
+    // Intelligence System Visibility, Slice 1 — Backend's live capability
+    // registry introspection + system summary, safe structural metadata
+    // only (see Ochiga-backend src/routes/officeExport.ts's own header
+    // comment for the exact safety boundary).
+    officeIntelligenceCapabilitiesPath:
+      process.env.OFFICE_INTELLIGENCE_CAPABILITIES_PATH || "/office/intelligence/capabilities",
+    officeIntelligenceSummaryPath:
+      process.env.OFFICE_INTELLIGENCE_SUMMARY_PATH || "/office/intelligence/summary",
     // Oyi Runtime Contract, Domain 3 (Task) — additive projection of the
     // 4 genuine overlapping commercial workflow types into Backend's
     // ochiga_workflows. Default ON, but a single env flag disables the

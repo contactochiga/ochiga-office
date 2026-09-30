@@ -627,7 +627,12 @@ const ADMIN_NAV = [
   { key: "audit", label: "Audit", permission: "audit.read", phase: null },
   // Route/key/permission unchanged — label-only rename (Programme 4 Home
   // redesign brief).
-  { key: "observatory", label: "AI Agents", permission: "audit.read", phase: null },
+  // Intelligence System Visibility, Slice 1 -- internal route key and
+  // permission gate unchanged deliberately (no existing bookmark/deep-
+  // link breaks); only the visible label changes, from "AI Agents" to
+  // "Intelligence" -- this now represents the complete Oyi intelligence
+  // system (one Core, four governed workers), not an agent roster.
+  { key: "observatory", label: "Intelligence", permission: "audit.read", phase: null },
 ];
 
 // Small, restrained outline icons (16x16, stroke-based, currentColor) for
@@ -1461,7 +1466,7 @@ async function renderRoute() {
   } else if (topKey === "observatory") {
     outlet.innerHTML = "";
     outlet.appendChild(skeletonPanel(4));
-    await renderObservatoryView(outlet, token);
+    await renderObservatoryView(outlet, rest, token);
   } else {
     setTopbar(item.label, item.phase ? `Phase ${item.phase}` : "");
     setSelectedObject(null);
@@ -2109,7 +2114,7 @@ function renderContentPanel(content) {
 }
 
 async function renderAiAgentsHomePanel(token) {
-  const panel = homePanel("AI Agents", "View all", () => navigate("observatory"));
+  const panel = homePanel("Intelligence", "View all", () => navigate("observatory"));
   try {
     // "Recorded Interactions" must agree with the AI Agents (Observatory)
     // page — it previously didn't: Home counted traces.length only
@@ -10125,6 +10130,15 @@ async function apiListTraces(limit) {
 async function apiListObservabilityEvents(limit) {
   return api(`/api/lead-agents/admin/observability-events${limit ? `?limit=${encodeURIComponent(limit)}` : ""}`);
 }
+// Intelligence System Visibility, Slice 1 -- live capability registry
+// introspection, safe-field-only. Backend-unavailable renders as
+// `{ available: false }`, never a cached or invented count.
+async function apiGetIntelligenceCapabilities() {
+  return api("/api/lead-agents/admin/intelligence/capabilities");
+}
+async function apiGetIntelligenceSummary() {
+  return api("/api/lead-agents/admin/intelligence/summary");
+}
 
 // Canonical cross-surface list — the ONE place Office declares which
 // surfaces are real and observable. "Oyi Core / Direct" is deliberately
@@ -10370,12 +10384,15 @@ function groupInteractionsIntoConversations(traces, events, limit = 8) {
   return conversations.sort((a, b) => String(b.lastActivity).localeCompare(String(a.lastActivity))).slice(0, limit);
 }
 
-async function renderObservatoryView(outlet, token) {
-  setTopbar("AI Agents", "");
-  setSelectedObject(null);
-  outlet.innerHTML = "";
-  outlet.appendChild(skeletonPanel(4));
-
+// Intelligence System Visibility, Slice 1 -- this is the ORIGINAL
+// observatory content, unchanged in substance, now rendering into a
+// tab-body container (`body`) supplied by the shell (renderObservatoryView
+// below) instead of owning the whole outlet. Overview intentionally
+// keeps carrying this content per this slice's own instruction ("Overview
+// may contain the existing AI Agents content ... or a clearly intentional
+// transitional state") -- only Capabilities is newly, fully built this
+// slice.
+async function renderIntelligenceOverviewSection(body, token) {
   const canViewHealth = hasPermission("integrations.read");
   const canViewSchedules = hasPermission("office.read") || hasPermission("content.write");
 
@@ -10403,17 +10420,15 @@ async function renderObservatoryView(outlet, token) {
     scheduledContent = contentData.items || [];
   } catch (err) {
     if (token !== state.renderToken) return;
-    outlet.innerHTML = "";
-    outlet.appendChild(el(`<div class="view-heading"><h1>AI Agents</h1></div>`));
-    outlet.appendChild(errorPanel(err.message || "Could not load agent traces."));
+    body.innerHTML = "";
+    body.appendChild(errorPanel(err.message || "Could not load agent traces."));
     return;
   }
   if (token !== state.renderToken) return;
 
-  outlet.innerHTML = "";
-  outlet.appendChild(el(`<div class="view-heading"><h1>AI Agents</h1></div>`));
+  body.innerHTML = "";
   if (!eventsAvailable) {
-    outlet.appendChild(el(`<p class="home-panel-empty" style="margin:0 0 var(--space-3);">Cross-surface activity (Consumer/Facility/Website Oyi widget) is temporarily unavailable — showing Office's own recorded activity only.</p>`));
+    body.appendChild(el(`<p class="home-panel-empty" style="margin:0 0 var(--space-3);">Cross-surface activity (Consumer/Facility/Website Oyi widget) is temporarily unavailable — showing Office's own recorded activity only.</p>`));
   }
 
   // ---- KPI row ----
@@ -10448,11 +10463,11 @@ async function renderObservatoryView(outlet, token) {
     { label: "Schedules Running", value: schedulesRunning, icon: iconSvg("meetings", "kpi-icon"), tone: "amber", sub: canViewSchedules ? "Upcoming demos + scheduled content" : "Requires reports/content access" },
   ]);
   kpiGroup.style.marginBottom = "var(--space-5)";
-  outlet.appendChild(kpiGroup);
+  body.appendChild(kpiGroup);
 
   // ---- Interactions Over Time + Interactions by Surface ----
   const rowA = el(`<div class="home-grid"></div>`);
-  outlet.appendChild(rowA);
+  body.appendChild(rowA);
 
   const chartPanel = homePanel("Interactions Over Time");
   const rangeTabs = el(`<div class="list-toolbar" style="padding:0 0 var(--space-2);border:none;"></div>`);
@@ -10503,7 +10518,7 @@ async function renderObservatoryView(outlet, token) {
 
   // ---- Tool Usage + Recent Activity ----
   const rowB = el(`<div class="home-grid" style="margin-top:var(--space-4);"></div>`);
-  outlet.appendChild(rowB);
+  body.appendChild(rowB);
 
   const toolPanel = homePanel("Tool Usage");
   if (Object.keys(toolCounts).length) {
@@ -10575,11 +10590,11 @@ async function renderObservatoryView(outlet, token) {
     });
     conversationsPanel.appendChild(list);
   }
-  outlet.appendChild(conversationsPanel);
+  body.appendChild(conversationsPanel);
 
   // ---- System Health + Scheduled Tasks ----
   const rowC = el(`<div class="home-grid" style="margin-top:var(--space-4);"></div>`);
-  outlet.appendChild(rowC);
+  body.appendChild(rowC);
 
   if (canViewHealth) {
     const healthPanel = homePanel("System Health");
@@ -10728,7 +10743,313 @@ async function renderObservatoryView(outlet, token) {
     const insightsPanel = homePanel("Intelligence Insights");
     insightsPanel.style.marginTop = "var(--space-4)";
     insightsPanel.appendChild(metricCellGrid(insightCells));
-    outlet.appendChild(insightsPanel);
+    body.appendChild(insightsPanel);
+  }
+}
+
+// Intelligence System Visibility, Slice 1 -- locked information
+// architecture (exact order; do not reorder or add sections here without
+// updating the spec). Only "capabilities" is fully implemented this
+// slice; everything else renders an honest not-yet-exposed placeholder,
+// never mock data. Internal route key stays "observatory" and the
+// permission gate stays "audit.read" -- only the visible label changed,
+// from "AI Agents" to "Intelligence".
+const INTELLIGENCE_WORKER_LABELS = {
+  oma: "Oma", office_internal: "Oma",
+  osa: "Osa", public_corporate: "Osa",
+  facility: "Facility",
+  consumer: "Consumer",
+};
+const INTELLIGENCE_WORKER_TONES = {
+  oma: "red", office_internal: "red",
+  osa: "blue", public_corporate: "blue",
+  facility: "amber",
+  consumer: "green",
+};
+const INTELLIGENCE_SECTIONS = [
+  { key: "overview", label: "Overview" },
+  { key: "workers", label: "Workers" },
+  { key: "activity-trace", label: "Activity & Trace" },
+  // Labelled "Oyi Capabilities", not bare "Capabilities" -- Office
+  // already uses "Capabilities" for staff routing grants
+  // (routing-capability-editor); this is a deliberately distinct,
+  // disambiguated label for the governed intelligence capability
+  // registry, not a rename of the existing feature.
+  { key: "capabilities", label: "Oyi Capabilities" },
+  { key: "knowledge", label: "Knowledge" },
+  { key: "goals-decisions", label: "Goals & Decisions" },
+  { key: "actions-workflows", label: "Actions & Workflows" },
+  { key: "memory-context", label: "Memory & Context" },
+  { key: "learning", label: "Learning" },
+];
+
+// One Oyi Core, four governed worker/surface manifestations -- never four
+// independent brains. Compact, uses only existing Office visual language
+// (CSS vars, existing badge tones) -- no new design system.
+function renderOneCoreVisual() {
+  const workers = [
+    { label: "Oma", sub: "Office", tone: "red" },
+    { label: "Osa", sub: "Public / Ochiga Website", tone: "blue" },
+    { label: "Facility", sub: "Estate", tone: "amber" },
+    { label: "Consumer", sub: "Home", tone: "green" },
+  ];
+  const wrap = el(`
+    <div class="one-core-visual" style="display:flex;align-items:center;justify-content:center;gap:var(--space-4);flex-wrap:wrap;padding:var(--space-4) 0;">
+      <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;width:112px;height:112px;border-radius:50%;background:var(--surface-secondary,#f4f4f7);border:2px solid var(--border-strong,#d8d8e0);text-align:center;">
+        <span style="font-weight:700;font-size:13px;letter-spacing:0.02em;">OYI CORE</span>
+        <span style="font-size:10.5px;color:var(--text-tertiary);margin-top:2px;">One Intelligence</span>
+      </div>
+    </div>
+  `);
+  const spokes = el(`<div style="display:flex;gap:var(--space-3);flex-wrap:wrap;justify-content:center;margin-top:var(--space-3);"></div>`);
+  workers.forEach((w) => {
+    spokes.appendChild(el(`
+      <div style="display:flex;flex-direction:column;align-items:center;gap:4px;min-width:96px;">
+        <span style="font-size:11px;color:var(--text-tertiary);">↑ governed worker</span>
+        ${badge(w.label, w.tone)}
+        <span style="font-size:10.5px;color:var(--text-tertiary);text-align:center;">${escapeHtml(w.sub)}</span>
+      </div>
+    `));
+  });
+  const outer = el(`<div></div>`);
+  outer.appendChild(wrap);
+  outer.appendChild(spokes);
+  outer.appendChild(el(`<p class="home-panel-empty" style="text-align:center;margin-top:var(--space-3);">One Oyi Core, four governed workers -- not four independent AI systems.</p>`));
+  return outer;
+}
+
+async function renderIntelligenceCapabilitiesSection(body, token) {
+  body.innerHTML = "";
+  body.appendChild(skeletonPanel(3));
+  let data;
+  try {
+    data = await apiGetIntelligenceCapabilities();
+  } catch (err) {
+    if (token !== state.renderToken) return;
+    body.innerHTML = "";
+    body.appendChild(errorPanel(err.message || "Could not load the capability registry."));
+    return;
+  }
+  if (token !== state.renderToken) return;
+  body.innerHTML = "";
+
+  if (data?.available === false) {
+    body.appendChild(el(`<div class="status-callout status-callout-amber" style="margin-bottom:var(--space-3);">Oyi Core capability registry is not reachable right now.</div>`));
+    body.appendChild(el(`<p class="home-panel-empty">This is a live registry read -- when Oyi Core is unavailable, no capability data is shown (never a cached or invented count).</p>`));
+    return;
+  }
+
+  const capabilities = data.capabilities || [];
+  const summary = data.summary || {};
+  const governedActionSystems = data.governed_action_systems || [];
+
+  const summaryGroup = KPIGroup([
+    { label: "Total Registered", value: summary.total_registered ?? 0, icon: iconSvg("observatory", "kpi-icon"), tone: "blue" },
+    { label: "Read-Shaped", value: summary.read_shaped ?? 0, icon: iconSvg("audit", "kpi-icon"), tone: "green" },
+    { label: "Action-Shaped", value: summary.action_shaped ?? 0, icon: iconSvg("lightning", "kpi-icon"), tone: "violet" },
+    { label: "Governed Action Systems", value: governedActionSystems.length, icon: iconSvg("briefing", "kpi-icon"), tone: "amber", sub: "Not in the registry above" },
+  ]);
+  summaryGroup.style.marginBottom = "var(--space-5)";
+  body.appendChild(summaryGroup);
+
+  const rowA = el(`<div class="home-grid"></div>`);
+  body.appendChild(rowA);
+
+  const workerPanel = homePanel("By Worker");
+  const workerEntries = Object.entries(data.by_worker || {});
+  workerPanel.appendChild(donutChart(
+    workerEntries.map(([key, count]) => ({ label: INTELLIGENCE_WORKER_LABELS[key] || titleCase(key), count, tone: INTELLIGENCE_WORKER_TONES[key] || "default" })),
+    "No capabilities registered yet."
+  ));
+  rowA.appendChild(homePanelWrap("span-4", workerPanel));
+
+  const riskPanel = homePanel("By Risk");
+  const riskEntries = Object.entries(data.by_risk_class || {});
+  riskPanel.appendChild(barDistribution(
+    riskEntries.map(([key, count]) => ({ label: titleCase(key), count, tone: key === "read" ? "green" : key === "consequential_action" ? "red" : "amber" })),
+    "No capabilities registered yet."
+  ));
+  rowA.appendChild(homePanelWrap("span-4", riskPanel));
+
+  const confirmPanel = homePanel("By Confirmation");
+  const confirmEntries = Object.entries(data.by_confirmation_policy || {});
+  confirmPanel.appendChild(barDistribution(
+    confirmEntries.map(([key, count]) => ({ label: titleCase(key), count, tone: key === "none" ? "green" : "amber" })),
+    "No capabilities registered yet."
+  ));
+  rowA.appendChild(homePanelWrap("span-4", confirmPanel));
+
+  if (governedActionSystems.length) {
+    const gasPanel = homePanel("Governed Action Systems");
+    gasPanel.style.marginTop = "var(--space-4)";
+    gasPanel.appendChild(el(`<p class="home-panel-empty" style="margin-bottom:var(--space-2);">Governed work that isn't a registered capability -- tracked and permissioned separately, not folded into the registry total above.</p>`));
+    gasPanel.appendChild(FactGrid(governedActionSystems.map((s) => ({
+      label: s.label,
+      html: `${escapeHtml(s.description || "")} <span style="color:var(--text-tertiary);">(${escapeHtml((s.supported_surfaces || []).map((k) => INTELLIGENCE_WORKER_LABELS[k] || k).join(", "))})</span>`,
+    }))));
+    body.appendChild(gasPanel);
+  }
+
+  const listSection = el(`<div style="margin-top:var(--space-4);"></div>`);
+  body.appendChild(listSection);
+
+  let selectedWorker = "";
+  const workerToggleRow = el(`<div class="list-toolbar" style="border:none;padding:0 0 var(--space-2);display:flex;gap:6px;flex-wrap:wrap;align-items:center;"><span style="font-size:11.5px;color:var(--text-tertiary);margin-right:4px;">Worker:</span></div>`);
+  const listHost = el(`<div></div>`);
+
+  function drawList() {
+    listHost.innerHTML = "";
+    renderStandardList(listHost, {
+      title: "Oyi Capabilities",
+      records: capabilities,
+      preFilter: selectedWorker ? (c) => (c.supported_workers || []).includes(selectedWorker) : null,
+      columns: [
+        { key: "key", label: "Key" },
+        { key: "domain_label", label: "Domain" },
+        { key: "rollout_status", label: "Rollout", render: (r) => badge(titleCase(r.rollout_status || "unknown"), r.rollout_status === "enabled" ? "green" : "default") },
+        { key: "supported_workers", label: "Workers", render: (r) => (r.supported_workers || []).join(", ") },
+        { key: "risk_class", label: "Risk", render: (r) => badge(titleCase(r.risk_class || "read"), r.risk_class === "read" ? "green" : r.risk_class === "consequential_action" ? "red" : "amber") },
+        { key: "classification", label: "Type", render: (r) => badge(titleCase(r.classification || "read"), r.classification === "action" ? "violet" : "default") },
+      ],
+      searchFields: ["key", "domain_label", "domain"],
+      filters: [
+        { key: "domain_label", label: "Domain" },
+        { key: "rollout_status", label: "Rollout" },
+        { key: "risk_class", label: "Risk" },
+        { key: "classification", label: "Type" },
+      ],
+      canManage: false,
+      secondaryAction: null,
+      onRowClick: (record) => navigate(`observatory/capabilities/${encodeURIComponent(record.key)}`),
+      emptyMessage: "No capabilities match this worker.",
+    });
+  }
+
+  const ALL_WORKERS = ["Oma", "Osa", "Facility", "Consumer"];
+  const allBtn = el(`<button type="button" class="btn btn-ghost btn-sm active">All</button>`);
+  allBtn.addEventListener("click", () => {
+    selectedWorker = "";
+    [...workerToggleRow.querySelectorAll("button")].forEach((b) => b.classList.remove("active"));
+    allBtn.classList.add("active");
+    drawList();
+  });
+  workerToggleRow.appendChild(allBtn);
+  ALL_WORKERS.forEach((w) => {
+    const btn = el(`<button type="button" class="btn btn-ghost btn-sm">${escapeHtml(w)}</button>`);
+    btn.addEventListener("click", () => {
+      selectedWorker = w;
+      [...workerToggleRow.querySelectorAll("button")].forEach((b) => b.classList.remove("active"));
+      btn.classList.add("active");
+      drawList();
+    });
+    workerToggleRow.appendChild(btn);
+  });
+
+  listSection.appendChild(workerToggleRow);
+  listSection.appendChild(listHost);
+  drawList();
+}
+
+async function renderIntelligenceCapabilityDetail(body, key, token) {
+  body.innerHTML = "";
+  body.appendChild(skeletonPanel(2));
+  let data;
+  try {
+    data = await apiGetIntelligenceCapabilities();
+  } catch (err) {
+    if (token !== state.renderToken) return;
+    body.innerHTML = "";
+    body.appendChild(errorPanel(err.message || "Could not load this capability."));
+    return;
+  }
+  if (token !== state.renderToken) return;
+  body.innerHTML = "";
+
+  if (data?.available === false) {
+    body.appendChild(el(`<div class="status-callout status-callout-amber">Oyi Core capability registry is not reachable right now.</div>`));
+    return;
+  }
+
+  const capability = (data.capabilities || []).find((c) => c.key === key);
+  if (!capability) {
+    body.appendChild(errorPanel(`Capability "${key}" was not found in the live registry.`));
+    return;
+  }
+
+  const backBtn = el(`<button type="button" class="btn btn-ghost btn-sm" style="margin-bottom:var(--space-3);">← Oyi Capabilities</button>`);
+  backBtn.addEventListener("click", () => navigate("observatory/capabilities"));
+  body.appendChild(backBtn);
+
+  body.appendChild(el(`<div class="view-heading"><h1>${escapeHtml(capability.key)}</h1></div>`));
+
+  const panel = homePanel(capability.domain_label || "Capability");
+  panel.appendChild(FactGrid([
+    { label: "Domain", html: escapeHtml(capability.domain_label || capability.domain) },
+    { label: "Workers", html: (capability.supported_workers || []).map((w) => badge(w, "default")).join(" ") || "—" },
+    { label: "Risk", html: badge(titleCase(capability.risk_class || "read"), capability.risk_class === "read" ? "green" : capability.risk_class === "consequential_action" ? "red" : "amber") },
+    { label: "Confirmation", html: badge(titleCase(capability.confirmation_policy || "none"), capability.confirmation_policy === "none" ? "green" : "amber") },
+    { label: "Rollout", html: badge(titleCase(capability.rollout_status || "unknown"), capability.rollout_status === "enabled" ? "green" : "default") },
+    { label: "Type", html: badge(titleCase(capability.classification || "read"), capability.classification === "action" ? "violet" : "default") },
+    { label: "Required Permissions", html: (capability.required_permissions || []).join(", ") || "None" },
+    { label: "Required Scope", html: (capability.required_scope || []).join(", ") || "None" },
+    { label: "Evidence Requirements", html: (capability.evidence_requirement_summary || []).join("; ") || "None" },
+  ]));
+  body.appendChild(panel);
+}
+
+// Honest not-yet-exposed placeholder -- no mock/fabricated data for
+// sections not yet implemented in this slice.
+function renderIntelligencePlaceholderSection(body, label) {
+  body.innerHTML = "";
+  body.appendChild(el(`
+    <div class="home-panel" style="text-align:center;padding:var(--space-6) var(--space-4);">
+      <p style="font-weight:600;margin-bottom:6px;">${escapeHtml(label)}</p>
+      <p class="home-panel-empty">Not yet exposed in this release. This section is part of the locked Intelligence information architecture and will be built in a later slice.</p>
+    </div>
+  `));
+}
+
+// ---------------------------------------------------------------
+// Intelligence shell -- locked 9-section navigation. Internal route key
+// ("observatory") and permission gate ("audit.read") are unchanged
+// deliberately; only the visible identity moved from "AI Agents" to
+// "Intelligence", representing one Oyi Core with four governed worker
+// manifestations. Only "capabilities" is fully implemented this slice;
+// Overview keeps the pre-existing AI Agents content as an intentional
+// transitional state; every other section is an honest placeholder.
+// ---------------------------------------------------------------
+async function renderObservatoryView(outlet, rest, token) {
+  const [sectionKey = "overview", detailKey] = rest;
+  setTopbar("Intelligence", "");
+  setSelectedObject(null);
+  outlet.innerHTML = "";
+
+  const tabs = el(`<div class="crm-tabs"></div>`);
+  INTELLIGENCE_SECTIONS.forEach((section) => {
+    const tabBtn = el(`<button type="button" class="crm-tab ${section.key === sectionKey ? "active" : ""}">${escapeHtml(section.label)}</button>`);
+    tabBtn.addEventListener("click", () => navigate(`observatory/${section.key}`));
+    tabs.appendChild(tabBtn);
+  });
+  outlet.appendChild(tabs);
+
+  const body = el(`<div class="crm-body"></div>`);
+  outlet.appendChild(body);
+
+  if (sectionKey === "overview") {
+    body.appendChild(renderOneCoreVisual());
+    const overviewContent = el(`<div></div>`);
+    overviewContent.appendChild(skeletonPanel(4));
+    body.appendChild(overviewContent);
+    await renderIntelligenceOverviewSection(overviewContent, token);
+  } else if (sectionKey === "capabilities") {
+    if (detailKey) {
+      await renderIntelligenceCapabilityDetail(body, decodeURIComponent(detailKey), token);
+    } else {
+      await renderIntelligenceCapabilitiesSection(body, token);
+    }
+  } else {
+    const found = INTELLIGENCE_SECTIONS.find((s) => s.key === sectionKey);
+    renderIntelligencePlaceholderSection(body, found ? found.label : "Intelligence");
   }
 }
 

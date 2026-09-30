@@ -48,6 +48,8 @@ const {
   callOyiCoreOfficeInternalConversation,
   callOyiCoreSpeechSynthesis,
   callOyiCoreObservabilityEvents,
+  callOyiCoreIntelligenceCapabilities,
+  callOyiCoreIntelligenceSummary,
   callOyiCoreListAutomations,
   callOyiCoreGetAutomation,
   callOyiCoreCreateAutomation,
@@ -5028,6 +5030,47 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           res,
           200,
           { events: result.events || [], available: result.ok !== false },
+          { "x-request-id": ctx.requestId }
+        );
+        return;
+      }
+
+      // Intelligence System Visibility, Slice 1 -- same "view_traces"
+      // read gate as the observability-events route above (this is the
+      // same Intelligence area, not a new permission surface). Thin
+      // pass-through to Backend's live capability registry; never
+      // fabricates a count when Backend is unreachable.
+      if (pathname === "/api/lead-agents/admin/intelligence/capabilities") {
+        if (req.method !== "GET") {
+          methodNotAllowed(res, "GET");
+          return;
+        }
+        authorizePermission(authContext, "view_traces");
+        const result = await callOyiCoreIntelligenceCapabilities(config);
+        json(
+          res,
+          200,
+          result.ok
+            ? { ...result.data, available: true }
+            : { ok: false, available: false, reason: result.reason || "unavailable" },
+          { "x-request-id": ctx.requestId }
+        );
+        return;
+      }
+
+      if (pathname === "/api/lead-agents/admin/intelligence/summary") {
+        if (req.method !== "GET") {
+          methodNotAllowed(res, "GET");
+          return;
+        }
+        authorizePermission(authContext, "view_traces");
+        const result = await callOyiCoreIntelligenceSummary(config);
+        json(
+          res,
+          200,
+          result.ok
+            ? { ...result.data, available: true }
+            : { ok: false, available: false, reason: result.reason || "unavailable" },
           { "x-request-id": ctx.requestId }
         );
         return;
