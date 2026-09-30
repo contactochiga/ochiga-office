@@ -54,6 +54,12 @@ const {
   callOyiCoreIntelligenceInterventions,
   callOyiCoreIntelligenceWorkers,
   callOyiCoreIntelligenceWorkerDetail,
+  callOyiCoreIntelligenceGoals,
+  callOyiCoreIntelligenceGoalDetail,
+  callOyiCoreIntelligenceDecisions,
+  callOyiCoreIntelligenceDecisionDetail,
+  callOyiCoreIntelligenceActions,
+  callOyiCoreIntelligenceActionDetail,
   callOyiCoreListAutomations,
   callOyiCoreGetAutomation,
   callOyiCoreCreateAutomation,
@@ -5155,8 +5161,132 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           return;
         }
         authorizePermission(authContext, "view_traces");
-        const workerKey = pathname.slice("/api/lead-agents/admin/intelligence/workers/".length);
+        const workerKey = decodeURIComponent(pathname.slice("/api/lead-agents/admin/intelligence/workers/".length));
         const result = await callOyiCoreIntelligenceWorkerDetail(config, workerKey);
+        json(
+          res,
+          result.ok ? 200 : (result.status === 404 ? 404 : 200),
+          result.ok
+            ? { ...result.data, available: true }
+            : { ok: false, available: false, reason: result.reason || "unavailable" },
+          { "x-request-id": ctx.requestId }
+        );
+        return;
+      }
+
+      // Intelligence System Visibility, Slice 4 -- same "view_traces" read
+      // gate as every Intelligence route above. Thin pass-through to
+      // Backend's Goals/Decisions/Actions read models; never fabricates
+      // data when Backend is unreachable. Detail routes matched by
+      // prefix, same convention as the Slice 3 worker-detail route above.
+      if (pathname === "/api/lead-agents/admin/intelligence/goals") {
+        if (req.method !== "GET") {
+          methodNotAllowed(res, "GET");
+          return;
+        }
+        authorizePermission(authContext, "view_traces");
+        const result = await callOyiCoreIntelligenceGoals(config);
+        json(
+          res,
+          200,
+          result.ok
+            ? { ...result.data, available: true }
+            : { ok: false, available: false, reason: result.reason || "unavailable" },
+          { "x-request-id": ctx.requestId }
+        );
+        return;
+      }
+
+      if (pathname.startsWith("/api/lead-agents/admin/intelligence/goals/")) {
+        if (req.method !== "GET") {
+          methodNotAllowed(res, "GET");
+          return;
+        }
+        authorizePermission(authContext, "view_traces");
+        const goalId = decodeURIComponent(pathname.slice("/api/lead-agents/admin/intelligence/goals/".length));
+        const result = await callOyiCoreIntelligenceGoalDetail(config, goalId);
+        json(
+          res,
+          result.ok ? 200 : (result.status === 404 ? 404 : 200),
+          result.ok
+            ? { ...result.data, available: true }
+            : { ok: false, available: false, reason: result.reason || "unavailable" },
+          { "x-request-id": ctx.requestId }
+        );
+        return;
+      }
+
+      if (pathname === "/api/lead-agents/admin/intelligence/decisions") {
+        if (req.method !== "GET") {
+          methodNotAllowed(res, "GET");
+          return;
+        }
+        authorizePermission(authContext, "view_traces");
+        const result = await callOyiCoreIntelligenceDecisions(config);
+        json(
+          res,
+          200,
+          result.ok
+            ? { ...result.data, available: true }
+            : { ok: false, available: false, reason: result.reason || "unavailable" },
+          { "x-request-id": ctx.requestId }
+        );
+        return;
+      }
+
+      if (pathname.startsWith("/api/lead-agents/admin/intelligence/decisions/")) {
+        if (req.method !== "GET") {
+          methodNotAllowed(res, "GET");
+          return;
+        }
+        authorizePermission(authContext, "view_traces");
+        const decisionId = decodeURIComponent(pathname.slice("/api/lead-agents/admin/intelligence/decisions/".length));
+        const result = await callOyiCoreIntelligenceDecisionDetail(config, decisionId);
+        json(
+          res,
+          result.ok ? 200 : (result.status === 404 ? 404 : 200),
+          result.ok
+            ? { ...result.data, available: true }
+            : { ok: false, available: false, reason: result.reason || "unavailable" },
+          { "x-request-id": ctx.requestId }
+        );
+        return;
+      }
+
+      if (pathname === "/api/lead-agents/admin/intelligence/actions") {
+        if (req.method !== "GET") {
+          methodNotAllowed(res, "GET");
+          return;
+        }
+        authorizePermission(authContext, "view_traces");
+        const result = await callOyiCoreIntelligenceActions(config);
+        json(
+          res,
+          200,
+          result.ok
+            ? { ...result.data, available: true }
+            : { ok: false, available: false, reason: result.reason || "unavailable" },
+          { "x-request-id": ctx.requestId }
+        );
+        return;
+      }
+
+      if (pathname.startsWith("/api/lead-agents/admin/intelligence/actions/")) {
+        if (req.method !== "GET") {
+          methodNotAllowed(res, "GET");
+          return;
+        }
+        authorizePermission(authContext, "view_traces");
+        // decodeURIComponent is required here (runtime-verified bug fix):
+        // pathname comes from `new URL(req.url, ...).pathname`, which
+        // preserves %3A un-decoded (colon is in the WHATWG "path
+        // percent-encode set"). Action ids are colon-joined
+        // ("communication:<uuid>") -- without decoding first, the
+        // gateway's own encodeURIComponent() double-encodes the colon
+        // (%3A -> %253A), and Backend's compoundId.indexOf(":") then
+        // finds no real colon at all, 400ing as "Invalid action id".
+        const actionId = decodeURIComponent(pathname.slice("/api/lead-agents/admin/intelligence/actions/".length));
+        const result = await callOyiCoreIntelligenceActionDetail(config, actionId);
         json(
           res,
           result.ok ? 200 : (result.status === 404 ? 404 : 200),

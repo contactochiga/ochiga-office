@@ -10155,6 +10155,26 @@ async function apiGetIntelligenceWorkers() {
 async function apiGetIntelligenceWorkerDetail(identity) {
   return api(`/api/lead-agents/admin/intelligence/workers/${encodeURIComponent(identity)}`);
 }
+// Intelligence System Visibility, Slice 4 -- Goals & Decisions and
+// Actions & Workflows read models. Same honest-unavailable convention.
+async function apiGetIntelligenceGoals() {
+  return api("/api/lead-agents/admin/intelligence/goals");
+}
+async function apiGetIntelligenceGoalDetail(id) {
+  return api(`/api/lead-agents/admin/intelligence/goals/${encodeURIComponent(id)}`);
+}
+async function apiGetIntelligenceDecisions() {
+  return api("/api/lead-agents/admin/intelligence/decisions");
+}
+async function apiGetIntelligenceDecisionDetail(id) {
+  return api(`/api/lead-agents/admin/intelligence/decisions/${encodeURIComponent(id)}`);
+}
+async function apiGetIntelligenceActions() {
+  return api("/api/lead-agents/admin/intelligence/actions");
+}
+async function apiGetIntelligenceActionDetail(id) {
+  return api(`/api/lead-agents/admin/intelligence/actions/${encodeURIComponent(id)}`);
+}
 
 // Canonical cross-surface list — the ONE place Office declares which
 // surfaces are real and observable. "Oyi Core / Direct" is deliberately
@@ -11318,6 +11338,7 @@ async function renderIntelligenceWorkerDetail(body, identity, token) {
   // Primary domains + governed actions
   const domainsPanel = homePanel("Primary Domains");
   domainsPanel.style.marginTop = "var(--space-4)";
+  domainsPanel.classList.add("intelligence-bar-wide-labels");
   if (w.capabilities?.available && (w.capabilities.domains || []).length) {
     domainsPanel.appendChild(barDistribution(
       w.capabilities.domains.map((d) => ({ label: d.domain_label, count: d.count, tone: "blue" })),
@@ -11609,6 +11630,660 @@ async function renderInterventionDetail(body, interventionId, token) {
   body.appendChild(el(`<p class="home-panel-empty" style="margin-top:var(--space-3);">This is a visibility-only view. Use the existing approval/confirmation surface for this item to take action.</p>`));
 }
 
+// ---------------------------------------------------------------
+// Intelligence System Visibility, Slice 4 -- Goals & Decisions.
+// GOAL != DECISION != RECOMMENDATION != PLAN -- this page and its two
+// detail views each read only their own canonical object's own real
+// fields; nothing here re-derives one object's meaning from another's.
+// ---------------------------------------------------------------
+
+function goalStatusTone(status) {
+  if (status === "needs_human") return "red";
+  if (status === "blocked" || status === "waiting") return "amber";
+  if (status === "completed") return "green";
+  if (status === "failed" || status === "cancelled" || status === "expired") return "default";
+  return "blue";
+}
+function decisionStatusTone(status) {
+  if (status === "awaiting_human") return "red";
+  if (status === "approved" || status === "selected") return "blue";
+  return "default";
+}
+
+// A/D of the locked hierarchy (KPI strip + Needs Human) reuse Slice 2's
+// own /intelligence/overview goals/decisions blocks and
+// /intelligence/interventions list respectively -- no second
+// needs-human query, per this slice's own explicit instruction.
+async function renderGoalsDecisionsSection(body, token) {
+  body.innerHTML = "";
+  body.appendChild(skeletonPanel(3));
+
+  const [overviewOutcome, goalsOutcome, decisionsOutcome, interventionsOutcome] = await Promise.all([
+    apiGetIntelligenceOverview().then((data) => ({ ok: true, data })).catch((err) => ({ ok: false, error: err?.message || "unavailable" })),
+    apiGetIntelligenceGoals().then((data) => ({ ok: true, data })).catch((err) => ({ ok: false, error: err?.message || "unavailable" })),
+    apiGetIntelligenceDecisions().then((data) => ({ ok: true, data })).catch((err) => ({ ok: false, error: err?.message || "unavailable" })),
+    apiGetIntelligenceInterventions(50).then((data) => ({ ok: true, data })).catch((err) => ({ ok: false, error: err?.message || "unavailable" })),
+  ]);
+  if (token !== state.renderToken) return;
+  body.innerHTML = "";
+
+  // ---- A. KPI Strip ----
+  const ov = overviewOutcome.ok && overviewOutcome.data?.available !== false ? overviewOutcome.data : null;
+  const kpiGroup = KPIGroup([
+    { label: "Active Goals", value: overviewCountText(ov?.goals?.active), icon: iconSvg("briefing", "kpi-icon"), tone: "violet" },
+    { label: "Needs Human", value: overviewCountText(ov?.goals?.needs_human), icon: iconSvg("attention", "kpi-icon"), tone: "red" },
+    { label: "Blocked / Waiting", value: overviewCountText(ov?.goals?.blocked_or_waiting), icon: iconSvg("observatory", "kpi-icon"), tone: "amber" },
+    { label: "Active Decisions", value: overviewCountText(ov?.decisions?.active), icon: iconSvg("audit", "kpi-icon"), tone: "blue" },
+    { label: "Awaiting Human", value: overviewCountText(ov?.decisions?.awaiting_human), icon: iconSvg("attention", "kpi-icon"), tone: "red" },
+  ]);
+  kpiGroup.style.marginBottom = "var(--space-5)";
+  body.appendChild(kpiGroup);
+
+  // ---- D. Needs Human (reuse Slice 2 interventions, goal/decision sources only) ----
+  const attentionPanel = homePanel("Needs Human");
+  if (!interventionsOutcome.ok || interventionsOutcome.data?.available === false) {
+    attentionPanel.appendChild(el(`<p class="home-panel-empty">Human intervention data is temporarily unavailable.</p>`));
+  } else {
+    const items = (interventionsOutcome.data.interventions || []).filter((i) => i.source_type === "goal_escalation" || i.source_type === "decision");
+    if (!items.length) {
+      attentionPanel.appendChild(el(`<p class="home-panel-empty">No goal or decision currently needs a human.</p>`));
+    } else {
+      const list = el(`<div class="attention-list"></div>`);
+      items.forEach((item) => {
+        const row = el(`
+          <div class="attention-row" style="cursor:pointer;">
+            <span class="attention-type">${badge(item.source_type === "goal_escalation" ? "Goal" : "Decision", item.source_type === "goal_escalation" ? "violet" : "blue")}</span>
+            <span class="attention-title">${escapeHtml(item.title)}</span>
+            <span class="attention-owner">${escapeHtml(item.required_human_step)}</span>
+            <span class="attention-owner">${escapeHtml(fmtRelative(item.created_at))}</span>
+          </div>
+        `);
+        row.addEventListener("click", () => navigate(`observatory/overview/intervention/${encodeURIComponent(item.id)}`));
+        list.appendChild(row);
+      });
+      attentionPanel.appendChild(list);
+    }
+  }
+  body.appendChild(attentionPanel);
+
+  // ---- B. Goals list ----
+  const goalsHost = el(`<div style="margin-top:var(--space-4);"></div>`);
+  body.appendChild(goalsHost);
+  if (!goalsOutcome.ok || goalsOutcome.data?.available === false) {
+    const p = homePanel("Goals");
+    p.appendChild(el(`<p class="home-panel-empty">Goals are temporarily unavailable.</p>`));
+    goalsHost.appendChild(p);
+  } else {
+    const goals = goalsOutcome.data.goals || [];
+    renderStandardList(goalsHost, {
+      title: "Goals",
+      records: goals,
+      columns: [
+        { key: "title", label: "Objective" },
+        { key: "status", label: "Status", render: (r) => badge(titleCase(r.status), goalStatusTone(r.status)) },
+        { key: "surface", label: "Worker", render: (r) => (r.surface ? INTELLIGENCE_WORKER_LABELS[r.surface] || r.surface : "—") },
+        { key: "step_count", label: "Steps", render: (r) => `${r.current_step_index + 1}/${r.step_count}` },
+        { key: "updated_at", label: "Updated", render: (r) => fmtRelative(r.updated_at) },
+      ],
+      searchFields: ["title"],
+      filters: [{ key: "status", label: "Status" }],
+      canManage: false,
+      secondaryAction: null,
+      onRowClick: (r) => navigate(`observatory/goals-decisions/goal/${encodeURIComponent(r.id)}`),
+      emptyMessage: "No goals recorded.",
+    });
+  }
+
+  // ---- C. Decisions list ----
+  const decisionsHost = el(`<div style="margin-top:var(--space-4);"></div>`);
+  body.appendChild(decisionsHost);
+  if (!decisionsOutcome.ok || decisionsOutcome.data?.available === false) {
+    const p = homePanel("Decisions");
+    p.appendChild(el(`<p class="home-panel-empty">Decisions are temporarily unavailable.</p>`));
+    decisionsHost.appendChild(p);
+  } else {
+    const decisions = decisionsOutcome.data.decisions || [];
+    renderStandardList(decisionsHost, {
+      title: "Decisions",
+      records: decisions,
+      columns: [
+        { key: "title", label: "Decision" },
+        { key: "status", label: "Status", render: (r) => badge(titleCase(r.status), decisionStatusTone(r.status)) },
+        { key: "authority_mode", label: "Authority", render: (r) => badge(r.authority_mode === "human_selection" ? "Human Selection" : "Deterministic Policy", r.authority_mode === "human_selection" ? "amber" : "default") },
+        { key: "entity_type", label: "Entity" },
+        { key: "updated_at", label: "Updated", render: (r) => fmtRelative(r.updated_at) },
+      ],
+      searchFields: ["title", "entity_type"],
+      filters: [
+        { key: "status", label: "Status" },
+        { key: "authority_mode", label: "Authority" },
+      ],
+      canManage: false,
+      secondaryAction: null,
+      onRowClick: (r) => navigate(`observatory/goals-decisions/decision/${encodeURIComponent(r.id)}`),
+      emptyMessage: "No decisions recorded.",
+    });
+  }
+
+  // ---- E. Recent Outcomes -- only real canonical terminal-state data,
+  // no fabricated "success rate" ----
+  const outcomesPanel = homePanel("Recent Outcomes");
+  outcomesPanel.style.marginTop = "var(--space-4)";
+  const recentGoals = (goalsOutcome.ok ? goalsOutcome.data.goals || [] : [])
+    .filter((g) => ["completed", "failed", "cancelled", "expired"].includes(g.status))
+    .sort((a, b) => String(b.updated_at).localeCompare(String(a.updated_at)))
+    .slice(0, 5);
+  const recentDecisions = (decisionsOutcome.ok ? decisionsOutcome.data.decisions || [] : [])
+    .filter((d) => d.decided_at)
+    .sort((a, b) => String(b.decided_at).localeCompare(String(a.decided_at)))
+    .slice(0, 5);
+  if (!recentGoals.length && !recentDecisions.length) {
+    outcomesPanel.appendChild(el(`<p class="home-panel-empty">No recent outcomes recorded.</p>`));
+  } else {
+    outcomesPanel.appendChild(FactGrid([
+      ...recentGoals.map((g) => ({ label: `Goal — ${g.title}`, html: `${badge(titleCase(g.status), goalStatusTone(g.status))} <span style="color:var(--text-tertiary);">${escapeHtml(fmtRelative(g.updated_at))}</span>` })),
+      ...recentDecisions.map((d) => ({ label: `Decision — ${d.title}`, html: `${badge(titleCase(d.status), decisionStatusTone(d.status))} <span style="color:var(--text-tertiary);">${escapeHtml(fmtRelative(d.decided_at))}</span>` })),
+    ]));
+  }
+  body.appendChild(outcomesPanel);
+}
+
+async function renderGoalDetail(body, goalId, token) {
+  body.innerHTML = "";
+  body.appendChild(skeletonPanel(3));
+  let data;
+  try {
+    data = await apiGetIntelligenceGoalDetail(goalId);
+  } catch (err) {
+    if (token !== state.renderToken) return;
+    body.innerHTML = "";
+    body.appendChild(errorPanel(err?.message || "Could not load this goal."));
+    return;
+  }
+  if (token !== state.renderToken) return;
+  body.innerHTML = "";
+
+  const backBtn = el(`<button type="button" class="btn btn-ghost btn-sm" style="margin-bottom:var(--space-3);">← Goals & Decisions</button>`);
+  backBtn.addEventListener("click", () => navigate("observatory/goals-decisions"));
+  body.appendChild(backBtn);
+
+  if (data?.available === false) {
+    body.appendChild(el(`<div class="status-callout status-callout-amber">Goal data is temporarily unavailable.</div>`));
+    return;
+  }
+  const g = data.goal;
+  if (!g) {
+    body.appendChild(errorPanel("This goal was not found -- it may have been created after this list loaded."));
+    return;
+  }
+
+  body.appendChild(el(`<div class="view-heading"><h1>${escapeHtml(g.title)}</h1></div>`));
+
+  const identityPanel = homePanel("Identity");
+  identityPanel.appendChild(FactGrid([
+    { label: "Status", html: badge(titleCase(g.status), goalStatusTone(g.status)) },
+    { label: "Stage", html: titleCase(g.stage || "unknown") },
+    { label: "Worker", html: g.surface ? badge(INTELLIGENCE_WORKER_LABELS[g.surface] || g.surface, "default") : "Unknown" },
+    { label: "Created", html: `${escapeHtml(fmtDateTime(g.created_at))} <span style="color:var(--text-tertiary);">(${escapeHtml(fmtRelative(g.created_at))})</span>` },
+    { label: "Updated", html: `${escapeHtml(fmtDateTime(g.updated_at))} <span style="color:var(--text-tertiary);">(${escapeHtml(fmtRelative(g.updated_at))})</span>` },
+    { label: "Due", html: g.due_at ? escapeHtml(fmtDateTime(g.due_at)) : "No deadline recorded" },
+    { label: "Next Evaluation", html: g.next_evaluation_at ? escapeHtml(fmtDateTime(g.next_evaluation_at)) : "Not scheduled" },
+  ]));
+  body.appendChild(identityPanel);
+
+  const rowProgress = el(`<div class="home-grid" style="margin-top:var(--space-4);"></div>`);
+  body.appendChild(rowProgress);
+
+  const progressPanel = homePanel("Progress");
+  progressPanel.appendChild(FactGrid([
+    { label: "Current Step", html: `${g.current_step_index + 1} of ${g.step_count}` },
+    { label: "Step Status Counts", html: Object.entries(g.step_status_counts || {}).map(([k, n]) => `${titleCase(k)}: ${n}`).join(", ") || "None" },
+    { label: "Attempts", html: `${g.attempts_completed} / ${g.max_attempts}` },
+    { label: "Needs Human", html: g.needs_human ? badge("Yes", "red") : badge("No", "green") },
+    { label: "Blocked / Waiting", html: g.blocked_or_waiting ? badge("Yes", "amber") : badge("No", "green") },
+    { label: "Completion Reason", html: g.completion_reason ? escapeHtml(g.completion_reason) : "Not recorded" },
+  ]));
+  rowProgress.appendChild(homePanelWrap("span-6", progressPanel));
+
+  const lineagePanel = homePanel("Lineage");
+  lineagePanel.appendChild(FactGrid([
+    { label: "Canonical Signal", html: g.lineage?.canonical_signal_key ? `<code style="font-size:11px;">${escapeHtml(g.lineage.canonical_signal_key)}</code>` : "No signal lineage recorded" },
+    { label: "Lead", html: g.reference_ids?.lead_id ? `<code style="font-size:11px;">${escapeHtml(g.reference_ids.lead_id)}</code>` : "—" },
+    { label: "Contact", html: g.reference_ids?.contact_id ? `<code style="font-size:11px;">${escapeHtml(g.reference_ids.contact_id)}</code>` : "—" },
+    { label: "Opportunity", html: g.reference_ids?.opportunity_id ? `<code style="font-size:11px;">${escapeHtml(g.reference_ids.opportunity_id)}</code>` : "—" },
+    { label: "Organization", html: g.reference_ids?.organization_id ? `<code style="font-size:11px;">${escapeHtml(g.reference_ids.organization_id)}</code>` : "—" },
+  ]));
+  rowProgress.appendChild(homePanelWrap("span-6", lineagePanel));
+
+  const planPanel = homePanel("Plan Steps");
+  planPanel.style.marginTop = "var(--space-4)";
+  if ((g.plan || []).length) {
+    planPanel.appendChild(renderDataTable({
+      columns: [
+        { key: "step_index", label: "#", render: (r) => String(r.step_index + 1) },
+        { key: "channel", label: "Channel", render: (r) => titleCase(r.channel) },
+        { key: "action_type", label: "Action", render: (r) => titleCase(r.action_type) },
+        { key: "status", label: "Status", render: (r) => badge(titleCase(r.status), r.status === "done" ? "green" : r.status === "failed" ? "red" : "default") },
+        { key: "wait_hours", label: "Wait (h)", render: (r) => String(r.wait_hours) },
+        { key: "executed_at", label: "Executed", render: (r) => (r.executed_at ? fmtRelative(r.executed_at) : "—") },
+      ],
+      rows: g.plan,
+      emptyMessage: "No plan steps recorded.",
+    }));
+  } else {
+    planPanel.appendChild(el(`<p class="home-panel-empty">No plan steps recorded.</p>`));
+  }
+  body.appendChild(planPanel);
+
+  const conditionsPanel = homePanel("Waiting Conditions");
+  conditionsPanel.style.marginTop = "var(--space-4)";
+  conditionsPanel.appendChild(FactGrid([
+    { label: "Success Condition", html: g.success_condition ? titleCase(g.success_condition.type) : "Not recorded" },
+    { label: "Stop Condition", html: g.stop_condition ? titleCase(g.stop_condition.type) : "Not recorded" },
+  ]));
+  if ((g.reply_branches || []).length) {
+    conditionsPanel.appendChild(el(`<p style="font-size:11.5px;color:var(--text-tertiary);margin:var(--space-2) 0 4px;">Reply Branches</p>`));
+    const list = el(`<ul style="margin:0;padding-left:18px;color:var(--text-secondary);font-size:12.5px;line-height:1.7;"></ul>`);
+    g.reply_branches.forEach((b) => list.appendChild(el(`<li>${escapeHtml((b.on_outcomes || []).join(", "))} → ${escapeHtml(titleCase(b.action))}${b.task_title ? `: ${escapeHtml(b.task_title)}` : ""}</li>`)));
+    conditionsPanel.appendChild(list);
+  }
+  body.appendChild(conditionsPanel);
+
+  const historyPanel = homePanel("Execution History");
+  historyPanel.style.marginTop = "var(--space-4)";
+  if ((g.execution_history || []).length) {
+    const list = el(`<div class="attention-list"></div>`);
+    g.execution_history.slice().reverse().forEach((h) => {
+      list.appendChild(el(`
+        <div class="attention-row">
+          <span class="attention-type">${badge(titleCase(h.outcome), h.outcome === "success" ? "green" : h.outcome === "failed" ? "red" : "default")}</span>
+          <span class="attention-title">${escapeHtml(h.action)}</span>
+          <span class="attention-owner">${h.step_index != null ? `Step ${h.step_index + 1}` : ""}</span>
+          <span class="attention-owner">${escapeHtml(fmtRelative(h.occurred_at))}</span>
+        </div>
+      `));
+    });
+    historyPanel.appendChild(list);
+  } else {
+    historyPanel.appendChild(el(`<p class="home-panel-empty">No execution history recorded.</p>`));
+  }
+  body.appendChild(historyPanel);
+}
+
+async function renderDecisionDetail(body, decisionId, token) {
+  body.innerHTML = "";
+  body.appendChild(skeletonPanel(2));
+  let data;
+  try {
+    data = await apiGetIntelligenceDecisionDetail(decisionId);
+  } catch (err) {
+    if (token !== state.renderToken) return;
+    body.innerHTML = "";
+    body.appendChild(errorPanel(err?.message || "Could not load this decision."));
+    return;
+  }
+  if (token !== state.renderToken) return;
+  body.innerHTML = "";
+
+  const backBtn = el(`<button type="button" class="btn btn-ghost btn-sm" style="margin-bottom:var(--space-3);">← Goals & Decisions</button>`);
+  backBtn.addEventListener("click", () => navigate("observatory/goals-decisions"));
+  body.appendChild(backBtn);
+
+  if (data?.available === false) {
+    body.appendChild(el(`<div class="status-callout status-callout-amber">Decision data is temporarily unavailable.</div>`));
+    return;
+  }
+  const d = data.decision;
+  if (!d) {
+    body.appendChild(errorPanel("This decision was not found -- it may have been created after this list loaded."));
+    return;
+  }
+
+  body.appendChild(el(`<div class="view-heading"><h1>${escapeHtml(d.title)}</h1></div>`));
+
+  const panel = homePanel("Decision");
+  panel.appendChild(FactGrid([
+    { label: "Status", html: badge(titleCase(d.status), decisionStatusTone(d.status)) },
+    { label: "Stage", html: titleCase(d.stage || "unknown") },
+    { label: "Authority Mode", html: d.authority_mode === "human_selection" ? badge("Human Selection", "amber") : badge("Deterministic Policy", "blue") },
+    { label: "Requires Human", html: d.requires_human ? badge("Yes", "red") : badge("No", "green") },
+    { label: "Selected By", html: `<code style="font-size:11px;">${escapeHtml(d.selected_by)}</code>` },
+    { label: "Policy Source", html: d.policy_source ? escapeHtml(d.policy_source) : "Not recorded" },
+    { label: "Entity", html: `${escapeHtml(d.entity_type)} · <code style="font-size:11px;">${escapeHtml(d.entity_id)}</code>` },
+    { label: "Action Type", html: escapeHtml(d.action_type) },
+    { label: "Reason", html: d.reason ? escapeHtml(d.reason) : "Not recorded" },
+    { label: "Created", html: `${escapeHtml(fmtDateTime(d.created_at))} <span style="color:var(--text-tertiary);">(${escapeHtml(fmtRelative(d.created_at))})</span>` },
+    { label: "Decided", html: d.decided_at ? `${escapeHtml(fmtDateTime(d.decided_at))} <span style="color:var(--text-tertiary);">(${escapeHtml(fmtRelative(d.decided_at))})</span>` : "Not yet decided" },
+    { label: "Closed", html: d.closed_at ? escapeHtml(fmtDateTime(d.closed_at)) : "Still open" },
+  ]));
+  body.appendChild(panel);
+
+  const lineagePanel = homePanel("Lineage");
+  lineagePanel.style.marginTop = "var(--space-4)";
+  const lineageRows = [
+    { label: "Canonical Signal", value: d.lineage?.canonical_signal_key },
+    { label: "Recommendation", value: d.lineage?.recommendation_key },
+    { label: "Goal", value: d.lineage?.goal_id, link: d.lineage?.goal_id ? `observatory/goals-decisions/goal/${encodeURIComponent(d.lineage.goal_id)}` : null },
+    { label: "Plan", value: d.lineage?.plan_id },
+    { label: "Incident", value: d.lineage?.incident_id },
+    { label: "Awareness", value: d.lineage?.awareness_key },
+  ];
+  const hasAnyLineage = lineageRows.some((r) => r.value);
+  if (!hasAnyLineage) {
+    lineagePanel.appendChild(el(`<p class="home-panel-empty">No lineage recorded for this decision -- a real Decision can exist without one.</p>`));
+  } else {
+    lineagePanel.appendChild(FactGrid(lineageRows.map((r) => ({ label: r.label, html: r.value ? `<code style="font-size:11px;">${escapeHtml(r.value)}</code>` : "—" }))));
+    const goalLink = lineageRows.find((r) => r.label === "Goal" && r.link);
+    if (goalLink) {
+      const linkBtn = el(`<button type="button" class="btn btn-ghost btn-sm" style="margin-top:var(--space-2);">View Related Goal →</button>`);
+      linkBtn.addEventListener("click", () => navigate(goalLink.link));
+      lineagePanel.appendChild(linkBtn);
+    }
+  }
+  body.appendChild(lineagePanel);
+
+  if (d.superseded_by) {
+    body.appendChild(el(`<p class="home-panel-empty" style="margin-top:var(--space-3);">Superseded by <code style="font-size:11px;">${escapeHtml(d.superseded_by)}</code></p>`));
+  }
+}
+
+// ---------------------------------------------------------------
+// Intelligence System Visibility, Slice 4 -- Actions & Workflows.
+// REQUESTED/DRAFT -> PROPOSED -> WAITING FOR CONFIRMATION -> CONFIRMED
+// -> EXECUTING -> EXECUTED -> VERIFIED (plus CANCELLED/FAILED/TIMED_OUT)
+// is the normalized presentation_stage Backend already computed; this
+// page displays it prominently and canonical_status in detail, never
+// the reverse.
+// ---------------------------------------------------------------
+
+const ACTION_SOURCE_LABEL = {
+  communication: "Communication",
+  device_command: "Device Command",
+  facility_automation: "Facility Automation",
+  conversation_workflow: "Conversation Workflow",
+};
+const ACTION_STAGE_TONE = {
+  proposed: "default",
+  waiting_confirmation: "amber",
+  confirmed: "blue",
+  executing: "violet",
+  executed: "blue",
+  verified: "green",
+  cancelled: "default",
+  failed: "red",
+  timed_out: "amber",
+};
+const ACTION_STAGE_LABEL = {
+  proposed: "Proposed",
+  waiting_confirmation: "Waiting Confirmation",
+  confirmed: "Confirmed",
+  executing: "Executing",
+  executed: "Executed",
+  verified: "Verified",
+  cancelled: "Cancelled",
+  failed: "Failed",
+  timed_out: "Timed Out",
+};
+
+async function renderActionsWorkflowsSection(body, token) {
+  body.innerHTML = "";
+  body.appendChild(skeletonPanel(3));
+
+  const [actionsOutcome, interventionsOutcome] = await Promise.all([
+    apiGetIntelligenceActions().then((data) => ({ ok: true, data })).catch((err) => ({ ok: false, error: err?.message || "unavailable" })),
+    apiGetIntelligenceInterventions(50).then((data) => ({ ok: true, data })).catch((err) => ({ ok: false, error: err?.message || "unavailable" })),
+  ]);
+  if (token !== state.renderToken) return;
+  body.innerHTML = "";
+
+  if (!actionsOutcome.ok || actionsOutcome.data?.available === false) {
+    body.appendChild(el(`<div class="status-callout status-callout-amber">Actions & Workflows data is temporarily unavailable.</div>`));
+    return;
+  }
+  const actionsData = actionsOutcome.data;
+  const items = actionsData.actions || [];
+  if (!actionsData.complete) {
+    body.appendChild(el(`<div class="status-callout status-callout-amber" style="margin-bottom:var(--space-4);">One or more action sources did not respond -- this list is a lower bound, not the complete picture.</div>`));
+  }
+
+  // ---- A. KPI Strip ----
+  const stageCounts = {};
+  items.forEach((i) => { stageCounts[i.presentation_stage] = (stageCounts[i.presentation_stage] || 0) + 1; });
+  const kpiGroup = KPIGroup([
+    { label: "Waiting Confirmation", value: stageCounts.waiting_confirmation || 0, icon: iconSvg("attention", "kpi-icon"), tone: "amber" },
+    { label: "Executing", value: stageCounts.executing || 0, icon: iconSvg("lightning", "kpi-icon"), tone: "violet" },
+    { label: "Verified", value: stageCounts.verified || 0, icon: iconSvg("audit", "kpi-icon"), tone: "green" },
+    { label: "Failed", value: stageCounts.failed || 0, icon: iconSvg("attention", "kpi-icon"), tone: stageCounts.failed ? "red" : "green", alert: Boolean(stageCounts.failed) },
+    { label: "Timed Out / Unobservable", value: stageCounts.timed_out || 0, icon: iconSvg("observatory", "kpi-icon"), tone: "amber" },
+  ]);
+  kpiGroup.style.marginBottom = "var(--space-5)";
+  body.appendChild(kpiGroup);
+
+  // ---- B. Pending Human Action (reuse Slice 2 interventions, non-goal/decision sources) ----
+  const attentionPanel = homePanel("Pending Human Action");
+  if (!interventionsOutcome.ok || interventionsOutcome.data?.available === false) {
+    attentionPanel.appendChild(el(`<p class="home-panel-empty">Human intervention data is temporarily unavailable.</p>`));
+  } else {
+    const pending = (interventionsOutcome.data.interventions || []).filter((i) => i.source_type !== "goal_escalation" && i.source_type !== "decision");
+    if (!pending.length) {
+      attentionPanel.appendChild(el(`<p class="home-panel-empty">No pending human action for a workflow, communication, or automation.</p>`));
+    } else {
+      const list = el(`<div class="attention-list"></div>`);
+      pending.forEach((item) => {
+        const row = el(`
+          <div class="attention-row" style="cursor:pointer;">
+            <span class="attention-type">${badge(INTERVENTION_SOURCE_LABEL[item.source_type] || item.source_type, INTERVENTION_TYPE_TONE[item.intervention_type] || "default")}</span>
+            <span class="attention-title">${escapeHtml(item.title)}${item.worker ? ` <span style="color:var(--text-tertiary);">(${escapeHtml(item.worker)})</span>` : ""}</span>
+            <span class="attention-owner">${escapeHtml(item.required_human_step)}</span>
+            <span class="attention-owner">${escapeHtml(fmtRelative(item.created_at))}</span>
+          </div>
+        `);
+        row.addEventListener("click", () => navigate(`observatory/overview/intervention/${encodeURIComponent(item.id)}`));
+        list.appendChild(row);
+      });
+      attentionPanel.appendChild(list);
+    }
+  }
+  body.appendChild(attentionPanel);
+
+  // ---- C/D. All Actions & Workflows (filterable -- covers Active
+  // Workflows and Recent Executions as filtered views of one real list) ----
+  const listHost = el(`<div style="margin-top:var(--space-4);"></div>`);
+  body.appendChild(listHost);
+  renderStandardList(listHost, {
+    title: "Actions & Workflows",
+    records: items,
+    columns: [
+      { key: "source_type", label: "Source", render: (r) => badge(ACTION_SOURCE_LABEL[r.source_type] || r.source_type, "default") },
+      { key: "title", label: "Action" },
+      { key: "presentation_stage", label: "Stage", render: (r) => badge(ACTION_STAGE_LABEL[r.presentation_stage] || titleCase(r.presentation_stage), ACTION_STAGE_TONE[r.presentation_stage] || "default") },
+      { key: "canonical_status", label: "Canonical Status", render: (r) => titleCase(r.canonical_status) },
+      { key: "worker", label: "Worker", render: (r) => (r.worker ? badge(r.worker, "default") : "—") },
+      { key: "updated_at", label: "Updated", render: (r) => fmtRelative(r.updated_at) },
+    ],
+    searchFields: ["title"],
+    filters: [
+      { key: "source_type", label: "Source" },
+      { key: "presentation_stage", label: "Stage" },
+      { key: "worker", label: "Worker" },
+    ],
+    canManage: false,
+    secondaryAction: null,
+    onRowClick: (r) => navigate(`observatory/actions-workflows/${encodeURIComponent(r.id)}`),
+    emptyMessage: "No actions or workflows recorded.",
+  });
+
+  // ---- E. Verification / Outcomes -- verified vs failed per source type ----
+  const outcomesPanel = homePanel("Verification / Outcomes");
+  outcomesPanel.style.marginTop = "var(--space-4)";
+  const bySourceOutcome = {};
+  items.forEach((i) => {
+    const bucket = bySourceOutcome[i.source_type] || (bySourceOutcome[i.source_type] = { verified: 0, failed: 0, other: 0 });
+    if (i.presentation_stage === "verified" || i.presentation_stage === "executed") bucket.verified += 1;
+    else if (i.presentation_stage === "failed" || i.presentation_stage === "timed_out") bucket.failed += 1;
+    else bucket.other += 1;
+  });
+  const outcomeEntries = Object.entries(bySourceOutcome);
+  if (!outcomeEntries.length) {
+    outcomesPanel.appendChild(el(`<p class="home-panel-empty">No outcomes recorded.</p>`));
+  } else {
+    outcomesPanel.appendChild(FactGrid(outcomeEntries.map(([sourceType, counts]) => ({
+      label: ACTION_SOURCE_LABEL[sourceType] || sourceType,
+      html: `${badge(`${counts.verified} verified/executed`, "green")} ${badge(`${counts.failed} failed/timed out`, counts.failed ? "red" : "default")} <span style="color:var(--text-tertiary);">${counts.other} in progress</span>`,
+    }))));
+  }
+  body.appendChild(outcomesPanel);
+
+  // ---- F. By Worker / Domain ----
+  const workerPanel = homePanel("By Worker");
+  workerPanel.style.marginTop = "var(--space-4)";
+  const byWorker = {};
+  items.forEach((i) => { const key = i.worker || "Unattributed"; byWorker[key] = (byWorker[key] || 0) + 1; });
+  const workerEntries = Object.entries(byWorker);
+  if (!workerEntries.length) {
+    workerPanel.appendChild(el(`<p class="home-panel-empty">No actions recorded.</p>`));
+  } else {
+    workerPanel.appendChild(barDistribution(
+      workerEntries.map(([label, count]) => ({ label, count, tone: INTELLIGENCE_WORKER_TONES[label?.toLowerCase()] || "default" })),
+      "No actions recorded."
+    ));
+  }
+  body.appendChild(workerPanel);
+}
+
+// Human-readable timeline per source type (Section 14) -- shared header/
+// FactGrid rendering, per-source-type safe explanation content.
+async function renderActionDetail(body, actionId, token) {
+  body.innerHTML = "";
+  body.appendChild(skeletonPanel(2));
+  let data;
+  try {
+    data = await apiGetIntelligenceActionDetail(actionId);
+  } catch (err) {
+    if (token !== state.renderToken) return;
+    body.innerHTML = "";
+    body.appendChild(errorPanel(err?.message || "Could not load this action."));
+    return;
+  }
+  if (token !== state.renderToken) return;
+  body.innerHTML = "";
+
+  const backBtn = el(`<button type="button" class="btn btn-ghost btn-sm" style="margin-bottom:var(--space-3);">← Actions & Workflows</button>`);
+  backBtn.addEventListener("click", () => navigate("observatory/actions-workflows"));
+  body.appendChild(backBtn);
+
+  if (data?.available === false) {
+    body.appendChild(el(`<div class="status-callout status-callout-amber">Action data is temporarily unavailable.</div>`));
+    return;
+  }
+  const a = data.action;
+  if (!a) {
+    body.appendChild(errorPanel("This action was not found -- it may have already resolved past this list's window."));
+    return;
+  }
+
+  body.appendChild(el(`<div class="view-heading"><h1>${escapeHtml(a.title)}</h1></div>`));
+
+  const headerPanel = homePanel(ACTION_SOURCE_LABEL[a.source_type] || a.source_type);
+  headerPanel.appendChild(FactGrid([
+    { label: "Stage", html: badge(ACTION_STAGE_LABEL[a.presentation_stage] || titleCase(a.presentation_stage), ACTION_STAGE_TONE[a.presentation_stage] || "default") },
+    { label: "Canonical Status", html: `<code style="font-size:11px;">${escapeHtml(a.canonical_status)}</code>` },
+    { label: "Worker", html: a.worker ? badge(a.worker, "default") : "Unattributed" },
+    { label: "Safe Source Identifier", html: `<code style="font-size:11px;">${escapeHtml(a.source_id)}</code>` },
+  ]));
+  body.appendChild(headerPanel);
+
+  // Per-source-type safe explanation + timeline.
+  if (a.source_type === "device_command") {
+    const timelinePanel = homePanel("Timeline");
+    timelinePanel.style.marginTop = "var(--space-4)";
+    timelinePanel.appendChild(FactGrid([
+      { label: "Requested", html: a.requested_at ? escapeHtml(fmtDateTime(a.requested_at)) : "Not recorded" },
+      { label: "Completed", html: a.completed_at ? escapeHtml(fmtDateTime(a.completed_at)) : "Not yet completed" },
+    ]));
+    body.appendChild(timelinePanel);
+
+    const truthPanel = homePanel("Device Command Truth");
+    truthPanel.style.marginTop = "var(--space-4)";
+    truthPanel.appendChild(el(`<p class="home-panel-empty" style="margin-bottom:var(--space-2);">A provider-accepted command is not automatically a verified physical effect -- each stage below is reported independently.</p>`));
+    truthPanel.appendChild(FactGrid([
+      { label: "Request", html: a.truth?.request_status ? titleCase(a.truth.request_status) : "Unknown" },
+      { label: "Dispatch", html: a.truth?.dispatch_status ? titleCase(a.truth.dispatch_status) : "Unknown" },
+      { label: "Provider", html: a.truth?.provider_status ? titleCase(a.truth.provider_status) : "Unknown" },
+      { label: "Confirmation", html: a.truth?.confirmation_status ? titleCase(a.truth.confirmation_status) : "Unknown" },
+      { label: "Physical Effect", html: a.truth?.physical_effect_status ? titleCase(a.truth.physical_effect_status) : "Unobservable" },
+      { label: "Final Status", html: a.truth?.final_status ? titleCase(a.truth.final_status) : "Not yet final" },
+      { label: "Truth State", html: a.truth?.truth_state ? titleCase(a.truth.truth_state) : "Unknown" },
+    ]));
+    if (a.safe_error_message) {
+      truthPanel.appendChild(el(`<p style="margin-top:var(--space-2);color:var(--red-bright);font-size:12.5px;">${escapeHtml(a.safe_error_message)}${a.retryable ? " (retryable)" : ""}</p>`));
+    }
+    body.appendChild(truthPanel);
+
+    if ((a.timeline || []).length) {
+      const stepsPanel = homePanel("Lifecycle Steps");
+      stepsPanel.style.marginTop = "var(--space-4)";
+      const list = el(`<div class="attention-list"></div>`);
+      a.timeline.forEach((step) => {
+        list.appendChild(el(`
+          <div class="attention-row">
+            <span class="attention-type">${badge(titleCase(step.status || "unknown"), "default")}</span>
+            <span class="attention-title"></span>
+            <span class="attention-owner"></span>
+            <span class="attention-owner">${step.occurred_at ? escapeHtml(fmtRelative(step.occurred_at)) : ""}</span>
+          </div>
+        `));
+      });
+      stepsPanel.appendChild(list);
+      body.appendChild(stepsPanel);
+    }
+  } else if (a.source_type === "communication") {
+    const panel = homePanel("Communication");
+    panel.style.marginTop = "var(--space-4)";
+    panel.appendChild(FactGrid([
+      { label: "Channel", html: titleCase(a.channel || "unknown") },
+      { label: "Intent", html: a.intent ? escapeHtml(a.intent) : "Not recorded" },
+      { label: "Confirmation Required", html: a.confirmation_required ? badge("Yes", "amber") : badge("No", "green") },
+      { label: "Created", html: a.created_at ? escapeHtml(fmtDateTime(a.created_at)) : "Unknown" },
+      { label: "Sent", html: a.sent_at ? escapeHtml(fmtDateTime(a.sent_at)) : "Not yet sent" },
+      { label: "Delivered", html: a.delivered_at ? escapeHtml(fmtDateTime(a.delivered_at)) : "Not yet delivered" },
+      { label: "Outcome", html: a.outcome ? titleCase(a.outcome) : "Not yet known" },
+      { label: "Failure Reason", html: a.failure_reason ? titleCase(a.failure_reason) : "None" },
+    ]));
+    panel.appendChild(el(`<p class="home-panel-empty" style="margin-top:var(--space-3);">Message subject/body/recipient are never exposed through Intelligence -- this is a safe structural summary only.</p>`));
+    body.appendChild(panel);
+  } else if (a.source_type === "facility_automation") {
+    const panel = homePanel("Facility Automation");
+    panel.style.marginTop = "var(--space-4)";
+    panel.appendChild(FactGrid([
+      { label: "Action", html: a.action_id ? escapeHtml(a.action_id) : "Unknown" },
+      { label: "Entity Type", html: a.entity_type ? titleCase(a.entity_type) : "Unknown" },
+      { label: "Created", html: a.created_at ? escapeHtml(fmtDateTime(a.created_at)) : "Unknown" },
+      { label: "Decided", html: a.decided_at ? escapeHtml(fmtDateTime(a.decided_at)) : "Not yet decided" },
+      { label: "Executed", html: a.executed_at ? escapeHtml(fmtDateTime(a.executed_at)) : "Not yet executed" },
+      { label: "Decision Note", html: a.decision_note ? escapeHtml(a.decision_note) : "None" },
+    ]));
+    body.appendChild(panel);
+  } else if (a.source_type === "conversation_workflow") {
+    const panel = homePanel("Conversation Workflow");
+    panel.style.marginTop = "var(--space-4)";
+    panel.appendChild(FactGrid([
+      { label: "Domain", html: a.domain ? titleCase(a.domain) : "Unknown" },
+      { label: "Capability", html: a.capability_key ? `<code style="font-size:11px;">${escapeHtml(a.capability_key)}</code>` : "Unknown" },
+      { label: "Operation", html: a.operation ? escapeHtml(a.operation) : "Unknown" },
+      { label: "Target", html: a.target_label ? escapeHtml(a.target_label) : "Not recorded" },
+      { label: "Required Human Input", html: (a.unresolved_inputs || []).length ? escapeHtml(a.unresolved_inputs.join(", ")) : "None" },
+      { label: "Created", html: a.created_at ? escapeHtml(fmtDateTime(a.created_at)) : "Unknown" },
+      { label: "Updated", html: a.updated_at ? escapeHtml(fmtDateTime(a.updated_at)) : "Unknown" },
+      { label: "Completed", html: a.completed_at ? escapeHtml(fmtDateTime(a.completed_at)) : "Not completed" },
+      { label: "Cancelled", html: a.cancelled_at ? escapeHtml(fmtDateTime(a.cancelled_at)) : "Not cancelled" },
+    ]));
+    body.appendChild(panel);
+  }
+
+  body.appendChild(el(`<p class="home-panel-empty" style="margin-top:var(--space-3);">This is a visibility-only view. Use the existing approval/confirmation surface for this item to take action.</p>`));
+}
+
 async function renderObservatoryView(outlet, rest, token) {
   const [sectionKey = "overview", detailKind, detailKey] = rest;
   setTopbar("Intelligence", "");
@@ -11678,6 +12353,24 @@ async function renderObservatoryView(outlet, rest, token) {
       await renderIntelligenceWorkerDetail(body, decodeURIComponent(detailKind), token);
     } else {
       await renderIntelligenceWorkersSection(body, token);
+    }
+  } else if (sectionKey === "goals-decisions") {
+    if (detailKind === "goal" && detailKey) {
+      await renderGoalDetail(body, decodeURIComponent(detailKey), token);
+    } else if (detailKind === "decision" && detailKey) {
+      await renderDecisionDetail(body, decodeURIComponent(detailKey), token);
+    } else {
+      await renderGoalsDecisionsSection(body, token);
+    }
+  } else if (sectionKey === "actions-workflows") {
+    // Action ids are compound ("source_type:source_id", colon-joined --
+    // see actionWorkflowView.ts) and carry no slash, so the whole
+    // encoded id lands in detailKind (rest[1]), never split across
+    // detailKind/detailKey the way the goal/decision sub-routes are.
+    if (detailKind) {
+      await renderActionDetail(body, decodeURIComponent(detailKind), token);
+    } else {
+      await renderActionsWorkflowsSection(body, token);
     }
   } else {
     const found = INTELLIGENCE_SECTIONS.find((s) => s.key === sectionKey);

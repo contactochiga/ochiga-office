@@ -922,6 +922,68 @@ async function callOyiCoreIntelligenceWorkerDetail(config = {}, workerKey, optio
   }
 }
 
+// Intelligence System Visibility, Slice 4 — Goals & Decisions and
+// Actions & Workflows. Same credential/timeout/honest-failure convention
+// as every Backend read call above. Factored into one internal helper
+// (unlike Slice 1-3's per-endpoint duplication) purely to keep six
+// near-identical list/detail pairs from repeating the same 20 lines six
+// times — the public surface (one exported function per endpoint,
+// mirrored 1:1 in server.js) is unchanged.
+async function callOyiCoreIntelligenceGet(config, path, options = {}) {
+  const baseUrl = String(config.officeBackendBaseUrl || "").replace(/\/+$/, "");
+  if (!baseUrl) {
+    return { ok: false, unavailable: true, reason: "not_configured" };
+  }
+  const headers = {};
+  if (config.officeBackendApiKey) headers["x-office-api-key"] = config.officeBackendApiKey;
+  if (config.officeBackendBearerToken) headers.authorization = `Bearer ${config.officeBackendBearerToken}`;
+
+  const get = options.httpGet || ((targetUrl, requestConfig) => axios.get(targetUrl, requestConfig));
+  try {
+    const response = await get(`${baseUrl}${path}`, {
+      timeout: config.officeBackendEventTimeoutMs || 10_000,
+      headers,
+      validateStatus: () => true,
+    });
+    const status = Number(response && response.status) || 0;
+    const body = response && response.data && typeof response.data === "object" ? response.data : {};
+    if (status >= 200 && status < 300 && body.ok !== false) {
+      return { ok: true, unavailable: false, status, data: body };
+    }
+    return { ok: false, unavailable: true, status, reason: text(body.error || "backend_rejected") };
+  } catch (error) {
+    return {
+      ok: false,
+      unavailable: true,
+      status: 0,
+      reason: "network_error",
+      error: error && error.code ? String(error.code) : "request_failed",
+    };
+  }
+}
+
+async function callOyiCoreIntelligenceGoals(config = {}, options = {}) {
+  return callOyiCoreIntelligenceGet(config, config.officeIntelligenceGoalsPath || "/office/intelligence/goals", options);
+}
+async function callOyiCoreIntelligenceGoalDetail(config = {}, goalId, options = {}) {
+  const basePath = config.officeIntelligenceGoalsPath || "/office/intelligence/goals";
+  return callOyiCoreIntelligenceGet(config, `${basePath}/${encodeURIComponent(String(goalId || ""))}`, options);
+}
+async function callOyiCoreIntelligenceDecisions(config = {}, options = {}) {
+  return callOyiCoreIntelligenceGet(config, config.officeIntelligenceDecisionsPath || "/office/intelligence/decisions", options);
+}
+async function callOyiCoreIntelligenceDecisionDetail(config = {}, decisionId, options = {}) {
+  const basePath = config.officeIntelligenceDecisionsPath || "/office/intelligence/decisions";
+  return callOyiCoreIntelligenceGet(config, `${basePath}/${encodeURIComponent(String(decisionId || ""))}`, options);
+}
+async function callOyiCoreIntelligenceActions(config = {}, options = {}) {
+  return callOyiCoreIntelligenceGet(config, config.officeIntelligenceActionsPath || "/office/intelligence/actions", options);
+}
+async function callOyiCoreIntelligenceActionDetail(config = {}, actionId, options = {}) {
+  const basePath = config.officeIntelligenceActionsPath || "/office/intelligence/actions";
+  return callOyiCoreIntelligenceGet(config, `${basePath}/${encodeURIComponent(String(actionId || ""))}`, options);
+}
+
 // Oyi Runtime Contract, Domain 3 (Task) — Backend's additive
 // office-backend-intelligence-events projection into ochiga_workflows.
 // Same credential/timeout convention as every other Backend call here.
@@ -1069,6 +1131,12 @@ module.exports = {
   callOyiCoreIntelligenceInterventions,
   callOyiCoreIntelligenceWorkers,
   callOyiCoreIntelligenceWorkerDetail,
+  callOyiCoreIntelligenceGoals,
+  callOyiCoreIntelligenceGoalDetail,
+  callOyiCoreIntelligenceDecisions,
+  callOyiCoreIntelligenceDecisionDetail,
+  callOyiCoreIntelligenceActions,
+  callOyiCoreIntelligenceActionDetail,
   callOyiCoreCreateWorkflow,
   callOyiCoreTransitionWorkflow,
   callOyiCoreListAutomations,
