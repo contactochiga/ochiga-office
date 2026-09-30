@@ -12306,13 +12306,18 @@ async function renderActionDetail(body, actionId, token) {
 // ---------------------------------------------------------------
 // Intelligence System Visibility, Slice 5 -- Governed Knowledge.
 //
-// Read-only view of Backend's canonical knowledge index (the same
-// snapshot live retrieval uses). Every governance label -- authority
-// class, audience, claim boundary, freshness, worker visibility -- is
-// Backend's own real value; Office only maps it to display text. The
-// list never carries item content; the detail view shows the governed
-// statement plus a safe source label (bare filename or source family,
-// never a repo path). No edit/publish/retire controls -- visibility only.
+// Read-only view of Backend's canonical knowledge index, under the
+// canonical Office staff knowledge authority (office_internal, Internal
+// Commercial ceiling) -- Backend applies that gate; Office never widens
+// or re-derives it. Two clearly separated layers:
+//   - Corpus governance: counts over classification labels for the
+//     WHOLE governed corpus (Backend's `corpus` block). No titles.
+//   - Inspectable items: only items the Office authority may see
+//     (`items`/`summary`). Worker chips narrow this set by governed
+//     worker visibility; they never act as that worker.
+// do_not_state_verbatim statements are withheld by Backend (content
+// null) and the detail view shows the classification instead. No
+// edit/publish/retire controls -- visibility only.
 // ---------------------------------------------------------------
 const KNOWLEDGE_AUTHORITY_LABEL = {
   APPROVED_INSTITUTIONAL: "Approved Institutional",
@@ -12376,8 +12381,9 @@ async function renderKnowledgeSection(body, token, initialWorker) {
   }
 
   const summary = data.summary || {};
+  const corpus = data.corpus || {};
   const kpiGroup = KPIGroup([
-    { label: "Governed Items", value: summary.total || 0, icon: iconSvg("briefing", "kpi-icon"), tone: "blue" },
+    { label: "Inspectable / Governed", value: `${summary.total || 0} / ${corpus.total ?? summary.total ?? 0}`, icon: iconSvg("briefing", "kpi-icon"), tone: "blue" },
     { label: "High Authority", value: summary.high_authority || 0, icon: iconSvg("audit", "kpi-icon"), tone: "green" },
     { label: "Volatile (Check Freshness)", value: summary.potentially_stale || 0, icon: iconSvg("attention", "kpi-icon"), tone: summary.potentially_stale ? "amber" : "green" },
     { label: "Workers Covered", value: `${summary.workers_covered || 0} / 4`, icon: iconSvg("observatory", "kpi-icon"), tone: "violet" },
@@ -12385,17 +12391,33 @@ async function renderKnowledgeSection(body, token, initialWorker) {
   kpiGroup.style.marginBottom = "var(--space-5)";
   body.appendChild(kpiGroup);
 
-  // Authority distribution in Backend's own canonical rank order.
-  const authorityPanel = homePanel("By Authority Class");
-  authorityPanel.classList.add("intelligence-bar-wide-labels");
+  const notInspectable = corpus.not_inspectable || 0;
+  body.appendChild(el(`<p class="home-panel-empty" style="margin-bottom:var(--space-4);">Viewing as Office staff knowledge authority (${escapeHtml(data.viewer_authority?.agent_role === "office_internal" ? "Office Internal" : titleCase(data.viewer_authority?.agent_role || "unknown"))}, ${escapeHtml(KNOWLEDGE_AUDIENCE_LABEL[data.viewer_authority?.audience_ceiling] || "unknown")} ceiling). ${notInspectable ? `${notInspectable} governed item${notInspectable === 1 ? " is" : "s are"} outside this authority and appear${notInspectable === 1 ? "s" : ""} in corpus counts only -- never by title or statement.` : "Every governed item is inspectable under this authority."}</p>`));
+
+  // Corpus governance -- whole-corpus counts over classification labels.
   const order = data.authority_class_order || Object.keys(KNOWLEDGE_AUTHORITY_LABEL);
+  const authorityPanel = homePanel("Corpus by Authority Class");
+  authorityPanel.classList.add("intelligence-bar-wide-labels");
   authorityPanel.appendChild(barDistribution(
-    order.filter((c) => summary.by_authority_class?.[c]).map((c) => ({ label: KNOWLEDGE_AUTHORITY_LABEL[c] || c, count: summary.by_authority_class[c], tone: KNOWLEDGE_AUTHORITY_TONE[c] || "default" })),
+    order.filter((c) => corpus.by_authority_class?.[c]).map((c) => ({ label: KNOWLEDGE_AUTHORITY_LABEL[c] || c, count: corpus.by_authority_class[c], tone: KNOWLEDGE_AUTHORITY_TONE[c] || "default" })),
     "No governed knowledge items."
   ));
   body.appendChild(authorityPanel);
 
-  const domainPanel = homePanel("By Domain");
+  const governancePanel = homePanel("Corpus Governance");
+  governancePanel.style.marginTop = "var(--space-4)";
+  const countBadges = (map, labels, tones) => Object.entries(map || {}).map(([k, n]) => badge(`${labels?.[k] || titleCase(k)}: ${n}`, tones?.[k] || "default")).join(" ") || "—";
+  governancePanel.appendChild(FactGrid([
+    { label: "Audience", html: countBadges(corpus.by_audience, KNOWLEDGE_AUDIENCE_LABEL, KNOWLEDGE_AUDIENCE_TONE) },
+    { label: "Claim Boundary", html: countBadges(corpus.by_claim_boundary, KNOWLEDGE_CLAIM_LABEL, KNOWLEDGE_CLAIM_TONE) },
+    { label: "Freshness", html: countBadges(corpus.by_freshness_class) },
+    { label: "Source Family", html: Object.entries(corpus.by_source_family || {}).map(([k, n]) => badge(`${k}: ${n}`, "default")).join(" ") || "—" },
+    { label: "Worker Visibility", html: KNOWLEDGE_WORKER_ORDER.map((w) => badge(`${w}: ${corpus.by_worker_visibility?.[w] || 0}`, "default")).join(" ") },
+  ]));
+  body.appendChild(governancePanel);
+
+  // Subject-matter domain is only ever counted over inspectable items.
+  const domainPanel = homePanel("Inspectable Items by Domain");
   domainPanel.style.marginTop = "var(--space-4)";
   domainPanel.classList.add("intelligence-bar-wide-labels");
   const domainLabels = {};
@@ -12422,13 +12444,15 @@ async function renderKnowledgeSection(body, token, initialWorker) {
     chipRow.innerHTML = "";
     ["", ...KNOWLEDGE_WORKER_ORDER].forEach((w) => {
       const count = w ? records.filter((r) => (r.worker_visibility || []).includes(w)).length : records.length;
-      const chip = el(`<button type="button" class="crm-tab ${w === workerFilter ? "active" : ""}" title="${escapeHtml(w ? `Items visible to ${w}` : "All governed items")}">${escapeHtml(w || "All Workers")} (${count})</button>`);
+      const governed = w ? corpus.by_worker_visibility?.[w] : corpus.total;
+      const countText = governed != null && governed !== count ? `${count} of ${governed}` : String(count);
+      const chip = el(`<button type="button" class="crm-tab ${w === workerFilter ? "active" : ""}" title="${escapeHtml(w ? `Inspectable items governed as visible to ${w}${governed != null ? ` (${governed} governed in total)` : ""}` : "All inspectable items")}">${escapeHtml(w || "All Workers")} (${escapeHtml(countText)})</button>`);
       chip.addEventListener("click", () => { workerFilter = w; drawList(); });
       chipRow.appendChild(chip);
     });
     listHost.innerHTML = "";
     renderStandardList(listHost, {
-      title: "Governed Knowledge",
+      title: "Inspectable Knowledge",
       records,
       preFilter: workerFilter ? (r) => (r.worker_visibility || []).includes(workerFilter) : null,
       columns: [
@@ -12452,14 +12476,14 @@ async function renderKnowledgeSection(body, token, initialWorker) {
       canManage: false,
       secondaryAction: null,
       onRowClick: (r) => navigate(`observatory/knowledge/item/${encodeURIComponent(r.canonical_key)}`),
-      emptyMessage: "No governed knowledge items.",
+      emptyMessage: workerFilter ? `No items visible to ${workerFilter} are inspectable under Office staff knowledge authority.` : "No inspectable knowledge items.",
     });
   };
   body.appendChild(chipRow);
   body.appendChild(listHost);
   drawList();
 
-  body.appendChild(el(`<p class="home-panel-empty" style="margin-top:var(--space-3);">Governance labels are shown exactly as the knowledge index records them. Seeing an item here does not mean every worker may use it -- live retrieval still applies each item's own audience and worker visibility.</p>`));
+  body.appendChild(el(`<p class="home-panel-empty" style="margin-top:var(--space-3);">Governance labels are shown exactly as the knowledge index records them. A worker filter narrows what Office staff may inspect; it never shows what that worker alone can see. Live retrieval still applies each item's own audience and worker visibility.</p>`));
 }
 
 async function renderKnowledgeDetail(body, canonicalKey, token) {
@@ -12490,7 +12514,7 @@ async function renderKnowledgeDetail(body, canonicalKey, token) {
   }
   const k = data.item;
   if (!k) {
-    body.appendChild(errorPanel("This knowledge item was not found -- it may have been removed from the governed corpus."));
+    body.appendChild(errorPanel("This knowledge item was not found, or is not inspectable under Office staff knowledge authority."));
     return;
   }
 
@@ -12522,10 +12546,12 @@ async function renderKnowledgeDetail(body, canonicalKey, token) {
 
   const contentPanel = homePanel("Governed Statement");
   contentPanel.style.marginTop = "var(--space-4)";
-  if (k.claim_boundary === "do_not_state_verbatim") {
-    contentPanel.appendChild(el(`<div class="status-callout status-callout-amber" style="margin-bottom:var(--space-3);">Internal reasoning only -- workers must never quote or paraphrase this to an external party.</div>`));
+  if (k.content_withheld || k.content == null) {
+    // Backend withholds the text (content is null); nothing to print.
+    contentPanel.appendChild(el(`<div class="status-callout status-callout-amber">Statement withheld. ${escapeHtml(k.content_withheld_reason || "This item's governance does not permit displaying its statement here.")}</div>`));
+  } else {
+    contentPanel.appendChild(el(`<div style="white-space:pre-wrap;overflow-wrap:anywhere;font-size:13px;line-height:1.55;">${escapeHtml(k.content)}</div>`));
   }
-  contentPanel.appendChild(el(`<div style="white-space:pre-wrap;overflow-wrap:anywhere;font-size:13px;line-height:1.55;">${escapeHtml(k.content || "")}</div>`));
   body.appendChild(contentPanel);
 
   body.appendChild(el(`<p class="home-panel-empty" style="margin-top:var(--space-3);">This is a visibility-only view. Knowledge is edited in the Office Knowledge Pack or Backend source, not here.</p>`));
