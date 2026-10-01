@@ -214,6 +214,9 @@ function createConfig() {
       process.env.OFFICE_INTELLIGENCE_MEMORY_CONTEXT_PATH || "/office/intelligence/memory-context",
     officeIntelligenceLearningPath:
       process.env.OFFICE_INTELLIGENCE_LEARNING_PATH || "/office/intelligence/learning",
+    // Intelligence System Visibility, Slice 7 — durable canonical traces.
+    officeIntelligenceTracesPath:
+      process.env.OFFICE_INTELLIGENCE_TRACES_PATH || "/office/intelligence/traces",
     // Oyi Runtime Contract, Domain 3 (Task) — additive projection of the
     // 4 genuine overlapping commercial workflow types into Backend's
     // ochiga_workflows. Default ON, but a single env flag disables the

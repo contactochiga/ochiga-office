@@ -64,6 +64,8 @@ const {
   callOyiCoreIntelligenceKnowledgeDetail,
   callOyiCoreIntelligenceMemoryContext,
   callOyiCoreIntelligenceLearning,
+  callOyiCoreIntelligenceTraces,
+  callOyiCoreIntelligenceTraceDetail,
   callOyiCoreListAutomations,
   callOyiCoreGetAutomation,
   callOyiCoreCreateAutomation,
@@ -5378,6 +5380,48 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
         json(
           res,
           200,
+          result.ok
+            ? { ...result.data, available: true }
+            : { ok: false, available: false, reason: result.reason || "unavailable" },
+          { "x-request-id": ctx.requestId }
+        );
+        return;
+      }
+
+      // Intelligence System Visibility, Slice 7 -- durable canonical traces.
+      // Same "view_traces" gate and honest-degradation shape. GET only.
+      if (pathname === "/api/lead-agents/admin/intelligence/traces") {
+        if (req.method !== "GET") {
+          methodNotAllowed(res, "GET");
+          return;
+        }
+        authorizePermission(authContext, "view_traces");
+        const tracesUrl = new URL(req.url, "http://localhost");
+        const query = {};
+        for (const key of new Set(tracesUrl.searchParams.keys())) query[key] = tracesUrl.searchParams.get(key);
+        const result = await callOyiCoreIntelligenceTraces(config, query);
+        json(
+          res,
+          200,
+          result.ok
+            ? { ...result.data, available: true }
+            : { ok: false, available: false, reason: result.reason || "unavailable" },
+          { "x-request-id": ctx.requestId }
+        );
+        return;
+      }
+
+      if (pathname.startsWith("/api/lead-agents/admin/intelligence/traces/")) {
+        if (req.method !== "GET") {
+          methodNotAllowed(res, "GET");
+          return;
+        }
+        authorizePermission(authContext, "view_traces");
+        const traceId = decodeURIComponent(pathname.slice("/api/lead-agents/admin/intelligence/traces/".length));
+        const result = await callOyiCoreIntelligenceTraceDetail(config, traceId);
+        json(
+          res,
+          result.ok ? 200 : (result.status === 404 ? 404 : 200),
           result.ok
             ? { ...result.data, available: true }
             : { ok: false, available: false, reason: result.reason || "unavailable" },

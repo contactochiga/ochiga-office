@@ -10187,6 +10187,13 @@ async function apiGetIntelligenceMemoryContext() {
 async function apiGetIntelligenceLearning() {
   return api("/api/lead-agents/admin/intelligence/learning");
 }
+async function apiGetIntelligenceTraces(params = {}) {
+  const qs = new URLSearchParams(Object.entries(params).filter(([, v]) => v != null && v !== "")).toString();
+  return api(`/api/lead-agents/admin/intelligence/traces${qs ? `?${qs}` : ""}`);
+}
+async function apiGetIntelligenceTraceDetail(id) {
+  return api(`/api/lead-agents/admin/intelligence/traces/${encodeURIComponent(id)}`);
+}
 
 // Canonical cross-surface list — the ONE place Office declares which
 // surfaces are real and observable. "Oyi Core / Direct" is deliberately
@@ -11151,6 +11158,12 @@ function buildWorkerCapabilityMatrix(capabilities, classificationFilter) {
 // Workers landing -- Section 8's A-E hierarchy. One-Core topology,
 // worker summary cards, domain/authority matrix, recent safe activity,
 // authority boundary summary.
+function workerTraceSummaryHtml(ct) {
+  if (!ct?.available) return "Trace data unavailable";
+  const latency = ct.latency?.available ? ` · median ${ct.latency.median_ms} ms` : "";
+  return `${escapeHtml(String(ct.turns))} turn${ct.turns === 1 ? "" : "s"}${ct.no_match_or_terminal ? ` · ${escapeHtml(String(ct.no_match_or_terminal))} no-match/terminal` : ""}${ct.failures ? ` <span style="color:var(--red-bright);">· ${escapeHtml(String(ct.failures))} failed/unsaved</span>` : ""}${escapeHtml(latency)}`;
+}
+
 async function renderIntelligenceWorkersSection(body, token) {
   body.innerHTML = "";
   body.appendChild(skeletonPanel(3));
@@ -11239,15 +11252,23 @@ async function renderIntelligenceWorkersSection(body, token) {
   body.appendChild(matrixPanel);
 
   // ---- D. Recent safe activity ----
-  // Durable Trace is deliberately deferred -- this only ever shows what
-  // the existing cross-surface observability/events contract can
-  // truthfully attribute to a surface today; no invented turn counts,
-  // uptime, or success rates.
+  // Slice 7: canonical turns per worker come from the durable trace
+  // store; cross-surface events remain as before. Workers are not
+  // processes -- no uptime and no synthetic score.
   const activityPanel = homePanel("Recent Safe Activity");
   activityPanel.style.marginTop = "var(--space-4)";
+  const anyTraceAvailable = workers.some((w) => w.canonical_turns?.available);
+  if (anyTraceAvailable) {
+    activityPanel.appendChild(el(`<p style="margin:0 0 var(--space-2);font-size:12px;color:var(--text-tertiary);">CANONICAL TURNS (24H, DURABLE TRACE)</p>`));
+    activityPanel.appendChild(FactGrid(workers.map((w) => ({
+      label: WORKER_DISPLAY_NAME[w.identity] || w.display_name,
+      html: workerTraceSummaryHtml(w.canonical_turns),
+    }))));
+    activityPanel.appendChild(el(`<p style="margin:var(--space-3) 0 var(--space-2);font-size:12px;color:var(--text-tertiary);">CROSS-SURFACE EVENTS (24H)</p>`));
+  }
   const anyActivityAvailable = workers.some((w) => w.activity?.available);
   if (!anyActivityAvailable) {
-    activityPanel.appendChild(el(`<p class="home-panel-empty">Detailed worker activity becomes available with durable Intelligence Trace.</p>`));
+    activityPanel.appendChild(el(`<p class="home-panel-empty">Cross-surface activity events are temporarily unavailable.</p>`));
   } else {
     activityPanel.appendChild(FactGrid(workers.map((w) => ({
       label: WORKER_DISPLAY_NAME[w.identity] || w.display_name,
@@ -11411,13 +11432,25 @@ async function renderIntelligenceWorkerDetail(body, identity, token) {
   // Recent safe activity
   const activityPanel = homePanel("Recent Safe Activity");
   activityPanel.style.marginTop = "var(--space-4)";
+  if (w.canonical_turns?.available) {
+    const ct = w.canonical_turns;
+    activityPanel.appendChild(FactGrid([
+      { label: "Canonical Turns (24h)", html: escapeHtml(String(ct.turns)) },
+      { label: "No-Match / Terminal", html: escapeHtml(String(ct.no_match_or_terminal)) },
+      { label: "Failures / Unsaved", html: escapeHtml(String(ct.failures)) },
+      { label: "Median Latency", html: ct.latency?.available ? `${escapeHtml(String(ct.latency.median_ms))} ms (p95 ${escapeHtml(String(ct.latency.p95_ms))} ms)` : `Needs ≥${escapeHtml(String(ct.latency?.min_sample || 20))} turns (have ${escapeHtml(String(ct.latency?.sample ?? 0))})` },
+    ]));
+    const traceLink = el(`<button type="button" class="btn btn-ghost btn-sm" style="margin-top:var(--space-3);">View this worker's canonical traces →</button>`);
+    traceLink.addEventListener("click", () => { traceListState.worker = w.identity; traceListState.page = 1; navigate("observatory/activity-trace"); });
+    activityPanel.appendChild(traceLink);
+  }
   if (w.activity?.available) {
     activityPanel.appendChild(FactGrid([
       { label: "Last 24h", html: `${w.activity.recent_count} event${w.activity.recent_count === 1 ? "" : "s"}` },
       { label: "Failures (24h)", html: w.failures?.available ? String(w.failures.recent_count) : "Unavailable" },
     ]));
   } else {
-    activityPanel.appendChild(el(`<p class="home-panel-empty">${escapeHtml(w.activity?.note || "Detailed worker activity becomes available with durable Intelligence Trace.")}</p>`));
+    activityPanel.appendChild(el(`<p class="home-panel-empty">Cross-surface activity events are temporarily unavailable.</p>`));
   }
   body.appendChild(activityPanel);
 
@@ -11590,6 +11623,23 @@ async function renderIntelligenceOverviewSummary(body, overviewFetch, token) {
     }))));
   }
   body.appendChild(workerPanel);
+
+  // ---- F. Canonical turns (Slice 7, compact; full view in Activity & Trace) ----
+  const ct = ov.canonical_traces || { available: false };
+  const tracePanel = homePanel("Canonical Turns (24h)", "Open Activity & Trace", () => navigate("observatory/activity-trace"));
+  tracePanel.style.marginTop = "var(--space-4)";
+  if (!ct.available) {
+    tracePanel.appendChild(el(`<p class="home-panel-empty">Canonical trace store unavailable. Oyi conversations are not affected.</p>`));
+  } else {
+    tracePanel.appendChild(FactGrid([
+      { label: "Canonical Turns", html: escapeHtml(String(ct.turns)) },
+      { label: "Structural Terminal Outcomes", html: ct.structural_failures ? badge(String(ct.structural_failures), "amber") : badge("0", "green") },
+      { label: "No-Match", html: escapeHtml(String(ct.no_match)) },
+      { label: "Authority Denied", html: ct.authority_denied ? badge(String(ct.authority_denied), "red") : "0" },
+      { label: "Runtime Errors / Unsaved", html: escapeHtml(`${ct.runtime_errors} / ${ct.persistence_failures}`) },
+    ]));
+  }
+  body.appendChild(tracePanel);
 }
 
 // Section 9 -- intervention detail. Visibility only: no approve/reject
@@ -12831,6 +12881,294 @@ async function renderLearningSection(body, token) {
   body.appendChild(el(`<p class="home-panel-empty" style="margin-top:var(--space-3);">This is a visibility-only view. Learning parameters cannot be promoted, approved or edited here.</p>`));
 }
 
+// ---------------------------------------------------------------
+// Intelligence System Visibility, Slice 7 -- Activity & Trace.
+//
+// Canonical Trace (durable, sanitized, one record per canonical turn --
+// Backend's oyi_conversation_traces projection) is the drill-down
+// authority. Below it, the existing Activity Analytics
+// (renderIntelligenceOverviewSection, unchanged) keeps the Office-
+// recorded + cross-surface interaction view. No prompt, reply, message or
+// identity is ever shown: every field below is structural.
+// ---------------------------------------------------------------
+const TRACE_WORKER_LABEL = { consumer: "Consumer", facility: "Facility", oma: "Oma", osa: "Osa", other: "Other" };
+const TRACE_TERMINAL_LABEL = {
+  capability_response: "Responded",
+  governed_continuation: "Governed continuation",
+  canonical_unsupported: "Canonical unsupported",
+  capability_no_match: "Capability no-match",
+  business_surface_fallback: "Business-surface fallback",
+  declared_disabled: "Declared disabled",
+  authority_denied: "Authority denied",
+  runtime_error: "Runtime error",
+};
+const TRACE_TERMINAL_TONE = {
+  capability_response: "green",
+  governed_continuation: "blue",
+  canonical_unsupported: "amber",
+  capability_no_match: "amber",
+  business_surface_fallback: "amber",
+  declared_disabled: "default",
+  authority_denied: "red",
+  runtime_error: "red",
+};
+const TRACE_STAGE_LABEL = {
+  request_received: "Request",
+  turn_normalized: "Interpretation",
+  workflow_restored: "Workflow",
+  turn_resolved: "Target",
+  authority_decided: "Authority",
+  capability_selected: "Capability",
+  canonical_terminal_response: "Terminal Outcome",
+  evidence_planned: "Evidence Plan",
+  evidence_loaded: "Evidence",
+  response_composed: "Response Composed",
+  persistence_completed: "Persistence",
+  response_sent: "Response",
+};
+const TRACE_WINDOWS = [["1h", 1], ["24h", 24], ["7d", 168], ["30d", 720]];
+
+function traceOutcomeBadge(row) {
+  const label = row.confirmation_required && row.terminal_outcome === "capability_response" ? "Confirmation required" : TRACE_TERMINAL_LABEL[row.terminal_outcome] || titleCase(row.terminal_outcome || "unknown");
+  return badge(label, row.confirmation_required && row.terminal_outcome === "capability_response" ? "amber" : TRACE_TERMINAL_TONE[row.terminal_outcome] || "default");
+}
+function traceAuthorityBadge(result) {
+  return result === "allowed" ? badge("Allowed", "green") : result === "denied" ? badge("Denied", "red") : badge("Not decided", "default");
+}
+function traceTime(iso) {
+  try { return new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }); } catch { return "—"; }
+}
+
+const traceListState = { window: "24h", worker: "", terminal_outcome: "", authority_result: "", response_status: "", has_lineage: false, page: 1 };
+
+async function renderActivityTraceSection(body, token, threadRef) {
+  body.innerHTML = "";
+  const traceHost = el(`<div></div>`);
+  const analyticsHost = el(`<div style="margin-top:var(--space-6);"></div>`);
+  body.appendChild(traceHost);
+  body.appendChild(analyticsHost);
+  await renderCanonicalTraceBlock(traceHost, token, threadRef);
+  if (token !== state.renderToken) return;
+  analyticsHost.appendChild(el(`<div class="view-heading" style="margin-bottom:var(--space-3);"><h2 style="font-size:16px;margin:0;">Activity Analytics</h2><p class="home-panel-empty" style="margin:4px 0 0;">Office-recorded and cross-surface interaction analytics (unchanged). Canonical traces above are the per-turn drill-down.</p></div>`));
+  const analyticsBody = el(`<div></div>`);
+  analyticsBody.appendChild(skeletonPanel(3));
+  analyticsHost.appendChild(analyticsBody);
+  await renderIntelligenceOverviewSection(analyticsBody, token);
+}
+
+async function renderCanonicalTraceBlock(host, token, threadRef) {
+  host.innerHTML = "";
+  host.appendChild(skeletonPanel(3));
+  const hours = (TRACE_WINDOWS.find(([k]) => k === traceListState.window) || TRACE_WINDOWS[1])[1];
+  const params = threadRef
+    ? { thread_ref: threadRef, page: traceListState.page, page_size: 20 }
+    : {
+        since: new Date(Date.now() - hours * 3600000).toISOString(),
+        worker: traceListState.worker,
+        terminal_outcome: traceListState.terminal_outcome,
+        authority_result: traceListState.authority_result,
+        response_status: traceListState.response_status,
+        has_lineage: traceListState.has_lineage ? "true" : "",
+        page: traceListState.page,
+        page_size: 20,
+      };
+  let data;
+  try {
+    data = await apiGetIntelligenceTraces(params);
+  } catch (err) {
+    data = { available: false };
+  }
+  if (token !== state.renderToken) return;
+  host.innerHTML = "";
+  host.appendChild(el(`<div class="view-heading" style="margin-bottom:var(--space-3);"><h2 style="font-size:16px;margin:0;">Canonical Trace</h2><p class="home-panel-empty" style="margin:4px 0 0;">One sanitized record per canonical Oyi turn: how it was interpreted, which capability and authority decided it, and how it ended. No prompts, replies or identities.</p></div>`));
+  if (!data || data.available === false) {
+    host.appendChild(el(`<div class="status-callout status-callout-amber">Canonical traces are temporarily unavailable (Backend unreachable). Oyi conversations are not affected.</div>`));
+    return;
+  }
+  if (data.store && data.store.available === false) {
+    host.appendChild(el(`<div class="status-callout status-callout-amber">The canonical trace store is unavailable right now. Oyi conversations are not affected -- trace persistence never blocks a response.</div>`));
+    return;
+  }
+  if (data.store && data.store.write_enabled === false) {
+    host.appendChild(el(`<div class="status-callout status-callout-amber" style="margin-bottom:var(--space-3);">Trace recording is switched off on this Backend (OYI_CONVERSATION_TRACE_ENABLED=false). Existing traces are still shown.</div>`));
+  }
+
+  const sm = data.summary || {};
+  if (sm.available) {
+    const lat = sm.latency || {};
+    const kpi = KPIGroup([
+      { label: "Canonical Turns", value: sm.turns, sub: "last 24h", icon: iconSvg("observatory", "kpi-icon"), tone: "blue" },
+      { label: "Structural Terminal Outcomes", value: sm.structural_failures, sub: "no-match, unsupported, denied, error", icon: iconSvg("attention", "kpi-icon"), tone: sm.structural_failures ? "amber" : "green" },
+      { label: "Authority Denied", value: sm.authority_denied, sub: "last 24h", icon: iconSvg("audit", "kpi-icon"), tone: sm.authority_denied ? "red" : "green" },
+      { label: "Errors / Unsaved", value: `${sm.runtime_errors} / ${sm.persistence_failures}`, sub: "runtime errors / unsaved turns", icon: iconSvg("attention", "kpi-icon"), tone: sm.runtime_errors || sm.persistence_failures ? "red" : "green" },
+      { label: "Median Latency", value: lat.available ? `${lat.median_ms} ms` : "—", sub: lat.available ? `p95 ${lat.p95_ms} ms · n=${lat.sample}` : `needs ≥${lat.min_sample || 20} turns`, icon: iconSvg("lightning", "kpi-icon"), tone: "violet" },
+    ]);
+    kpi.style.marginBottom = "var(--space-4)";
+    host.appendChild(kpi);
+    const dist = homePanel("Terminal Outcomes (24h)");
+    dist.classList.add("intelligence-bar-wide-labels");
+    dist.appendChild(barDistribution(Object.entries(sm.by_terminal_outcome || {}).filter(([, n]) => n > 0).map(([k, n]) => ({ label: TRACE_TERMINAL_LABEL[k] || titleCase(k), count: n, tone: TRACE_TERMINAL_TONE[k] || "default" })), "No canonical turns in the last 24h."));
+    host.appendChild(dist);
+  } else {
+    host.appendChild(el(`<p class="home-panel-empty">Trace summary is temporarily unavailable.</p>`));
+  }
+
+  // Filters (server-side) + list.
+  const listPanel = homePanel(threadRef ? "Same Conversation" : "Recent Canonical Turns");
+  listPanel.style.marginTop = "var(--space-4)";
+  if (threadRef) {
+    const back = el(`<button type="button" class="btn btn-ghost btn-sm" style="margin-bottom:var(--space-3);">← All traces</button>`);
+    back.addEventListener("click", () => navigate("observatory/activity-trace"));
+    listPanel.appendChild(back);
+    listPanel.appendChild(el(`<p class="home-panel-empty" style="margin-bottom:var(--space-3);">Turns sharing one opaque conversation reference. Conversation content is never shown here.</p>`));
+  } else {
+    const select = (label, key, options) => {
+      const wrap = el(`<label style="display:flex;flex-direction:column;gap:4px;font-size:11px;color:var(--text-tertiary);text-transform:uppercase;letter-spacing:0.05em;">${escapeHtml(label)}<select class="input" style="min-width:140px;"></select></label>`);
+      const sel = wrap.querySelector("select");
+      options.forEach(([value, text]) => { const o = document.createElement("option"); o.value = value; o.textContent = text; if (traceListState[key] === value) o.selected = true; sel.appendChild(o); });
+      sel.addEventListener("change", () => { traceListState[key] = sel.value; traceListState.page = 1; renderCanonicalTraceBlock(host, state.renderToken, null); });
+      return wrap;
+    };
+    const bar = el(`<div style="display:flex;flex-wrap:wrap;gap:var(--space-3);align-items:flex-end;margin-bottom:var(--space-3);"></div>`);
+    bar.appendChild(select("Window", "window", TRACE_WINDOWS.map(([k]) => [k, `Last ${k}`])));
+    bar.appendChild(select("Worker", "worker", [["", "All workers"], ...Object.entries(TRACE_WORKER_LABEL)]));
+    bar.appendChild(select("Outcome", "terminal_outcome", [["", "All outcomes"], ...Object.entries(TRACE_TERMINAL_LABEL)]));
+    bar.appendChild(select("Authority", "authority_result", [["", "Any"], ["allowed", "Allowed"], ["denied", "Denied"]]));
+    bar.appendChild(select("Persistence", "response_status", [["", "Any"], ["returned", "Saved"], ["returned_unsaved", "Not saved"], ["failed", "Failed turn"]]));
+    const lineage = el(`<label style="display:flex;align-items:center;gap:6px;font-size:13px;"><input type="checkbox" ${traceListState.has_lineage ? "checked" : ""}/> Has workflow/action link</label>`);
+    lineage.querySelector("input").addEventListener("change", (e) => { traceListState.has_lineage = e.target.checked; traceListState.page = 1; renderCanonicalTraceBlock(host, state.renderToken, null); });
+    bar.appendChild(lineage);
+    listPanel.appendChild(bar);
+  }
+  if (!data.list_available) {
+    listPanel.appendChild(el(`<p class="home-panel-empty">Trace list is temporarily unavailable.</p>`));
+  } else {
+    listPanel.appendChild(renderDataTable({
+      columns: [
+        { key: "started_at", label: "When", width: "0.8fr", render: (r) => `${escapeHtml(traceTime(r.started_at))}<div style="color:var(--text-tertiary);font-size:11px;">${escapeHtml(fmtRelative(r.started_at))}</div>` },
+        { key: "worker", label: "Worker", width: "0.7fr", render: (r) => badge(TRACE_WORKER_LABEL[r.worker] || r.worker, "default") },
+        { key: "domain", label: "Domain / Operation", width: "1.3fr", render: (r) => `<div style="white-space:normal;overflow-wrap:anywhere;">${escapeHtml(r.domain ? titleCase(r.domain) : "—")} / ${escapeHtml(r.operation || "—")}</div>` },
+        { key: "capability_key", label: "Capability", width: "1.4fr", render: (r) => (r.capability_key ? `<code style="font-size:11px;white-space:normal;overflow-wrap:anywhere;display:block;">${escapeHtml(r.capability_key)}</code>` : `<span style="color:var(--text-tertiary);">None matched</span>`) },
+        { key: "authority_result", label: "Authority", width: "0.8fr", render: (r) => traceAuthorityBadge(r.authority_result) },
+        { key: "terminal_outcome", label: "Outcome", width: "1.2fr", render: (r) => `${traceOutcomeBadge(r)}${r.persistence_saved === false ? ` ${badge("Not saved", "red")}` : ""}` },
+        { key: "total_latency_ms", label: "Latency", width: "0.6fr", render: (r) => `${escapeHtml(String(r.total_latency_ms))} ms` },
+      ],
+      rows: data.items || [],
+      onRowClick: (r) => navigate(`observatory/activity-trace/trace/${encodeURIComponent(r.trace_id)}`),
+      emptyMessage: "No canonical turns match these filters.",
+    }));
+    const pg = data.pagination || { page: 1, total_pages: 1, total: 0 };
+    const pager = el(`<div style="display:flex;align-items:center;justify-content:space-between;gap:var(--space-2);margin-top:var(--space-3);flex-wrap:wrap;"><span class="home-panel-empty">${escapeHtml(String(pg.total))} trace${pg.total === 1 ? "" : "s"} · page ${escapeHtml(String(pg.page))} of ${escapeHtml(String(pg.total_pages))}</span><span style="display:flex;gap:var(--space-2);"></span></div>`);
+    const btns = pager.lastElementChild;
+    const mk = (text, page, disabled) => { const b = el(`<button type="button" class="btn btn-ghost btn-sm" ${disabled ? "disabled" : ""}>${text}</button>`); b.addEventListener("click", () => { traceListState.page = page; renderCanonicalTraceBlock(host, state.renderToken, threadRef); }); return b; };
+    btns.appendChild(mk("← Newer", pg.page - 1, pg.page <= 1));
+    btns.appendChild(mk("Older →", pg.page + 1, pg.page >= pg.total_pages));
+    listPanel.appendChild(pager);
+  }
+  host.appendChild(listPanel);
+}
+
+function traceStageNarrative(stage, t) {
+  switch (stage) {
+    case "request_received": return `${TRACE_WORKER_LABEL[t.worker] || t.worker} turn received · ${titleCase(t.actor_class || "unknown")} actor`;
+    case "turn_normalized": return `Domain: ${t.domain ? titleCase(t.domain) : "unresolved"} · Operation: ${t.operation || "unresolved"} · Mutation: ${t.mutation_intent ? "yes" : "no"}`;
+    case "workflow_restored": return t.workflow_restored ? `Active workflow restored${t.workflow_state ? ` (${titleCase(t.workflow_state)})` : ""}` : "No active workflow to restore";
+    case "turn_resolved": return t.target_class ? `${titleCase(t.target_class)} target resolved · source: ${titleCase(t.target_resolution_source || "none")}` : "No specific target";
+    case "authority_decided": return `${t.authority_result === "denied" ? "Denied" : t.authority_result === "allowed" ? "Allowed" : "Undecided"}${Number.isInteger(t.authority_tier) ? ` · tier ${t.authority_tier}` : ""}${t.authority_denial_reason ? ` · ${titleCase(t.authority_denial_reason)}` : ""}`;
+    case "capability_selected": return t.capability_key ? `${t.capability_key}${t.capability_rollout ? ` · ${titleCase(t.capability_rollout)}` : ""}${t.resolution_outcome ? ` · ${titleCase(t.resolution_outcome)}` : ""}` : `No capability matched${t.resolution_outcome ? ` · ${titleCase(t.resolution_outcome)}` : ""}`;
+    case "canonical_terminal_response": return TRACE_TERMINAL_LABEL[t.terminal_outcome] || titleCase(t.terminal_outcome);
+    case "evidence_planned": return "Governed evidence planned";
+    case "evidence_loaded": return `${t.evidence_count ?? 0} governed evidence item${t.evidence_count === 1 ? "" : "s"} loaded`;
+    case "response_composed": return "Response composed";
+    case "persistence_completed": return t.persistence_saved === false ? "Conversation turn NOT saved" : "Conversation turn saved";
+    case "response_sent": return t.confirmation_required ? "Confirmation requested" : t.response_status === "returned_unsaved" ? "Returned (unsaved)" : "Response returned";
+    default: return titleCase(stage);
+  }
+}
+
+async function renderTraceDetail(body, traceId, token) {
+  body.innerHTML = "";
+  body.appendChild(skeletonPanel(3));
+  let data;
+  try {
+    data = await apiGetIntelligenceTraceDetail(traceId);
+  } catch (err) {
+    if (token !== state.renderToken) return;
+    body.innerHTML = "";
+    const back = el(`<button type="button" class="btn btn-ghost btn-sm" style="margin-bottom:var(--space-3);">← Activity & Trace</button>`);
+    back.addEventListener("click", () => navigate("observatory/activity-trace"));
+    body.appendChild(back);
+    body.appendChild(errorPanel(err?.status === 404 ? "This trace was not found -- it may have passed its retention window." : "This trace could not be loaded."));
+    return;
+  }
+  if (token !== state.renderToken) return;
+  body.innerHTML = "";
+  const back = el(`<button type="button" class="btn btn-ghost btn-sm" style="margin-bottom:var(--space-3);">← Activity & Trace</button>`);
+  back.addEventListener("click", () => navigate("observatory/activity-trace"));
+  body.appendChild(back);
+  if (!data || data.available === false || !data.trace) {
+    body.appendChild(el(`<div class="status-callout status-callout-amber">Trace data is temporarily unavailable.</div>`));
+    return;
+  }
+  const t = data.trace;
+  body.appendChild(el(`<div class="view-heading"><h1>${escapeHtml(TRACE_WORKER_LABEL[t.worker] || t.worker)} · ${escapeHtml(t.domain ? titleCase(t.domain) : "Unresolved")} / ${escapeHtml(t.operation || "—")}</h1></div>`));
+  const head = homePanel("Outcome");
+  head.appendChild(FactGrid([
+    { label: "When", html: escapeHtml(fmtDateTime(t.started_at)) },
+    { label: "Outcome", html: `${traceOutcomeBadge(t)}${t.compatibility_label_seen ? ` <span style="color:var(--text-tertiary);font-size:12px;">(older compatibility label recorded by the tracer -- not an intelligence path)</span>` : ""}` },
+    { label: "Authority", html: traceAuthorityBadge(t.authority_result) },
+    { label: "Capability", html: t.capability_key ? `<code style="font-size:11px;">${escapeHtml(t.capability_key)}</code>` : "None matched" },
+    { label: "Persistence", html: t.persistence_saved === false ? badge("Not saved", "red") : t.persistence_saved === true ? badge("Saved", "green") : badge("No response", "default") },
+    { label: "Total Latency", html: `${escapeHtml(String(t.total_latency_ms))} ms` },
+    ...(t.error_class ? [{ label: "Error Class", html: `<code style="font-size:11px;">${escapeHtml(t.error_class)}</code> <span style="color:var(--text-tertiary);">(class only -- messages are never stored)</span>` }] : []),
+  ]));
+  body.appendChild(head);
+
+  // Timeline: observed stages in order, with the time between them; the
+  // conceptual stages that did not occur are listed separately as
+  // "not observed" -- never shown as if they happened.
+  const timeline = homePanel("Decision Path");
+  timeline.style.marginTop = "var(--space-4)";
+  const list = el(`<div style="display:flex;flex-direction:column;"></div>`);
+  // Gap between consecutive observed stages, from their offsets. (The
+  // tracer's own duration_ms is measured from turn start on a stage's
+  // first occurrence, so it is not an inter-stage gap.)
+  (t.stages || []).forEach((s, i, all) => {
+    if (i > 0) list.appendChild(el(`<div style="padding:2px 0 2px 14px;color:var(--text-tertiary);font-size:12px;">↓ ${escapeHtml(String(Math.max(0, s.offset_ms - all[i - 1].offset_ms)))} ms</div>`));
+    list.appendChild(el(`<div style="border-left:2px solid var(--accent, #e5484d);padding:6px 12px;">
+      <div style="font-size:11px;letter-spacing:0.06em;color:var(--text-tertiary);text-transform:uppercase;">${escapeHtml(TRACE_STAGE_LABEL[s.stage] || titleCase(s.stage))} <span style="text-transform:none;letter-spacing:0;">· +${escapeHtml(String(s.offset_ms))} ms</span></div>
+      <div style="font-size:13px;overflow-wrap:anywhere;">${escapeHtml(traceStageNarrative(s.stage, t))}</div>
+    </div>`));
+  });
+  if (!(t.stages || []).length) list.appendChild(el(`<p class="home-panel-empty">No stages were recorded for this turn.</p>`));
+  timeline.appendChild(list);
+  const notObserved = (t.stage_coverage || []).filter((c) => !c.observed).map((c) => TRACE_STAGE_LABEL[c.stage] || titleCase(c.stage));
+  if (notObserved.length) timeline.appendChild(el(`<p class="home-panel-empty" style="margin-top:var(--space-3);">Not observed in this turn (absent or not applicable): ${escapeHtml(notObserved.join(", "))}.</p>`));
+  body.appendChild(timeline);
+
+  const links = homePanel("Related");
+  links.style.marginTop = "var(--space-4)";
+  const rel = el(`<div style="display:flex;flex-wrap:wrap;gap:var(--space-2);align-items:center;"></div>`);
+  (t.lineage_links || []).forEach((l) => {
+    if (l.section && l.ref) {
+      const b = el(`<button type="button" class="btn btn-ghost btn-sm">${escapeHtml(l.label)} →</button>`);
+      b.addEventListener("click", () => navigate(`observatory/${l.section}/${encodeURIComponent(l.ref)}`));
+      rel.appendChild(b);
+    } else {
+      rel.appendChild(badge(l.label, "default"));
+    }
+  });
+  if (t.thread_ref && t.same_conversation_traces) {
+    const b = el(`<button type="button" class="btn btn-ghost btn-sm">Same conversation: ${escapeHtml(String(t.same_conversation_traces))} trace${t.same_conversation_traces === 1 ? "" : "s"} →</button>`);
+    b.addEventListener("click", () => navigate(`observatory/activity-trace/thread/${encodeURIComponent(t.thread_ref)}`));
+    rel.appendChild(b);
+  }
+  if (!rel.children.length) rel.appendChild(el(`<p class="home-panel-empty">No workflow, action, goal or conversation links for this turn.</p>`));
+  links.appendChild(rel);
+  body.appendChild(links);
+  body.appendChild(el(`<p class="home-panel-empty" style="margin-top:var(--space-3);">Structural trace only: the prompt, reply, conversation, identities and evidence content are never stored or shown. Retained until ${escapeHtml(fmtDateTime(t.expires_at))}.</p>`));
+}
+
 async function renderObservatoryView(outlet, rest, token) {
   const [sectionKey = "overview", detailKind, detailKey] = rest;
   setTopbar("Intelligence", "");
@@ -12918,6 +13256,15 @@ async function renderObservatoryView(outlet, rest, token) {
       await renderKnowledgeSection(body, token, decodeURIComponent(detailKey));
     } else {
       await renderKnowledgeSection(body, token);
+    }
+  } else if (sectionKey === "activity-trace") {
+    if (detailKind === "trace" && detailKey) {
+      await renderTraceDetail(body, decodeURIComponent(detailKey), token);
+    } else if (detailKind === "thread" && detailKey) {
+      traceListState.page = 1;
+      await renderActivityTraceSection(body, token, decodeURIComponent(detailKey));
+    } else {
+      await renderActivityTraceSection(body, token, null);
     }
   } else if (sectionKey === "memory-context") {
     await renderMemoryContextSection(body, token);

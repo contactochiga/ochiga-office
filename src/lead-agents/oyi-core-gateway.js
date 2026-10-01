@@ -1012,6 +1012,24 @@ async function callOyiCoreIntelligenceLearning(config = {}, options = {}) {
   return callOyiCoreIntelligenceGet(config, config.officeIntelligenceLearningPath || "/office/intelligence/learning", options);
 }
 
+// Intelligence System Visibility, Slice 7 — durable canonical traces.
+// The list call forwards only Backend's own known filter/pagination keys.
+const TRACE_QUERY_KEYS = ["since", "until", "worker", "surface", "domain", "capability", "resolution_outcome", "authority_result", "terminal_outcome", "response_status", "has_lineage", "thread_ref", "page", "page_size"];
+async function callOyiCoreIntelligenceTraces(config = {}, query = {}, options = {}) {
+  const basePath = config.officeIntelligenceTracesPath || "/office/intelligence/traces";
+  const params = new URLSearchParams();
+  for (const key of TRACE_QUERY_KEYS) {
+    const value = Array.isArray(query[key]) ? query[key][0] : query[key];
+    if (value != null && value !== "") params.set(key, String(value));
+  }
+  const qs = params.toString();
+  return callOyiCoreIntelligenceGet(config, qs ? `${basePath}?${qs}` : basePath, options);
+}
+async function callOyiCoreIntelligenceTraceDetail(config = {}, traceId, options = {}) {
+  const basePath = config.officeIntelligenceTracesPath || "/office/intelligence/traces";
+  return callOyiCoreIntelligenceGet(config, `${basePath}/${encodeURIComponent(String(traceId || ""))}`, options);
+}
+
 // Oyi Runtime Contract, Domain 3 (Task) — Backend's additive
 // office-backend-intelligence-events projection into ochiga_workflows.
 // Same credential/timeout convention as every other Backend call here.
@@ -1169,6 +1187,8 @@ module.exports = {
   callOyiCoreIntelligenceKnowledgeDetail,
   callOyiCoreIntelligenceMemoryContext,
   callOyiCoreIntelligenceLearning,
+  callOyiCoreIntelligenceTraces,
+  callOyiCoreIntelligenceTraceDetail,
   callOyiCoreCreateWorkflow,
   callOyiCoreTransitionWorkflow,
   callOyiCoreListAutomations,
