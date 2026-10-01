@@ -62,6 +62,8 @@ const {
   callOyiCoreIntelligenceActionDetail,
   callOyiCoreIntelligenceKnowledge,
   callOyiCoreIntelligenceKnowledgeDetail,
+  callOyiCoreIntelligenceMemoryContext,
+  callOyiCoreIntelligenceLearning,
   callOyiCoreListAutomations,
   callOyiCoreGetAutomation,
   callOyiCoreCreateAutomation,
@@ -5337,6 +5339,45 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
         json(
           res,
           result.ok ? 200 : (result.status === 404 ? 404 : 200),
+          result.ok
+            ? { ...result.data, available: true }
+            : { ok: false, available: false, reason: result.reason || "unavailable" },
+          { "x-request-id": ctx.requestId }
+        );
+        return;
+      }
+
+      // Intelligence System Visibility, Slice 6 -- Memory & Context and
+      // Learning. Same "view_traces" gate and honest-degradation shape as
+      // Slices 1-5. GET only; there are deliberately no control routes.
+      if (pathname === "/api/lead-agents/admin/intelligence/memory-context") {
+        if (req.method !== "GET") {
+          methodNotAllowed(res, "GET");
+          return;
+        }
+        authorizePermission(authContext, "view_traces");
+        const result = await callOyiCoreIntelligenceMemoryContext(config);
+        json(
+          res,
+          200,
+          result.ok
+            ? { ...result.data, available: true }
+            : { ok: false, available: false, reason: result.reason || "unavailable" },
+          { "x-request-id": ctx.requestId }
+        );
+        return;
+      }
+
+      if (pathname === "/api/lead-agents/admin/intelligence/learning") {
+        if (req.method !== "GET") {
+          methodNotAllowed(res, "GET");
+          return;
+        }
+        authorizePermission(authContext, "view_traces");
+        const result = await callOyiCoreIntelligenceLearning(config);
+        json(
+          res,
+          200,
           result.ok
             ? { ...result.data, available: true }
             : { ok: false, available: false, reason: result.reason || "unavailable" },

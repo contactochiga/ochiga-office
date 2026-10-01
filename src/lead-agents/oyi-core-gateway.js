@@ -1003,6 +1003,15 @@ async function callOyiCoreIntelligenceKnowledgeDetail(config = {}, canonicalKey,
   return callOyiCoreIntelligenceGet(config, `${basePath}/${encodeURIComponent(String(canonicalKey || ""))}`, options);
 }
 
+// Intelligence System Visibility, Slice 6 — Memory & Context, Learning.
+// No parameters are forwarded: both contracts are fixed aggregates.
+async function callOyiCoreIntelligenceMemoryContext(config = {}, options = {}) {
+  return callOyiCoreIntelligenceGet(config, config.officeIntelligenceMemoryContextPath || "/office/intelligence/memory-context", options);
+}
+async function callOyiCoreIntelligenceLearning(config = {}, options = {}) {
+  return callOyiCoreIntelligenceGet(config, config.officeIntelligenceLearningPath || "/office/intelligence/learning", options);
+}
+
 // Oyi Runtime Contract, Domain 3 (Task) — Backend's additive
 // office-backend-intelligence-events projection into ochiga_workflows.
 // Same credential/timeout convention as every other Backend call here.
@@ -1158,6 +1167,8 @@ module.exports = {
   callOyiCoreIntelligenceActionDetail,
   callOyiCoreIntelligenceKnowledge,
   callOyiCoreIntelligenceKnowledgeDetail,
+  callOyiCoreIntelligenceMemoryContext,
+  callOyiCoreIntelligenceLearning,
   callOyiCoreCreateWorkflow,
   callOyiCoreTransitionWorkflow,
   callOyiCoreListAutomations,

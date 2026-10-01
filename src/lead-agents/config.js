@@ -208,6 +208,12 @@ function createConfig() {
     // safety boundary as the Slice 1-4 paths above.
     officeIntelligenceKnowledgePath:
       process.env.OFFICE_INTELLIGENCE_KNOWLEDGE_PATH || "/office/intelligence/knowledge",
+    // Intelligence System Visibility, Slice 6 — Memory & Context and
+    // Learning (aggregate/structural, read-only). Same safety boundary.
+    officeIntelligenceMemoryContextPath:
+      process.env.OFFICE_INTELLIGENCE_MEMORY_CONTEXT_PATH || "/office/intelligence/memory-context",
+    officeIntelligenceLearningPath:
+      process.env.OFFICE_INTELLIGENCE_LEARNING_PATH || "/office/intelligence/learning",
     // Oyi Runtime Contract, Domain 3 (Task) — additive projection of the
     // 4 genuine overlapping commercial workflow types into Backend's
     // ochiga_workflows. Default ON, but a single env flag disables the

@@ -10181,6 +10181,12 @@ async function apiGetIntelligenceKnowledge(page = 1) {
 async function apiGetIntelligenceKnowledgeDetail(key) {
   return api(`/api/lead-agents/admin/intelligence/knowledge/${encodeURIComponent(key)}`);
 }
+async function apiGetIntelligenceMemoryContext() {
+  return api("/api/lead-agents/admin/intelligence/memory-context");
+}
+async function apiGetIntelligenceLearning() {
+  return api("/api/lead-agents/admin/intelligence/learning");
+}
 
 // Canonical cross-surface list — the ONE place Office declares which
 // surfaces are real and observable. "Oyi Core / Direct" is deliberately
@@ -12557,6 +12563,274 @@ async function renderKnowledgeDetail(body, canonicalKey, token) {
   body.appendChild(el(`<p class="home-panel-empty" style="margin-top:var(--space-3);">This is a visibility-only view. Knowledge is edited in the Office Knowledge Pack or Backend source, not here.</p>`));
 }
 
+// ---------------------------------------------------------------
+// Intelligence System Visibility, Slice 6 -- Memory & Context, Learning.
+//
+// Both pages observe SYSTEMS, never people: Backend returns only counts
+// and structural descriptors (no conversation/memory/draft/feedback
+// text, no IDs). Every status word is Backend's own; Office only maps it
+// to display text. Visibility only -- no promote/approve/edit/reset/
+// delete/clear/force-admission controls anywhere.
+// ---------------------------------------------------------------
+function fmtDurationMs(ms) {
+  if (ms == null) return "No TTL";
+  const minutes = Math.round(ms / 60000);
+  if (minutes < 120) return `${minutes} min`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 48) return `${hours} h`;
+  return `${Math.round(hours / 24)} days`;
+}
+const fmtCount = (value) => (value == null ? "Unavailable" : Number(value).toLocaleString());
+const CONTEXT_PERSISTENCE_LABEL = { ephemeral_ttl: "Ephemeral (TTL)", thread_scoped: "Thread-scoped", durable: "Durable" };
+const CONTEXT_PERSISTENCE_TONE = { ephemeral_ttl: "blue", thread_scoped: "default", durable: "violet" };
+const MEMORY_WRITE_STATUS = { active: ["Active", "amber"], not_wired: ["Not wired", "default"] };
+const LEARNING_STATUS = {
+  active: ["Active", "green"],
+  config_gated: ["Config-gated", "amber"],
+  inactive_unwired: ["Inactive -- not wired", "default"],
+  not_implemented: ["Not implemented", "default"],
+};
+const LEARNING_STAGE_TONE = { observe: "default", shadow: "blue", reviewed: "amber", enabled: "green" };
+
+function intelligenceSourcesCallout(data, label) {
+  const missing = Object.entries(data.sources || {}).filter(([, ok]) => !ok).map(([name]) => titleCase(name.replace(/^context_|^outcomes_/, "")));
+  if (data.complete || !missing.length) return null;
+  return el(`<div class="status-callout status-callout-amber" style="margin-bottom:var(--space-4);">${escapeHtml(label)} is partial -- unavailable right now: ${escapeHtml(missing.join(", "))}. Everything else shown is current.</div>`);
+}
+
+async function renderMemoryContextSection(body, token) {
+  body.innerHTML = "";
+  body.appendChild(skeletonPanel(3));
+  let data;
+  try {
+    data = await apiGetIntelligenceMemoryContext();
+  } catch (err) {
+    data = { available: false };
+  }
+  if (token !== state.renderToken) return;
+  body.innerHTML = "";
+  if (!data || data.available === false) {
+    body.appendChild(el(`<div class="status-callout status-callout-amber">Memory & Context data is temporarily unavailable.</div>`));
+    return;
+  }
+  const partial = intelligenceSourcesCallout(data, "Memory & Context");
+  if (partial) body.appendChild(partial);
+
+  const continuity = data.continuity || {};
+  const rm = data.resident_memory || {};
+  const summary = data.context_summary || {};
+  const kpi = KPIGroup([
+    { label: "Active Conversations", value: continuity.available ? fmtCount(continuity.active_threads_24h) : "Unavailable", sub: "threads, last 24h", icon: iconSvg("briefing", "kpi-icon"), tone: "blue" },
+    { label: "Active Contexts", value: fmtCount(summary.active_ttl_contexts), sub: "unexpired TTL contexts", icon: iconSvg("observatory", "kpi-icon"), tone: "violet" },
+    { label: "Pending Contextual Actions", value: fmtCount(summary.pending_contextual_actions), sub: "awaiting confirmation", icon: iconSvg("attention", "kpi-icon"), tone: summary.pending_contextual_actions ? "amber" : "green" },
+    { label: "Resident Memory Items", value: rm.available ? fmtCount(rm.total_items) : "Unavailable", sub: "durable, aggregate only", icon: iconSvg("audit", "kpi-icon"), tone: "blue" },
+    { label: "Memory Admission", value: rm.admission_status === "ungoverned_legacy_writer_only" ? "Not governed" : titleCase(rm.admission_status || "unknown"), sub: "governed path not wired", icon: iconSvg("attention", "kpi-icon"), tone: "amber" },
+  ]);
+  kpi.style.marginBottom = "var(--space-5)";
+  body.appendChild(kpi);
+
+  // B. Context types -- what each is for and how it expires.
+  const listHost = el(`<div></div>`);
+  body.appendChild(listHost);
+  renderStandardList(listHost, {
+    title: "Context Types",
+    records: (data.context_types || []).map((t) => ({ ...t, persistence_label: CONTEXT_PERSISTENCE_LABEL[t.persistence] || t.persistence })),
+    columns: [
+      { key: "label", label: "Context" },
+      { key: "persistence_label", label: "Persistence", render: (r) => badge(r.persistence_label, CONTEXT_PERSISTENCE_TONE[r.persistence] || "default") },
+      { key: "ttl_ms", label: "Expiry", render: (r) => `<div style="white-space:normal;overflow-wrap:anywhere;">${escapeHtml(fmtDurationMs(r.ttl_ms))}<div style="color:var(--text-tertiary);font-size:12px;">${escapeHtml(r.expiry_model)}</div></div>` },
+      { key: "active", label: "Active Now", render: (r) => (r.active.available ? `<div style="white-space:normal;overflow-wrap:anywhere;">${escapeHtml(fmtCount(r.active.count))}<div style="color:var(--text-tertiary);font-size:12px;">${escapeHtml(r.active_definition)}</div></div>` : badge("Unavailable", "amber")) },
+      { key: "purpose", label: "Purpose", render: (r) => `<div style="white-space:normal;overflow-wrap:anywhere;">${escapeHtml(r.purpose)}</div>` },
+    ],
+    searchFields: ["label", "purpose"],
+    filters: [{ key: "persistence_label", label: "Persistence" }],
+    canManage: false,
+    secondaryAction: null,
+    emptyMessage: "No context types declared.",
+  });
+  body.appendChild(el(`<p class="home-panel-empty" style="margin-top:var(--space-2);">Short-lived context expires on purpose: a stale confirmation can never execute an action later, and drafts and objectives do not linger.</p>`));
+
+  // C. Continuity health.
+  const continuityPanel = homePanel("Continuity Health");
+  continuityPanel.style.marginTop = "var(--space-4)";
+  if (!continuity.available) {
+    continuityPanel.appendChild(el(`<p class="home-panel-empty">Conversation continuity data is temporarily unavailable.</p>`));
+  } else {
+    continuityPanel.appendChild(FactGrid([
+      { label: "Conversation Threads", html: `${escapeHtml(fmtCount(continuity.threads_total))} <span style="color:var(--text-tertiary);">(estimated)</span>` },
+      { label: "Persisted Messages", html: `${escapeHtml(fmtCount(continuity.messages_total))} <span style="color:var(--text-tertiary);">(estimated)</span>` },
+      { label: "Active, Last 24h", html: escapeHtml(fmtCount(continuity.active_threads_24h)) },
+      { label: "Active, Last 7 Days", html: escapeHtml(fmtCount(continuity.active_threads_7d)) },
+      { label: "Sources", html: Object.entries(data.sources || {}).map(([name, ok]) => badge(`${titleCase(name.replace(/^context_/, ""))}: ${ok ? "OK" : "Unavailable"}`, ok ? "green" : "amber")).join(" ") },
+    ]));
+    const surfaces = Object.entries(continuity.active_threads_7d_by_surface || {}).filter(([, n]) => n > 0);
+    if (surfaces.length) {
+      continuityPanel.appendChild(el(`<p style="margin:var(--space-3) 0 var(--space-2);font-size:12px;color:var(--text-tertiary);">ACTIVE THREADS BY SURFACE (7 DAYS)</p>`));
+      continuityPanel.appendChild(barDistribution(surfaces.map(([surface, count]) => ({ label: titleCase(surface), count, tone: "default" })), "No recent conversations."));
+    }
+  }
+  body.appendChild(continuityPanel);
+
+  // D. Resident memory -- durable, aggregate only.
+  const memoryPanel = homePanel("Resident Memory");
+  memoryPanel.style.marginTop = "var(--space-4)";
+  memoryPanel.appendChild(FactGrid([
+    { label: "Read Capability", html: `${badge(rm.read_path?.status === "active" ? "Available" : titleCase(rm.read_path?.status || "unknown"), "green")} <span style="color:var(--text-tertiary);">${escapeHtml(rm.read_path?.description || "")}</span>` },
+    ...(rm.write_paths || []).map((w) => ({
+      label: w.label,
+      html: `${badge((MEMORY_WRITE_STATUS[w.status] || [titleCase(w.status)])[0], (MEMORY_WRITE_STATUS[w.status] || [null, "default"])[1])} <span style="color:var(--text-tertiary);">${escapeHtml(w.admission_checks)} ${escapeHtml(w.note)}</span>`,
+    })),
+    { label: "Retention", html: escapeHtml(`${fmtDurationMs(rm.retention_ms)} from last seen; older items are never read back.`) },
+    { label: "Visibility", html: (rm.visibility_classes || []).every((v) => v.audience === "actor_private") ? `${badge("Owner only", "default")} <span style="color:var(--text-tertiary);">Every admitted memory is private to its owner and used as context only, never as fact.</span>` : "Mixed" },
+  ]));
+  if (!rm.available) {
+    memoryPanel.appendChild(el(`<p class="home-panel-empty" style="margin-top:var(--space-3);">Resident memory counts are temporarily unavailable. The read/write status above is structural and still current.</p>`));
+  } else {
+    memoryPanel.appendChild(el(`<p style="margin:var(--space-4) 0 var(--space-2);font-size:12px;color:var(--text-tertiary);">ITEMS BY ADMITTED TYPE (${escapeHtml(fmtCount(rm.total_items))} TOTAL${rm.not_admitted_by_read_path ? `, ${escapeHtml(fmtCount(rm.not_admitted_by_read_path))} NOT READABLE BY OYI` : ""})</p>`));
+    memoryPanel.appendChild(barDistribution(Object.entries(rm.by_admitted_type || {}).map(([type, count]) => ({ label: titleCase(type), count, tone: "default" })), "No resident memory items."));
+    memoryPanel.appendChild(el(`<p style="margin:var(--space-4) 0 var(--space-2);font-size:12px;color:var(--text-tertiary);">AGE BY LAST SEEN</p>`));
+    const age = rm.age_by_last_seen || {};
+    memoryPanel.appendChild(barDistribution([
+      { label: "Within 24h", count: age.within_24h || 0, tone: "green" },
+      { label: "1-7 days", count: age.within_7d || 0, tone: "blue" },
+      { label: "7 days - retention limit", count: age.within_retention_window || 0, tone: "default" },
+      { label: "Beyond retention", count: age.beyond_retention_window || 0, tone: "amber" },
+    ], "No resident memory items."));
+    memoryPanel.appendChild(el(`<p class="home-panel-empty" style="margin-top:var(--space-3);">Written in the last 24h: ${escapeHtml(fmtCount(rm.written_24h))} · last 7 days: ${escapeHtml(fmtCount(rm.written_7d))}.</p>`));
+  }
+  memoryPanel.appendChild(el(`<div class="status-callout status-callout-amber" style="margin-top:var(--space-3);">Oyi is not building a profile of anyone's preferences. The governed admission path is implemented but not wired. The only live writer is the legacy /ai/chat route, which stores recent queries without an admission check.</div>`));
+  memoryPanel.classList.add("intelligence-bar-wide-labels");
+  body.appendChild(memoryPanel);
+
+  // E. Privacy boundary.
+  body.appendChild(el(`<div class="status-callout" style="margin-top:var(--space-4);">Privacy boundary: Intelligence shows system-level memory health only -- counts, expiry rules and wiring. It never shows conversation text, resident memories, drafts, result-set records, opportunity details, device/home context, or anyone's identity.</div>`));
+}
+
+function learningPipelineStep(title, value, note, tone, muted) {
+  return `<div style="flex:1 1 140px;min-width:0;border:1px solid var(--border-subtle, rgba(255,255,255,0.08));border-radius:10px;padding:var(--space-3);${muted ? "opacity:0.55;" : ""}">
+    <div style="font-size:11px;letter-spacing:0.06em;color:var(--text-tertiary);text-transform:uppercase;">${escapeHtml(title)}</div>
+    <div style="margin:6px 0;">${badge(value, tone)}</div>
+    <div style="font-size:12px;color:var(--text-tertiary);overflow-wrap:anywhere;">${escapeHtml(note)}</div>
+  </div>`;
+}
+
+async function renderLearningSection(body, token) {
+  body.innerHTML = "";
+  body.appendChild(skeletonPanel(3));
+  let data;
+  try {
+    data = await apiGetIntelligenceLearning();
+  } catch (err) {
+    data = { available: false };
+  }
+  if (token !== state.renderToken) return;
+  body.innerHTML = "";
+  if (!data || data.available === false) {
+    body.appendChild(el(`<div class="status-callout status-callout-amber">Learning data is temporarily unavailable.</div>`));
+    return;
+  }
+  const partial = intelligenceSourcesCallout(data, "Learning");
+  if (partial) body.appendChild(partial);
+
+  const m = data.mechanisms || {};
+  const statusText = (mech) => (LEARNING_STATUS[mech?.status] || [titleCase(mech?.status || "unknown")])[0];
+  const behaviour = data.behaviour_change || {};
+  const kpi = KPIGroup([
+    { label: "Evidence Collection", value: statusText(m.evidence_collection), sub: m.evidence_collection?.observed?.available ? `${fmtCount(m.evidence_collection.observed.evidence_rows)} evidence rows` : "count unavailable", icon: iconSvg("audit", "kpi-icon"), tone: "green" },
+    { label: "Parameter Proposals", value: statusText(m.parameter_proposal), sub: m.parameter_proposal?.observed?.available ? `${fmtCount(m.parameter_proposal.observed.pending_proposals)} pending` : "count unavailable", icon: iconSvg("briefing", "kpi-icon"), tone: "amber" },
+    { label: "Automatic Promotion", value: statusText(m.automatic_promotion), sub: "by design", icon: iconSvg("attention", "kpi-icon"), tone: "violet" },
+    { label: "Model Training", value: statusText(m.model_training), sub: "rule-based providers", icon: iconSvg("observatory", "kpi-icon"), tone: "violet" },
+    { label: "Changing Behaviour", value: behaviour.available ? fmtCount(behaviour.parameters_changing_behaviour) : "Unavailable", sub: "parameters in effect", icon: iconSvg("lightning", "kpi-icon"), tone: behaviour.parameters_changing_behaviour ? "amber" : "green" },
+  ]);
+  kpi.style.marginBottom = "var(--space-5)";
+  body.appendChild(kpi);
+
+  // B. Evidence pipeline -- visibly stops where promotion is unwired.
+  const pipelinePanel = homePanel("Evidence Pipeline");
+  const promotionWired = m.human_promotion?.status === "active";
+  const feedbackTotal = data.feedback?.available ? data.feedback.total : null;
+  const pending = data.parameters?.available ? data.parameters.pending_proposals : null;
+  pipelinePanel.appendChild(el(`<div style="display:flex;flex-wrap:wrap;align-items:stretch;gap:var(--space-2);">
+    ${learningPipelineStep("Signals, outcomes, feedback", statusText(m.evidence_collection), "Outcome evaluators and feedback recording.", "green", false)}
+    <div aria-hidden="true" style="align-self:center;color:var(--text-tertiary);">→</div>
+    ${learningPipelineStep("Evidence", feedbackTotal == null ? "Unavailable" : `${fmtCount(feedbackTotal)} rows`, "Stored outcome and feedback records.", "blue", false)}
+    <div aria-hidden="true" style="align-self:center;color:var(--text-tertiary);">→</div>
+    ${learningPipelineStep("Proposed parameter", statusText(m.parameter_proposal), `${pending == null ? "Unknown" : fmtCount(pending)} pending. Writes a proposal only, never the live value.`, "amber", false)}
+    <div aria-hidden="true" style="align-self:center;font-weight:700;color:var(--red-bright, #e5484d);">${promotionWired ? "→" : "■"}</div>
+    ${learningPipelineStep("Promotion", statusText(m.human_promotion), promotionWired ? "Human-approved promotion." : "Pipeline stops here: nothing promotes a proposal.", promotionWired ? "green" : "default", !promotionWired)}
+    ${promotionWired ? `<div aria-hidden="true" style="align-self:center;color:var(--text-tertiary);">→</div>` : ""}
+    ${learningPipelineStep("Behaviour change", behaviour.available ? `${fmtCount(behaviour.parameters_changing_behaviour)} in effect` : "Unavailable", behaviour.rule || "", behaviour.parameters_changing_behaviour ? "amber" : "default", !behaviour.parameters_changing_behaviour)}
+  </div>`));
+  pipelinePanel.appendChild(el(`<p class="home-panel-empty" style="margin-top:var(--space-3);">${escapeHtml(m.parameter_proposal?.detail || "")} ${m.parameter_proposal?.enabled_in_this_process === false ? "Not enabled in this deployment's web process." : ""}</p>`));
+  body.appendChild(pipelinePanel);
+
+  // C. Learning parameters.
+  const paramsHost = el(`<div style="margin-top:var(--space-4);"></div>`);
+  body.appendChild(paramsHost);
+  if (!data.parameters?.available) {
+    paramsHost.appendChild(el(`<div class="status-callout status-callout-amber">Learning parameters are temporarily unavailable.</div>`));
+  } else {
+    const fmtNum = (v) => (v == null ? "—" : String(Math.round(v * 1000) / 1000));
+    renderStandardList(paramsHost, {
+      title: "Learning Parameters",
+      records: data.parameters.items.map((i) => ({ ...i, stage_label: titleCase(i.rollout_stage), scope_label: titleCase(i.scope), namespace_label: (i.namespace || "").replace(/\.$/, "") })),
+      columns: [
+        { key: "name", label: "Parameter", render: (r) => `<code style="font-size:11px;white-space:normal;overflow-wrap:anywhere;display:block;">${escapeHtml(r.name)}</code>` },
+        { key: "stage_label", label: "Stage", render: (r) => `${badge(r.stage_label, LEARNING_STAGE_TONE[r.rollout_stage] || "default")}${r.changes_behaviour ? ` ${badge("In effect", "amber")}` : ""}` },
+        { key: "current_value", label: "Current", render: (r) => escapeHtml(fmtNum(r.current_value)) },
+        { key: "proposed_value", label: "Proposed", render: (r) => escapeHtml(fmtNum(r.proposed_value)) },
+        { key: "evidence", label: "Evidence", render: (r) => (r.evidence?.sample_size != null ? `${escapeHtml(fmtCount(r.evidence.sample_size))} samples${r.evidence.accuracy != null ? ` · ${escapeHtml(Math.round(r.evidence.accuracy * 100))}% accurate` : ""}` : "None yet") },
+        { key: "scope_label", label: "Scope" },
+        { key: "updated_at", label: "Updated", render: (r) => (r.updated_at ? escapeHtml(fmtRelative(r.updated_at)) : "—") },
+      ],
+      searchFields: ["name"],
+      filters: [
+        { key: "namespace_label", label: "Namespace" },
+        { key: "stage_label", label: "Stage" },
+        { key: "scope_label", label: "Scope" },
+      ],
+      canManage: false,
+      secondaryAction: null,
+      emptyMessage: "No learning parameters exist yet.",
+    });
+    if (data.parameters.non_conforming_hidden) {
+      paramsHost.appendChild(el(`<p class="home-panel-empty" style="margin-top:var(--space-2);">${escapeHtml(fmtCount(data.parameters.non_conforming_hidden))} stored row(s) fall outside the learnable boundary and are hidden.</p>`));
+    }
+  }
+
+  // D. Outcome / feedback summary.
+  const evidencePanel = homePanel("Outcomes & Feedback");
+  evidencePanel.style.marginTop = "var(--space-4)";
+  const outcomeRows = (data.outcomes || []).map((o) => ({
+    label: o.label,
+    html: o.available
+      ? `${escapeHtml(fmtCount(o.evaluated))} evaluated · ${badge(`${fmtCount(o.observable)} observed`, "green")} ${badge(`${fmtCount(o.unobservable)} unobservable`, o.unobservable ? "amber" : "default")}`
+      : badge("Unavailable", "amber"),
+  }));
+  const fbData = data.feedback || {};
+  const dismissals = fbData.available ? fbData.canonical.filter((c) => c.kind === "recommendation_dismissal") : [];
+  evidencePanel.appendChild(FactGrid([
+    ...outcomeRows,
+    { label: "Recommendation Dismissals", html: fbData.available ? dismissals.map((c) => badge(`${c.label.replace(/^Recommendation /, "")}: ${fmtCount(c.count)}`, "default")).join(" ") : badge("Unavailable", "amber") },
+    { label: "Other Feedback", html: fbData.available ? `${escapeHtml(fmtCount(fbData.other))} <span style="color:var(--text-tertiary);">non-standard records, counted only</span>` : badge("Unavailable", "amber") },
+  ]));
+  body.appendChild(evidencePanel);
+
+  // E. Safety boundary.
+  const boundary = data.safety_boundary || {};
+  const boundaryPanel = homePanel("Safety Boundary");
+  boundaryPanel.style.marginTop = "var(--space-4)";
+  boundaryPanel.appendChild(FactGrid([
+    { label: "Learning May Adjust", html: (boundary.allowed_namespaces || []).map((ns) => badge(ns.replace(/\.$/, "").replace(/\./g, " "), "green")).join(" ") },
+    { label: "Learning May Never Adjust", html: (boundary.forbidden_terms || []).map((t) => badge(t.replace(/[._]/g, " "), "red")).join(" ") },
+    { label: "Enforcement", html: escapeHtml(boundary.enforcement || "") },
+    { label: "Approval", html: escapeHtml(boundary.approval || "") },
+  ]));
+  body.appendChild(boundaryPanel);
+
+  body.appendChild(el(`<p class="home-panel-empty" style="margin-top:var(--space-3);">This is a visibility-only view. Learning parameters cannot be promoted, approved or edited here.</p>`));
+}
+
 async function renderObservatoryView(outlet, rest, token) {
   const [sectionKey = "overview", detailKind, detailKey] = rest;
   setTopbar("Intelligence", "");
@@ -12645,6 +12919,10 @@ async function renderObservatoryView(outlet, rest, token) {
     } else {
       await renderKnowledgeSection(body, token);
     }
+  } else if (sectionKey === "memory-context") {
+    await renderMemoryContextSection(body, token);
+  } else if (sectionKey === "learning") {
+    await renderLearningSection(body, token);
   } else if (sectionKey === "actions-workflows") {
     // Action ids are compound ("source_type:source_id", colon-joined --
     // see actionWorkflowView.ts) and carry no slash, so the whole
