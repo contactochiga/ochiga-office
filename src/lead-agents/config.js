@@ -176,6 +176,47 @@ function createConfig() {
     // own local traces table has no visibility into).
     officeObservabilityEventsPath:
       process.env.OFFICE_OBSERVABILITY_EVENTS_PATH || "/office/observability/events",
+    // Intelligence System Visibility, Slice 1 — Backend's live capability
+    // registry introspection + system summary, safe structural metadata
+    // only (see Ochiga-backend src/routes/officeExport.ts's own header
+    // comment for the exact safety boundary).
+    officeIntelligenceCapabilitiesPath:
+      process.env.OFFICE_INTELLIGENCE_CAPABILITIES_PATH || "/office/intelligence/capabilities",
+    officeIntelligenceSummaryPath:
+      process.env.OFFICE_INTELLIGENCE_SUMMARY_PATH || "/office/intelligence/summary",
+    // Intelligence System Visibility, Slice 2 — Overview + Attention/
+    // Human Intervention. Same safety boundary as the Slice 1 paths
+    // above.
+    officeIntelligenceOverviewPath:
+      process.env.OFFICE_INTELLIGENCE_OVERVIEW_PATH || "/office/intelligence/overview",
+    officeIntelligenceInterventionsPath:
+      process.env.OFFICE_INTELLIGENCE_INTERVENTIONS_PATH || "/office/intelligence/interventions",
+    // Intelligence System Visibility, Slice 3 — Worker Visibility. Same
+    // safety boundary as the Slice 1/2 paths above.
+    officeIntelligenceWorkersPath:
+      process.env.OFFICE_INTELLIGENCE_WORKERS_PATH || "/office/intelligence/workers",
+    // Intelligence System Visibility, Slice 4 — Goals & Decisions and
+    // Actions & Workflows. Same safety boundary as the Slice 1/2/3 paths
+    // above.
+    officeIntelligenceGoalsPath:
+      process.env.OFFICE_INTELLIGENCE_GOALS_PATH || "/office/intelligence/goals",
+    officeIntelligenceDecisionsPath:
+      process.env.OFFICE_INTELLIGENCE_DECISIONS_PATH || "/office/intelligence/decisions",
+    officeIntelligenceActionsPath:
+      process.env.OFFICE_INTELLIGENCE_ACTIONS_PATH || "/office/intelligence/actions",
+    // Intelligence System Visibility, Slice 5 — Governed Knowledge. Same
+    // safety boundary as the Slice 1-4 paths above.
+    officeIntelligenceKnowledgePath:
+      process.env.OFFICE_INTELLIGENCE_KNOWLEDGE_PATH || "/office/intelligence/knowledge",
+    // Intelligence System Visibility, Slice 6 — Memory & Context and
+    // Learning (aggregate/structural, read-only). Same safety boundary.
+    officeIntelligenceMemoryContextPath:
+      process.env.OFFICE_INTELLIGENCE_MEMORY_CONTEXT_PATH || "/office/intelligence/memory-context",
+    officeIntelligenceLearningPath:
+      process.env.OFFICE_INTELLIGENCE_LEARNING_PATH || "/office/intelligence/learning",
+    // Intelligence System Visibility, Slice 7 — durable canonical traces.
+    officeIntelligenceTracesPath:
+      process.env.OFFICE_INTELLIGENCE_TRACES_PATH || "/office/intelligence/traces",
     // Oyi Runtime Contract, Domain 3 (Task) — additive projection of the
     // 4 genuine overlapping commercial workflow types into Backend's
     // ochiga_workflows. Default ON, but a single env flag disables the

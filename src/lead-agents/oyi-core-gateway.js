@@ -703,6 +703,333 @@ async function callOyiCoreObservabilityEvents(config = {}, options = {}) {
   }
 }
 
+// Intelligence System Visibility, Slice 1 — Backend's live capability
+// registry introspection. Same credential/timeout/honest-failure
+// convention as callOyiCoreObservabilityEvents above (this file's own
+// established pattern for every Backend read call): never fabricates a
+// count on failure, always reports why it could not answer.
+async function callOyiCoreIntelligenceCapabilities(config = {}, options = {}) {
+  const baseUrl = String(config.officeBackendBaseUrl || "").replace(/\/+$/, "");
+  const path = config.officeIntelligenceCapabilitiesPath || "/office/intelligence/capabilities";
+  if (!baseUrl) {
+    return { ok: false, unavailable: true, reason: "not_configured" };
+  }
+  const headers = {};
+  if (config.officeBackendApiKey) headers["x-office-api-key"] = config.officeBackendApiKey;
+  if (config.officeBackendBearerToken) headers.authorization = `Bearer ${config.officeBackendBearerToken}`;
+
+  const get = options.httpGet || ((targetUrl, requestConfig) => axios.get(targetUrl, requestConfig));
+  try {
+    const response = await get(`${baseUrl}${path}`, {
+      timeout: config.officeBackendEventTimeoutMs || 10_000,
+      headers,
+      validateStatus: () => true,
+    });
+    const status = Number(response && response.status) || 0;
+    const body = response && response.data && typeof response.data === "object" ? response.data : {};
+    if (status >= 200 && status < 300 && body.ok !== false) {
+      return { ok: true, unavailable: false, status, data: body };
+    }
+    return { ok: false, unavailable: true, status, reason: text(body.error || "backend_rejected") };
+  } catch (error) {
+    return {
+      ok: false,
+      unavailable: true,
+      status: 0,
+      reason: "network_error",
+      error: error && error.code ? String(error.code) : "request_failed",
+    };
+  }
+}
+
+// Intelligence System Visibility, Slice 1 — Backend's smallest safe
+// Intelligence-header summary (one_core architecture, the four workers,
+// live capability counts). Same convention as above.
+async function callOyiCoreIntelligenceSummary(config = {}, options = {}) {
+  const baseUrl = String(config.officeBackendBaseUrl || "").replace(/\/+$/, "");
+  const path = config.officeIntelligenceSummaryPath || "/office/intelligence/summary";
+  if (!baseUrl) {
+    return { ok: false, unavailable: true, reason: "not_configured" };
+  }
+  const headers = {};
+  if (config.officeBackendApiKey) headers["x-office-api-key"] = config.officeBackendApiKey;
+  if (config.officeBackendBearerToken) headers.authorization = `Bearer ${config.officeBackendBearerToken}`;
+
+  const get = options.httpGet || ((targetUrl, requestConfig) => axios.get(targetUrl, requestConfig));
+  try {
+    const response = await get(`${baseUrl}${path}`, {
+      timeout: config.officeBackendEventTimeoutMs || 10_000,
+      headers,
+      validateStatus: () => true,
+    });
+    const status = Number(response && response.status) || 0;
+    const body = response && response.data && typeof response.data === "object" ? response.data : {};
+    if (status >= 200 && status < 300 && body.ok !== false) {
+      return { ok: true, unavailable: false, status, data: body };
+    }
+    return { ok: false, unavailable: true, status, reason: text(body.error || "backend_rejected") };
+  } catch (error) {
+    return {
+      ok: false,
+      unavailable: true,
+      status: 0,
+      reason: "network_error",
+      error: error && error.code ? String(error.code) : "request_failed",
+    };
+  }
+}
+
+// Intelligence System Visibility, Slice 2 — Overview + Attention/Human
+// Intervention. Same credential/timeout/honest-failure convention as
+// every other Backend read call in this file.
+async function callOyiCoreIntelligenceOverview(config = {}, options = {}) {
+  const baseUrl = String(config.officeBackendBaseUrl || "").replace(/\/+$/, "");
+  const path = config.officeIntelligenceOverviewPath || "/office/intelligence/overview";
+  if (!baseUrl) {
+    return { ok: false, unavailable: true, reason: "not_configured" };
+  }
+  const headers = {};
+  if (config.officeBackendApiKey) headers["x-office-api-key"] = config.officeBackendApiKey;
+  if (config.officeBackendBearerToken) headers.authorization = `Bearer ${config.officeBackendBearerToken}`;
+
+  const get = options.httpGet || ((targetUrl, requestConfig) => axios.get(targetUrl, requestConfig));
+  try {
+    const response = await get(`${baseUrl}${path}`, {
+      timeout: config.officeBackendEventTimeoutMs || 10_000,
+      headers,
+      validateStatus: () => true,
+    });
+    const status = Number(response && response.status) || 0;
+    const body = response && response.data && typeof response.data === "object" ? response.data : {};
+    if (status >= 200 && status < 300 && body.ok !== false) {
+      return { ok: true, unavailable: false, status, data: body };
+    }
+    return { ok: false, unavailable: true, status, reason: text(body.error || "backend_rejected") };
+  } catch (error) {
+    return {
+      ok: false,
+      unavailable: true,
+      status: 0,
+      reason: "network_error",
+      error: error && error.code ? String(error.code) : "request_failed",
+    };
+  }
+}
+
+async function callOyiCoreIntelligenceInterventions(config = {}, options = {}) {
+  const baseUrl = String(config.officeBackendBaseUrl || "").replace(/\/+$/, "");
+  const path = config.officeIntelligenceInterventionsPath || "/office/intelligence/interventions";
+  if (!baseUrl) {
+    return { ok: false, unavailable: true, reason: "not_configured" };
+  }
+  const headers = {};
+  if (config.officeBackendApiKey) headers["x-office-api-key"] = config.officeBackendApiKey;
+  if (config.officeBackendBearerToken) headers.authorization = `Bearer ${config.officeBackendBearerToken}`;
+
+  const query = options.limit ? `?limit=${encodeURIComponent(options.limit)}` : "";
+  const get = options.httpGet || ((targetUrl, requestConfig) => axios.get(targetUrl, requestConfig));
+  try {
+    const response = await get(`${baseUrl}${path}${query}`, {
+      timeout: config.officeBackendEventTimeoutMs || 10_000,
+      headers,
+      validateStatus: () => true,
+    });
+    const status = Number(response && response.status) || 0;
+    const body = response && response.data && typeof response.data === "object" ? response.data : {};
+    if (status >= 200 && status < 300 && body.ok !== false) {
+      return { ok: true, unavailable: false, status, data: body };
+    }
+    return { ok: false, unavailable: true, status, reason: text(body.error || "backend_rejected") };
+  } catch (error) {
+    return {
+      ok: false,
+      unavailable: true,
+      status: 0,
+      reason: "network_error",
+      error: error && error.code ? String(error.code) : "request_failed",
+    };
+  }
+}
+
+// Intelligence System Visibility, Slice 3 — Worker Visibility. Same
+// credential/timeout/honest-failure convention as every other Backend
+// read call in this file.
+async function callOyiCoreIntelligenceWorkers(config = {}, options = {}) {
+  const baseUrl = String(config.officeBackendBaseUrl || "").replace(/\/+$/, "");
+  const path = config.officeIntelligenceWorkersPath || "/office/intelligence/workers";
+  if (!baseUrl) {
+    return { ok: false, unavailable: true, reason: "not_configured" };
+  }
+  const headers = {};
+  if (config.officeBackendApiKey) headers["x-office-api-key"] = config.officeBackendApiKey;
+  if (config.officeBackendBearerToken) headers.authorization = `Bearer ${config.officeBackendBearerToken}`;
+
+  const get = options.httpGet || ((targetUrl, requestConfig) => axios.get(targetUrl, requestConfig));
+  try {
+    const response = await get(`${baseUrl}${path}`, {
+      timeout: config.officeBackendEventTimeoutMs || 10_000,
+      headers,
+      validateStatus: () => true,
+    });
+    const status = Number(response && response.status) || 0;
+    const body = response && response.data && typeof response.data === "object" ? response.data : {};
+    if (status >= 200 && status < 300 && body.ok !== false) {
+      return { ok: true, unavailable: false, status, data: body };
+    }
+    return { ok: false, unavailable: true, status, reason: text(body.error || "backend_rejected") };
+  } catch (error) {
+    return {
+      ok: false,
+      unavailable: true,
+      status: 0,
+      reason: "network_error",
+      error: error && error.code ? String(error.code) : "request_failed",
+    };
+  }
+}
+
+async function callOyiCoreIntelligenceWorkerDetail(config = {}, workerKey, options = {}) {
+  const baseUrl = String(config.officeBackendBaseUrl || "").replace(/\/+$/, "");
+  const basePath = config.officeIntelligenceWorkersPath || "/office/intelligence/workers";
+  if (!baseUrl) {
+    return { ok: false, unavailable: true, reason: "not_configured" };
+  }
+  const headers = {};
+  if (config.officeBackendApiKey) headers["x-office-api-key"] = config.officeBackendApiKey;
+  if (config.officeBackendBearerToken) headers.authorization = `Bearer ${config.officeBackendBearerToken}`;
+
+  const get = options.httpGet || ((targetUrl, requestConfig) => axios.get(targetUrl, requestConfig));
+  try {
+    const response = await get(`${baseUrl}${basePath}/${encodeURIComponent(String(workerKey || ""))}`, {
+      timeout: config.officeBackendEventTimeoutMs || 10_000,
+      headers,
+      validateStatus: () => true,
+    });
+    const status = Number(response && response.status) || 0;
+    const body = response && response.data && typeof response.data === "object" ? response.data : {};
+    if (status >= 200 && status < 300 && body.ok !== false) {
+      return { ok: true, unavailable: false, status, data: body };
+    }
+    return { ok: false, unavailable: true, status, reason: text(body.error || "backend_rejected") };
+  } catch (error) {
+    return {
+      ok: false,
+      unavailable: true,
+      status: 0,
+      reason: "network_error",
+      error: error && error.code ? String(error.code) : "request_failed",
+    };
+  }
+}
+
+// Intelligence System Visibility, Slice 4 — Goals & Decisions and
+// Actions & Workflows. Same credential/timeout/honest-failure convention
+// as every Backend read call above. Factored into one internal helper
+// (unlike Slice 1-3's per-endpoint duplication) purely to keep six
+// near-identical list/detail pairs from repeating the same 20 lines six
+// times — the public surface (one exported function per endpoint,
+// mirrored 1:1 in server.js) is unchanged.
+async function callOyiCoreIntelligenceGet(config, path, options = {}) {
+  const baseUrl = String(config.officeBackendBaseUrl || "").replace(/\/+$/, "");
+  if (!baseUrl) {
+    return { ok: false, unavailable: true, reason: "not_configured" };
+  }
+  const headers = {};
+  if (config.officeBackendApiKey) headers["x-office-api-key"] = config.officeBackendApiKey;
+  if (config.officeBackendBearerToken) headers.authorization = `Bearer ${config.officeBackendBearerToken}`;
+
+  const get = options.httpGet || ((targetUrl, requestConfig) => axios.get(targetUrl, requestConfig));
+  try {
+    const response = await get(`${baseUrl}${path}`, {
+      timeout: config.officeBackendEventTimeoutMs || 10_000,
+      headers,
+      validateStatus: () => true,
+    });
+    const status = Number(response && response.status) || 0;
+    const body = response && response.data && typeof response.data === "object" ? response.data : {};
+    if (status >= 200 && status < 300 && body.ok !== false) {
+      return { ok: true, unavailable: false, status, data: body };
+    }
+    return { ok: false, unavailable: true, status, reason: text(body.error || "backend_rejected") };
+  } catch (error) {
+    return {
+      ok: false,
+      unavailable: true,
+      status: 0,
+      reason: "network_error",
+      error: error && error.code ? String(error.code) : "request_failed",
+    };
+  }
+}
+
+async function callOyiCoreIntelligenceGoals(config = {}, options = {}) {
+  return callOyiCoreIntelligenceGet(config, config.officeIntelligenceGoalsPath || "/office/intelligence/goals", options);
+}
+async function callOyiCoreIntelligenceGoalDetail(config = {}, goalId, options = {}) {
+  const basePath = config.officeIntelligenceGoalsPath || "/office/intelligence/goals";
+  return callOyiCoreIntelligenceGet(config, `${basePath}/${encodeURIComponent(String(goalId || ""))}`, options);
+}
+async function callOyiCoreIntelligenceDecisions(config = {}, options = {}) {
+  return callOyiCoreIntelligenceGet(config, config.officeIntelligenceDecisionsPath || "/office/intelligence/decisions", options);
+}
+async function callOyiCoreIntelligenceDecisionDetail(config = {}, decisionId, options = {}) {
+  const basePath = config.officeIntelligenceDecisionsPath || "/office/intelligence/decisions";
+  return callOyiCoreIntelligenceGet(config, `${basePath}/${encodeURIComponent(String(decisionId || ""))}`, options);
+}
+async function callOyiCoreIntelligenceActions(config = {}, options = {}) {
+  return callOyiCoreIntelligenceGet(config, config.officeIntelligenceActionsPath || "/office/intelligence/actions", options);
+}
+async function callOyiCoreIntelligenceActionDetail(config = {}, actionId, options = {}) {
+  const basePath = config.officeIntelligenceActionsPath || "/office/intelligence/actions";
+  return callOyiCoreIntelligenceGet(config, `${basePath}/${encodeURIComponent(String(actionId || ""))}`, options);
+}
+
+// Intelligence System Visibility, Slice 5 — Governed Knowledge. The list
+// call forwards only Backend's own known filter/pagination params (never
+// an arbitrary caller-supplied query string).
+const KNOWLEDGE_QUERY_KEYS = ["domain", "authority_class", "audience", "freshness", "claim_boundary", "worker", "page", "page_size"];
+async function callOyiCoreIntelligenceKnowledge(config = {}, query = {}, options = {}) {
+  const basePath = config.officeIntelligenceKnowledgePath || "/office/intelligence/knowledge";
+  const params = new URLSearchParams();
+  for (const key of KNOWLEDGE_QUERY_KEYS) {
+    const values = Array.isArray(query[key]) ? query[key] : query[key] != null && query[key] !== "" ? [query[key]] : [];
+    values.forEach((value) => params.append(key, String(value)));
+  }
+  const qs = params.toString();
+  return callOyiCoreIntelligenceGet(config, qs ? `${basePath}?${qs}` : basePath, options);
+}
+async function callOyiCoreIntelligenceKnowledgeDetail(config = {}, canonicalKey, options = {}) {
+  const basePath = config.officeIntelligenceKnowledgePath || "/office/intelligence/knowledge";
+  return callOyiCoreIntelligenceGet(config, `${basePath}/${encodeURIComponent(String(canonicalKey || ""))}`, options);
+}
+
+// Intelligence System Visibility, Slice 6 — Memory & Context, Learning.
+// No parameters are forwarded: both contracts are fixed aggregates.
+async function callOyiCoreIntelligenceMemoryContext(config = {}, options = {}) {
+  return callOyiCoreIntelligenceGet(config, config.officeIntelligenceMemoryContextPath || "/office/intelligence/memory-context", options);
+}
+async function callOyiCoreIntelligenceLearning(config = {}, options = {}) {
+  return callOyiCoreIntelligenceGet(config, config.officeIntelligenceLearningPath || "/office/intelligence/learning", options);
+}
+
+// Intelligence System Visibility, Slice 7 — durable canonical traces.
+// The list call forwards only Backend's own known filter/pagination keys.
+const TRACE_QUERY_KEYS = ["since", "until", "worker", "surface", "domain", "capability", "resolution_outcome", "authority_result", "terminal_outcome", "response_status", "has_lineage", "thread_ref", "page", "page_size"];
+async function callOyiCoreIntelligenceTraces(config = {}, query = {}, options = {}) {
+  const basePath = config.officeIntelligenceTracesPath || "/office/intelligence/traces";
+  const params = new URLSearchParams();
+  for (const key of TRACE_QUERY_KEYS) {
+    const value = Array.isArray(query[key]) ? query[key][0] : query[key];
+    if (value != null && value !== "") params.set(key, String(value));
+  }
+  const qs = params.toString();
+  return callOyiCoreIntelligenceGet(config, qs ? `${basePath}?${qs}` : basePath, options);
+}
+async function callOyiCoreIntelligenceTraceDetail(config = {}, traceId, options = {}) {
+  const basePath = config.officeIntelligenceTracesPath || "/office/intelligence/traces";
+  return callOyiCoreIntelligenceGet(config, `${basePath}/${encodeURIComponent(String(traceId || ""))}`, options);
+}
+
 // Oyi Runtime Contract, Domain 3 (Task) — Backend's additive
 // office-backend-intelligence-events projection into ochiga_workflows.
 // Same credential/timeout convention as every other Backend call here.
@@ -844,6 +1171,24 @@ module.exports = {
   callOyiCoreOfficeInternalConversation,
   callOyiCoreSpeechSynthesis,
   callOyiCoreObservabilityEvents,
+  callOyiCoreIntelligenceCapabilities,
+  callOyiCoreIntelligenceSummary,
+  callOyiCoreIntelligenceOverview,
+  callOyiCoreIntelligenceInterventions,
+  callOyiCoreIntelligenceWorkers,
+  callOyiCoreIntelligenceWorkerDetail,
+  callOyiCoreIntelligenceGoals,
+  callOyiCoreIntelligenceGoalDetail,
+  callOyiCoreIntelligenceDecisions,
+  callOyiCoreIntelligenceDecisionDetail,
+  callOyiCoreIntelligenceActions,
+  callOyiCoreIntelligenceActionDetail,
+  callOyiCoreIntelligenceKnowledge,
+  callOyiCoreIntelligenceKnowledgeDetail,
+  callOyiCoreIntelligenceMemoryContext,
+  callOyiCoreIntelligenceLearning,
+  callOyiCoreIntelligenceTraces,
+  callOyiCoreIntelligenceTraceDetail,
   callOyiCoreCreateWorkflow,
   callOyiCoreTransitionWorkflow,
   callOyiCoreListAutomations,

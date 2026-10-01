@@ -48,6 +48,24 @@ const {
   callOyiCoreOfficeInternalConversation,
   callOyiCoreSpeechSynthesis,
   callOyiCoreObservabilityEvents,
+  callOyiCoreIntelligenceCapabilities,
+  callOyiCoreIntelligenceSummary,
+  callOyiCoreIntelligenceOverview,
+  callOyiCoreIntelligenceInterventions,
+  callOyiCoreIntelligenceWorkers,
+  callOyiCoreIntelligenceWorkerDetail,
+  callOyiCoreIntelligenceGoals,
+  callOyiCoreIntelligenceGoalDetail,
+  callOyiCoreIntelligenceDecisions,
+  callOyiCoreIntelligenceDecisionDetail,
+  callOyiCoreIntelligenceActions,
+  callOyiCoreIntelligenceActionDetail,
+  callOyiCoreIntelligenceKnowledge,
+  callOyiCoreIntelligenceKnowledgeDetail,
+  callOyiCoreIntelligenceMemoryContext,
+  callOyiCoreIntelligenceLearning,
+  callOyiCoreIntelligenceTraces,
+  callOyiCoreIntelligenceTraceDetail,
   callOyiCoreListAutomations,
   callOyiCoreGetAutomation,
   callOyiCoreCreateAutomation,
@@ -5028,6 +5046,385 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           res,
           200,
           { events: result.events || [], available: result.ok !== false },
+          { "x-request-id": ctx.requestId }
+        );
+        return;
+      }
+
+      // Intelligence System Visibility, Slice 1 -- same "view_traces"
+      // read gate as the observability-events route above (this is the
+      // same Intelligence area, not a new permission surface). Thin
+      // pass-through to Backend's live capability registry; never
+      // fabricates a count when Backend is unreachable.
+      if (pathname === "/api/lead-agents/admin/intelligence/capabilities") {
+        if (req.method !== "GET") {
+          methodNotAllowed(res, "GET");
+          return;
+        }
+        authorizePermission(authContext, "view_traces");
+        const result = await callOyiCoreIntelligenceCapabilities(config);
+        json(
+          res,
+          200,
+          result.ok
+            ? { ...result.data, available: true }
+            : { ok: false, available: false, reason: result.reason || "unavailable" },
+          { "x-request-id": ctx.requestId }
+        );
+        return;
+      }
+
+      if (pathname === "/api/lead-agents/admin/intelligence/summary") {
+        if (req.method !== "GET") {
+          methodNotAllowed(res, "GET");
+          return;
+        }
+        authorizePermission(authContext, "view_traces");
+        const result = await callOyiCoreIntelligenceSummary(config);
+        json(
+          res,
+          200,
+          result.ok
+            ? { ...result.data, available: true }
+            : { ok: false, available: false, reason: result.reason || "unavailable" },
+          { "x-request-id": ctx.requestId }
+        );
+        return;
+      }
+
+      // Intelligence System Visibility, Slice 2 -- same "view_traces" read
+      // gate as the two Slice 1 routes above (same Intelligence area, not
+      // a new permission surface). Thin pass-through to Backend's Overview
+      // read model; never fabricates data when Backend is unreachable.
+      if (pathname === "/api/lead-agents/admin/intelligence/overview") {
+        if (req.method !== "GET") {
+          methodNotAllowed(res, "GET");
+          return;
+        }
+        authorizePermission(authContext, "view_traces");
+        const result = await callOyiCoreIntelligenceOverview(config);
+        json(
+          res,
+          200,
+          result.ok
+            ? { ...result.data, available: true }
+            : { ok: false, available: false, reason: result.reason || "unavailable" },
+          { "x-request-id": ctx.requestId }
+        );
+        return;
+      }
+
+      if (pathname === "/api/lead-agents/admin/intelligence/interventions") {
+        if (req.method !== "GET") {
+          methodNotAllowed(res, "GET");
+          return;
+        }
+        authorizePermission(authContext, "view_traces");
+        const interventionsUrl = new URL(req.url, "http://localhost");
+        const requestedLimit = Number(interventionsUrl.searchParams.get("limit"));
+        const limit = Number.isFinite(requestedLimit) && requestedLimit > 0 ? Math.min(Math.floor(requestedLimit), 200) : 50;
+        const result = await callOyiCoreIntelligenceInterventions(config, { limit });
+        json(
+          res,
+          200,
+          result.ok
+            ? { ...result.data, available: true }
+            : { ok: false, available: false, reason: result.reason || "unavailable" },
+          { "x-request-id": ctx.requestId }
+        );
+        return;
+      }
+
+      // Intelligence System Visibility, Slice 3 -- same "view_traces" read
+      // gate as the Slice 1/2 Intelligence routes above (same Intelligence
+      // area, not a new permission surface). Thin pass-through to
+      // Backend's per-worker read model; never fabricates data when
+      // Backend is unreachable. The detail route is matched by prefix
+      // (this server uses plain pathname equality elsewhere, but a path
+      // param is unavoidable here -- the workerKey segment is never used
+      // for anything but a single encodeURIComponent'd path append).
+      if (pathname === "/api/lead-agents/admin/intelligence/workers") {
+        if (req.method !== "GET") {
+          methodNotAllowed(res, "GET");
+          return;
+        }
+        authorizePermission(authContext, "view_traces");
+        const result = await callOyiCoreIntelligenceWorkers(config);
+        json(
+          res,
+          200,
+          result.ok
+            ? { ...result.data, available: true }
+            : { ok: false, available: false, reason: result.reason || "unavailable" },
+          { "x-request-id": ctx.requestId }
+        );
+        return;
+      }
+
+      if (pathname.startsWith("/api/lead-agents/admin/intelligence/workers/")) {
+        if (req.method !== "GET") {
+          methodNotAllowed(res, "GET");
+          return;
+        }
+        authorizePermission(authContext, "view_traces");
+        const workerKey = decodeURIComponent(pathname.slice("/api/lead-agents/admin/intelligence/workers/".length));
+        const result = await callOyiCoreIntelligenceWorkerDetail(config, workerKey);
+        json(
+          res,
+          result.ok ? 200 : (result.status === 404 ? 404 : 200),
+          result.ok
+            ? { ...result.data, available: true }
+            : { ok: false, available: false, reason: result.reason || "unavailable" },
+          { "x-request-id": ctx.requestId }
+        );
+        return;
+      }
+
+      // Intelligence System Visibility, Slice 4 -- same "view_traces" read
+      // gate as every Intelligence route above. Thin pass-through to
+      // Backend's Goals/Decisions/Actions read models; never fabricates
+      // data when Backend is unreachable. Detail routes matched by
+      // prefix, same convention as the Slice 3 worker-detail route above.
+      if (pathname === "/api/lead-agents/admin/intelligence/goals") {
+        if (req.method !== "GET") {
+          methodNotAllowed(res, "GET");
+          return;
+        }
+        authorizePermission(authContext, "view_traces");
+        const result = await callOyiCoreIntelligenceGoals(config);
+        json(
+          res,
+          200,
+          result.ok
+            ? { ...result.data, available: true }
+            : { ok: false, available: false, reason: result.reason || "unavailable" },
+          { "x-request-id": ctx.requestId }
+        );
+        return;
+      }
+
+      if (pathname.startsWith("/api/lead-agents/admin/intelligence/goals/")) {
+        if (req.method !== "GET") {
+          methodNotAllowed(res, "GET");
+          return;
+        }
+        authorizePermission(authContext, "view_traces");
+        const goalId = decodeURIComponent(pathname.slice("/api/lead-agents/admin/intelligence/goals/".length));
+        const result = await callOyiCoreIntelligenceGoalDetail(config, goalId);
+        json(
+          res,
+          result.ok ? 200 : (result.status === 404 ? 404 : 200),
+          result.ok
+            ? { ...result.data, available: true }
+            : { ok: false, available: false, reason: result.reason || "unavailable" },
+          { "x-request-id": ctx.requestId }
+        );
+        return;
+      }
+
+      if (pathname === "/api/lead-agents/admin/intelligence/decisions") {
+        if (req.method !== "GET") {
+          methodNotAllowed(res, "GET");
+          return;
+        }
+        authorizePermission(authContext, "view_traces");
+        const result = await callOyiCoreIntelligenceDecisions(config);
+        json(
+          res,
+          200,
+          result.ok
+            ? { ...result.data, available: true }
+            : { ok: false, available: false, reason: result.reason || "unavailable" },
+          { "x-request-id": ctx.requestId }
+        );
+        return;
+      }
+
+      if (pathname.startsWith("/api/lead-agents/admin/intelligence/decisions/")) {
+        if (req.method !== "GET") {
+          methodNotAllowed(res, "GET");
+          return;
+        }
+        authorizePermission(authContext, "view_traces");
+        const decisionId = decodeURIComponent(pathname.slice("/api/lead-agents/admin/intelligence/decisions/".length));
+        const result = await callOyiCoreIntelligenceDecisionDetail(config, decisionId);
+        json(
+          res,
+          result.ok ? 200 : (result.status === 404 ? 404 : 200),
+          result.ok
+            ? { ...result.data, available: true }
+            : { ok: false, available: false, reason: result.reason || "unavailable" },
+          { "x-request-id": ctx.requestId }
+        );
+        return;
+      }
+
+      if (pathname === "/api/lead-agents/admin/intelligence/actions") {
+        if (req.method !== "GET") {
+          methodNotAllowed(res, "GET");
+          return;
+        }
+        authorizePermission(authContext, "view_traces");
+        const result = await callOyiCoreIntelligenceActions(config);
+        json(
+          res,
+          200,
+          result.ok
+            ? { ...result.data, available: true }
+            : { ok: false, available: false, reason: result.reason || "unavailable" },
+          { "x-request-id": ctx.requestId }
+        );
+        return;
+      }
+
+      if (pathname.startsWith("/api/lead-agents/admin/intelligence/actions/")) {
+        if (req.method !== "GET") {
+          methodNotAllowed(res, "GET");
+          return;
+        }
+        authorizePermission(authContext, "view_traces");
+        // decodeURIComponent is required here (runtime-verified bug fix):
+        // pathname comes from `new URL(req.url, ...).pathname`, which
+        // preserves %3A un-decoded (colon is in the WHATWG "path
+        // percent-encode set"). Action ids are colon-joined
+        // ("communication:<uuid>") -- without decoding first, the
+        // gateway's own encodeURIComponent() double-encodes the colon
+        // (%3A -> %253A), and Backend's compoundId.indexOf(":") then
+        // finds no real colon at all, 400ing as "Invalid action id".
+        const actionId = decodeURIComponent(pathname.slice("/api/lead-agents/admin/intelligence/actions/".length));
+        const result = await callOyiCoreIntelligenceActionDetail(config, actionId);
+        json(
+          res,
+          result.ok ? 200 : (result.status === 404 ? 404 : 200),
+          result.ok
+            ? { ...result.data, available: true }
+            : { ok: false, available: false, reason: result.reason || "unavailable" },
+          { "x-request-id": ctx.requestId }
+        );
+        return;
+      }
+
+      // Intelligence System Visibility, Slice 5 -- Governed Knowledge. Same
+      // "view_traces" gate and honest-degradation shape as Slice 4 above.
+      // Canonical keys are colon-joined ("office:<stem>"), so the detail
+      // key is decodeURIComponent()-ed first -- same double-encoding fix
+      // as the Slice 4 action-detail route.
+      if (pathname === "/api/lead-agents/admin/intelligence/knowledge") {
+        if (req.method !== "GET") {
+          methodNotAllowed(res, "GET");
+          return;
+        }
+        authorizePermission(authContext, "view_traces");
+        const knowledgeUrl = new URL(req.url, "http://localhost");
+        const query = {};
+        for (const key of new Set(knowledgeUrl.searchParams.keys())) query[key] = knowledgeUrl.searchParams.getAll(key);
+        const result = await callOyiCoreIntelligenceKnowledge(config, query);
+        json(
+          res,
+          200,
+          result.ok
+            ? { ...result.data, available: true }
+            : { ok: false, available: false, reason: result.reason || "unavailable" },
+          { "x-request-id": ctx.requestId }
+        );
+        return;
+      }
+
+      if (pathname.startsWith("/api/lead-agents/admin/intelligence/knowledge/")) {
+        if (req.method !== "GET") {
+          methodNotAllowed(res, "GET");
+          return;
+        }
+        authorizePermission(authContext, "view_traces");
+        const canonicalKey = decodeURIComponent(pathname.slice("/api/lead-agents/admin/intelligence/knowledge/".length));
+        const result = await callOyiCoreIntelligenceKnowledgeDetail(config, canonicalKey);
+        json(
+          res,
+          result.ok ? 200 : (result.status === 404 ? 404 : 200),
+          result.ok
+            ? { ...result.data, available: true }
+            : { ok: false, available: false, reason: result.reason || "unavailable" },
+          { "x-request-id": ctx.requestId }
+        );
+        return;
+      }
+
+      // Intelligence System Visibility, Slice 6 -- Memory & Context and
+      // Learning. Same "view_traces" gate and honest-degradation shape as
+      // Slices 1-5. GET only; there are deliberately no control routes.
+      if (pathname === "/api/lead-agents/admin/intelligence/memory-context") {
+        if (req.method !== "GET") {
+          methodNotAllowed(res, "GET");
+          return;
+        }
+        authorizePermission(authContext, "view_traces");
+        const result = await callOyiCoreIntelligenceMemoryContext(config);
+        json(
+          res,
+          200,
+          result.ok
+            ? { ...result.data, available: true }
+            : { ok: false, available: false, reason: result.reason || "unavailable" },
+          { "x-request-id": ctx.requestId }
+        );
+        return;
+      }
+
+      if (pathname === "/api/lead-agents/admin/intelligence/learning") {
+        if (req.method !== "GET") {
+          methodNotAllowed(res, "GET");
+          return;
+        }
+        authorizePermission(authContext, "view_traces");
+        const result = await callOyiCoreIntelligenceLearning(config);
+        json(
+          res,
+          200,
+          result.ok
+            ? { ...result.data, available: true }
+            : { ok: false, available: false, reason: result.reason || "unavailable" },
+          { "x-request-id": ctx.requestId }
+        );
+        return;
+      }
+
+      // Intelligence System Visibility, Slice 7 -- durable canonical traces.
+      // Same "view_traces" gate and honest-degradation shape. GET only.
+      if (pathname === "/api/lead-agents/admin/intelligence/traces") {
+        if (req.method !== "GET") {
+          methodNotAllowed(res, "GET");
+          return;
+        }
+        authorizePermission(authContext, "view_traces");
+        const tracesUrl = new URL(req.url, "http://localhost");
+        const query = {};
+        for (const key of new Set(tracesUrl.searchParams.keys())) query[key] = tracesUrl.searchParams.get(key);
+        const result = await callOyiCoreIntelligenceTraces(config, query);
+        json(
+          res,
+          200,
+          result.ok
+            ? { ...result.data, available: true }
+            : { ok: false, available: false, reason: result.reason || "unavailable" },
+          { "x-request-id": ctx.requestId }
+        );
+        return;
+      }
+
+      if (pathname.startsWith("/api/lead-agents/admin/intelligence/traces/")) {
+        if (req.method !== "GET") {
+          methodNotAllowed(res, "GET");
+          return;
+        }
+        authorizePermission(authContext, "view_traces");
+        const traceId = decodeURIComponent(pathname.slice("/api/lead-agents/admin/intelligence/traces/".length));
+        const result = await callOyiCoreIntelligenceTraceDetail(config, traceId);
+        json(
+          res,
+          result.ok ? 200 : (result.status === 404 ? 404 : 200),
+          result.ok
+            ? { ...result.data, available: true }
+            : { ok: false, available: false, reason: result.reason || "unavailable" },
           { "x-request-id": ctx.requestId }
         );
         return;

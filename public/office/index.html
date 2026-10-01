@@ -986,6 +986,16 @@
   .crm-tab:hover { color: var(--white); }
   .crm-tab.active { color: var(--white); border-color: var(--red); font-weight: 500; }
   .crm-tabs-spacer { flex: 1; }
+  /* Intelligence tab rail — narrow viewports: the Intelligence section
+     bar has 9 labels (more than any other .crm-tabs user), so at ~480px
+     and below its buttons wrap onto 2-3 lines each instead of the
+     single-line scroll every other .crm-tabs user gets at that width.
+     Scoped to this one bar (not the shared .crm-tabs/.crm-tab rules) so
+     Documents/Proposals/etc. tab bars are unaffected. */
+  @media (max-width: 480px) {
+    .intelligence-tab-rail { flex-wrap: nowrap; overflow-x: auto; -webkit-overflow-scrolling: touch; }
+    .intelligence-tab-rail .crm-tab { white-space: nowrap; flex-shrink: 0; }
+  }
   .crm-tabs-action { width: auto; margin-top: 0; margin-bottom: 8px; flex-shrink: 0; }
   .crm-metrics-strip {
     border: 1px solid var(--line); border-radius: var(--radius);
@@ -1016,6 +1026,18 @@
   .bar-row-track { height: 8px; border-radius: 4px; background: rgba(255,255,255,0.05); overflow: hidden; }
   .bar-row-fill { height: 100%; border-radius: 4px; transition: width var(--duration-fast) var(--ease); }
   .bar-row-count { font-size: 12px; font-weight: 600; color: var(--white); text-align: right; font-variant-numeric: tabular-nums; }
+  /* Wide-label variant — Intelligence's By Risk/By Confirmation panels
+     use full canonical terms ("Consequential Action", "Explicit
+     Confirmation") that don't fit the default 108px label column and
+     were ellipsis-truncating. Scoped to panels that opt in, so the
+     default single-line-ellipsis .bar-row-label (Tool Usage, etc.)
+     elsewhere is unchanged. */
+  .intelligence-bar-wide-labels .bar-row { grid-template-columns: 132px 1fr 30px; }
+  .intelligence-bar-wide-labels .bar-row-label { white-space: normal; overflow: visible; text-overflow: clip; line-height: 1.25; }
+  /* Final review: Intelligence tables carry canonical keys/labels whose
+     meaning is lost when ellipsized -- wrap instead (scoped to the
+     Intelligence shell; every other Office table keeps its clipping). */
+  .intelligence-wrap-cells .crm-row .cell { white-space: normal; overflow: visible; text-overflow: clip; overflow-wrap: anywhere; }
 
   /* Donut chart — dependency-free conic-gradient + legend. */
   .donut-chart { display: flex; align-items: center; gap: var(--space-4); flex-wrap: wrap; }
