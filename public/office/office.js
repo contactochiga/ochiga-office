@@ -10447,7 +10447,11 @@ function groupInteractionsIntoConversations(traces, events, limit = 8) {
 // may contain the existing AI Agents content ... or a clearly intentional
 // transitional state") -- only Capabilities is newly, fully built this
 // slice.
-async function renderIntelligenceOverviewSection(body, token) {
+// Final review (IA): Activity & Trace owns the full historical analytics
+// (mode "full"); Overview renders only the compact operational pair --
+// Recent Activity + System Health -- from the SAME fetch and the SAME
+// panels (mode "compact"), never a second copy of the whole block.
+async function renderIntelligenceOverviewSection(body, token, { compact = false } = {}) {
   const canViewHealth = hasPermission("integrations.read");
   const canViewSchedules = hasPermission("office.read") || hasPermission("content.write");
 
@@ -10486,6 +10490,8 @@ async function renderIntelligenceOverviewSection(body, token) {
     body.appendChild(el(`<p class="home-panel-empty" style="margin:0 0 var(--space-3);">Cross-surface activity (Consumer/Facility/Website Oyi widget) is temporarily unavailable — showing Office's own recorded activity only.</p>`));
   }
 
+  const fullBody = compact ? el(`<div></div>`) : body;
+  let healthPanelRef = null;
   // ---- KPI row ----
   const toolExecutions = traces.filter((t) => t.type === "tool_executed");
   const deviceEvents = events.filter((e) => e.category === "device");
@@ -10518,11 +10524,11 @@ async function renderIntelligenceOverviewSection(body, token) {
     { label: "Schedules Running", value: schedulesRunning, icon: iconSvg("meetings", "kpi-icon"), tone: "amber", sub: canViewSchedules ? "Upcoming demos + scheduled content" : "Requires reports/content access" },
   ]);
   kpiGroup.style.marginBottom = "var(--space-5)";
-  body.appendChild(kpiGroup);
+  fullBody.appendChild(kpiGroup);
 
   // ---- Interactions Over Time + Interactions by Surface ----
   const rowA = el(`<div class="home-grid"></div>`);
-  body.appendChild(rowA);
+  fullBody.appendChild(rowA);
 
   const chartPanel = homePanel("Interactions Over Time");
   const rangeTabs = el(`<div class="list-toolbar" style="padding:0 0 var(--space-2);border:none;"></div>`);
@@ -10573,7 +10579,7 @@ async function renderIntelligenceOverviewSection(body, token) {
 
   // ---- Tool Usage + Recent Activity ----
   const rowB = el(`<div class="home-grid" style="margin-top:var(--space-4);"></div>`);
-  body.appendChild(rowB);
+  fullBody.appendChild(rowB);
 
   const toolPanel = homePanel("Tool Usage");
   if (Object.keys(toolCounts).length) {
@@ -10645,14 +10651,15 @@ async function renderIntelligenceOverviewSection(body, token) {
     });
     conversationsPanel.appendChild(list);
   }
-  body.appendChild(conversationsPanel);
+  fullBody.appendChild(conversationsPanel);
 
   // ---- System Health + Scheduled Tasks ----
   const rowC = el(`<div class="home-grid" style="margin-top:var(--space-4);"></div>`);
-  body.appendChild(rowC);
+  fullBody.appendChild(rowC);
 
   if (canViewHealth) {
     const healthPanel = homePanel("System Health");
+    healthPanelRef = healthPanel;
     // Facility/Consumer sometimes probe successfully (ok:true) while
     // still missing a few non-critical export fields — real evidence
     // worth surfacing, but as a note under "Operational", not a
@@ -10798,9 +10805,19 @@ async function renderIntelligenceOverviewSection(body, token) {
     const insightsPanel = homePanel("Intelligence Insights");
     insightsPanel.style.marginTop = "var(--space-4)";
     insightsPanel.appendChild(metricCellGrid(insightCells));
-    body.appendChild(insightsPanel);
+    fullBody.appendChild(insightsPanel);
+  }
+  if (compact) {
+    const row = el(`<div class="home-grid"></div>`);
+    row.appendChild(homePanelWrap(healthPanelRef ? "span-6" : "span-12", activityPanel));
+    if (healthPanelRef) row.appendChild(homePanelWrap("span-6", healthPanelRef));
+    const link = el(`<button type="button" class="btn btn-ghost btn-sm" style="margin-top:var(--space-3);">Full activity analytics and canonical traces →</button>`);
+    link.addEventListener("click", () => navigate("observatory/activity-trace"));
+    body.appendChild(row);
+    body.appendChild(link);
   }
 }
+
 
 // Intelligence System Visibility, Slice 1 -- locked information
 // architecture (exact order; do not reorder or add sections here without
@@ -11628,6 +11645,9 @@ async function renderIntelligenceOverviewSummary(body, overviewFetch, token) {
   const ct = ov.canonical_traces || { available: false };
   const tracePanel = homePanel("Canonical Turns (24h)", "Open Activity & Trace", () => navigate("observatory/activity-trace"));
   tracePanel.style.marginTop = "var(--space-4)";
+  if (ct.recording_status === "unconfigured" || ct.recording_status === "disabled") {
+    tracePanel.appendChild(el(`<p class="home-panel-empty" style="margin-bottom:var(--space-2);color:var(--amber-bright, #f5a524);">Trace recording ${ct.recording_status === "disabled" ? "is switched off" : "is degraded (no trace reference key configured)"} -- no new traces are being recorded. Conversations are not affected.</p>`));
+  }
   if (!ct.available) {
     tracePanel.appendChild(el(`<p class="home-panel-empty">Canonical trace store unavailable. Oyi conversations are not affected.</p>`));
   } else {
@@ -12949,7 +12969,7 @@ async function renderActivityTraceSection(body, token, threadRef) {
   body.appendChild(analyticsHost);
   await renderCanonicalTraceBlock(traceHost, token, threadRef);
   if (token !== state.renderToken) return;
-  analyticsHost.appendChild(el(`<div class="view-heading" style="margin-bottom:var(--space-3);"><h2 style="font-size:16px;margin:0;">Activity Analytics</h2><p class="home-panel-empty" style="margin:4px 0 0;">Office-recorded and cross-surface interaction analytics (unchanged). Canonical traces above are the per-turn drill-down.</p></div>`));
+  analyticsHost.appendChild(el(`<div class="view-heading" style="margin-bottom:var(--space-3);"><h2 style="font-size:16px;margin:0;">Activity Analytics</h2><p class="home-panel-empty" style="margin:4px 0 0;">Office-recorded and cross-surface interaction history. Canonical traces above are the per-turn drill-down; Overview shows only Recent Activity and System Health from this same source.</p></div>`));
   const analyticsBody = el(`<div></div>`);
   analyticsBody.appendChild(skeletonPanel(3));
   analyticsHost.appendChild(analyticsBody);
@@ -12989,8 +13009,10 @@ async function renderCanonicalTraceBlock(host, token, threadRef) {
     host.appendChild(el(`<div class="status-callout status-callout-amber">The canonical trace store is unavailable right now. Oyi conversations are not affected -- trace persistence never blocks a response.</div>`));
     return;
   }
-  if (data.store && data.store.write_enabled === false) {
-    host.appendChild(el(`<div class="status-callout status-callout-amber" style="margin-bottom:var(--space-3);">Trace recording is switched off on this Backend (OYI_CONVERSATION_TRACE_ENABLED=false). Existing traces are still shown.</div>`));
+  if (data.store && data.store.recording_status === "disabled") {
+    host.appendChild(el(`<div class="status-callout status-callout-amber" style="margin-bottom:var(--space-3);">Trace recording is switched off on this Backend. Existing traces are still shown; Oyi conversations are not affected.</div>`));
+  } else if (data.store && data.store.recording_status === "unconfigured") {
+    host.appendChild(el(`<div class="status-callout status-callout-amber" style="margin-bottom:var(--space-3);">Trace recording is degraded: this Backend has no trace reference key configured, so no new traces are being recorded. Existing traces are still shown; Oyi conversations are not affected.</div>`));
   }
 
   const sm = data.summary || {};
@@ -13183,7 +13205,7 @@ async function renderObservatoryView(outlet, rest, token) {
   });
   outlet.appendChild(tabs);
 
-  const body = el(`<div class="crm-body"></div>`);
+  const body = el(`<div class="crm-body intelligence-wrap-cells"></div>`);
   outlet.appendChild(body);
 
   if (sectionKey === "overview") {
@@ -13216,7 +13238,7 @@ async function renderObservatoryView(outlet, rest, token) {
     const overviewContent = el(`<div></div>`);
     overviewContent.appendChild(skeletonPanel(4));
     body.appendChild(overviewContent);
-    await renderIntelligenceOverviewSection(overviewContent, token);
+    await renderIntelligenceOverviewSection(overviewContent, token, { compact: true });
   } else if (sectionKey === "capabilities") {
     // Fix (Slice 3): destructuring above is [sectionKey, detailKind,
     // detailKey] (added in Slice 2 for the overview/intervention

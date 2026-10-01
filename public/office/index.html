@@ -1034,6 +1034,10 @@
      elsewhere is unchanged. */
   .intelligence-bar-wide-labels .bar-row { grid-template-columns: 132px 1fr 30px; }
   .intelligence-bar-wide-labels .bar-row-label { white-space: normal; overflow: visible; text-overflow: clip; line-height: 1.25; }
+  /* Final review: Intelligence tables carry canonical keys/labels whose
+     meaning is lost when ellipsized -- wrap instead (scoped to the
+     Intelligence shell; every other Office table keeps its clipping). */
+  .intelligence-wrap-cells .crm-row .cell { white-space: normal; overflow: visible; text-overflow: clip; overflow-wrap: anywhere; }
 
   /* Donut chart — dependency-free conic-gradient + legend. */
   .donut-chart { display: flex; align-items: center; gap: var(--space-4); flex-wrap: wrap; }
