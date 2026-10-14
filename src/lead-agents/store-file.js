@@ -44,6 +44,7 @@ class FileLeadAgentsStore {
       office_documents: [],
       office_document_folders: [],
       office_letterhead_config: null,
+      runtime_settings: {},
       office_support_mappings: [],
       office_handoffs: [],
       office_staff_profiles: [],
@@ -120,6 +121,7 @@ class FileLeadAgentsStore {
         office_documents: Array.isArray(parsed.office_documents) ? parsed.office_documents : [],
         office_document_folders: Array.isArray(parsed.office_document_folders) ? parsed.office_document_folders : [],
         office_letterhead_config: parsed.office_letterhead_config && typeof parsed.office_letterhead_config === "object" ? parsed.office_letterhead_config : null,
+        runtime_settings: parsed.runtime_settings && typeof parsed.runtime_settings === "object" && !Array.isArray(parsed.runtime_settings) ? parsed.runtime_settings : {},
         office_support_mappings: Array.isArray(parsed.office_support_mappings)
           ? parsed.office_support_mappings
           : [],
@@ -702,6 +704,26 @@ class FileLeadAgentsStore {
     }
     await this.persist();
     return value;
+  }
+
+  // Durable runtime settings (key -> {key, value, updated_by, updated_at}); a missing key is null, never an invented default.
+  async getRuntimeSetting(key) {
+    return this.state.runtime_settings[key] || null;
+  }
+
+  async setRuntimeSetting(key, value, actor) {
+    const previous = this.state.runtime_settings[key] || null;
+    const current = { key, value, updated_by: actor || "", updated_at: this.nowIso() };
+    this.state.runtime_settings[key] = current;
+    await this.persist();
+    return { previous, current };
+  }
+
+  async hasInboundEvent({ channel, eventType, externalEventId }) {
+    if (!externalEventId) return false;
+    return this.state.inbound_events.some(
+      (item) => item.channel === channel && item.event_type === eventType && item.external_event_id === externalEventId
+    );
   }
 
   async appendInboundEvent(input) {

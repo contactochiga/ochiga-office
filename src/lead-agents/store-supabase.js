@@ -523,6 +523,33 @@ class SupabaseLeadAgentsStore {
     return response.data[0];
   }
 
+  // Durable runtime settings. Reads are STRICT: a failed or malformed read throws so callers can fail closed; only an empty result means "no row".
+  async getRuntimeSetting(key) {
+    const response = await this.client.get(`/office_runtime_settings?key=eq.${encodeURIComponent(key)}&limit=1`);
+    if (!Array.isArray(response.data)) throw new Error("runtime_setting_read_malformed");
+    return response.data[0] || null;
+  }
+
+  async setRuntimeSetting(key, value, actor) {
+    const previous = await this.getRuntimeSetting(key);
+    const response = await this.client.post(
+      "/office_runtime_settings?on_conflict=key",
+      { key, value, updated_by: actor || "", updated_at: new Date().toISOString() },
+      { headers: { ...this.selectHeaders(), Prefer: "resolution=merge-duplicates,return=representation" } }
+    );
+    const current = Array.isArray(response.data) ? response.data[0] : null;
+    if (!current) throw new Error("runtime_setting_write_unconfirmed");
+    return { previous, current };
+  }
+
+  async hasInboundEvent({ channel, eventType, externalEventId }) {
+    if (!externalEventId) return false;
+    const response = await this.client.get(
+      `/inbound_events?channel=eq.${encodeURIComponent(channel)}&event_type=eq.${encodeURIComponent(eventType)}&external_event_id=eq.${encodeURIComponent(externalEventId)}&select=id&limit=1`
+    );
+    return Array.isArray(response.data) && response.data.length > 0;
+  }
+
   async appendInboundEvent(input) {
     const response = await this.client.post(
       "/inbound_events",

@@ -1398,3 +1398,12 @@ create table if not exists ochiga_workflow_links (
 
 create unique index if not exists ochiga_workflow_links_record_idx
 on ochiga_workflow_links (record_type, record_id);
+
+-- Durable Office runtime settings (see db/20261014_office_runtime_settings.sql). First key: whatsapp_autonomous_responses_enabled.
+create table if not exists office_runtime_settings (
+  key text primary key,
+  value jsonb not null,
+  updated_by text,
+  updated_at timestamptz not null default now()
+);
+alter table office_runtime_settings enable row level security;

@@ -132,6 +132,8 @@ function createConfig() {
     whatsappPhoneNumberId: process.env.WHATSAPP_PHONE_NUMBER_ID || "",
     whatsappBusinessAccountId: process.env.WHATSAPP_BUSINESS_ACCOUNT_ID || "",
     whatsappApiVersion: process.env.WHATSAPP_API_VERSION || "v22.0",
+    // display only (Settings -> Integrations -> WhatsApp); never used for sending
+    whatsappDisplayNumber: process.env.WHATSAPP_DISPLAY_NUMBER || "",
     metaAppId: process.env.META_APP_ID || "",
     metaAppSecret: process.env.META_APP_SECRET || "",
     metaAccessToken: process.env.META_ACCESS_TOKEN || "",

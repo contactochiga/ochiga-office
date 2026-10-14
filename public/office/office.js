@@ -9921,6 +9921,82 @@ async function toggleTeamEditRow(user, canonicalRoles) {
 // the one real action (trigger a Facility/Consumer sync) uses the
 // same endpoint the legacy dashboard used.
 // ---------------------------------------------------------------
+
+// ---------------------------------------------------------------
+// Settings -> Integrations -> WhatsApp: the ONE global switch for autonomous
+// AI replies. The server's persisted setting is the only truth: the control
+// shows what the server returned, never an optimistic local value, and a
+// failed save leaves the displayed state unchanged and says so.
+// ---------------------------------------------------------------
+async function apiGetWhatsAppAutonomy() {
+  return api("/api/lead-agents/admin/settings/whatsapp-autonomy");
+}
+async function apiSetWhatsAppAutonomy(enabled) {
+  return api("/api/lead-agents/admin/settings/whatsapp-autonomy", { method: "PUT", body: { enabled } });
+}
+function whatsAppAutonomyStatusText(status) {
+  if (!status) return "The current status could not be read.";
+  if (status.state === "unknown_fail_closed") return "Status unknown — treated as OFF. No autonomous WhatsApp reply will be sent until the setting can be read.";
+  if (status.enabled) return "ON — Oyi may reply to WhatsApp messages automatically, except where a conversation is paused or a staff member has taken over.";
+  return "OFF — WhatsApp messages are still received and saved to the CRM, but no automatic reply is sent. Staff can reply manually.";
+}
+async function renderWhatsAppAutonomyPanel(outlet, token) {
+  const section = el(`<div class="overview-section" style="margin-top:24px;"><h3>WhatsApp</h3></div>`);
+  outlet.appendChild(section);
+  let status = null;
+  let loadError = "";
+  try {
+    status = (await apiGetWhatsAppAutonomy()).whatsapp_autonomy;
+  } catch (err) {
+    loadError = err.message || "Could not read the WhatsApp setting.";
+  }
+  if (token !== state.renderToken) return;
+  const canManage = hasPermission("integrations.manage");
+  const body = el(`<div></div>`);
+  section.appendChild(body);
+  const feedback = el(`<div class="hint" role="status" aria-live="polite" id="waAutonomyFeedback"></div>`);
+  const draw = () => {
+    const known = Boolean(status) && status.state !== "unknown_fail_closed";
+    const on = Boolean(status && status.enabled);
+    const changed = status && status.updated_at
+      ? `${escapeHtml(status.updated_by || "unknown")} · ${escapeHtml(new Date(status.updated_at).toLocaleString())}`
+      : "Never changed (default OFF)";
+    body.innerHTML = `
+      <div class="fact-grid">
+        <div class="fact"><div class="fact-label">Official WhatsApp number</div><div class="fact-value">${status && status.official_number ? escapeHtml(status.official_number) : "Not shown (display value not configured)"}</div></div>
+        <div class="fact"><div class="fact-label">Autonomous AI Responses</div><div class="fact-value">${known ? badge(on ? "ON" : "OFF", on ? "green" : "default") : badge("Unknown (OFF)", "amber")}</div></div>
+        <div class="fact"><div class="fact-label">Last changed by / at</div><div class="fact-value">${changed}</div></div>
+      </div>
+      <p class="hint" id="waAutonomyEffective">${loadError ? escapeHtml(loadError) : escapeHtml(whatsAppAutonomyStatusText(status))}</p>
+    `;
+    if (canManage && !loadError) {
+      const row = el(`<div class="inline-form"></div>`);
+      const btn = el(`<button class="btn ${on ? "btn-ghost" : ""}" type="button" id="waAutonomyToggle">${on ? "Turn OFF" : "Turn ON"}</button>`);
+      btn.addEventListener("click", async () => {
+        const target = !on;
+        if (target && !window.confirm("Turn ON autonomous WhatsApp replies? Oyi will reply to incoming WhatsApp messages automatically (paused and taken-over conversations are excluded). Messages received while OFF are not answered retroactively.")) return;
+        btn.disabled = true;
+        feedback.textContent = "Saving…";
+        try {
+          const result = await apiSetWhatsAppAutonomy(target);
+          status = result.whatsapp_autonomy;
+          draw();
+          feedback.textContent = `Saved. ${status.enabled === target ? "The server confirms the setting is now " + (status.enabled ? "ON" : "OFF") + "." : "The server reports a different value; it is shown above."}`;
+        } catch (err) {
+          draw();
+          feedback.textContent = `Not saved — ${err.message || "the setting could not be changed"}. The setting above is unchanged.`;
+        }
+      });
+      row.appendChild(btn);
+      body.appendChild(row);
+    } else if (!canManage) {
+      body.appendChild(el(`<p class="hint">Only administrators can change this setting.</p>`));
+    }
+    body.appendChild(feedback);
+  };
+  draw();
+}
+
 async function renderSettingsView(outlet, token) {
   setTopbar("Settings", "");
   setSelectedObject(null);
@@ -9963,6 +10039,11 @@ async function renderSettingsView(outlet, token) {
   });
   section.appendChild(grid);
   outlet.appendChild(section);
+
+  if (hasPermission("integrations.read")) {
+    await renderWhatsAppAutonomyPanel(outlet, token);
+    if (token !== state.renderToken) return;
+  }
 
   if (hasPermission("office.manage")) {
     const syncSection = el(`<div class="overview-section" style="margin-top:24px;"><h3>Sync</h3></div>`);
