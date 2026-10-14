@@ -1,0 +1,548 @@
+{
+ "captured": "2026-10-14 ~17:20 UTC",
+ "project": "metbajilbqclwjfsxfps (Ochiga marketing and sales agent)",
+ "method": "read-only catalog queries (pg_class, has_table_privilege)",
+ "note": "metadata only; no row data",
+ "tables": [
+  {
+   "table": "admin_invites",
+   "tier": "T0 credentials / authentication",
+   "rls_enabled": false,
+   "anon_privileges": "DELETE,INSERT,REFERENCES,SELECT,TRIGGER,TRUNCATE,UPDATE",
+   "authenticated_privileges": "DELETE,INSERT,REFERENCES,SELECT,TRIGGER,TRUNCATE,UPDATE",
+   "service_role_privileges": "DELETE,INSERT,SELECT,UPDATE",
+   "estimated_rows": 2,
+   "effective_anon_access": "full read/write/delete/truncate"
+  },
+  {
+   "table": "admin_users",
+   "tier": "T0 credentials / authentication",
+   "rls_enabled": false,
+   "anon_privileges": "DELETE,INSERT,REFERENCES,SELECT,TRIGGER,TRUNCATE,UPDATE",
+   "authenticated_privileges": "DELETE,INSERT,REFERENCES,SELECT,TRIGGER,TRUNCATE,UPDATE",
+   "service_role_privileges": "DELETE,INSERT,SELECT,UPDATE",
+   "estimated_rows": 6,
+   "effective_anon_access": "full read/write/delete/truncate"
+  },
+  {
+   "table": "audit_events",
+   "tier": "T0 audit integrity",
+   "rls_enabled": false,
+   "anon_privileges": "DELETE,INSERT,REFERENCES,SELECT,TRIGGER,TRUNCATE,UPDATE",
+   "authenticated_privileges": "DELETE,INSERT,REFERENCES,SELECT,TRIGGER,TRUNCATE,UPDATE",
+   "service_role_privileges": "DELETE,INSERT,SELECT,UPDATE",
+   "estimated_rows": 809,
+   "effective_anon_access": "full read/write/delete/truncate"
+  },
+  {
+   "table": "conversations",
+   "tier": "T1 customer / CRM data",
+   "rls_enabled": false,
+   "anon_privileges": "DELETE,INSERT,REFERENCES,SELECT,TRIGGER,TRUNCATE,UPDATE",
+   "authenticated_privileges": "DELETE,INSERT,REFERENCES,SELECT,TRIGGER,TRUNCATE,UPDATE",
+   "service_role_privileges": "DELETE,INSERT,SELECT,UPDATE",
+   "estimated_rows": 240,
+   "effective_anon_access": "full read/write/delete/truncate"
+  },
+  {
+   "table": "crm_activities",
+   "tier": "T1 customer / CRM data",
+   "rls_enabled": false,
+   "anon_privileges": "DELETE,INSERT,REFERENCES,SELECT,TRIGGER,TRUNCATE,UPDATE",
+   "authenticated_privileges": "DELETE,INSERT,REFERENCES,SELECT,TRIGGER,TRUNCATE,UPDATE",
+   "service_role_privileges": "DELETE,INSERT,SELECT,UPDATE",
+   "estimated_rows": 168,
+   "effective_anon_access": "full read/write/delete/truncate"
+  },
+  {
+   "table": "crm_contacts",
+   "tier": "T1 customer / CRM data",
+   "rls_enabled": false,
+   "anon_privileges": "DELETE,INSERT,REFERENCES,SELECT,TRIGGER,TRUNCATE,UPDATE",
+   "authenticated_privileges": "DELETE,INSERT,REFERENCES,SELECT,TRIGGER,TRUNCATE,UPDATE",
+   "service_role_privileges": "DELETE,INSERT,SELECT,UPDATE",
+   "estimated_rows": -1,
+   "effective_anon_access": "full read/write/delete/truncate"
+  },
+  {
+   "table": "crm_opportunities",
+   "tier": "T1 customer / CRM data",
+   "rls_enabled": false,
+   "anon_privileges": "DELETE,INSERT,REFERENCES,SELECT,TRIGGER,TRUNCATE,UPDATE",
+   "authenticated_privileges": "DELETE,INSERT,REFERENCES,SELECT,TRIGGER,TRUNCATE,UPDATE",
+   "service_role_privileges": "DELETE,INSERT,SELECT,UPDATE",
+   "estimated_rows": -1,
+   "effective_anon_access": "full read/write/delete/truncate"
+  },
+  {
+   "table": "crm_organizations",
+   "tier": "T1 customer / CRM data",
+   "rls_enabled": false,
+   "anon_privileges": "DELETE,INSERT,REFERENCES,SELECT,TRIGGER,TRUNCATE,UPDATE",
+   "authenticated_privileges": "DELETE,INSERT,REFERENCES,SELECT,TRIGGER,TRUNCATE,UPDATE",
+   "service_role_privileges": "DELETE,INSERT,SELECT,UPDATE",
+   "estimated_rows": -1,
+   "effective_anon_access": "full read/write/delete/truncate"
+  },
+  {
+   "table": "crm_tasks",
+   "tier": "T1 customer / CRM data",
+   "rls_enabled": false,
+   "anon_privileges": "DELETE,INSERT,REFERENCES,SELECT,TRIGGER,TRUNCATE,UPDATE",
+   "authenticated_privileges": "DELETE,INSERT,REFERENCES,SELECT,TRIGGER,TRUNCATE,UPDATE",
+   "service_role_privileges": "DELETE,INSERT,SELECT,UPDATE",
+   "estimated_rows": 41,
+   "effective_anon_access": "full read/write/delete/truncate"
+  },
+  {
+   "table": "demos",
+   "tier": "T1 customer / CRM data",
+   "rls_enabled": false,
+   "anon_privileges": "DELETE,INSERT,REFERENCES,SELECT,TRIGGER,TRUNCATE,UPDATE",
+   "authenticated_privileges": "DELETE,INSERT,REFERENCES,SELECT,TRIGGER,TRUNCATE,UPDATE",
+   "service_role_privileges": "DELETE,INSERT,SELECT,UPDATE",
+   "estimated_rows": -1,
+   "effective_anon_access": "full read/write/delete/truncate"
+  },
+  {
+   "table": "deployment_projects",
+   "tier": "T3 operational / portfolio data",
+   "rls_enabled": true,
+   "anon_privileges": "DELETE,INSERT,REFERENCES,SELECT,TRIGGER,TRUNCATE,UPDATE",
+   "authenticated_privileges": "DELETE,INSERT,REFERENCES,SELECT,TRIGGER,TRUNCATE,UPDATE",
+   "service_role_privileges": "DELETE,INSERT,SELECT,UPDATE",
+   "estimated_rows": -1,
+   "effective_anon_access": "none (RLS enabled, no policy)"
+  },
+  {
+   "table": "facility_workspaces",
+   "tier": "T3 operational / portfolio data",
+   "rls_enabled": true,
+   "anon_privileges": "DELETE,INSERT,REFERENCES,SELECT,TRIGGER,TRUNCATE,UPDATE",
+   "authenticated_privileges": "DELETE,INSERT,REFERENCES,SELECT,TRIGGER,TRUNCATE,UPDATE",
+   "service_role_privileges": "DELETE,INSERT,SELECT,UPDATE",
+   "estimated_rows": -1,
+   "effective_anon_access": "none (RLS enabled, no policy)"
+  },
+  {
+   "table": "inbound_events",
+   "tier": "T1 customer / CRM data",
+   "rls_enabled": false,
+   "anon_privileges": "DELETE,INSERT,REFERENCES,SELECT,TRIGGER,TRUNCATE,UPDATE",
+   "authenticated_privileges": "DELETE,INSERT,REFERENCES,SELECT,TRIGGER,TRUNCATE,UPDATE",
+   "service_role_privileges": "DELETE,INSERT,SELECT,UPDATE",
+   "estimated_rows": 239,
+   "effective_anon_access": "full read/write/delete/truncate"
+  },
+  {
+   "table": "lead_channel_states",
+   "tier": "T1 customer / CRM data",
+   "rls_enabled": false,
+   "anon_privileges": "DELETE,INSERT,REFERENCES,SELECT,TRIGGER,TRUNCATE,UPDATE",
+   "authenticated_privileges": "DELETE,INSERT,REFERENCES,SELECT,TRIGGER,TRUNCATE,UPDATE",
+   "service_role_privileges": "DELETE,INSERT,SELECT,UPDATE",
+   "estimated_rows": 15,
+   "effective_anon_access": "full read/write/delete/truncate"
+  },
+  {
+   "table": "lead_memories",
+   "tier": "T1 customer / CRM data",
+   "rls_enabled": false,
+   "anon_privileges": "DELETE,INSERT,REFERENCES,SELECT,TRIGGER,TRUNCATE,UPDATE",
+   "authenticated_privileges": "DELETE,INSERT,REFERENCES,SELECT,TRIGGER,TRUNCATE,UPDATE",
+   "service_role_privileges": "DELETE,INSERT,SELECT,UPDATE",
+   "estimated_rows": -1,
+   "effective_anon_access": "full read/write/delete/truncate"
+  },
+  {
+   "table": "leads",
+   "tier": "T1 customer / CRM data",
+   "rls_enabled": false,
+   "anon_privileges": "DELETE,INSERT,REFERENCES,SELECT,TRIGGER,TRUNCATE,UPDATE",
+   "authenticated_privileges": "DELETE,INSERT,REFERENCES,SELECT,TRIGGER,TRUNCATE,UPDATE",
+   "service_role_privileges": "DELETE,INSERT,SELECT,UPDATE",
+   "estimated_rows": 55,
+   "effective_anon_access": "full read/write/delete/truncate"
+  },
+  {
+   "table": "notifications",
+   "tier": "T1 customer / CRM data",
+   "rls_enabled": false,
+   "anon_privileges": "DELETE,INSERT,REFERENCES,SELECT,TRIGGER,TRUNCATE,UPDATE",
+   "authenticated_privileges": "DELETE,INSERT,REFERENCES,SELECT,TRIGGER,TRUNCATE,UPDATE",
+   "service_role_privileges": "DELETE,INSERT,SELECT,UPDATE",
+   "estimated_rows": 316,
+   "effective_anon_access": "full read/write/delete/truncate"
+  },
+  {
+   "table": "ochiga_workflow_links",
+   "tier": "T3 operational / portfolio data",
+   "rls_enabled": false,
+   "anon_privileges": "DELETE,INSERT,REFERENCES,SELECT,TRIGGER,TRUNCATE,UPDATE",
+   "authenticated_privileges": "DELETE,INSERT,REFERENCES,SELECT,TRIGGER,TRUNCATE,UPDATE",
+   "service_role_privileges": "DELETE,INSERT,SELECT,UPDATE",
+   "estimated_rows": -1,
+   "effective_anon_access": "full read/write/delete/truncate"
+  },
+  {
+   "table": "office_analytics",
+   "tier": "T3 operational / portfolio data",
+   "rls_enabled": false,
+   "anon_privileges": "DELETE,INSERT,REFERENCES,SELECT,TRIGGER,TRUNCATE,UPDATE",
+   "authenticated_privileges": "DELETE,INSERT,REFERENCES,SELECT,TRIGGER,TRUNCATE,UPDATE",
+   "service_role_privileges": "DELETE,INSERT,SELECT,UPDATE",
+   "estimated_rows": -1,
+   "effective_anon_access": "full read/write/delete/truncate"
+  },
+  {
+   "table": "office_buildings",
+   "tier": "T3 operational / portfolio data",
+   "rls_enabled": false,
+   "anon_privileges": "DELETE,INSERT,REFERENCES,SELECT,TRIGGER,TRUNCATE,UPDATE",
+   "authenticated_privileges": "DELETE,INSERT,REFERENCES,SELECT,TRIGGER,TRUNCATE,UPDATE",
+   "service_role_privileges": "DELETE,INSERT,SELECT,UPDATE",
+   "estimated_rows": -1,
+   "effective_anon_access": "full read/write/delete/truncate"
+  },
+  {
+   "table": "office_content_items",
+   "tier": "T3 operational / portfolio data",
+   "rls_enabled": false,
+   "anon_privileges": "DELETE,INSERT,REFERENCES,SELECT,TRIGGER,TRUNCATE,UPDATE",
+   "authenticated_privileges": "DELETE,INSERT,REFERENCES,SELECT,TRIGGER,TRUNCATE,UPDATE",
+   "service_role_privileges": "DELETE,INSERT,SELECT,UPDATE",
+   "estimated_rows": -1,
+   "effective_anon_access": "full read/write/delete/truncate"
+  },
+  {
+   "table": "office_development_projects",
+   "tier": "T3 operational / portfolio data",
+   "rls_enabled": false,
+   "anon_privileges": "DELETE,INSERT,REFERENCES,SELECT,TRIGGER,TRUNCATE,UPDATE",
+   "authenticated_privileges": "DELETE,INSERT,REFERENCES,SELECT,TRIGGER,TRUNCATE,UPDATE",
+   "service_role_privileges": "DELETE,INSERT,SELECT,UPDATE",
+   "estimated_rows": -1,
+   "effective_anon_access": "full read/write/delete/truncate"
+  },
+  {
+   "table": "office_devices",
+   "tier": "T3 operational / portfolio data",
+   "rls_enabled": false,
+   "anon_privileges": "DELETE,INSERT,REFERENCES,SELECT,TRIGGER,TRUNCATE,UPDATE",
+   "authenticated_privileges": "DELETE,INSERT,REFERENCES,SELECT,TRIGGER,TRUNCATE,UPDATE",
+   "service_role_privileges": "DELETE,INSERT,SELECT,UPDATE",
+   "estimated_rows": 14,
+   "effective_anon_access": "full read/write/delete/truncate"
+  },
+  {
+   "table": "office_document_folders",
+   "tier": "T2 internal documents and relationships",
+   "rls_enabled": false,
+   "anon_privileges": "DELETE,INSERT,REFERENCES,SELECT,TRIGGER,TRUNCATE,UPDATE",
+   "authenticated_privileges": "DELETE,INSERT,REFERENCES,SELECT,TRIGGER,TRUNCATE,UPDATE",
+   "service_role_privileges": "DELETE,INSERT,SELECT,UPDATE",
+   "estimated_rows": -1,
+   "effective_anon_access": "full read/write/delete/truncate"
+  },
+  {
+   "table": "office_documents",
+   "tier": "T2 internal documents and relationships",
+   "rls_enabled": false,
+   "anon_privileges": "DELETE,INSERT,REFERENCES,SELECT,TRIGGER,TRUNCATE,UPDATE",
+   "authenticated_privileges": "DELETE,INSERT,REFERENCES,SELECT,TRIGGER,TRUNCATE,UPDATE",
+   "service_role_privileges": "DELETE,INSERT,SELECT,UPDATE",
+   "estimated_rows": 13,
+   "effective_anon_access": "full read/write/delete/truncate"
+  },
+  {
+   "table": "office_estates",
+   "tier": "T3 operational / portfolio data",
+   "rls_enabled": false,
+   "anon_privileges": "DELETE,INSERT,REFERENCES,SELECT,TRIGGER,TRUNCATE,UPDATE",
+   "authenticated_privileges": "DELETE,INSERT,REFERENCES,SELECT,TRIGGER,TRUNCATE,UPDATE",
+   "service_role_privileges": "DELETE,INSERT,SELECT,UPDATE",
+   "estimated_rows": 18,
+   "effective_anon_access": "full read/write/delete/truncate"
+  },
+  {
+   "table": "office_files",
+   "tier": "T2 internal documents and relationships",
+   "rls_enabled": false,
+   "anon_privileges": "DELETE,INSERT,REFERENCES,SELECT,TRIGGER,TRUNCATE,UPDATE",
+   "authenticated_privileges": "DELETE,INSERT,REFERENCES,SELECT,TRIGGER,TRUNCATE,UPDATE",
+   "service_role_privileges": "DELETE,INSERT,SELECT,UPDATE",
+   "estimated_rows": -1,
+   "effective_anon_access": "full read/write/delete/truncate"
+  },
+  {
+   "table": "office_handoffs",
+   "tier": "T2 internal documents and relationships",
+   "rls_enabled": false,
+   "anon_privileges": "DELETE,INSERT,REFERENCES,SELECT,TRIGGER,TRUNCATE,UPDATE",
+   "authenticated_privileges": "DELETE,INSERT,REFERENCES,SELECT,TRIGGER,TRUNCATE,UPDATE",
+   "service_role_privileges": "DELETE,INSERT,SELECT,UPDATE",
+   "estimated_rows": -1,
+   "effective_anon_access": "full read/write/delete/truncate"
+  },
+  {
+   "table": "office_homes",
+   "tier": "T3 operational / portfolio data",
+   "rls_enabled": false,
+   "anon_privileges": "DELETE,INSERT,REFERENCES,SELECT,TRIGGER,TRUNCATE,UPDATE",
+   "authenticated_privileges": "DELETE,INSERT,REFERENCES,SELECT,TRIGGER,TRUNCATE,UPDATE",
+   "service_role_privileges": "DELETE,INSERT,SELECT,UPDATE",
+   "estimated_rows": -1,
+   "effective_anon_access": "full read/write/delete/truncate"
+  },
+  {
+   "table": "office_letterhead_config",
+   "tier": "T2 internal documents and relationships",
+   "rls_enabled": false,
+   "anon_privileges": "DELETE,INSERT,REFERENCES,SELECT,TRIGGER,TRUNCATE,UPDATE",
+   "authenticated_privileges": "DELETE,INSERT,REFERENCES,SELECT,TRIGGER,TRUNCATE,UPDATE",
+   "service_role_privileges": "DELETE,INSERT,SELECT,UPDATE",
+   "estimated_rows": -1,
+   "effective_anon_access": "full read/write/delete/truncate"
+  },
+  {
+   "table": "office_meetings",
+   "tier": "T2 internal documents and relationships",
+   "rls_enabled": false,
+   "anon_privileges": "DELETE,INSERT,REFERENCES,SELECT,TRIGGER,TRUNCATE,UPDATE",
+   "authenticated_privileges": "DELETE,INSERT,REFERENCES,SELECT,TRIGGER,TRUNCATE,UPDATE",
+   "service_role_privileges": "DELETE,INSERT,SELECT,UPDATE",
+   "estimated_rows": -1,
+   "effective_anon_access": "full read/write/delete/truncate"
+  },
+  {
+   "table": "office_packages",
+   "tier": "T3 operational / portfolio data",
+   "rls_enabled": false,
+   "anon_privileges": "DELETE,INSERT,REFERENCES,SELECT,TRIGGER,TRUNCATE,UPDATE",
+   "authenticated_privileges": "DELETE,INSERT,REFERENCES,SELECT,TRIGGER,TRUNCATE,UPDATE",
+   "service_role_privileges": "DELETE,INSERT,SELECT,UPDATE",
+   "estimated_rows": -1,
+   "effective_anon_access": "full read/write/delete/truncate"
+  },
+  {
+   "table": "office_partnership_relationships",
+   "tier": "T2 internal documents and relationships",
+   "rls_enabled": false,
+   "anon_privileges": "DELETE,INSERT,REFERENCES,SELECT,TRIGGER,TRUNCATE,UPDATE",
+   "authenticated_privileges": "DELETE,INSERT,REFERENCES,SELECT,TRIGGER,TRUNCATE,UPDATE",
+   "service_role_privileges": "DELETE,INSERT,SELECT,UPDATE",
+   "estimated_rows": -1,
+   "effective_anon_access": "full read/write/delete/truncate"
+  },
+  {
+   "table": "office_portfolio_entries",
+   "tier": "T3 operational / portfolio data",
+   "rls_enabled": false,
+   "anon_privileges": "DELETE,INSERT,REFERENCES,SELECT,TRIGGER,TRUNCATE,UPDATE",
+   "authenticated_privileges": "DELETE,INSERT,REFERENCES,SELECT,TRIGGER,TRUNCATE,UPDATE",
+   "service_role_privileges": "DELETE,INSERT,SELECT,UPDATE",
+   "estimated_rows": 3,
+   "effective_anon_access": "full read/write/delete/truncate"
+  },
+  {
+   "table": "office_private_relationships",
+   "tier": "T2 internal documents and relationships",
+   "rls_enabled": false,
+   "anon_privileges": "DELETE,INSERT,REFERENCES,SELECT,TRIGGER,TRUNCATE,UPDATE",
+   "authenticated_privileges": "DELETE,INSERT,REFERENCES,SELECT,TRIGGER,TRUNCATE,UPDATE",
+   "service_role_privileges": "DELETE,INSERT,SELECT,UPDATE",
+   "estimated_rows": -1,
+   "effective_anon_access": "full read/write/delete/truncate"
+  },
+  {
+   "table": "office_projects",
+   "tier": "T3 operational / portfolio data",
+   "rls_enabled": false,
+   "anon_privileges": "DELETE,INSERT,REFERENCES,SELECT,TRIGGER,TRUNCATE,UPDATE",
+   "authenticated_privileges": "DELETE,INSERT,REFERENCES,SELECT,TRIGGER,TRUNCATE,UPDATE",
+   "service_role_privileges": "DELETE,INSERT,SELECT,UPDATE",
+   "estimated_rows": -1,
+   "effective_anon_access": "full read/write/delete/truncate"
+  },
+  {
+   "table": "office_reports",
+   "tier": "T2 internal documents and relationships",
+   "rls_enabled": false,
+   "anon_privileges": "DELETE,INSERT,REFERENCES,SELECT,TRIGGER,TRUNCATE,UPDATE",
+   "authenticated_privileges": "DELETE,INSERT,REFERENCES,SELECT,TRIGGER,TRUNCATE,UPDATE",
+   "service_role_privileges": "DELETE,INSERT,SELECT,UPDATE",
+   "estimated_rows": -1,
+   "effective_anon_access": "full read/write/delete/truncate"
+  },
+  {
+   "table": "office_staff_capabilities",
+   "tier": "T2 internal documents and relationships",
+   "rls_enabled": false,
+   "anon_privileges": "DELETE,INSERT,REFERENCES,SELECT,TRIGGER,TRUNCATE,UPDATE",
+   "authenticated_privileges": "DELETE,INSERT,REFERENCES,SELECT,TRIGGER,TRUNCATE,UPDATE",
+   "service_role_privileges": "DELETE,INSERT,SELECT,UPDATE",
+   "estimated_rows": -1,
+   "effective_anon_access": "full read/write/delete/truncate"
+  },
+  {
+   "table": "office_staff_profiles",
+   "tier": "T2 internal documents and relationships",
+   "rls_enabled": false,
+   "anon_privileges": "DELETE,INSERT,REFERENCES,SELECT,TRIGGER,TRUNCATE,UPDATE",
+   "authenticated_privileges": "DELETE,INSERT,REFERENCES,SELECT,TRIGGER,TRUNCATE,UPDATE",
+   "service_role_privileges": "DELETE,INSERT,SELECT,UPDATE",
+   "estimated_rows": -1,
+   "effective_anon_access": "full read/write/delete/truncate"
+  },
+  {
+   "table": "office_support_cases",
+   "tier": "T3 operational / portfolio data",
+   "rls_enabled": false,
+   "anon_privileges": "DELETE,INSERT,REFERENCES,SELECT,TRIGGER,TRUNCATE,UPDATE",
+   "authenticated_privileges": "DELETE,INSERT,REFERENCES,SELECT,TRIGGER,TRUNCATE,UPDATE",
+   "service_role_privileges": "DELETE,INSERT,SELECT,UPDATE",
+   "estimated_rows": -1,
+   "effective_anon_access": "full read/write/delete/truncate"
+  },
+  {
+   "table": "office_support_mappings",
+   "tier": "T3 operational / portfolio data",
+   "rls_enabled": false,
+   "anon_privileges": "DELETE,INSERT,REFERENCES,SELECT,TRIGGER,TRUNCATE,UPDATE",
+   "authenticated_privileges": "DELETE,INSERT,REFERENCES,SELECT,TRIGGER,TRUNCATE,UPDATE",
+   "service_role_privileges": "DELETE,INSERT,SELECT,UPDATE",
+   "estimated_rows": -1,
+   "effective_anon_access": "full read/write/delete/truncate"
+  },
+  {
+   "table": "office_wallets",
+   "tier": "T3 operational / portfolio data",
+   "rls_enabled": false,
+   "anon_privileges": "DELETE,INSERT,REFERENCES,SELECT,TRIGGER,TRUNCATE,UPDATE",
+   "authenticated_privileges": "DELETE,INSERT,REFERENCES,SELECT,TRIGGER,TRUNCATE,UPDATE",
+   "service_role_privileges": "DELETE,INSERT,SELECT,UPDATE",
+   "estimated_rows": 25,
+   "effective_anon_access": "full read/write/delete/truncate"
+  },
+  {
+   "table": "onboarding_emails",
+   "tier": "T3 operational / portfolio data",
+   "rls_enabled": true,
+   "anon_privileges": "DELETE,INSERT,REFERENCES,SELECT,TRIGGER,TRUNCATE,UPDATE",
+   "authenticated_privileges": "DELETE,INSERT,REFERENCES,SELECT,TRIGGER,TRUNCATE,UPDATE",
+   "service_role_privileges": "DELETE,INSERT,SELECT,UPDATE",
+   "estimated_rows": -1,
+   "effective_anon_access": "none (RLS enabled, no policy)"
+  },
+  {
+   "table": "partners",
+   "tier": "T3 operational / portfolio data",
+   "rls_enabled": true,
+   "anon_privileges": "DELETE,INSERT,REFERENCES,SELECT,TRIGGER,TRUNCATE,UPDATE",
+   "authenticated_privileges": "DELETE,INSERT,REFERENCES,SELECT,TRIGGER,TRUNCATE,UPDATE",
+   "service_role_privileges": "DELETE,INSERT,SELECT,UPDATE",
+   "estimated_rows": -1,
+   "effective_anon_access": "none (RLS enabled, no policy)"
+  },
+  {
+   "table": "password_reset_tokens",
+   "tier": "T0 credentials / authentication",
+   "rls_enabled": false,
+   "anon_privileges": "DELETE,INSERT,REFERENCES,SELECT,TRIGGER,TRUNCATE,UPDATE",
+   "authenticated_privileges": "DELETE,INSERT,REFERENCES,SELECT,TRIGGER,TRUNCATE,UPDATE",
+   "service_role_privileges": "DELETE,INSERT,SELECT,UPDATE",
+   "estimated_rows": -1,
+   "effective_anon_access": "full read/write/delete/truncate"
+  },
+  {
+   "table": "proposals",
+   "tier": "T1 customer / CRM data",
+   "rls_enabled": false,
+   "anon_privileges": "DELETE,INSERT,REFERENCES,SELECT,TRIGGER,TRUNCATE,UPDATE",
+   "authenticated_privileges": "DELETE,INSERT,REFERENCES,SELECT,TRIGGER,TRUNCATE,UPDATE",
+   "service_role_privileges": "DELETE,INSERT,SELECT,UPDATE",
+   "estimated_rows": 6,
+   "effective_anon_access": "full read/write/delete/truncate"
+  },
+  {
+   "table": "staff_conversation_participants",
+   "tier": "T1 private staff communication",
+   "rls_enabled": false,
+   "anon_privileges": "DELETE,INSERT,REFERENCES,SELECT,TRIGGER,TRUNCATE,UPDATE",
+   "authenticated_privileges": "DELETE,INSERT,REFERENCES,SELECT,TRIGGER,TRUNCATE,UPDATE",
+   "service_role_privileges": "DELETE,INSERT,SELECT,UPDATE",
+   "estimated_rows": -1,
+   "effective_anon_access": "full read/write/delete/truncate"
+  },
+  {
+   "table": "staff_conversations",
+   "tier": "T1 private staff communication",
+   "rls_enabled": false,
+   "anon_privileges": "DELETE,INSERT,REFERENCES,SELECT,TRIGGER,TRUNCATE,UPDATE",
+   "authenticated_privileges": "DELETE,INSERT,REFERENCES,SELECT,TRIGGER,TRUNCATE,UPDATE",
+   "service_role_privileges": "DELETE,INSERT,SELECT,UPDATE",
+   "estimated_rows": -1,
+   "effective_anon_access": "full read/write/delete/truncate"
+  },
+  {
+   "table": "staff_message_attachments",
+   "tier": "T1 private staff communication",
+   "rls_enabled": false,
+   "anon_privileges": "DELETE,INSERT,REFERENCES,SELECT,TRIGGER,TRUNCATE,UPDATE",
+   "authenticated_privileges": "DELETE,INSERT,REFERENCES,SELECT,TRIGGER,TRUNCATE,UPDATE",
+   "service_role_privileges": "DELETE,INSERT,SELECT,UPDATE",
+   "estimated_rows": -1,
+   "effective_anon_access": "full read/write/delete/truncate"
+  },
+  {
+   "table": "staff_message_reactions",
+   "tier": "T1 private staff communication",
+   "rls_enabled": false,
+   "anon_privileges": "DELETE,INSERT,REFERENCES,SELECT,TRIGGER,TRUNCATE,UPDATE",
+   "authenticated_privileges": "DELETE,INSERT,REFERENCES,SELECT,TRIGGER,TRUNCATE,UPDATE",
+   "service_role_privileges": "DELETE,INSERT,SELECT,UPDATE",
+   "estimated_rows": -1,
+   "effective_anon_access": "full read/write/delete/truncate"
+  },
+  {
+   "table": "staff_message_reads",
+   "tier": "T1 private staff communication",
+   "rls_enabled": false,
+   "anon_privileges": "DELETE,INSERT,REFERENCES,SELECT,TRIGGER,TRUNCATE,UPDATE",
+   "authenticated_privileges": "DELETE,INSERT,REFERENCES,SELECT,TRIGGER,TRUNCATE,UPDATE",
+   "service_role_privileges": "DELETE,INSERT,SELECT,UPDATE",
+   "estimated_rows": -1,
+   "effective_anon_access": "full read/write/delete/truncate"
+  },
+  {
+   "table": "staff_messages",
+   "tier": "T1 private staff communication",
+   "rls_enabled": false,
+   "anon_privileges": "DELETE,INSERT,REFERENCES,SELECT,TRIGGER,TRUNCATE,UPDATE",
+   "authenticated_privileges": "DELETE,INSERT,REFERENCES,SELECT,TRIGGER,TRUNCATE,UPDATE",
+   "service_role_privileges": "DELETE,INSERT,SELECT,UPDATE",
+   "estimated_rows": -1,
+   "effective_anon_access": "full read/write/delete/truncate"
+  },
+  {
+   "table": "timeline_events",
+   "tier": "T1 customer / CRM data",
+   "rls_enabled": false,
+   "anon_privileges": "DELETE,INSERT,REFERENCES,SELECT,TRIGGER,TRUNCATE,UPDATE",
+   "authenticated_privileges": "DELETE,INSERT,REFERENCES,SELECT,TRIGGER,TRUNCATE,UPDATE",
+   "service_role_privileges": "DELETE,INSERT,SELECT,UPDATE",
+   "estimated_rows": 786,
+   "effective_anon_access": "full read/write/delete/truncate"
+  },
+  {
+   "table": "traces",
+   "tier": "T1 customer / CRM data",
+   "rls_enabled": false,
+   "anon_privileges": "DELETE,INSERT,REFERENCES,SELECT,TRIGGER,TRUNCATE,UPDATE",
+   "authenticated_privileges": "DELETE,INSERT,REFERENCES,SELECT,TRIGGER,TRUNCATE,UPDATE",
+   "service_role_privileges": "DELETE,INSERT,SELECT,UPDATE",
+   "estimated_rows": 729,
+   "effective_anon_access": "full read/write/delete/truncate"
+  }
+ ]
+}
