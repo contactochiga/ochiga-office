@@ -30,6 +30,9 @@ const AUDIT_EVENT_NAMES = Object.freeze([
   "ai.action.failed",
   "communication.whatsapp.sent",
   "communication.whatsapp.send_failed",
+  "whatsapp_autonomy_setting_changed",
+  "communication.whatsapp.autonomous_blocked",
+  "communication.whatsapp.manual_reply",
 ]);
 
 const LEGACY_ACTION_NAMES = Object.freeze({

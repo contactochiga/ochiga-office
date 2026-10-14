@@ -96,6 +96,7 @@ const {
 // second copy of this vocabulary in the frontend.
 const { DEFAULT_CAPABILITIES } = require("./communications-handoff");
 const { WhatsAppCloudAdapter } = require("./whatsapp");
+const { evaluateAutonomousWhatsAppPolicy, readWhatsAppAutonomySetting, isStaffConfirmedOrigin, describeWhatsAppAutonomyStatus, WHATSAPP_AUTONOMY_SETTING_KEY } = require("./whatsapp-autonomy");
 const { resolveRecipient, resolveRecipientByEntity } = require("./recipient-resolution");
 const { buildCalendarLinks, parsePreferredSchedule } = require("./scheduling");
 const { buildProposal, inferCommercialFacts } = require("./commercial");
@@ -1740,6 +1741,39 @@ async function forwardCommunicationWebhookEvent(config, payload, requestId) {
   }
 }
 
+// OFF / unreadable / takeover: the inbound message is kept as CRM activity and a timeline note records that no reply was sent. The suppressed reply is NOT stored for
+// later: switching the setting ON never replays it.
+async function suppressAutonomousWhatsAppReply({ store, lead, event, requestId, reason, stage, paused = false }) {
+  log("info", "whatsapp_autonomous_reply_suppressed", { request_id: requestId, lead_id: lead.id, reason, stage });
+  await store.appendTimelineEvent({
+    lead_id: lead.id,
+    event_type: "whatsapp_autonomous_reply_suppressed",
+    actor: "ochiga_intelligence",
+    title: "WhatsApp autonomous reply not sent",
+    body: reason === "autonomous_whatsapp_disabled" ? "Autonomous WhatsApp responses are switched off in Office settings." : reason === "setting_unreadable" ? "The autonomous-response setting could not be read, so no reply was sent." : "A human has taken over this conversation.",
+    metadata: { request_id: requestId, reason, stage },
+  }).catch(() => null);
+  await createCorporateRecord(
+    store,
+    "activities",
+    {
+      lead_id: lead.id,
+      related_type: "lead",
+      related_id: lead.id,
+      activity_type: "whatsapp_message",
+      title: "WhatsApp message",
+      body: String(event.text || "").slice(0, 2000),
+      source: "whatsapp",
+      metadata: { direction: "inbound", ai_replied: false, suppressed_reason: reason, request_id: requestId },
+    },
+    { actorEmail: "whatsapp" }
+  ).catch(() => null);
+  return { kind: "message", lead_id: lead.id, suppressed: true, reason, ...(paused ? { paused: true } : {}) };
+}
+
+// message ids currently being processed in this process (a concurrent retry of the same Meta delivery must not draw a second reply)
+const inflightWhatsAppMessageIds = new Set();
+
 async function processWhatsAppEvent({ event, store, adapter, config, requestId }) {
   if (event.kind === "status") {
     await store.appendInboundEvent({
@@ -1776,6 +1810,21 @@ async function processWhatsAppEvent({ event, store, adapter, config, requestId }
     };
   }
 
+  // Meta retries a delivery it believes failed; a message id already received (or being received) is acknowledged without a second reply.
+  if (event.message_id) {
+    if (inflightWhatsAppMessageIds.has(event.message_id)) return { kind: "message", duplicate: true };
+    const alreadyReceived = await store.hasInboundEvent({ channel: "whatsapp", eventType: "message", externalEventId: event.message_id }).catch(() => false);
+    if (alreadyReceived) return { kind: "message", duplicate: true };
+    inflightWhatsAppMessageIds.add(event.message_id);
+  }
+  try {
+    return await processWhatsAppMessageEvent({ event, store, adapter, config, requestId });
+  } finally {
+    if (event.message_id) inflightWhatsAppMessageIds.delete(event.message_id);
+  }
+}
+
+async function processWhatsAppMessageEvent({ event, store, adapter, config, requestId }) {
   const lead = await resolveLeadForChannel(store, event.from, "whatsapp");
   log("info", "whatsapp_webhook.thread_resolved", { request_id: requestId, lead_id: lead.id });
   await store.updateLead(lead.id, {
@@ -1815,7 +1864,7 @@ async function processWhatsAppEvent({ event, store, adapter, config, requestId }
     customer_service_window_expires_at: customerServiceWindowExpiry(event.timestamp),
     last_external_message_id: event.message_id,
     last_inbound_at: new Date(Number(event.timestamp || 0) * 1000 || Date.now()).toISOString(),
-    human_status: "auto",
+    // human_status is deliberately NOT written here: a customer message must never end an active human takeover (new rows take the stored default "auto").
   });
 
   if (channelState.ai_paused || ["human_active", "human_review"].includes(channelState.human_status)) {
@@ -1847,6 +1896,12 @@ async function processWhatsAppEvent({ event, store, adapter, config, requestId }
       lead_id: lead.id,
       deferred_to_goal: true,
     };
+  }
+
+  // Global autonomy switch: OFF (or unreadable) means no autonomous reply is generated or sent. The inbound message stays stored and visible in the CRM.
+  const earlyPolicy = await evaluateAutonomousWhatsAppPolicy(store);
+  if (!earlyPolicy.allowed) {
+    return suppressAutonomousWhatsAppReply({ store, lead, event, requestId, reason: earlyPolicy.reason, stage: "before_generation" });
   }
 
   const session = buildPublicIntelligenceSession({
@@ -1883,6 +1938,20 @@ async function processWhatsAppEvent({ event, store, adapter, config, requestId }
       reason: oyiCoreResult.ok ? "" : oyiCoreResult.reason,
     },
   });
+  // The setting and the takeover state are read again IMMEDIATELY before the send: a switch-off or takeover that happened while the reply was being generated wins.
+  const sendPolicy = await evaluateAutonomousWhatsAppPolicy(store);
+  const freshState = await store.getLeadChannelState(lead.id, "whatsapp").catch(() => null);
+  const takeoverNow = !freshState || freshState.ai_paused || ["human_active", "human_review"].includes(freshState.human_status);
+  if (!sendPolicy.allowed || takeoverNow) {
+    return suppressAutonomousWhatsAppReply({ store, lead, event, requestId, reason: !sendPolicy.allowed ? sendPolicy.reason : "human_takeover_active", stage: "before_send", paused: takeoverNow && sendPolicy.allowed });
+  }
+
+  const sendResult = await adapter.sendTextMessage({
+    to: event.from,
+    body: assistantMessage,
+    contextMessageId: event.message_id,
+  });
+
   // Also log to the canonical polymorphic crm_activities timeline (Phase
   // 6, v2 audit) — timeline_events above stays as the source-specific
   // technical log this webhook path already depended on; this is the
@@ -1901,16 +1970,10 @@ async function processWhatsAppEvent({ event, store, adapter, config, requestId }
       title: "WhatsApp message",
       body: String(event.text || "").slice(0, 2000),
       source: "whatsapp",
-      metadata: { direction: "inbound", ai_replied: oyiCoreResult.ok, request_id: requestId },
+      metadata: { direction: "inbound", ai_replied: Boolean(sendResult && sendResult.delivered), request_id: requestId },
     },
     { actorEmail: "whatsapp" }
   ).catch(() => null);
-
-  const sendResult = await adapter.sendTextMessage({
-    to: event.from,
-    body: assistantMessage,
-    contextMessageId: event.message_id,
-  });
 
   await store.upsertLeadChannelState(lead.id, "whatsapp", {
     last_outbound_at: new Date().toISOString(),
@@ -2570,6 +2633,21 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
         // funnels through this one bridge route, so this is the one
         // place that truth needs to be enforced to block ALL of them.
         // A fresh read-through on every send, not a cached/mirrored flag.
+        // Global autonomy switch (see whatsapp-autonomy.js): a bridge send that is not explicitly declared staff-confirmed is autonomous (Goal runtime, scheduled
+        // automation, anything unlabeled) and is refused while the switch is OFF or unreadable. Staff-confirmed sends are governed manual communication and unaffected.
+        if (!isStaffConfirmedOrigin(body.send_origin)) {
+          const policy = await evaluateAutonomousWhatsAppPolicy(store);
+          if (!policy.allowed) {
+            log("info", "communication_bridge_send_blocked_autonomy", { request_id: ctx.requestId, reason: policy.reason, lead_id: String(body.lead_id || "") || null });
+            await appendAuditRecord({
+              store, authContext: null, action: "communication.whatsapp.autonomous_blocked", resourceType: "communication", resourceId: body.communication_id || "",
+              metadata: { to_present: Boolean(to), reason: policy.reason, send_origin: String(body.send_origin || "") || "unspecified", source: "communication_runtime_bridge" },
+              req, status: "failure",
+            }).catch(() => null);
+            json(res, 200, { ok: false, delivered: false, failure_reason: policy.reason === "setting_unreadable" ? "autonomy_setting_unreadable" : "autonomous_whatsapp_disabled", failure_detail: "Autonomous WhatsApp responses are switched off in Office settings." }, { "x-request-id": ctx.requestId });
+            return;
+          }
+        }
         const leadIdForTakeoverCheck = String(body.lead_id || "").trim();
         if (leadIdForTakeoverCheck) {
           const channelState = await store.getLeadChannelState(leadIdForTakeoverCheck, "whatsapp").catch(() => null);
@@ -6196,6 +6274,88 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           },
           { "x-request-id": ctx.requestId }
         );
+        return;
+      }
+
+      // Global WhatsApp autonomous-response switch. The server's persisted setting is the only source of truth; the response always reports what is actually stored.
+      if (pathname === "/api/lead-agents/admin/settings/whatsapp-autonomy") {
+        if (req.method === "GET") {
+          authorizePermission(authContext, "view_integrations");
+          const setting = await readWhatsAppAutonomySetting(store);
+          json(res, 200, { whatsapp_autonomy: describeWhatsAppAutonomyStatus(setting, { officialNumber: config.whatsappDisplayNumber }) }, { "x-request-id": ctx.requestId });
+          return;
+        }
+        if (req.method === "PUT") {
+          authorizePermission(authContext, "manage_integrations");
+          const body = await readJsonBody(req);
+          requireObject(body, "body");
+          if (typeof body.enabled !== "boolean") {
+            json(res, 400, { error: "enabled_must_be_boolean" }, { "x-request-id": ctx.requestId });
+            return;
+          }
+          let change;
+          try {
+            change = await store.setRuntimeSetting(WHATSAPP_AUTONOMY_SETTING_KEY, body.enabled, authContext.email || "");
+          } catch (error) {
+            await appendAuditRecord({ store, authContext, action: "whatsapp_autonomy_setting_changed", resourceType: "runtime_setting", resourceId: WHATSAPP_AUTONOMY_SETTING_KEY, metadata: { requested: body.enabled, error: String(error?.message || error).slice(0, 200) }, req, status: "failure" }).catch(() => null);
+            json(res, 503, { error: "setting_not_saved", detail: "The setting could not be saved. Nothing was changed." }, { "x-request-id": ctx.requestId });
+            return;
+          }
+          await appendAuditRecord({
+            store, authContext, action: "whatsapp_autonomy_setting_changed", resourceType: "runtime_setting", resourceId: WHATSAPP_AUTONOMY_SETTING_KEY,
+            metadata: { old_value: change.previous ? change.previous.value : null, new_value: change.current.value, previous_updated_by: change.previous?.updated_by || null },
+            req, status: "success",
+          });
+          // report what is now actually stored, not what was requested
+          const setting = await readWhatsAppAutonomySetting(store);
+          json(res, 200, { whatsapp_autonomy: describeWhatsAppAutonomyStatus(setting, { officialNumber: config.whatsappDisplayNumber }), changed: !change.previous || change.previous.value !== change.current.value }, { "x-request-id": ctx.requestId });
+          return;
+        }
+        methodNotAllowed(res, "GET,PUT");
+        return;
+      }
+
+      // Governed MANUAL WhatsApp reply by an authorised staff member. Independent of the autonomy switch (a human is sending), but only while that human owns the
+      // conversation (active takeover), and always audited with the operator.
+      const manualReplyMatch = pathname.match(/^\/api\/lead-agents\/admin\/leads\/([^/]+)\/whatsapp\/reply$/);
+      if (manualReplyMatch) {
+        if (req.method !== "POST") {
+          methodNotAllowed(res, "POST");
+          return;
+        }
+        authorizePermission(authContext, "manage_takeover");
+        const leadId = decodeURIComponent(manualReplyMatch[1]);
+        const body = await readJsonBody(req);
+        requireObject(body, "body");
+        const text = String(body.body || "").trim();
+        if (!text) {
+          json(res, 400, { error: "missing_body" }, { "x-request-id": ctx.requestId });
+          return;
+        }
+        const lead = await store.getLead(leadId).catch(() => null);
+        const to = String(lead?.whatsapp_phone || "").trim();
+        if (!lead || !to) {
+          json(res, 404, { error: "lead_whatsapp_not_found" }, { "x-request-id": ctx.requestId });
+          return;
+        }
+        const state = await store.getLeadChannelState(leadId, "whatsapp").catch(() => null);
+        if (!state || !(state.ai_paused || ["human_active", "human_review"].includes(state.human_status))) {
+          json(res, 409, { error: "takeover_required", detail: "Take over the conversation before replying manually." }, { "x-request-id": ctx.requestId });
+          return;
+        }
+        if (!whatsappAdapter.isConfigured()) {
+          json(res, 503, { error: "whatsapp_not_configured" }, { "x-request-id": ctx.requestId });
+          return;
+        }
+        try {
+          const result = await whatsappAdapter.sendTextMessage({ to, body: text });
+          await store.upsertLeadChannelState(leadId, "whatsapp", { last_outbound_at: new Date().toISOString(), last_external_message_id: result.external_message_id || undefined });
+          await appendAuditRecord({ store, authContext, action: "communication.whatsapp.manual_reply", resourceType: "lead", resourceId: leadId, metadata: { external_message_id: result.external_message_id || null, delivered: Boolean(result.delivered), operator: authContext.email || "" }, req, status: result.delivered ? "success" : "failure" });
+          json(res, 200, { ok: Boolean(result.delivered), delivered: Boolean(result.delivered), external_message_id: result.external_message_id || null }, { "x-request-id": ctx.requestId });
+        } catch (error) {
+          await appendAuditRecord({ store, authContext, action: "communication.whatsapp.manual_reply", resourceType: "lead", resourceId: leadId, metadata: { operator: authContext.email || "", provider_status: error?.response?.status || null }, req, status: "failure" }).catch(() => null);
+          json(res, 502, { ok: false, delivered: false, error: "provider_unavailable" }, { "x-request-id": ctx.requestId });
+        }
         return;
       }
 
