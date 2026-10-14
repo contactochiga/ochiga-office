@@ -115,7 +115,7 @@ const {
 // second copy of this vocabulary in the frontend.
 const { DEFAULT_CAPABILITIES } = require("./communications-handoff");
 const { WhatsAppCloudAdapter } = require("./whatsapp");
-const { evaluateAutonomousWhatsAppPolicy, readWhatsAppAutonomySetting, isStaffConfirmedOrigin, describeWhatsAppAutonomyStatus, WHATSAPP_AUTONOMY_SETTING_KEY } = require("./whatsapp-autonomy");
+const { evaluateAutonomousWhatsAppPolicy, readWhatsAppAutonomySetting, verifyStaffConfirmedSend, describeWhatsAppAutonomyStatus, WHATSAPP_AUTONOMY_SETTING_KEY } = require("./whatsapp-autonomy");
 const { resolveRecipient, resolveRecipientByEntity } = require("./recipient-resolution");
 const { buildCalendarLinks, parsePreferredSchedule } = require("./scheduling");
 const { buildProposal, inferCommercialFacts } = require("./commercial");
@@ -1816,7 +1816,8 @@ async function processWhatsAppMessageEvent({ event, store, adapter, config, requ
     primary_channel: "whatsapp",
     channel_last_seen_at: new Date().toISOString(),
   });
-  await store.appendInboundEvent({
+  // The append is also the atomic claim of this provider message id (unique index in Supabase): a concurrent or retried delivery that loses the claim stops here.
+  const claim = await store.appendInboundEvent({
     channel: "whatsapp",
     provider: "meta",
     event_type: "message",
@@ -1824,6 +1825,7 @@ async function processWhatsAppMessageEvent({ event, store, adapter, config, requ
     external_event_id: event.message_id,
     payload: event.raw,
   });
+  if (claim && claim.duplicate) return { kind: "message", lead_id: lead.id, duplicate: true };
   // Forward the inbound message itself into the Communication Runtime's
   // canonical thread (Phase 5) -- correlated by phone number so it lands
   // in the SAME thread as any prior outbound send to this person.
@@ -1909,19 +1911,6 @@ async function processWhatsAppMessageEvent({ event, store, adapter, config, requ
   const assistantMessage = oyiCoreResult.ok
     ? oyiCoreResult.response.answer
     : "Ochiga Intelligence is temporarily unavailable. We have your WhatsApp message and the Office team can follow up, but I cannot continue the automated conversation right now.";
-  await store.appendTimelineEvent({
-    lead_id: lead.id,
-    event_type: oyiCoreResult.ok ? "oyi_core_whatsapp_turn" : "oyi_core_whatsapp_unavailable",
-    actor: "ochiga_intelligence",
-    title: oyiCoreResult.ok ? "WhatsApp intelligence turn" : "WhatsApp intelligence unavailable",
-    body: String(assistantMessage || "").slice(0, 500),
-    metadata: {
-      request_id: requestId,
-      public_session_id: session.session_id,
-      oyi_thread_id: oyiCoreResult.ok ? oyiCoreResult.response.conversation_thread_id : "",
-      reason: oyiCoreResult.ok ? "" : oyiCoreResult.reason,
-    },
-  });
   // The setting and the takeover state are read again IMMEDIATELY before the send: a switch-off or takeover that happened while the reply was being generated wins.
   const sendPolicy = await evaluateAutonomousWhatsAppPolicy(store);
   const freshState = await store.getLeadChannelState(lead.id, "whatsapp").catch(() => null);
@@ -1934,6 +1923,20 @@ async function processWhatsAppMessageEvent({ event, store, adapter, config, requ
     to: event.from,
     body: assistantMessage,
     contextMessageId: event.message_id,
+  });
+
+  await store.appendTimelineEvent({
+    lead_id: lead.id,
+    event_type: oyiCoreResult.ok ? "oyi_core_whatsapp_turn" : "oyi_core_whatsapp_unavailable",
+    actor: "ochiga_intelligence",
+    title: oyiCoreResult.ok ? "WhatsApp intelligence turn" : "WhatsApp intelligence unavailable",
+    body: String(assistantMessage || "").slice(0, 500),
+    metadata: {
+      request_id: requestId,
+      public_session_id: session.session_id,
+      oyi_thread_id: oyiCoreResult.ok ? oyiCoreResult.response.conversation_thread_id : "",
+      reason: oyiCoreResult.ok ? "" : oyiCoreResult.reason,
+    },
   });
 
   // Also log to the canonical polymorphic crm_activities timeline (Phase
@@ -2617,13 +2620,18 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
         // A fresh read-through on every send, not a cached/mirrored flag.
         // Global autonomy switch (see whatsapp-autonomy.js): a bridge send that is not explicitly declared staff-confirmed is autonomous (Goal runtime, scheduled
         // automation, anything unlabeled) and is refused while the switch is OFF or unreadable. Staff-confirmed sends are governed manual communication and unaffected.
-        if (!isStaffConfirmedOrigin(body.send_origin)) {
+        const staffConfirmation = verifyStaffConfirmedSend(body, config.officeBackendApiKey);
+        if (String(body.send_origin || "").trim().toLowerCase() === "staff_confirmed" && !staffConfirmation.confirmed) {
+          log("warn", "communication_bridge_staff_origin_rejected", { request_id: ctx.requestId, reason: staffConfirmation.reason, lead_id: String(body.lead_id || "") || null });
+          await appendAuditRecord({ store, authContext: null, action: "communication.whatsapp.origin_rejected", resourceType: "communication", resourceId: body.communication_id || "", metadata: { reason: staffConfirmation.reason, source: "communication_runtime_bridge" }, req, status: "failure" }).catch(() => null);
+        }
+        if (!staffConfirmation.confirmed) {
           const policy = await evaluateAutonomousWhatsAppPolicy(store);
           if (!policy.allowed) {
             log("info", "communication_bridge_send_blocked_autonomy", { request_id: ctx.requestId, reason: policy.reason, lead_id: String(body.lead_id || "") || null });
             await appendAuditRecord({
               store, authContext: null, action: "communication.whatsapp.autonomous_blocked", resourceType: "communication", resourceId: body.communication_id || "",
-              metadata: { to_present: Boolean(to), reason: policy.reason, send_origin: String(body.send_origin || "") || "unspecified", source: "communication_runtime_bridge" },
+              metadata: { to_present: Boolean(to), reason: policy.reason, send_origin: String(body.send_origin || "") || "unspecified", origin_verification: staffConfirmation.reason, source: "communication_runtime_bridge" },
               req, status: "failure",
             }).catch(() => null);
             json(res, 200, { ok: false, delivered: false, failure_reason: policy.reason === "setting_unreadable" ? "autonomy_setting_unreadable" : "autonomous_whatsapp_disabled", failure_detail: "Autonomous WhatsApp responses are switched off in Office settings." }, { "x-request-id": ctx.requestId });
@@ -2677,6 +2685,8 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
               external_message_id: result.external_message_id || null,
               response_code: result.response_code || null,
               source: "communication_runtime_bridge",
+              send_origin: staffConfirmation.confirmed ? "staff_confirmed" : "autonomous",
+              ...(staffConfirmation.confirmed ? { confirmed_by: staffConfirmation.confirmed_by, confirmation_id: staffConfirmation.confirmation_id } : {}),
             },
             req,
             status: result.delivered ? "success" : "failure",
@@ -6713,7 +6723,7 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           return;
         }
         const state = await store.getLeadChannelState(leadId, "whatsapp").catch(() => null);
-        if (!state || !(state.ai_paused || ["human_active", "human_review"].includes(state.human_status))) {
+        if (!state || !["human_active", "human_review"].includes(state.human_status)) {
           json(res, 409, { error: "takeover_required", detail: "Take over the conversation before replying manually." }, { "x-request-id": ctx.requestId });
           return;
         }

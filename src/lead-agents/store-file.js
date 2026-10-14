@@ -727,6 +727,9 @@ class FileLeadAgentsStore {
   }
 
   async appendInboundEvent(input) {
+    if (input.external_event_id && input.event_type === "message" && this.state.inbound_events.some((item) => item.channel === input.channel && item.event_type === "message" && item.external_event_id === input.external_event_id)) {
+      return { duplicate: true };
+    }
     const event = {
       id: crypto.randomUUID(),
       channel: input.channel,

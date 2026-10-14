@@ -9961,7 +9961,10 @@ async function renderWhatsAppAutonomyPanel(outlet, token) {
     const changed = status && status.updated_at
       ? `${escapeHtml(status.updated_by || "unknown")} · ${escapeHtml(new Date(status.updated_at).toLocaleString())}`
       : "Never changed (default OFF)";
+    const bannerText = loadError ? "AUTONOMOUS RESPONSES — STATE UNAVAILABLE (TREATED AS OFF)" : !known ? "AUTONOMOUS RESPONSES UNKNOWN — TREATED AS OFF" : on ? "AUTONOMOUS RESPONSES ON" : "AUTONOMOUS RESPONSES OFF";
+    const bannerColor = !loadError && known && on ? "#0a7d3b" : "#b42318";
     body.innerHTML = `
+      <div id="waAutonomyBanner" role="status" style="font-weight:700;letter-spacing:.04em;padding:10px 14px;margin:8px 0 14px;border-radius:8px;border:2px solid ${bannerColor};color:${bannerColor};display:inline-block;">${escapeHtml(bannerText)}</div>
       <div class="fact-grid">
         <div class="fact"><div class="fact-label">Official WhatsApp number</div><div class="fact-value">${status && status.official_number ? escapeHtml(status.official_number) : "Not shown (display value not configured)"}</div></div>
         <div class="fact"><div class="fact-label">Autonomous AI Responses</div><div class="fact-value">${known ? badge(on ? "ON" : "OFF", on ? "green" : "default") : badge("Unknown (OFF)", "amber")}</div></div>

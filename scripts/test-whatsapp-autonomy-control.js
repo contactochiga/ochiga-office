@@ -8,7 +8,7 @@ const { WebhookDispatcher } = require("../src/lead-agents/webhooks");
 const { createTempStore } = require("../src/lead-agents/testing");
 const { FileLeadAgentsStore } = require("../src/lead-agents/store-file");
 const { hashPassword } = require("../src/lead-agents/auth");
-const { evaluateAutonomousWhatsAppPolicy, WHATSAPP_AUTONOMY_SETTING_KEY } = require("../src/lead-agents/whatsapp-autonomy");
+const { evaluateAutonomousWhatsAppPolicy, WHATSAPP_AUTONOMY_SETTING_KEY, signStaffConfirmation, verifyStaffConfirmedSend } = require("../src/lead-agents/whatsapp-autonomy");
 
 // Global WhatsApp autonomous-response switch: real HTTP surface, real file store, stubbed Meta adapter and stubbed Backend (Oyi Core + communication forward).
 const KEY = "autonomy-bridge-key";
@@ -63,6 +63,12 @@ async function main() {
     assert.equal(res.status, 200); return (await res.json()).results[0];
   };
   const bridge = (payload, headers = {}) => fetch(`${base}/api/lead-agents/admin/communications/whatsapp/send`, { method: "POST", headers: { "content-type": "application/json", "x-office-api-key": KEY, ...headers }, body: JSON.stringify(payload) }).then(async (r) => ({ status: r.status, body: await r.json() }));
+  // a genuine staff-confirmation attestation, built exactly as Backend's WhatsAppAdapter builds it (shared key, no new secret)
+  const attested = (payload, overrides = {}) => {
+    const attestation = { confirmed_by: "staff-user-1", confirmation_id: `conf-${payload.communication_id}`, confirmed_at: new Date().toISOString(), ...overrides };
+    attestation.signature = overrides.signature || signStaffConfirmation(payload, attestation, KEY);
+    return { ...payload, send_origin: "staff_confirmed", staff_confirmation: attestation };
+  };
   const setSwitch = (cookie, enabled) => fetch(`${base}/api/lead-agents/admin/settings/whatsapp-autonomy`, { method: "PUT", headers: { "content-type": "application/json", cookie }, body: JSON.stringify({ enabled }) });
   const getSwitch = async (cookie) => (await (await fetch(`${base}/api/lead-agents/admin/settings/whatsapp-autonomy`, { headers: { cookie } })).json()).whatsapp_autonomy;
   const leadFor = async (phone) => (await store.listLeads()).find((l) => l.whatsapp_phone === phone);
@@ -96,11 +102,17 @@ async function main() {
     console.log("2/3. OFF blocks Office direct reply and every autonomous/unlabelled Backend bridge send — PASS");
 
     // 4. OFF does not block authorised manual communication.
-    const manualBridge = await bridge({ to: "+2348011111111", body: "Staff confirmed message", lead_id: lead1.id, communication_id: "c3", send_origin: "staff_confirmed" });
+    const manualBridge = await bridge(attested({ to: "+2348011111111", body: "Staff confirmed message", lead_id: lead1.id, communication_id: "c3" }));
     assert.equal(manualBridge.body.delivered, true); assert.equal(sent.length, 1);
     // governed Office manual reply: needs permission and an active takeover
     const noTakeover = await fetch(`${base}/api/lead-agents/admin/leads/${lead1.id}/whatsapp/reply`, { method: "POST", headers: { "content-type": "application/json", cookie: superCookie }, body: JSON.stringify({ body: "Hi from staff" }) });
     assert.equal(noTakeover.status, 409, "manual reply requires the human to own the conversation");
+    await store.upsertLeadChannelState(lead1.id, "whatsapp", { ai_paused: true });
+    const pausedOnly = await fetch(`${base}/api/lead-agents/admin/leads/${lead1.id}/whatsapp/reply`, { method: "POST", headers: { "content-type": "application/json", cookie: superCookie }, body: JSON.stringify({ body: "x" }) });
+    assert.equal(pausedOnly.status, 409, "an AI pause alone is not a human takeover");
+    await store.upsertLeadChannelState(lead1.id, "whatsapp", { ai_paused: false });
+    const staffNoPerm = await fetch(`${base}/api/lead-agents/admin/leads/${lead1.id}/whatsapp/reply`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ body: "x" }) });
+    assert.ok([401, 403].includes(staffNoPerm.status), "unauthenticated manual reply is refused");
     await store.upsertLeadChannelState(lead1.id, "whatsapp", { human_status: "human_active", human_owner: "super@ochiga.local" });
     const manual = await fetch(`${base}/api/lead-agents/admin/leads/${lead1.id}/whatsapp/reply`, { method: "POST", headers: { "content-type": "application/json", cookie: superCookie }, body: JSON.stringify({ body: "Hi from staff" }) });
     assert.equal(manual.status, 200); assert.equal((await manual.json()).delivered, true); assert.equal(sent.length, 2, "manual reply sent while the switch is OFF");
@@ -165,8 +177,72 @@ async function main() {
     assert.equal((await setSwitch(superCookie, false)).status, 200); // switched OFF while the reply is being generated
     const racedResult = await racing; coreDelayMs = 0;
     assert.equal(racedResult.suppressed, true); assert.equal(racedResult.reason, "autonomous_whatsapp_disabled"); assert.equal(sent.length, 0, "OFF during generation: the pre-send re-check blocks the send");
+    const racedLead = await leadFor("2348044444444");
+    const racedTimeline = store.state.timeline_events.filter((e) => e.lead_id === racedLead.id);
+    assert.ok(racedTimeline.some((e) => e.event_type === "whatsapp_autonomous_reply_suppressed" && e.metadata?.stage === "before_send"));
+    assert.ok(!racedTimeline.some((e) => e.event_type === "oyi_core_whatsapp_turn"), "a blocked reply is never recorded as an Oyi turn that was delivered");
     console.log("9. Concurrent inbound cannot bypass OFF; a switch-off during generation blocks the send — PASS");
 
+    // ---- Negative controls (switch OFF unless stated) ----
+    assert.equal((await getSwitch(superCookie)).enabled, false);
+    sent.length = 0;
+    // A. missing lead_id   B. autonomous template (also unlabelled)   D. Backend automation   E. unresolved CRM identity (unknown recipient, no lead)
+    const nA = await bridge({ to: "+2348099999991", body: "x", communication_id: "nA", send_origin: "autonomous" });
+    const nB = await bridge({ to: "+2348099999992", template_name: "hello_world", template_language: "en_US", communication_id: "nB" });
+    const nD = await bridge({ to: "+2348099999993", body: "automation follow-up", communication_id: "nD", send_origin: "autonomous", lead_id: "lead-from-automation" });
+    const nE = await bridge({ to: "+2348099999994", body: "who is this", communication_id: "nE" });
+    for (const [name, r] of [["A", nA], ["B", nB], ["D", nD], ["E", nE]]) { assert.equal(r.body.delivered, false, `negative control ${name}`); assert.equal(r.body.failure_reason, "autonomous_whatsapp_disabled", `negative control ${name}`); }
+    // C. forged staff_confirmed origin: bare label, wrong signature, tampered content, tampered recipient, stale, from the future, missing fields, wrong key
+    const forged = [
+      ["bare label", { to: "+2348099999995", body: "x", communication_id: "nC1", send_origin: "staff_confirmed" }],
+      ["empty attestation", { to: "+2348099999995", body: "x", communication_id: "nC2", send_origin: "staff_confirmed", staff_confirmation: {} }],
+      ["wrong signature", attested({ to: "+2348099999995", body: "x", communication_id: "nC3" }, { signature: "00".repeat(32) })],
+      ["not hex", attested({ to: "+2348099999995", body: "x", communication_id: "nC4" }, { signature: "zz" })],
+      ["stale", attested({ to: "+2348099999995", body: "x", communication_id: "nC5" }, { confirmed_at: new Date(Date.now() - 3600_000).toISOString() })],
+      ["future", attested({ to: "+2348099999995", body: "x", communication_id: "nC6" }, { confirmed_at: new Date(Date.now() + 3600_000).toISOString() })],
+      ["missing confirmed_by", attested({ to: "+2348099999995", body: "x", communication_id: "nC7" }, { confirmed_by: "" })],
+      ["missing communication_id", attested({ to: "+2348099999995", body: "x", communication_id: "" })],
+    ];
+    for (const [name, payload] of forged) { const r = await bridge(payload); assert.equal(r.body.delivered, false, `forged origin (${name}) must not bypass OFF`); assert.equal(r.body.failure_reason, "autonomous_whatsapp_disabled", name); }
+    const good = attested({ to: "+2348099999995", body: "approved text", communication_id: "nC9" });
+    const tamperedBody = { ...good, body: "different text the human never approved" };
+    const tamperedTo = { ...good, to: "+2348099999000" };
+    const tamperedTemplate = { ...good, body: undefined, template_name: "other_template" };
+    for (const [name, payload] of [["tampered body", tamperedBody], ["tampered recipient", tamperedTo], ["swapped to template", tamperedTemplate]]) { const r = await bridge(payload); assert.equal(r.body.failure_reason, "autonomous_whatsapp_disabled", name); }
+    const wrongKey = attested({ to: "+2348099999995", body: "x", communication_id: "nC10" }); wrongKey.staff_confirmation.signature = signStaffConfirmation({ to: "+2348099999995", body: "x", communication_id: "nC10" }, wrongKey.staff_confirmation, "some-other-key");
+    assert.equal((await bridge(wrongKey)).body.failure_reason, "autonomous_whatsapp_disabled", "signed with the wrong key");
+    assert.equal(sent.length, 0, "no forged or autonomous bridge send reached Meta");
+    assert.ok(store.state.audit_events.some((e) => e.action === "communication.whatsapp.origin_rejected"), "rejected origins are audited");
+    // cross-repo contract vector (the same constants are asserted by Ochiga-backend's whatsapp-send-origin smoke)
+    assert.equal(signStaffConfirmation({ communication_id: "comm-1", to: "+2348012345678", body: "Hello from staff" }, { confirmed_by: "user-1", confirmation_id: "conf-1", confirmed_at: "2026-10-14T12:00:00.000Z" }, "contract-key"), "ac5d8e89cb402019cb4fcc924ee5813615b12350fdc42506671cfaee146bda56");
+    assert.equal(signStaffConfirmation({ communication_id: "comm-2", to: "+2348012345678", template_name: "hello_world", template_language: "en_US" }, { confirmed_by: "user-1", confirmation_id: "conf-2", confirmed_at: "2026-10-14T12:00:00.000Z" }, "contract-key"), "6b827a44ad27b83ce00fb102feec0c7d37a0190383a42b2b400ddbf4528c8ff6");
+    assert.equal(verifyStaffConfirmedSend(good, KEY).confirmed, true); assert.equal(verifyStaffConfirmedSend(good, KEY).confirmed_by, "staff-user-1");
+    // a genuine attested send still goes through while OFF, and carries the confirming staff identity into the audit trail
+    const genuine = await bridge(good); assert.equal(genuine.body.delivered, true); assert.equal(sent.length, 1);
+    assert.ok(store.state.audit_events.some((e) => e.action === "communication.whatsapp.sent" && e.metadata?.confirmed_by === "staff-user-1" && e.metadata?.send_origin === "staff_confirmed"));
+    // template variant of a genuine confirmation
+    const tplGood = attested({ to: "+2348099999996", template_name: "hello_world", template_language: "en_US", communication_id: "nC11" });
+    assert.equal((await bridge(tplGood)).body.delivered, true);
+    sent.length = 0;
+    // J. switch turned OFF between draft and send: the message was prepared while ON, dispatched after OFF
+    assert.equal((await setSwitch(superCookie, true)).status, 200);
+    const draft = { to: "+2348099999997", body: "prepared while ON", communication_id: "nJ", send_origin: "autonomous", lead_id: lead1.id };
+    assert.equal((await setSwitch(superCookie, false)).status, 200);
+    const afterOff = await bridge(draft);
+    assert.equal(afterOff.body.delivered, false); assert.equal(afterOff.body.failure_reason, "autonomous_whatsapp_disabled"); assert.equal(sent.length, 0, "a send prepared while ON is blocked by the final check after OFF");
+    // F/G (global ON + per-lead pause / takeover) are proven above (steps 6/7). H. concurrent duplicate deliveries of ONE provider message id
+    assert.equal((await setSwitch(superCookie, true)).status, 200);
+    sent.length = 0; coreCalls = 0;
+    const dupResults = await Promise.all(Array.from({ length: 6 }, () => inbound("2348066666666", "same message delivered six times", "wamid.concurrent.1")));
+    assert.equal(sent.length, 1, "six concurrent deliveries of one message id produce exactly one reply");
+    assert.equal(dupResults.filter((r) => r.outbound?.delivered).length, 1); assert.equal(dupResults.filter((r) => r.duplicate).length, 5);
+    assert.equal(store.state.inbound_events.filter((e) => e.external_event_id === "wamid.concurrent.1" && e.event_type === "message").length, 1, "stored exactly once");
+    assert.equal((await setSwitch(superCookie, false)).status, 200);
+    console.log("A-E,J,H negative controls (missing lead, template, forged/tampered/stale origin, automation, unresolved identity, OFF between draft and send, concurrent duplicates) — PASS");
+
+    const raw = JSON.stringify(await (await fetch(`${base}/api/lead-agents/admin/settings/whatsapp-autonomy`, { headers: { cookie: superCookie } })).json());
+    for (const secret of [config.officeBackendApiKey, config.whatsappAccessToken, config.whatsappVerifyToken, config.metaAppSecret].filter(Boolean)) assert.ok(!raw.includes(secret), "the settings response never contains credentials");
+    assert.match(raw, /\+234 800 000 0000/, "the official number is display-only config");
     // 8. The setting survives a restart (new store instance on the same file, new server).
     await close(server);
     const restarted = new FileLeadAgentsStore(filePath); await restarted.init();
