@@ -551,21 +551,27 @@ class SupabaseLeadAgentsStore {
   }
 
   async appendInboundEvent(input) {
-    const response = await this.client.post(
-      "/inbound_events",
-      {
-        channel: input.channel,
-        provider: input.provider,
-        event_type: input.event_type,
-        lead_id: input.lead_id || null,
-        external_event_id: input.external_event_id || null,
-        payload: input.payload || {},
-      },
-      {
-        headers: this.selectHeaders(),
-      }
-    );
-    return response.data[0];
+    try {
+      const response = await this.client.post(
+        "/inbound_events",
+        {
+          channel: input.channel,
+          provider: input.provider,
+          event_type: input.event_type,
+          lead_id: input.lead_id || null,
+          external_event_id: input.external_event_id || null,
+          payload: input.payload || {},
+        },
+        {
+          headers: this.selectHeaders(),
+        }
+      );
+      return response.data[0];
+    } catch (error) {
+      // unique index inbound_events_message_once (see db/20261014_office_runtime_settings.sql): the same provider message id was already claimed
+      if (error?.response?.status === 409 && input.event_type === "message" && input.external_event_id) return { duplicate: true };
+      throw error;
+    }
   }
 
   async createNotification(input) {

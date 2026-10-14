@@ -32,6 +32,7 @@ const AUDIT_EVENT_NAMES = Object.freeze([
   "communication.whatsapp.send_failed",
   "whatsapp_autonomy_setting_changed",
   "communication.whatsapp.autonomous_blocked",
+  "communication.whatsapp.origin_rejected",
   "communication.whatsapp.manual_reply",
 ]);
 

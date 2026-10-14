@@ -47,15 +47,24 @@ const { evaluateAutonomousWhatsAppPolicy, readWhatsAppAutonomySetting, WHATSAPP_
   assert.equal(await store.hasInboundEvent({ channel: "whatsapp", eventType: "message", externalEventId: "wamid.1" }), true);
   assert.equal(await store.hasInboundEvent({ channel: "whatsapp", eventType: "message", externalEventId: "wamid.2" }), false);
 
+  // atomic claim of an inbound message id: a unique-index conflict (409) is "duplicate", any other failure still throws
+  store.client.post = async () => { const e = new Error("conflict"); e.response = { status: 409 }; throw e; };
+  assert.deepEqual(await store.appendInboundEvent({ channel: "whatsapp", provider: "meta", event_type: "message", external_event_id: "wamid.1", payload: {} }), { duplicate: true });
+  await assert.rejects(() => store.appendInboundEvent({ channel: "whatsapp", provider: "meta", event_type: "status:sent", external_event_id: "wamid.1", payload: {} }), /conflict/);
+  store.client.post = async () => { const e = new Error("boom"); e.response = { status: 500 }; throw e; };
+  await assert.rejects(() => store.appendInboundEvent({ channel: "whatsapp", provider: "meta", event_type: "message", external_event_id: "wamid.9", payload: {} }), /boom/);
+
   // migration + schema define the table and keep it out of anon access
   const migration = fs.readFileSync(path.join(__dirname, "..", "db", "20261014_office_runtime_settings.sql"), "utf8");
   assert.match(migration, /create table if not exists office_runtime_settings/); assert.match(migration, /enable row level security/);
+  assert.match(migration, /inbound_events_message_once/); assert.match(migration, /raise notice/);
   assert.match(fs.readFileSync(path.join(__dirname, "..", "db", "lead-agents-schema.sql"), "utf8"), /create table if not exists office_runtime_settings/);
 
   // shipped Office UI
   const ui = fs.readFileSync(path.join(__dirname, "..", "public", "office", "office.js"), "utf8");
   assert.match(ui, /\/api\/lead-agents\/admin\/settings\/whatsapp-autonomy/, "the control talks to the real backend setting");
   assert.match(ui, /method: "PUT", body: \{ enabled \}/);
+  for (const text of ["AUTONOMOUS RESPONSES ON", "AUTONOMOUS RESPONSES OFF", "TREATED AS OFF"]) assert.ok(ui.includes(text), `the state banner says: ${text}`);
   assert.match(ui, /Autonomous AI Responses/); assert.match(ui, /Official WhatsApp number/); assert.match(ui, /Last changed by \/ at/);
   assert.match(ui, /hasPermission\("integrations\.manage"\)/, "only administrators get the control");
   assert.match(ui, /status = result\.whatsapp_autonomy;[\s\S]*?draw\(\);/, "success renders the value the server returned");
