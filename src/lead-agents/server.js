@@ -1724,6 +1724,11 @@ async function forwardCommunicationWebhookEvent(config, payload, requestId) {
   }
 }
 
+// EMERGENCY ROLLBACK BUILD: production code as of codex/office-extraction plus ONE static rule — no autonomous WhatsApp send of any kind. It exists so that rolling Office
+// back never restores automatic customer replies. Inbound messages are still received, stored and forwarded; manual/staff-confirmed bridge sends are also blocked here
+// because this build cannot verify staff attestations (use the full release build for those).
+const WHATSAPP_AUTONOMY_HARD_OFF = true;
+
 async function processWhatsAppEvent({ event, store, adapter, config, requestId }) {
   if (event.kind === "status") {
     await store.appendInboundEvent({
@@ -1831,6 +1836,18 @@ async function processWhatsAppEvent({ event, store, adapter, config, requestId }
       lead_id: lead.id,
       deferred_to_goal: true,
     };
+  }
+
+  if (WHATSAPP_AUTONOMY_HARD_OFF) {
+    await store.appendTimelineEvent({
+      lead_id: lead.id,
+      event_type: "whatsapp_autonomous_reply_suppressed",
+      actor: "ochiga_intelligence",
+      title: "WhatsApp autonomous reply not sent",
+      body: "Autonomous WhatsApp responses are disabled by the emergency rollback build.",
+      metadata: { request_id: requestId, reason: "hard_off_rollback_build" },
+    }).catch(() => null);
+    return { kind: "message", lead_id: lead.id, suppressed: true, reason: "hard_off_rollback_build" };
   }
 
   const session = buildPublicIntelligenceSession({
@@ -2552,6 +2569,10 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
         // funnels through this one bridge route, so this is the one
         // place that truth needs to be enforced to block ALL of them.
         // A fresh read-through on every send, not a cached/mirrored flag.
+        if (WHATSAPP_AUTONOMY_HARD_OFF) {
+          json(res, 200, { ok: false, delivered: false, failure_reason: "autonomous_whatsapp_disabled", failure_detail: "Autonomous WhatsApp sends are disabled by the emergency rollback build." }, { "x-request-id": ctx.requestId });
+          return;
+        }
         const leadIdForTakeoverCheck = String(body.lead_id || "").trim();
         if (leadIdForTakeoverCheck) {
           const channelState = await store.getLeadChannelState(leadIdForTakeoverCheck, "whatsapp").catch(() => null);
