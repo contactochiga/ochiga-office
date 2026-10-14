@@ -15,7 +15,7 @@ Negative PostgREST tests (public anon key, GET limit 1 only, no writes): `admin_
 
 ## Application health (what was actually exercised)
 - office.ochiga.com.ng: HTTP 200 (static site). Oyi backend `https://oyi-os.onrender.com/health`: 200, `status ok`, runtime counters last seen 17:03 UTC.
-- **Office API `https://ochiga-lead-agents.onrender.com` is DOWN: every path hangs, then HTTP 503 with `x-render-routing: hibernate-wake-error` (the free-plan service cannot wake).** Office code does no database work at startup (`SupabaseLeadAgentsStore.init()` is a no-op), the replica differential suite shows the code works on the hardened schema, and the last Office writes (17:39 UTC) predate the migration (21:03 UTC), so the migration is not the evidenced cause — but I cannot prove it without Render logs/dashboard. **Impact: while it is down, WhatsApp inbound, website intake and staff login to Office do not work.**
+- **Office API `https://ochiga-lead-agents.onrender.com`: initially unresponsive** (requests hung, then HTTP 503 `x-render-routing: hibernate-wake-error` for ~5 minutes, 21:15–21:19 UTC; free-plan service waking). At ~21:30 UTC it answered `200` on `/healthz` with `uptime_ms` ~108,000 (i.e. it had just started) and live statistics read from the hardened database through service_role: leads 67, conversations 316, admin_users 7, audit_events 915, estates 25, documents 14, etc. This is direct evidence that the production app, on its freshly started process, reads the database after the P0 migration. Unauthenticated `/api/office/session`, `/api/office/leads`, `/api/leads` and an empty POST to the WhatsApp webhook path => 401 (auth enforced). Cause of the slow wake is not evidenced as migration-related (the app does no DB work at startup); this free-plan hibernation will recur: WhatsApp webhooks arriving while it sleeps risk delay/loss, consider a paid plan or keep-alive (not changed).
 - NOT exercised (API down, no authorized test accounts/credentials available, no browser session): login, CRM pages, messages, documents, invitations, password reset, WhatsApp webhook, form intake. I do not claim they passed.
 - Replica proof for service_role paths: 54/54 tables readable, Office suite identical before/after, 0 refused requests.
 
@@ -27,5 +27,5 @@ Admin roster (masked): 1 super_admin, 4 active ochiga_admin, 2 removed; password
 
 ## Verdicts
 A. DATABASE SECURITY: **PARTIALLY SECURED — REMAINING ISSUES** (current exposure closed and verified; `supabase_admin` default ACLs open at ACL level; incident review incomplete).
-B. APPLICATION OPERATIONS: **PRODUCTION REGRESSION FOUND / NOT FULLY VERIFIED** — Office API down (503 hibernate-wake-error); cause unproven.
+B. APPLICATION OPERATIONS: **NOT FULLY VERIFIED** — Office API and Oyi healthy and reading the hardened DB, but authenticated browser workflows and the WhatsApp webhook were not exercised; no regression found.
 E/C/D: see the other reports.
