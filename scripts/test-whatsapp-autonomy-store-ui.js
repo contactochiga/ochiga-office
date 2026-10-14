@@ -47,17 +47,45 @@ const { evaluateAutonomousWhatsAppPolicy, readWhatsAppAutonomySetting, WHATSAPP_
   assert.equal(await store.hasInboundEvent({ channel: "whatsapp", eventType: "message", externalEventId: "wamid.1" }), true);
   assert.equal(await store.hasInboundEvent({ channel: "whatsapp", eventType: "message", externalEventId: "wamid.2" }), false);
 
-  // atomic claim of an inbound message id: a unique-index conflict (409) is "duplicate", any other failure still throws
-  store.client.post = async () => { const e = new Error("conflict"); e.response = { status: 409 }; throw e; };
-  assert.deepEqual(await store.appendInboundEvent({ channel: "whatsapp", provider: "meta", event_type: "message", external_event_id: "wamid.1", payload: {} }), { duplicate: true });
-  await assert.rejects(() => store.appendInboundEvent({ channel: "whatsapp", provider: "meta", event_type: "status:sent", external_event_id: "wamid.1", payload: {} }), /conflict/);
-  store.client.post = async () => { const e = new Error("boom"); e.response = { status: 500 }; throw e; };
-  await assert.rejects(() => store.appendInboundEvent({ channel: "whatsapp", provider: "meta", event_type: "message", external_event_id: "wamid.9", payload: {} }), /boom/);
+  // provider-message claim: PostgREST emulation with primary-key + conditional-update semantics
+  const claims = new Map();
+  store.client = {
+    get: async (url) => { const m = url.match(/whatsapp_inbound_claims\?provider_message_id=eq\.([^&]+)/); const r = m && claims.get(decodeURIComponent(m[1])); return { data: r ? [r] : [] }; },
+    post: async (url, body, options) => {
+      assert.match(url, /whatsapp_inbound_claims\?on_conflict=provider_message_id/); assert.match(options.headers.Prefer, /ignore-duplicates/);
+      if (claims.has(body.provider_message_id)) return { data: [] };
+      claims.set(body.provider_message_id, { ...body, claimed_at: new Date().toISOString(), reply_sent_at: null }); return { data: [claims.get(body.provider_message_id)] };
+    },
+    patch: async (url, body) => {
+      const id = decodeURIComponent(url.match(/provider_message_id=eq\.([^&]+)/)[1]); const row = claims.get(id); if (!row) return { data: [] };
+      const stale = url.match(/claimed_at=lt\.([^&]+)/);
+      if (/status=eq\.processing/.test(url) && (row.status !== "processing" || (stale && !(Date.parse(row.claimed_at) < Date.parse(decodeURIComponent(stale[1])))))) return { data: [] };
+      Object.assign(row, body); return { data: [row] };
+    },
+  };
+  assert.equal((await store.claimInboundMessage({ providerMessageId: "wamid.c1", requestId: "r1" })).status, "claimed");
+  assert.equal((await store.claimInboundMessage({ providerMessageId: "wamid.c1", requestId: "r2" })).status, "duplicate", "a second delivery loses the claim");
+  assert.equal((await Promise.all(Array.from({ length: 10 }, () => store.claimInboundMessage({ providerMessageId: "wamid.c2" })))).filter((r) => r.status === "claimed").length, 1, "exactly one concurrent claimant wins");
+  claims.get("wamid.c1").claimed_at = new Date(Date.now() - 10 * 60_000).toISOString();
+  assert.equal((await store.claimInboundMessage({ providerMessageId: "wamid.c1" })).status, "takeover", "a stale processing claim can be taken over once");
+  assert.equal((await store.claimInboundMessage({ providerMessageId: "wamid.c1" })).status, "duplicate", "...and then it is fresh again");
+  await store.updateInboundClaim("wamid.c1", { status: "completed", reply_sent_at: new Date().toISOString() });
+  claims.get("wamid.c1").claimed_at = new Date(Date.now() - 10 * 60_000).toISOString();
+  const done = await store.claimInboundMessage({ providerMessageId: "wamid.c1" });
+  assert.equal(done.status, "duplicate"); assert.equal(done.reply_sent, true, "a completed claim is never taken over");
+  await assert.rejects(() => store.claimInboundMessage({ providerMessageId: "" }), /provider_message_id/);
+  store.client.post = async () => { const e = new Error("db down"); e.response = { status: 503 }; throw e; };
+  await assert.rejects(() => store.claimInboundMessage({ providerMessageId: "wamid.c9" }), /db down/);
+  store.client.post = async () => ({ data: "<html/>" });
+  await assert.rejects(() => store.claimInboundMessage({ providerMessageId: "wamid.c9" }), /malformed/);
 
   // migration + schema define the table and keep it out of anon access
   const migration = fs.readFileSync(path.join(__dirname, "..", "db", "20261014_office_runtime_settings.sql"), "utf8");
   assert.match(migration, /create table if not exists office_runtime_settings/); assert.match(migration, /enable row level security/);
-  assert.match(migration, /inbound_events_message_once/); assert.match(migration, /raise notice/);
+  assert.doesNotMatch(migration, /inbound_events/, "the settings migration no longer touches inbound_events");
+  const claimsSql = fs.readFileSync(path.join(__dirname, "..", "db", "20261015_whatsapp_inbound_claims.sql"), "utf8");
+  assert.match(claimsSql, /provider_message_id text primary key/); assert.match(claimsSql, /on conflict \(provider_message_id\) do nothing/); assert.doesNotMatch(claimsSql, /\b(delete|truncate|update)\b\s+(from\s+)?(public\.)?inbound_events/i, "history is never modified");
+  assert.match(fs.readFileSync(path.join(__dirname, "..", "db", "lead-agents-schema.sql"), "utf8"), /create table if not exists whatsapp_inbound_claims/);
   assert.match(fs.readFileSync(path.join(__dirname, "..", "db", "lead-agents-schema.sql"), "utf8"), /create table if not exists office_runtime_settings/);
 
   // shipped Office UI

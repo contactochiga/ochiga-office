@@ -237,6 +237,27 @@ async function main() {
     assert.equal(sent.length, 1, "six concurrent deliveries of one message id produce exactly one reply");
     assert.equal(dupResults.filter((r) => r.outbound?.delivered).length, 1); assert.equal(dupResults.filter((r) => r.duplicate).length, 5);
     assert.equal(store.state.inbound_events.filter((e) => e.external_event_id === "wamid.concurrent.1" && e.event_type === "message").length, 1, "stored exactly once");
+    assert.equal((await store.listLeads()).filter((l) => l.whatsapp_phone === "2348066666666").length, 1, "concurrent first-contact deliveries of one message id create exactly one lead");
+    // idempotency edge cases (switch ON): no provider id, a late retry of a message processed long ago, stale-claim takeover with and without a reply already sent
+    const rawEvent = (from, id, text) => fetch(`${base}/webhooks/whatsapp`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ events: [{ kind: "message", from, message_id: id, message_type: "text", timestamp: String(Math.floor(Date.now() / 1000)), text, raw: {}, metadata: {}, contacts: [] }] }) }).then(async (r) => (await r.json()).results[0]);
+    sent.length = 0;
+    const noId = await rawEvent("2348077777777", undefined, "message without a provider id");
+    assert.equal(noId.suppressed, true); assert.equal(noId.reason, "no_provider_message_id"); assert.equal(sent.length, 0, "no autonomous reply can be made idempotent without a provider id");
+    assert.ok(await leadFor("2348077777777"), "...but the message is still captured in the CRM");
+    await store.claimInboundMessage({ providerMessageId: "wamid.historical.1" }); await store.updateInboundClaim("wamid.historical.1", { status: "completed", reply_sent_at: new Date().toISOString() });
+    const leadsBefore = (await store.listLeads()).length;
+    const lateRetry = await rawEvent("2348088888888", "wamid.historical.1", "a retry of a message answered long ago");
+    assert.equal(lateRetry.duplicate, true); assert.equal(sent.length, 0); assert.equal((await store.listLeads()).length, leadsBefore, "a late retry creates no lead and no reply");
+    await store.claimInboundMessage({ providerMessageId: "wamid.stale.sent" }); await store.updateInboundClaim("wamid.stale.sent", { reply_sent_at: new Date().toISOString() });
+    store.state.whatsapp_inbound_claims["wamid.stale.sent"].claimed_at = new Date(Date.now() - 3600_000).toISOString();
+    const staleSent = await rawEvent("2348099900001", "wamid.stale.sent", "crashed after replying");
+    assert.equal(staleSent.suppressed, true); assert.equal(staleSent.reason, "reply_already_sent"); assert.equal(sent.length, 0, "a takeover never sends a second reply");
+    await store.claimInboundMessage({ providerMessageId: "wamid.stale.unsent" });
+    store.state.whatsapp_inbound_claims["wamid.stale.unsent"].claimed_at = new Date(Date.now() - 3600_000).toISOString();
+    const staleUnsent = await rawEvent("2348099900002", "wamid.stale.unsent", "crashed before replying");
+    assert.equal(staleUnsent.outbound?.delivered, true); assert.equal(sent.length, 1, "a stale unfinished claim is completed exactly once");
+    assert.equal(store.state.whatsapp_inbound_claims["wamid.stale.unsent"].status, "completed");
+    assert.equal((await rawEvent("2348099900002", "wamid.stale.unsent", "again")).duplicate, true);
     assert.equal((await setSwitch(superCookie, false)).status, 200);
     console.log("A-E,J,H negative controls (missing lead, template, forged/tampered/stale origin, automation, unresolved identity, OFF between draft and send, concurrent duplicates) — PASS");
 
@@ -272,6 +293,15 @@ async function main() {
     assert.equal(failBridge.body.failure_reason, "autonomy_setting_unreadable");
     const status = await getSwitch(cookie4);
     assert.equal(status.enabled, false); assert.equal(status.state, "unknown_fail_closed");
+    // database claim unavailable (switch ON): the message is kept, no autonomous reply
+    assert.equal((await restarted2.getRuntimeSetting(WHATSAPP_AUTONOMY_SETTING_KEY)).value, true);
+    const noClaim = new Proxy(restarted2, { get: (t, p) => (p === "claimInboundMessage" ? async () => { throw new Error("claims table unavailable"); } : typeof t[p] === "function" ? t[p].bind(t) : t[p]) });
+    await close(server); server = buildFor(noClaim); base = `http://127.0.0.1:${await listen(server)}`;
+    sent.length = 0;
+    const claimDown = await inbound("2348012300000", "claims database is down");
+    assert.equal(claimDown.suppressed, true); assert.equal(claimDown.reason, "claim_unavailable"); assert.equal(sent.length, 0);
+    assert.ok(restarted2.state.leads.some((l) => l.whatsapp_phone === "2348012300000"), "the enquiry still reaches the CRM");
+    await close(server); server = buildFor(brokenStore); base = `http://127.0.0.1:${await listen(server)}`;
     // a failed save must not look like success
     const brokenWrite = new Proxy(restarted2, { get: (t, p) => (p === "setRuntimeSetting" ? async () => { throw new Error("write failed"); } : typeof t[p] === "function" ? t[p].bind(t) : t[p]) });
     await close(server);

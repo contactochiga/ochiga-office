@@ -1408,13 +1408,24 @@ create table if not exists office_runtime_settings (
 );
 alter table office_runtime_settings enable row level security;
 
--- Inbound WhatsApp message de-duplication across server instances: one stored "message" event per provider message id.
--- Created only if no duplicates already exist (a duplicate-bearing table keeps working through the application-level check; the notice says so).
-do $$
-begin
-  if exists (select 1 from inbound_events where event_type = 'message' and external_event_id is not null group by channel, event_type, external_event_id having count(*) > 1) then
-    raise notice 'inbound_events_message_once not created: duplicate message ids already exist; clean them up and re-run';
-  else
-    create unique index if not exists inbound_events_message_once on inbound_events (channel, event_type, external_event_id) where event_type = 'message' and external_event_id is not null;
-  end if;
-end $$;
+-- Idempotency for inbound WhatsApp deliveries: one row per Meta provider message id, claimed (INSERT ... ON CONFLICT DO NOTHING) BEFORE a lead is created or a reply drafted.
+-- Additive and non-destructive: existing inbound_events rows (including historical duplicate provider ids) are never modified or deleted; they are only read to seed claims
+-- for message ids that were already processed, so a late Meta retry of an old message cannot trigger a second reply or a second lead.
+create table if not exists whatsapp_inbound_claims (
+  provider_message_id text primary key,
+  channel text not null default 'whatsapp',
+  status text not null default 'processing' check (status in ('processing', 'completed')),
+  lead_id uuid,
+  claimed_at timestamptz not null default now(),
+  completed_at timestamptz,
+  reply_sent_at timestamptz,
+  request_id text
+);
+alter table whatsapp_inbound_claims enable row level security;
+
+insert into whatsapp_inbound_claims (provider_message_id, channel, status, lead_id, claimed_at, completed_at, reply_sent_at)
+select distinct on (external_event_id) external_event_id, channel, 'completed', lead_id, created_at, created_at, created_at
+from inbound_events
+where channel = 'whatsapp' and event_type = 'message' and external_event_id is not null and external_event_id <> ''
+order by external_event_id, created_at asc
+on conflict (provider_message_id) do nothing;

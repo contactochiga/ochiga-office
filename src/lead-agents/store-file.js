@@ -45,6 +45,7 @@ class FileLeadAgentsStore {
       office_document_folders: [],
       office_letterhead_config: null,
       runtime_settings: {},
+      whatsapp_inbound_claims: {},
       office_support_mappings: [],
       office_handoffs: [],
       office_staff_profiles: [],
@@ -122,6 +123,7 @@ class FileLeadAgentsStore {
         office_document_folders: Array.isArray(parsed.office_document_folders) ? parsed.office_document_folders : [],
         office_letterhead_config: parsed.office_letterhead_config && typeof parsed.office_letterhead_config === "object" ? parsed.office_letterhead_config : null,
         runtime_settings: parsed.runtime_settings && typeof parsed.runtime_settings === "object" && !Array.isArray(parsed.runtime_settings) ? parsed.runtime_settings : {},
+        whatsapp_inbound_claims: parsed.whatsapp_inbound_claims && typeof parsed.whatsapp_inbound_claims === "object" && !Array.isArray(parsed.whatsapp_inbound_claims) ? parsed.whatsapp_inbound_claims : {},
         office_support_mappings: Array.isArray(parsed.office_support_mappings)
           ? parsed.office_support_mappings
           : [],
@@ -719,6 +721,35 @@ class FileLeadAgentsStore {
     return { previous, current };
   }
 
+  // Provider-message claim (idempotency for inbound webhooks). Synchronous check-and-set, so concurrent callers in this process cannot both win.
+  // -> { status: "claimed" | "duplicate" | "takeover", reply_sent: boolean }; a "processing" claim older than staleAfterMs can be taken over by a retry.
+  async claimInboundMessage({ providerMessageId, channel = "whatsapp", requestId = "", staleAfterMs = 5 * 60 * 1000 }) {
+    const key = String(providerMessageId || "");
+    if (!key) throw new Error("claim_requires_provider_message_id");
+    const now = Date.now();
+    const existing = this.state.whatsapp_inbound_claims[key];
+    if (!existing) {
+      this.state.whatsapp_inbound_claims[key] = { provider_message_id: key, channel, status: "processing", lead_id: null, claimed_at: new Date(now).toISOString(), completed_at: null, reply_sent_at: null, request_id: requestId };
+      await this.persist();
+      return { status: "claimed", reply_sent: false };
+    }
+    if (existing.status === "processing" && now - Date.parse(existing.claimed_at) > staleAfterMs) {
+      existing.claimed_at = new Date(now).toISOString();
+      existing.request_id = requestId;
+      await this.persist();
+      return { status: "takeover", reply_sent: Boolean(existing.reply_sent_at) };
+    }
+    return { status: "duplicate", reply_sent: Boolean(existing.reply_sent_at) };
+  }
+
+  async updateInboundClaim(providerMessageId, patch) {
+    const existing = this.state.whatsapp_inbound_claims[String(providerMessageId || "")];
+    if (!existing) return null;
+    for (const field of ["status", "lead_id", "completed_at", "reply_sent_at"]) if (patch[field] !== undefined) existing[field] = patch[field];
+    await this.persist();
+    return existing;
+  }
+
   async hasInboundEvent({ channel, eventType, externalEventId }) {
     if (!externalEventId) return false;
     return this.state.inbound_events.some(
@@ -727,9 +758,6 @@ class FileLeadAgentsStore {
   }
 
   async appendInboundEvent(input) {
-    if (input.external_event_id && input.event_type === "message" && this.state.inbound_events.some((item) => item.channel === input.channel && item.event_type === "message" && item.external_event_id === input.external_event_id)) {
-      return { duplicate: true };
-    }
     const event = {
       id: crypto.randomUUID(),
       channel: input.channel,

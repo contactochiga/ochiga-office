@@ -1,5 +1,8 @@
 # WhatsApp autonomous response control — contract and audit (frozen before implementation)
 
+> **Superseded in part (production reconciliation):** duplicate protection no longer uses the guarded unique index `inbound_events_message_once`. Production `inbound_events` contains historical duplicate provider ids, so the guarded index would have been skipped. The final mechanism is the additive claims table `whatsapp_inbound_claims` (`db/20261015_whatsapp_inbound_claims.sql`); see `docs/WHATSAPP_AUTONOMY_PRODUCTION_RECONCILIATION.md`.
+
+
 Branch `codex/whatsapp-autonomy-control` (from `codex/wave10-office-core-planstudio` @ `b071f23`). Not merged, not deployed, autonomous replies not enabled.
 
 ## 1. Audit — every WhatsApp send path and takeover behaviour today

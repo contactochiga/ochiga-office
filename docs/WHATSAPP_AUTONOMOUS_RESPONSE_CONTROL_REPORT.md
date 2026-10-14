@@ -1,5 +1,8 @@
 # WhatsApp autonomous response control — implementation report
 
+> **Superseded in part (production reconciliation):** duplicate protection no longer uses the guarded unique index `inbound_events_message_once`. Production `inbound_events` contains historical duplicate provider ids, so the guarded index would have been skipped. The final mechanism is the additive claims table `whatsapp_inbound_claims` (`db/20261015_whatsapp_inbound_claims.sql`); see `docs/WHATSAPP_AUTONOMY_PRODUCTION_RECONCILIATION.md`.
+
+
 Branches (local, not pushed, not merged, not deployed; autonomous replies not enabled):
 - `ochiga-office` `codex/whatsapp-autonomy-control` — contract `e44274b`, implementation `b8a11ee` (base `b071f23`).
 - `Ochiga-backend` `codex/whatsapp-send-origin-contract` — `ef69ce6` (base `17e876d`): 6-line contract change, see "Backend dependency".

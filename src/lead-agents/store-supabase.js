@@ -542,6 +542,38 @@ class SupabaseLeadAgentsStore {
     return { previous, current };
   }
 
+  // Provider-message claim: INSERT ... ON CONFLICT DO NOTHING on the primary key (PostgREST `resolution=ignore-duplicates`), so exactly one concurrent caller across
+  // all server instances gets a row back. A losing caller may take over only a STALE "processing" claim through one conditional UPDATE (also atomic in Postgres).
+  // Any transport/schema error throws: the caller must then not reply autonomously.
+  async claimInboundMessage({ providerMessageId, channel = "whatsapp", requestId = "", staleAfterMs = 5 * 60 * 1000 }) {
+    const key = String(providerMessageId || "");
+    if (!key) throw new Error("claim_requires_provider_message_id");
+    const inserted = await this.client.post(
+      "/whatsapp_inbound_claims?on_conflict=provider_message_id",
+      { provider_message_id: key, channel, status: "processing", request_id: requestId || null },
+      { headers: { ...this.selectHeaders(), Prefer: "resolution=ignore-duplicates,return=representation" } }
+    );
+    if (!Array.isArray(inserted.data)) throw new Error("claim_response_malformed");
+    if (inserted.data.length === 1) return { status: "claimed", reply_sent: false };
+    const staleBefore = new Date(Date.now() - staleAfterMs).toISOString();
+    const takeover = await this.client.patch(
+      `/whatsapp_inbound_claims?provider_message_id=eq.${encodeURIComponent(key)}&status=eq.processing&claimed_at=lt.${encodeURIComponent(staleBefore)}`,
+      { claimed_at: new Date().toISOString(), request_id: requestId || null },
+      { headers: this.selectHeaders() }
+    );
+    if (!Array.isArray(takeover.data)) throw new Error("claim_response_malformed");
+    if (takeover.data.length === 1) return { status: "takeover", reply_sent: Boolean(takeover.data[0].reply_sent_at) };
+    const current = await this.client.get(`/whatsapp_inbound_claims?provider_message_id=eq.${encodeURIComponent(key)}&select=reply_sent_at&limit=1`);
+    return { status: "duplicate", reply_sent: Boolean(Array.isArray(current.data) && current.data[0]?.reply_sent_at) };
+  }
+
+  async updateInboundClaim(providerMessageId, patch) {
+    const body = {};
+    for (const field of ["status", "lead_id", "completed_at", "reply_sent_at"]) if (patch[field] !== undefined) body[field] = patch[field];
+    const response = await this.client.patch(`/whatsapp_inbound_claims?provider_message_id=eq.${encodeURIComponent(String(providerMessageId || ""))}`, body, { headers: this.selectHeaders() });
+    return Array.isArray(response.data) ? response.data[0] || null : null;
+  }
+
   async hasInboundEvent({ channel, eventType, externalEventId }) {
     if (!externalEventId) return false;
     const response = await this.client.get(
@@ -551,27 +583,21 @@ class SupabaseLeadAgentsStore {
   }
 
   async appendInboundEvent(input) {
-    try {
-      const response = await this.client.post(
-        "/inbound_events",
-        {
-          channel: input.channel,
-          provider: input.provider,
-          event_type: input.event_type,
-          lead_id: input.lead_id || null,
-          external_event_id: input.external_event_id || null,
-          payload: input.payload || {},
-        },
-        {
-          headers: this.selectHeaders(),
-        }
-      );
-      return response.data[0];
-    } catch (error) {
-      // unique index inbound_events_message_once (see db/20261014_office_runtime_settings.sql): the same provider message id was already claimed
-      if (error?.response?.status === 409 && input.event_type === "message" && input.external_event_id) return { duplicate: true };
-      throw error;
-    }
+    const response = await this.client.post(
+      "/inbound_events",
+      {
+        channel: input.channel,
+        provider: input.provider,
+        event_type: input.event_type,
+        lead_id: input.lead_id || null,
+        external_event_id: input.external_event_id || null,
+        payload: input.payload || {},
+      },
+      {
+        headers: this.selectHeaders(),
+      }
+    );
+    return response.data[0];
   }
 
   async createNotification(input) {

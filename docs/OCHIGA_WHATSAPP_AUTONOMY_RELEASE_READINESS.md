@@ -1,5 +1,8 @@
 # Ochiga WhatsApp autonomous-response control — release readiness
 
+> **Superseded in part (production reconciliation):** duplicate protection no longer uses the guarded unique index `inbound_events_message_once`. Production `inbound_events` contains historical duplicate provider ids, so the guarded index would have been skipped. The final mechanism is the additive claims table `whatsapp_inbound_claims` (`db/20261015_whatsapp_inbound_claims.sql`); see `docs/WHATSAPP_AUTONOMY_PRODUCTION_RECONCILIATION.md`.
+
+
 Date: 2026-10-14. Nothing was deployed, merged, migrated in production, or enabled. No production environment variable was changed. All tests ran against controlled adapters; no message was sent to any real number.
 
 ## 1. Repository and branch verification

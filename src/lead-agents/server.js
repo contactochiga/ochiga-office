@@ -1734,7 +1734,7 @@ async function suppressAutonomousWhatsAppReply({ store, lead, event, requestId, 
     event_type: "whatsapp_autonomous_reply_suppressed",
     actor: "ochiga_intelligence",
     title: "WhatsApp autonomous reply not sent",
-    body: reason === "autonomous_whatsapp_disabled" ? "Autonomous WhatsApp responses are switched off in Office settings." : reason === "setting_unreadable" ? "The autonomous-response setting could not be read, so no reply was sent." : "A human has taken over this conversation.",
+    body: reason === "autonomous_whatsapp_disabled" ? "Autonomous WhatsApp responses are switched off in Office settings." : reason === "setting_unreadable" ? "The autonomous-response setting could not be read, so no reply was sent." : ["claim_unavailable", "no_provider_message_id", "reply_already_sent"].includes(reason) ? "The message could not be safely de-duplicated, or a reply was already sent, so no automatic reply was sent." : "A human has taken over this conversation.",
     metadata: { request_id: requestId, reason, stage },
   }).catch(() => null);
   await createCorporateRecord(
@@ -1794,21 +1794,34 @@ async function processWhatsAppEvent({ event, store, adapter, config, requestId }
     };
   }
 
-  // Meta retries a delivery it believes failed; a message id already received (or being received) is acknowledged without a second reply.
+  // Idempotency: the provider message id is CLAIMED first (before any lead is created or reply drafted) in a table whose primary key is the provider id, so a
+  // retried or concurrent delivery — on this or any other instance — loses the claim and is acknowledged without a second lead, record or reply.
+  // If the claim cannot be made (database error) or the event has no provider id, the message is still stored in the CRM but NO autonomous reply is sent.
+  let claim = { status: event.message_id ? "unavailable" : "no_message_id", reply_sent: false };
   if (event.message_id) {
     if (inflightWhatsAppMessageIds.has(event.message_id)) return { kind: "message", duplicate: true };
-    const alreadyReceived = await store.hasInboundEvent({ channel: "whatsapp", eventType: "message", externalEventId: event.message_id }).catch(() => false);
-    if (alreadyReceived) return { kind: "message", duplicate: true };
+    try {
+      claim = await store.claimInboundMessage({ providerMessageId: event.message_id, channel: "whatsapp", requestId });
+    } catch (error) {
+      log("error", "whatsapp_webhook.claim_unavailable", { request_id: requestId, message_id: event.message_id, error: error?.message || String(error) });
+      claim = { status: "unavailable", reply_sent: false };
+    }
+    if (claim.status === "duplicate") {
+      log("info", "whatsapp_webhook.duplicate_delivery", { request_id: requestId, message_id: event.message_id });
+      return { kind: "message", duplicate: true };
+    }
     inflightWhatsAppMessageIds.add(event.message_id);
   }
   try {
-    return await processWhatsAppMessageEvent({ event, store, adapter, config, requestId });
+    const result = await processWhatsAppMessageEvent({ event, store, adapter, config, requestId, claim });
+    if (["claimed", "takeover"].includes(claim.status)) await store.updateInboundClaim(event.message_id, { status: "completed", completed_at: new Date().toISOString() }).catch(() => null);
+    return result;
   } finally {
     if (event.message_id) inflightWhatsAppMessageIds.delete(event.message_id);
   }
 }
 
-async function processWhatsAppMessageEvent({ event, store, adapter, config, requestId }) {
+async function processWhatsAppMessageEvent({ event, store, adapter, config, requestId, claim }) {
   const lead = await resolveLeadForChannel(store, event.from, "whatsapp");
   log("info", "whatsapp_webhook.thread_resolved", { request_id: requestId, lead_id: lead.id });
   await store.updateLead(lead.id, {
@@ -1816,16 +1829,19 @@ async function processWhatsAppMessageEvent({ event, store, adapter, config, requ
     primary_channel: "whatsapp",
     channel_last_seen_at: new Date().toISOString(),
   });
-  // The append is also the atomic claim of this provider message id (unique index in Supabase): a concurrent or retried delivery that loses the claim stops here.
-  const claim = await store.appendInboundEvent({
-    channel: "whatsapp",
-    provider: "meta",
-    event_type: "message",
-    lead_id: lead.id,
-    external_event_id: event.message_id,
-    payload: event.raw,
-  });
-  if (claim && claim.duplicate) return { kind: "message", lead_id: lead.id, duplicate: true };
+  if (["claimed", "takeover"].includes(claim.status)) await store.updateInboundClaim(event.message_id, { lead_id: lead.id }).catch(() => null);
+  // A takeover of a stale claim must not store the inbound message a second time.
+  const alreadyStored = claim.status === "takeover" ? await store.hasInboundEvent({ channel: "whatsapp", eventType: "message", externalEventId: event.message_id }).catch(() => false) : false;
+  if (!alreadyStored) {
+    await store.appendInboundEvent({
+      channel: "whatsapp",
+      provider: "meta",
+      event_type: "message",
+      lead_id: lead.id,
+      external_event_id: event.message_id,
+      payload: event.raw,
+    });
+  }
   // Forward the inbound message itself into the Communication Runtime's
   // canonical thread (Phase 5) -- correlated by phone number so it lands
   // in the SAME thread as any prior outbound send to this person.
@@ -1883,6 +1899,10 @@ async function processWhatsAppMessageEvent({ event, store, adapter, config, requ
       deferred_to_goal: true,
     };
   }
+
+  // An autonomous reply needs an exclusive, healthy claim on this provider message: no claim / no id / a reply already sent by an earlier attempt => no reply.
+  const claimBlock = claim.status === "unavailable" ? "claim_unavailable" : claim.status === "no_message_id" ? "no_provider_message_id" : claim.reply_sent ? "reply_already_sent" : null;
+  if (claimBlock) return suppressAutonomousWhatsAppReply({ store, lead, event, requestId, reason: claimBlock, stage: "before_generation" });
 
   // Global autonomy switch: OFF (or unreadable) means no autonomous reply is generated or sent. The inbound message stays stored and visible in the CRM.
   const earlyPolicy = await evaluateAutonomousWhatsAppPolicy(store);
@@ -1962,6 +1982,7 @@ async function processWhatsAppMessageEvent({ event, store, adapter, config, requ
     { actorEmail: "whatsapp" }
   ).catch(() => null);
 
+  if (sendResult && sendResult.delivered) await store.updateInboundClaim(event.message_id, { reply_sent_at: new Date().toISOString() }).catch(() => null);
   await store.upsertLeadChannelState(lead.id, "whatsapp", {
     last_outbound_at: new Date().toISOString(),
     last_external_message_id: sendResult.external_message_id || event.message_id,
