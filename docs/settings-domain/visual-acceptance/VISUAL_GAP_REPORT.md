@@ -1,45 +1,44 @@
-# Settings S1–S2 — Visual Gap Report
+# Settings S1–S2 — Visual Gap Report (after correction slice)
 
-Commit under test: `4e39efbb702c9e4e5f1088073b21b19d4d9549b9` (`feature/settings-s1-s2`). Real Office server, fixture data only, headless Chrome. No runtime code was modified in this review.
-Evidence: `GALLERY.html` (40 labelled screenshots + the reference), `results.json` (objective checks), `scripts/capture-settings-visual-acceptance.js` (reproducible, `node scripts/capture-settings-visual-acceptance.js`).
+Baseline: implementation `4e39efbb702c9e4e5f1088073b21b19d4d9549b9`; acceptance evidence `510e19ba57a15608a6bae605699b4efc56227ae9` (this slice started from that commit, clean tree, local = remote). Fixture data only, headless Chrome, real Office server.
+Evidence: `GALLERY.html` (44 labelled captures plus the reference), `results.json`, `scripts/capture-settings-visual-acceptance.js` (re-runnable), and `scripts/test-settings-domain-browser.js` (`npm run office:settings:test`, 14 scenarios).
 
-Captured: Overview, Intelligence, Integrations, Communications, Organization, Security at 1440 / 1100 / 900 / 768 / 390px; list landing at 900/768/390; permission-denied states (denied deep link at 1440/390, no-access page at 1440/390); limited-user overview; keyboard focus.
+## Disposition of the eight findings
+| # | Finding | Status | What changed / evidence |
+|---|---|---|---|
+| G1 | Tablet tab strip wrapped and clipped | **Fixed** | Tabs are single-line (max label height 20px at 1100 and 900); edge fades plus left/right scroll buttons appear only while sections are off-screen; the active tab is scrolled into view; focus scrolls items into view; all 14 sections reachable (test clicks the last one). `tabs-scrolled-*.png`, `overview-1100.png` |
+| G2 | Recent Activity showed logins and raw ids | **Fixed** | Activity is an exact allowlist of audited configuration event types (autonomy, letterhead, team add/update/remove/restore/delete, invitations, password reset issued, routing profile, outbox and inbound-visibility operations). Logins, logouts, denials and sends are excluded; titles are plain language, no record ids; the full history, including logins, remains in Audit (test asserts both). Autonomy rows say what happened (e.g. "Set to OFF (previously the default, OFF)") |
+| G3 | Digital Twin read "Reachable" | **Fixed** | Same-origin bindings now read "Available in-process · Check: In-process; no network probe made" and are not counted as reachable. A genuine network probe still reads "Reachable · HTTP 200" (Backend card). No new health claim introduced |
+| G4 | Denied state was a bare line | **Fixed** | Titled region (`aria-labelledby`), explanation, required permission, "ask an administrator", "Back to Settings overview" (44px); focus moves to the heading. Not-found sections use the same panel. Server still returns 403 for the underlying API (asserted) |
+| G5 | Mobile back link under 24px | **Fixed** | `‹ All settings` is a ≥44×44px target with left safe-area padding and the standard focus ring |
+| G6 | Tile and selected-nav refinement | **Fixed** | Status-tile icons now sit beside their labels (asserted); selected navigation uses the existing red token gradient with the bright-red 3px rule and white text; no new colours. Tile labels wrap by whole words only and never overflow their tile (asserted at 1440/1100/900/768) |
+| G7 | Autonomy button presentation | **Fixed (presentation only)** | Scoped CSS makes it an outlined 44px control (full width on phones). The component, its route, persistence and authorization are untouched; the existing autonomy source-guard test still passes; OFF → ON → OFF verified end to end. The panel's banner keeps its legacy inline colours (component not modified) |
+| G8 | Floating Oyi orb overlaps content | **Documented, not modified** | See below |
+
+### G8 — documented orb overlap
+The orb is the shared `.oyi-control` (`position: fixed; right: 20px; bottom: 20px; z-index: 40`), draggable and minimisable by the user. It overlaps Settings content at every captured width (measured: nav items at 390/768, cards at 900/1100/1440; see `results.json → corrections.orb_overlap`). It is app-wide, not Settings-specific, and shared Oyi components were deliberately not changed. Recommended follow-up (separate slice): reserve bottom/right clearance in the shared shell or auto-minimise over dense views.
 
 ## Objective results
 | Check | Result |
 |---|---|
 | Horizontal overflow, 30 view×width captures | None |
 | Console/page errors | 0 |
-| Permission gating, 14 sections × super_admin / ochiga_admin / limited (settings.manage only) | Sidebar equals permission-derived expectation for all three; every hidden section's deep link shows a denied state (people, intelligence, finance, audit for the limited user) |
-| No `settings.manage` | Existing forbidden view, no Settings UI at 1440 and 390 |
-| WhatsApp autonomy (real UI → real server) | OFF → ON → OFF confirmed server-side each step; restored to OFF |
-| Letterhead (real UI → real server) | Dirty-gated save persisted (`Acceptance tagline`) |
-| Customer messages sent / non-GET Backend calls during review | 0 / 0 |
-| Landmarks | `nav[aria-label]`, `main`, one h1, one h2 per section, `aria-current="page"` on the active item |
-| Labels / names / alt | 0 unlabeled inputs, 0 unnamed buttons, 0 images without alt |
-| Keyboard | Real Tab key reaches sidebar items; focus ring 2px solid `rgb(211,55,44)`, `:focus-visible` true; all 14 items tabbable |
-| Contrast (alpha-aware) | Title 18.8, nav label 16.9, card subtitle 11.7, field label 11.7, note 4.8, nav sub/tag 5.3 — all ≥ 4.5:1 |
-| Reduced-motion rule | Present for tiles and actions |
-| Fabricated data | None found: every tile/state/activity row traces to a probe, `/healthz` or the audit trail |
+| Permission gating (14 sections × super_admin / ochiga_admin / settings.manage-only user) | Sidebar equals the permission-derived expectation for all three; every hidden section's deep link is denied; no-`settings.manage` user gets the forbidden page |
+| Keyboard | Real Tab reaches sidebar items (2px solid red focus ring, `:focus-visible` true); all 14 items tabbable; denied heading receives focus |
+| Touch targets at 390px (landing, Organization, Communications, Integrations) | 0 interactive controls under 44px (was: inputs 40px, form and sync buttons 29px) |
+| Contrast (alpha-aware) | Title 18.8, nav label 16.9, subtitle 11.7, note 4.8, nav sub/tag 5.3 — all ≥ 4.5:1 |
+| Activity | 2 genuine rows from the real audit trail; 0 logins; 0 ids |
+| Integration truth | Probe-backed = Reachable with HTTP status; same-origin = in-process; credentials only = "Configured, not verified"; dead Backend = Not reachable |
+| WhatsApp autonomy (real UI → real server) | OFF → ON → OFF confirmed server-side; restored OFF |
+| Letterhead | Dirty-gated save persisted |
+| Customer messages / non-GET Backend calls | 0 / 0 |
+| Repository gates | check, lint, build, secrets, deployment: PASS |
+| Office regression | 49/49 scripts PASS (plus the store-level outbox test); the Postgres and cross-repo scripts are excluded because they need external services |
 
-## Comparison with the reference (desktop Overview)
-Matches: Settings header with icon tile; dedicated sidebar with search, icon + title + subtitle per item, red-highlighted active item with left rule; "Settings Overview" title; System Status card with five tiles; Quick Actions as four chevron cards; Recent Activity beside a secondary card; spacing rhythm, dark layered surfaces, existing Ochiga typography.
+## Remaining notes (not blocking)
+- At 1100px the five status tiles wrap 4 + 1 (the 5-across layout starts at 1300px).
+- G8 orb overlap remains by instruction.
+- The autonomy banner keeps its legacy hard-coded colours because the component is intentionally untouched.
+- Test-harness note: Chrome's back/forward cache kept old pages' event streams open and exhausted its connection pool during the longer suite, so the test and capture launches now pass `--disable-features=BackForwardCache`. This affects test tooling only.
 
-Intentional deviations (truthfulness, not defects): no "Operational" labels (states are Reachable / Configured, not verified / Not reachable); no "12 connected", `v1.0.0`, documentation or support links; "Related Areas" replaces Helpful Resources/Need Help; 14 approved domains instead of the image's labels (Data & Sync, Billing, Branding, Notifications have no contract); the topbar search, ⌘K and workspace chip belong to the app shell, not Settings.
-
-## Gaps
-| # | Severity | Gap | Evidence | Suggested correction |
-|---|---|---|---|---|
-| G1 | Medium | Tablet tab strip (860–1100px): labels wrap ("People & Access" onto three lines), strip is taller than needed, last tabs are clipped with no scroll cue | `overview-1100.png`, `overview-900.png` | `white-space: nowrap` on tab labels; scroll-fade/edge affordance |
-| G2 | Medium | Recent Activity lists `User.Login` rows with raw record UUIDs; these are authentication events, not configuration changes. Real but misleading under "configuration changes"; the filter pattern matches `user` | `overview-1440.png` | Narrow the filter to settings/integration/role/permission/outbox/letterhead actions and exclude logins; show a short target instead of a UUID |
-| G3 | Medium | Digital Twin card shows "Reachable · Health probe: active". For the same-origin twin this is an in-process check, not a network probe, so "Reachable" overstates what was verified | `integrations-1440.png`, `integrations-390.png` | Derive a distinct state (e.g. "Same-origin, in-process") and drop "Reachable" for same-origin entries |
-| G4 | Low | Denied deep link is a plain dashed line with no heading, icon or route back | `denied-section-1440.png`, `denied-section-390.png` | Use a titled denied panel with a link to Overview |
-| G5 | Low | Mobile "‹ All settings" link is under 24px tall (WCAG 2.2 target size) | `results.json` → `targets_under_24px` | Give it ≥44px height like the nav items |
-| G6 | Low | Status tiles stack icon above text; reference places icon left of text. Active nav highlight is subtler than the reference's solid red. Activity rows use one generic icon where the reference uses per-source icons | `overview-1440.png` vs `00-reference.png` | Optional polish; per-source icons only where the source is real |
-| G7 | Low | The preserved autonomy panel's "Turn ON" button is a pale full-width block on mobile and its banner uses legacy inline colours, unlike the rest of Settings. Behaviour is unchanged by design | `communications-768.png` | Style-only alignment, no contract change |
-| G8 | Info | The app-wide floating Oyi orb overlaps the right edge of content at several widths (pre-existing, outside Settings) | `intelligence-1440.png`, `overview-900.png` | Track separately |
-
-## Verdict
-No fabricated activity, provider connections or health statuses were found, permission gating is correct, and the autonomy and letterhead controls work. G1–G3 are real defects (layout break at tablet, misleading activity feed, an overstated health state) and should be corrected before acceptance.
-
-S1–S2 VISUAL CORRECTIONS REQUIRED
+S1–S2 VISUAL ACCEPTANCE READY

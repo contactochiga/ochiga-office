@@ -47,8 +47,8 @@ async function main() {
   assert.equal((await api(superCookie, "/api/lead-agents/admin/settings/whatsapp-autonomy", { method: "PUT", body: JSON.stringify({ enabled: false }) })).status, 200);
 
   const userDir = fs.mkdtempSync(path.join(os.tmpdir(), "st-chrome-"));
-  const chrome = spawn(CHROME, ["--headless=new", "--remote-debugging-port=9351", `--user-data-dir=${userDir}`, "--no-first-run", "--disable-gpu", "--hide-scrollbars", "about:blank"], { stdio: "ignore" });
-  let ws, id = 0; const pending = new Map(); let deadServer = null;
+  const chrome = spawn(CHROME, ["--headless=new", "--remote-debugging-port=9351", `--user-data-dir=${userDir}`, "--no-first-run", "--disable-gpu", "--hide-scrollbars", "--disable-features=BackForwardCache", "about:blank"], { stdio: "ignore" });
+  let ws, id = 0; const pending = new Map(); let deadServer = null; const errors = [];
   try {
     let targets;
     for (let i = 0; i < 50 && !targets; i++) { try { targets = await (await fetch("http://127.0.0.1:9351/json")).json(); } catch { await sleep(200); } }
@@ -58,10 +58,10 @@ async function main() {
     ws.onmessage = (m) => { const d = JSON.parse(m.data); if (d.id && pending.has(d.id)) { pending.get(d.id)(d); pending.delete(d.id); } };
     const send = (method, params = {}) => new Promise((resolve) => { const n = ++id; pending.set(n, resolve); ws.send(JSON.stringify({ id: n, method, params })); });
     const evalJs = async (expr) => { const r = await send("Runtime.evaluate", { expression: expr, awaitPromise: true, returnByValue: true }); if (r.result.exceptionDetails) throw new Error(JSON.stringify(r.result.exceptionDetails).slice(0, 400)); return r.result.result.value; };
-    const waitFor = async (expr, label, ms = 8000) => { const end = Date.now() + ms; while (Date.now() < end) { try { if (await evalJs(expr)) return true; } catch { /* navigating */ } await sleep(120); } throw new Error(`timeout waiting for: ${label}`); };
+    const waitFor = async (expr, label, ms = 8000) => { const end = Date.now() + ms; while (Date.now() < end) { try { if (await evalJs(expr)) return true; } catch { /* navigating */ } await sleep(120); } throw new Error(`timeout waiting for: ${label} | page errors: ${errors.slice(-2).join(' / ').slice(0, 400)} | hash: ${await evalJs(`location.hash + " segs=" + document.title`).catch(() => "?")} | body: ${(await evalJs(`document.querySelector('#viewOutlet')?.innerText?.slice(0, 300)`).catch(() => '?'))}`); };
     const shot = async (name) => { if (!process.env.OFFICE_ST_SHOTS) return; const r = await send("Page.captureScreenshot", { format: "png" }); fs.writeFileSync(path.join(process.env.OFFICE_ST_SHOTS, name), Buffer.from(r.result.data, "base64")); };
     await send("Page.enable"); await send("Runtime.enable"); await send("Network.enable");
-    const errors = []; ws.addEventListener("message", (m) => { const d = JSON.parse(m.data); if (d.method === "Runtime.exceptionThrown") errors.push(d.params.exceptionDetails.exception?.description || d.params.exceptionDetails.text); });
+    ws.addEventListener("message", (m) => { const d = JSON.parse(m.data); if (d.method === "Runtime.exceptionThrown") errors.push(d.params.exceptionDetails.exception?.description || d.params.exceptionDetails.text); });
     const useCookie = async (c, origin = base) => { await send("Page.navigate", { url: "about:blank" }); await send("Network.setCookie", { name: c.name, value: c.value, url: origin }); };
     const viewport = (width, height, mobile = false) => send("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: 1, mobile });
     const go = async (hash, ready) => { await evalJs(`document.querySelector('.st-page')?.setAttribute('data-stale', '1')`).catch(() => null); const same = await evalJs(`location.hash === '#/${hash}'`).catch(() => false); await send(same ? "Page.reload" : "Page.navigate", same ? {} : { url: `${base}/office#/${hash}` }); const fresh = `!document.querySelector('.st-page[data-stale]')`; await waitFor(`${fresh} && (${ready || `!!document.querySelector('.st-page') && !document.querySelector('#stContent .skeleton-line')`})`, `route ${hash}`); };
@@ -82,7 +82,11 @@ async function main() {
     assert.ok(!/operational/i.test(overviewText), "never claims 'operational' (not verifiable from Office)");
     assert.ok(!/12 connected|v1\.0\.0|Contact Support/i.test(overviewText), "no fabricated figures or support links from the reference image");
     assert.ok(/Oyi Intelligence[\s\S]*Reachable/.test(overviewText), "Oyi tile reflects the real Backend health probe (stub answered)");
-    assert.ok(/Whatsapp Autonomy Setting Changed/i.test(overviewText) && /super@ochiga\.local/.test(overviewText), "Recent Activity shows the genuine audit record");
+    assert.ok(/WhatsApp autonomous replies changed/.test(overviewText) && /super@ochiga\.local/.test(overviewText), "Recent Activity shows the genuine audit record");
+    const activityText = await evalJs(`document.querySelector('.st-activity').innerText`);
+    assert.ok(!/log\s?in|log\s?out|permission\.denied/i.test(activityText), "ordinary login events are excluded from configuration activity");
+    assert.ok(!/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}/i.test(activityText), "no raw internal record ids in activity labels");
+    assert.ok((await (await api(superCookie, "/api/lead-agents/admin/audit")).json()).audit.some((e) => /login/i.test(e.action)), "the complete audit trail still contains the login events");
     assert.ok(/Autonomy OFF/.test(overviewText), "autonomy state comes from the server");
     assert.ok(!overviewText.includes(SECRET), "no secret value in the page");
     await shot("settings-overview-desktop.png");
@@ -211,6 +215,62 @@ async function main() {
     assert.ok(/Oyi Intelligence[\s\S]{0,40}Not reachable/.test(deadText), "unreachable Backend shown as Not reachable");
     assert.ok(!/Oyi Intelligence[\s\S]{0,40}Reachable\n/.test(deadText.replace(/Not reachable/g, "")), "never shown as reachable");
     console.log("11. Dead Backend reports Not reachable (no fabricated healthy state) — PASS");
+
+    // 12. G1 tablet tab strip: single-line labels, visible scroll affordances, all sections reachable
+    await useCookie(superCookie);
+    for (const w of [1100, 900]) {
+      await viewport(w, 900); await go("settings");
+      assert.ok(await evalJs(`[...document.querySelectorAll('.st-nav-label')].every(l => l.getBoundingClientRect().height < 22)`), `${w}px: no multi-line tab labels`);
+      assert.equal(await evalJs(`new Set([...document.querySelectorAll('.st-nav-item')].map(i => Math.round(i.getBoundingClientRect().height))).size`), 1, `${w}px: uniform tab height`);
+      assert.equal(await evalJs(`document.querySelector('.st-side').dataset.moreRight`), "1", `${w}px: right scroll affordance shown while sections are off-screen`);
+      assert.ok(await evalJs(`getComputedStyle(document.querySelector('.st-scroll-r')).display !== 'none'`), `${w}px: scroll button visible`);
+      assert.ok(await noOverflow(), `${w}px: no page overflow`);
+    }
+    await evalJs(`document.querySelector('.st-scroll-r').click()`);
+    await waitFor(`document.querySelector('.st-side').dataset.moreLeft === '1'`, "left affordance after scrolling right");
+    await evalJs(`(() => { const l = document.querySelector('#stNavList'); l.scrollLeft = l.scrollWidth; l.dispatchEvent(new Event('scroll')); })()`);
+    await waitFor(`document.querySelector('.st-side').dataset.moreRight === '0'`, "right affordance hides at the end");
+    await evalJs(`document.querySelector('.st-nav-item[href="#/settings/system-health"]').click()`);
+    await waitFor(`document.querySelector('.st-page')?.dataset.section === 'system-health' && !document.querySelector('#stContent .skeleton-line')`, "last section reachable from the strip");
+    assert.ok(await evalJs(`(() => { const a = document.querySelector('.st-nav-item.active').getBoundingClientRect(), l = document.querySelector('#stNavList').getBoundingClientRect(); return a.left >= l.left - 1 && a.right <= l.right + 1; })()`), "active tab is scrolled into view");
+    console.log("12. Tablet tab strip: single-line labels, scroll affordances, all sections reachable — PASS");
+
+    // 13. G4 denied panel
+    await useCookie(limitedCookie); await viewport(1440); await go("settings/people", `!!document.querySelector('.st-denied-panel')`);
+    assert.ok(await evalJs(`document.querySelector('.st-denied-panel h2').textContent.includes('access') && document.activeElement.id === 'stDeniedTitle'`), "denied panel has a heading and receives focus");
+    assert.ok(await evalJs(`document.querySelector('.st-denied-panel').getAttribute('role') === 'region' && document.querySelector('.st-denied-panel').getAttribute('aria-labelledby') === 'stDeniedTitle'`), "labelled region");
+    assert.equal(await evalJs(`document.querySelector('.st-denied-back').getAttribute('href')`), "#/settings", "return navigation");
+    assert.ok(await evalJs(`document.querySelector('.st-denied-back').getBoundingClientRect().height >= 44`), "return link is a 44px target");
+    assert.ok(/staff\.manage/.test(await evalJs(`document.querySelector('.st-denied-panel').textContent`)), "names the required permission");
+    assert.equal(await evalJs(`document.querySelectorAll('#stContent .st-card').length`), 0, "no section data rendered for the denied section");
+    assert.equal((await api(limitedCookie, "/api/lead-agents/admin/permissions")).status, 403, "server-side authorization still denies the underlying API");
+    await go("settings/not-a-section", `!!document.querySelector('.st-denied-panel')`);
+    assert.ok(/not found/i.test(await evalJs(`document.querySelector('.st-denied-panel h2').textContent`)), "unknown section is reported as not found");
+    console.log("13. Denied panel: heading, focus, return navigation, server still enforces — PASS");
+
+    // 14. G3 truthful twin status, G6 tile + selected nav, G5 back target, G7 button
+    await useCookie(superCookie); await viewport(1440); await go("settings/integrations");
+    const twin = await evalJs(`[...document.querySelectorAll('.st-provider')].find(c => /Digital Twin/.test(c.textContent))?.innerText || ''`);
+    assert.ok(/Available in-process/.test(twin) && /no network probe/i.test(twin) && !/Reachable/i.test(twin), "same-origin twin is never called reachable");
+    const backend = await evalJs(`[...document.querySelectorAll('.st-provider')].find(c => /Backend Control Plane/.test(c.textContent))?.innerText || ''`);
+    assert.ok(/Reachable/.test(backend) && /HTTP 200/.test(backend), "a genuine network probe still reads Reachable with its HTTP status");
+    await go("settings");
+    assert.ok(await evalJs(`[...document.querySelectorAll('.st-tile')].every(t => { const i = t.querySelector('.st-tile-ico').getBoundingClientRect(), n = t.querySelector('.st-tile-name').getBoundingClientRect(); return Math.abs((i.top + i.height / 2) - (n.top + n.height / 2)) < 6 && n.left > i.right - 1; })`), "tile icons sit beside their labels");
+    assert.ok(/rgb\(179, 36, 27\)/.test(await evalJs(`getComputedStyle(document.querySelector('.st-nav-item.active')).backgroundImage`)), "selected nav uses the existing Ochiga red token");
+    assert.ok(await evalJs(`getComputedStyle(document.querySelector('.st-nav-item.active')).boxShadow.includes('rgb(211, 55, 44)')`), "selected nav keeps the bright-red rule");
+    for (const w of [1440, 1100, 900, 768]) { await viewport(w); await go("settings"); assert.ok(await evalJs(`[...document.querySelectorAll('.st-tile-name')].every(n => { const t = n.closest('.st-tile').getBoundingClientRect(), r = n.getBoundingClientRect(); const range = document.createRange(); range.selectNodeContents(n); const tr = range.getBoundingClientRect(); return n.scrollWidth <= n.clientWidth + 1 && tr.right <= t.right - 4; })`), `${w}px: no tile label overflows its tile or breaks mid-word`); }
+    await viewport(1440); await go("settings");
+    assert.ok(await evalJs(`[...document.querySelectorAll('.st-tile-name')].every(n => !/\\s$/.test(n.textContent) && Math.round(n.getBoundingClientRect().height) <= 36)`), "tile labels wrap by whole words at most");
+    await viewport(390, 800, true); await go("settings/organization", `!!document.querySelector('.st-form')`);
+    assert.ok(await evalJs(`(() => { const r = document.querySelector('.st-back').getBoundingClientRect(); return r.height >= 44 && r.width >= 44; })()`), "back link is a 44px target");
+    assert.ok(await evalJs(`[...document.querySelectorAll('.st-form-bar .btn, .st-field input')].every(e => e.getBoundingClientRect().height >= 44)`), "form buttons and inputs are 44px targets on mobile");
+    await go("settings/integrations");
+    assert.ok(await evalJs(`[...document.querySelectorAll('#stContent .btn')].every(e => e.getBoundingClientRect().height >= 44)`), "sync buttons are 44px targets on mobile");
+    await go("settings/communications", `!!document.querySelector('#waAutonomyToggle')`);
+    assert.ok(await evalJs(`document.querySelector('#waAutonomyToggle').getBoundingClientRect().height >= 44`), "autonomy button is a 44px target on mobile");
+    assert.ok(await evalJs(`getComputedStyle(document.querySelector('#waAutonomyToggle')).backgroundColor !== 'rgb(239, 239, 239)'`), "autonomy button no longer renders as the pale default block");
+    assert.ok(await noOverflow(), "no overflow");
+    console.log("14. Truthful twin status, tile alignment, selected nav, 44px targets, autonomy button styling — PASS");
 
     assert.equal(sent.filter((s) => !s.startsWith("GET ")).length, 0, "Settings made only read (GET health) calls to the Backend: nothing that could reach customers");
     assert.deepEqual(errors, [], `no uncaught page errors (${errors.join(" | ").slice(0, 300)})`);

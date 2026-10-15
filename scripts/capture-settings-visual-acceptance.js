@@ -45,7 +45,7 @@ async function main() {
   await call("super", "/api/lead-agents/admin/letterhead-config", { method: "PATCH", body: JSON.stringify({ tagline: "Visual acceptance fixture", email: "office@ochiga.test" }) });
 
   const userDir = fs.mkdtempSync(path.join(os.tmpdir(), "stv-chrome-"));
-  const chrome = spawn(CHROME, ["--headless=new", "--remote-debugging-port=9353", `--user-data-dir=${userDir}`, "--no-first-run", "--disable-gpu", "--hide-scrollbars", "about:blank"], { stdio: "ignore" });
+  const chrome = spawn(CHROME, ["--headless=new", "--remote-debugging-port=9353", `--user-data-dir=${userDir}`, "--no-first-run", "--disable-gpu", "--hide-scrollbars", "--disable-features=BackForwardCache", "about:blank"], { stdio: "ignore" });
   let ws, id = 0; const pending = new Map(); const results = { captured: [], permission_matrix: {}, accessibility: {}, function: {}, overflow: {}, console_errors: [] };
   try {
     let targets; for (let i = 0; i < 50 && !targets; i++) { try { targets = await (await fetch("http://127.0.0.1:9353/json")).json(); } catch { await sleep(200); } }
@@ -132,6 +132,39 @@ async function main() {
     // keyboard-only: Tab order moves through the sidebar items in DOM order
     results.accessibility.tab_order = await ev(`(() => { const items = [...document.querySelectorAll('.st-nav-item')]; return items.length === 14 && items.every(i => i.tabIndex === 0); })()`);
 
+    // ---- correction-slice checks (G1-G8) ----
+    results.corrections = { tablet_tabs: {}, touch_targets_390: {}, orb_overlap: {} };
+    await as("super");
+    for (const w of [1100, 900]) {
+      await viewport(w); await go("settings");
+      results.corrections.tablet_tabs[w] = await ev(`(() => { const labels = [...document.querySelectorAll('.st-nav-label')]; const l = document.querySelector('#stNavList'); const side = document.querySelector('.st-side'); return { sections: labels.length, max_label_height: Math.max(...labels.map(x => Math.round(x.getBoundingClientRect().height))), more_right: side.dataset.moreRight, scroll_button_visible: getComputedStyle(document.querySelector('.st-scroll-r')).display !== 'none', scrollable: l.scrollWidth > l.clientWidth }; })()`);
+      await ev(`document.querySelector('.st-scroll-r').click()`); await sleep(500);
+      await snap(`tabs-scrolled-${w}`, `Tablet tab strip after scrolling right (left affordance visible) — ${w}px`, false);
+    }
+    await viewport(390);
+    for (const [name, hash] of [["landing", "settings"], ["organization", "settings/organization"], ["communications", "settings/communications"], ["integrations", "settings/integrations"]]) {
+      await go(hash);
+      results.corrections.touch_targets_390[name] = await ev(`[...document.querySelectorAll('.st-page a[href], .st-page button, .st-page input, .st-page [role=button]')].filter(e => { const r = e.getBoundingClientRect(); const cs = getComputedStyle(e); return r.width > 0 && r.height > 0 && cs.visibility !== 'hidden' && !e.closest('p, small, dd, li.st-nav-empty') && r.height < 44; }).map(e => ({ tag: e.tagName.toLowerCase(), text: (e.textContent || e.name || '').trim().slice(0, 28), h: Math.round(e.getBoundingClientRect().height) }))`);
+    }
+    for (const w of WIDTHS) {
+      await viewport(w); await go("settings");
+      results.corrections.orb_overlap[w] = await ev(`(() => { const orb = document.querySelector('.oyi-orb'); if (!orb) return { present: false }; const o = orb.getBoundingClientRect(); const hits = [...document.querySelectorAll('.st-card, .st-tile, .st-action, .st-nav-item, .st-activity li')].filter(e => { const r = e.getBoundingClientRect(); return r.width && r.height && !(r.right < o.left || r.left > o.right || r.bottom < o.top || r.top > o.bottom); }).map(e => e.className.split(' ')[0]); return { present: true, fixed: getComputedStyle(orb.closest('.oyi-control') || orb).position, draggable_control: !!document.querySelector('.oyi-control'), overlaps: [...new Set(hits)] }; })()`);
+    }
+    await viewport(1440); await go("settings");
+    const act = await ev(`document.querySelector('.st-activity')?.innerText || ''`);
+    results.corrections.activity = { rows: (act.match(/\n/g) || []).length, has_login: /log\s?in|log\s?out/i.test(act), has_uuid: /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}/i.test(act), text: act.replace(/\n+/g, " | ").slice(0, 400) };
+    await go("settings/integrations");
+    results.corrections.twin_card = await ev(`[...document.querySelectorAll('.st-provider')].find(c => /Digital Twin/.test(c.textContent))?.innerText.replace(/\\n+/g, ' | ')`);
+    results.corrections.backend_card = await ev(`[...document.querySelectorAll('.st-provider')].find(c => /Backend Control Plane/.test(c.textContent))?.innerText.replace(/\\n+/g, ' | ')`);
+    await go("settings");
+    results.corrections.tiles_icon_beside_label = await ev(`[...document.querySelectorAll('.st-tile')].every(t => { const i = t.querySelector('.st-tile-ico').getBoundingClientRect(), n = t.querySelector('.st-tile-name').getBoundingClientRect(); return Math.abs((i.top + i.height / 2) - (n.top + n.height / 2)) < 6 && n.left > i.right - 1; })`);
+    results.corrections.selected_nav = await ev(`(() => { const c = getComputedStyle(document.querySelector('.st-nav-item.active')); return { background: c.backgroundImage.slice(0, 80), rule: c.boxShadow.slice(0, 40) }; })()`);
+    await as("limited"); await viewport(1440); await go("settings/people", `!!document.querySelector('.st-denied-panel')`);
+    results.corrections.denied = await ev(`({ heading: document.querySelector('.st-denied-panel h2').textContent, focused: document.activeElement.id, back_href: document.querySelector('.st-denied-back').getAttribute('href'), back_height: Math.round(document.querySelector('.st-denied-back').getBoundingClientRect().height) })`);
+    await snap("denied-section-1440", "Denied deep link (settings/people, user lacks staff.manage) — 1440px", false);
+    await viewport(390); await go("settings/people", `!!document.querySelector('.st-denied-panel')`); await snap("denied-section-390", "Denied deep link — 390px", false);
+
+    await as("super");
     // ---- function: autonomy toggle + letterhead, via the real UI against the real server ----
     await viewport(1440); await go("settings/communications", `!!document.querySelector('#waAutonomyToggle')`);
     const before = (await (await call("super", "/api/lead-agents/admin/settings/whatsapp-autonomy")).json()).whatsapp_autonomy.enabled;

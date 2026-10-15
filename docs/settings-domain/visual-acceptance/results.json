@@ -157,6 +157,22 @@
       "label": "Keyboard focus ring on first sidebar item (real Tab key) — 1440px"
     },
     {
+      "file": "shots/tabs-scrolled-1100.png",
+      "label": "Tablet tab strip after scrolling right (left affordance visible) — 1100px"
+    },
+    {
+      "file": "shots/tabs-scrolled-900.png",
+      "label": "Tablet tab strip after scrolling right (left affordance visible) — 900px"
+    },
+    {
+      "file": "shots/denied-section-1440.png",
+      "label": "Denied deep link (settings/people, user lacks staff.manage) — 1440px"
+    },
+    {
+      "file": "shots/denied-section-390.png",
+      "label": "Denied deep link — 390px"
+    },
+    {
       "file": "shots/communications-autonomy-on-1440.png",
       "label": "Communications with autonomy ON (test data only; restored immediately) — 1440px"
     }
@@ -282,9 +298,7 @@
       "images_without_alt": 0,
       "status_live_regions": 1,
       "focus_outline_on_nav_item": null,
-      "targets_under_24px": [
-        "‹ All settings"
-      ],
+      "targets_under_24px": [],
       "contrast": {
         "title": 18.76,
         "nav_label": 16.93,
@@ -377,5 +391,90 @@
     "organization@390": true,
     "security@390": true
   },
-  "console_errors": []
+  "console_errors": [],
+  "corrections": {
+    "tablet_tabs": {
+      "900": {
+        "sections": 14,
+        "max_label_height": 20,
+        "more_right": "1",
+        "scroll_button_visible": true,
+        "scrollable": true
+      },
+      "1100": {
+        "sections": 14,
+        "max_label_height": 20,
+        "more_right": "1",
+        "scroll_button_visible": true,
+        "scrollable": true
+      }
+    },
+    "touch_targets_390": {
+      "landing": [],
+      "organization": [],
+      "communications": [],
+      "integrations": []
+    },
+    "orb_overlap": {
+      "390": {
+        "present": true,
+        "fixed": "fixed",
+        "draggable_control": true,
+        "overlaps": [
+          "st-nav-item"
+        ]
+      },
+      "768": {
+        "present": true,
+        "fixed": "fixed",
+        "draggable_control": true,
+        "overlaps": [
+          "st-nav-item"
+        ]
+      },
+      "900": {
+        "present": true,
+        "fixed": "fixed",
+        "draggable_control": true,
+        "overlaps": [
+          "st-action"
+        ]
+      },
+      "1100": {
+        "present": true,
+        "fixed": "fixed",
+        "draggable_control": true,
+        "overlaps": [
+          "st-action"
+        ]
+      },
+      "1440": {
+        "present": true,
+        "fixed": "fixed",
+        "draggable_control": true,
+        "overlaps": [
+          "st-card"
+        ]
+      }
+    },
+    "activity": {
+      "rows": 5,
+      "has_login": false,
+      "has_uuid": false,
+      "text": "Corporate letterhead updated | super@ochiga.test | 15 Oct, 16:38 | WhatsApp autonomous replies changed | super@ochiga.test · Set to OFF (previously the default, OFF) | 15 Oct, 16:38"
+    },
+    "twin_card": "Oyi Digital Twin Binding | DIGITAL TWIN | Available in-process | CHECK | In-process; no network probe made",
+    "backend_card": "Oyi Edge / Backend Control Plane | BACKEND | Reachable | HEALTH PROBE | HTTP 200",
+    "tiles_icon_beside_label": true,
+    "selected_nav": {
+      "background": "linear-gradient(90deg, rgb(179, 36, 27) 0%, rgba(179, 36, 27, 0.45) 45%, rgba(17",
+      "rule": "rgb(211, 55, 44) 3px 0px 0px 0px inset"
+    },
+    "denied": {
+      "heading": "You don't have access to People & Access",
+      "focused": "stDeniedTitle",
+      "back_href": "#/settings",
+      "back_height": 44
+    }
+  }
 }

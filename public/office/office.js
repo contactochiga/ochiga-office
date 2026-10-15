@@ -10060,6 +10060,7 @@ const ST_STATES = {
   unavailable: ["Unavailable", "grey"],
   not_qualified: ["Not qualified", "violet"],
   online: ["Online", "green"],
+  in_process: ["Available in-process", "blue"],
   info: ["Info", "blue"],
 };
 const SETTINGS_OWNER = { facility: "Facility", consumer: "Consumer", website: "Website", edge: "Backend", digital_twin: "Digital Twin", events: "Office", email: "Office", storage: "Office", maps: "Office", whatsapp: "Office · Meta", meta: "Office · Meta", linkedin: "Office", google_oauth: "Office", google_marketing: "Office", webhooks: "Office" };
@@ -10073,6 +10074,8 @@ function stDeriveIntegrationState(key, value) {
   if (!value || typeof value !== "object") return "unavailable";
   if (key === "events") return "info";
   const probe = value.endpoint_health || value.backend_health || value.scene_endpoint;
+  // A same-origin binding is served by this process: it is available, but no network probe was made, so it must never read as "Reachable".
+  if (probe && probe.same_origin) return probe.ok ? "in_process" : "unavailable";
   if (probe && probe.checked) return probe.ok ? "reachable" : "unreachable";
   if (value.same_origin) return "info";
   if (value.configured === false || value.status === "not_configured" || value.status === "missing_credentials" || value.status === "pending_integration") return "not_configured";
@@ -10105,6 +10108,9 @@ function stUnavailable({ title, reason, link }) {
 function stPermissionGate(perm, render, fallbackText) {
   if (hasPermission(perm)) return render();
   return el(`<div class="st-denied" role="note">${escapeHtml(fallbackText || "You don't have access to this information.")} <code>${escapeHtml(perm)}</code></div>`);
+}
+function stDeniedPanel({ title, body, perm }) {
+  return el(`<section class="st-denied st-denied-panel" role="region" aria-labelledby="stDeniedTitle"><span class="st-denied-ico" aria-hidden="true">${iconSvg("private", "st-ico")}</span><div><h2 id="stDeniedTitle" tabindex="-1">${escapeHtml(title)}</h2><p>${escapeHtml(body)}${perm ? ` Required permission: <code>${escapeHtml(perm)}</code>.` : ""}</p><p class="st-note">If you need this access, ask an administrator. Access is enforced by the server, not by this page.</p><a class="btn btn-ghost btn-sm st-denied-back" href="#/settings">Back to Settings overview</a></div></section>`);
 }
 function stErrorWithRetry(message, retry) {
   const node = el(`<div class="st-error" role="alert"><strong>Could not load</strong><p>${escapeHtml(message)}</p><button class="btn btn-ghost btn-sm" type="button">Retry</button></div>`);
@@ -10224,16 +10230,53 @@ function stUptime(ms) {
 }
 function stTileEl(t) {
   const label = t.label || stStateLabel(t.state);
-  return el(`<a class="st-tile" href="#/settings/${escapeHtml(t.section)}"><span class="st-tile-ico">${stIcon(t.icon)}</span><span class="st-tile-text"><span class="st-tile-name">${escapeHtml(t.name)}</span>${stStatusIndicator(t.state, label)}<span class="st-tile-detail">${escapeHtml(t.detail || "")}</span></span></a>`);
+  return el(`<a class="st-tile" href="#/settings/${escapeHtml(t.section)}"><span class="st-tile-top"><span class="st-tile-ico">${stIcon(t.icon)}</span><span class="st-tile-name">${escapeHtml(t.name)}</span></span>${stStatusIndicator(t.state, label)}<span class="st-tile-detail">${escapeHtml(t.detail || "")}</span></a>`);
 }
-const ST_ACTIVITY_PATTERN = /setting|letterhead|integration|autonomy|user|role|permission|outbox|repair|invite|password|storage|sync|team|staff/i;
+// Genuine configuration/access changes only, matched against the audited event types Office already writes (exact names, never a loose pattern).
+// Logins, logouts, permission denials, sends and other operational events are deliberately excluded; the full history stays in Audit.
+const ST_CONFIG_ACTIONS = {
+  whatsapp_autonomy_setting_changed: "WhatsApp autonomous replies changed",
+  office_letterhead_config_updated: "Corporate letterhead updated",
+  admin_user_created: "Team member added",
+  admin_user_updated: "Team member updated",
+  admin_user_removed: "Team member removed",
+  admin_user_restored: "Team member restored",
+  admin_user_permanently_deleted: "Team member permanently deleted",
+  admin_invite_created: "Team invitation created",
+  password_reset_issued: "Password reset issued",
+  staff_routing_profile_updated: "Staff routing profile updated",
+};
+const ST_CONFIG_PREFIXES = [["communication.outbox.", "Delivery outbox"], ["whatsapp.inbound_visibility.", "Inbound visibility"]];
+function stActivityTitle(e) {
+  const action = String(e.action || "");
+  if (ST_CONFIG_ACTIONS[action]) return ST_CONFIG_ACTIONS[action];
+  const pre = ST_CONFIG_PREFIXES.find(([p]) => action.startsWith(p));
+  if (pre) { const verb = action.slice(pre[0].length).replace(/_/g, " "); return `${pre[1]} ${verb}`; }
+  return null;
+}
+function stActivityDetail(e) {
+  const m = e.metadata && typeof e.metadata === "object" ? e.metadata : {};
+  const parts = [];
+  if (e.action === "whatsapp_autonomy_setting_changed" && typeof m.new_value === "boolean") {
+    const to = m.new_value ? "ON" : "OFF";
+    if (typeof m.old_value !== "boolean") parts.push(`Set to ${to} (previously the default, OFF)`);
+    else if (m.old_value === m.new_value) parts.push(`Saved, unchanged (${to})`);
+    else parts.push(`${m.old_value ? "ON" : "OFF"} → ${to}`);
+  }
+  else if (e.action === "whatsapp_autonomy_setting_changed" && m.requested !== undefined) parts.push("Change was not saved");
+  if (m.email && /^admin_/.test(e.action)) parts.push(String(m.email));
+  if (m.role && /^admin_user_(created|updated)/.test(e.action)) parts.push(`role ${titleCase(m.role)}`);
+  if (m.dry_run === true) parts.push("dry run");
+  if (e.status && e.status !== "success") parts.push(titleCase(e.status));
+  return parts.join(" · ");
+}
 function stRecentActivity(audit, limit = 5) {
-  return (audit || []).filter((e) => ST_ACTIVITY_PATTERN.test(String(e.action || ""))).slice(0, limit);
+  return (audit || []).filter((e) => stActivityTitle(e)).slice(0, limit);
 }
 function stActivityList(audit, limit) {
   const rows = stRecentActivity(audit, limit);
-  if (!rows.length) return `<p class="st-note">No configuration changes found in the ${(audit || []).length} most recent audit events.</p>`;
-  return `<ul class="st-activity">${rows.map((e) => `<li><span class="st-act-ico">${stIcon("audit")}</span><span class="st-act-text"><strong>${escapeHtml(titleCase(e.action))}</strong><small>${escapeHtml(e.actor_email || "system")} · ${escapeHtml(`${e.target_type || e.resource_type || ""} ${e.target_id || e.resource_id || ""}`.trim() || "—")}</small></span><time datetime="${escapeHtml(e.created_at || "")}">${escapeHtml(fmtDateTime(e.created_at))}</time></li>`).join("")}</ul>`;
+  if (!rows.length) return `<p class="st-note">No configuration changes in the ${(audit || []).length} most recent audit events. Other activity, such as sign-ins, is in the full audit trail.</p>`;
+  return `<ul class="st-activity">${rows.map((e) => { const detail = stActivityDetail(e); return `<li><span class="st-act-ico">${stIcon("audit")}</span><span class="st-act-text"><strong>${escapeHtml(stActivityTitle(e))}</strong><small>${escapeHtml(e.actor_email || "system")}${detail ? ` · ${escapeHtml(detail)}` : ""}</small></span><time datetime="${escapeHtml(e.created_at || "")}">${escapeHtml(fmtDateTime(e.created_at))}</time></li>`; }).join("")}</ul>`;
 }
 
 // ---- section renderers: each returns a node; every one handles its own error/denied/unavailable states ----
@@ -10358,7 +10401,8 @@ function stIntegrationCards(integ, keys) {
     const v = integ[k]; const state = stDeriveIntegrationState(k, v);
     const probe = v.endpoint_health || v.backend_health || v.scene_endpoint;
     const facts = [];
-    if (probe && probe.checked) facts.push(["Health probe", probe.http_status ? `HTTP ${probe.http_status}` : escapeHtml(String(probe.status || "no response"))]);
+    if (probe && probe.same_origin) facts.push(["Check", "In-process; no network probe made"]);
+    else if (probe && probe.checked) facts.push(["Health probe", probe.http_status ? `HTTP ${probe.http_status}` : escapeHtml(String(probe.status || "no response"))]);
     else if (probe) facts.push(["Health probe", "Not run"]);
     if (Array.isArray(v.missing) && v.missing.length) facts.push(["Missing configuration", escapeHtml(v.missing.join(", "))]);
     grid.appendChild(stProviderCard({ name: v.name || titleCase(k), owner: SETTINGS_OWNER[k] || "Office", state, facts }));
@@ -10513,7 +10557,24 @@ function stNavListHtml(active) {
   return list || `<li class="st-nav-empty">No settings match “${escapeHtml(stSearchText)}”.</li>`;
 }
 function stSidebarHtml(active) {
-  return `<label class="st-search"><span class="st-search-ico">${stIcon("st-search")}</span><input type="search" id="stSearch" placeholder="Search settings…" aria-label="Search settings" value="${escapeHtml(stSearchText)}" autocomplete="off" /></label><ul class="st-nav-list" role="list" id="stNavList">${stNavListHtml(active)}</ul>`;
+  return `<label class="st-search"><span class="st-search-ico">${stIcon("st-search")}</span><input type="search" id="stSearch" placeholder="Search settings…" aria-label="Search settings" value="${escapeHtml(stSearchText)}" autocomplete="off" /></label><div class="st-navwrap"><button type="button" class="st-scroll st-scroll-l" aria-label="Scroll sections left" tabindex="-1">‹</button><ul class="st-nav-list" role="list" id="stNavList">${stNavListHtml(active)}</ul><button type="button" class="st-scroll st-scroll-r" aria-label="Scroll sections right" tabindex="-1">›</button></div>`;
+}
+// Tablet tab strip: edge fades + arrow buttons appear only while more sections are off-screen. Keyboard users still Tab through every item.
+function stBindTabScroll(side) {
+  const list = side && side.querySelector("#stNavList");
+  if (!list) return;
+  const update = () => {
+    if (!side.isConnected) { window.removeEventListener("resize", update); return; }
+    const max = list.scrollWidth - list.clientWidth;
+    side.dataset.moreLeft = list.scrollLeft > 2 ? "1" : "0";
+    side.dataset.moreRight = max > 2 && list.scrollLeft < max - 2 ? "1" : "0";
+  };
+  list.addEventListener("scroll", update, { passive: true });
+  window.addEventListener("resize", update);
+  side.querySelector(".st-scroll-l").addEventListener("click", () => list.scrollBy({ left: -Math.max(160, list.clientWidth * 0.6), behavior: "smooth" }));
+  side.querySelector(".st-scroll-r").addEventListener("click", () => list.scrollBy({ left: Math.max(160, list.clientWidth * 0.6), behavior: "smooth" }));
+  list.addEventListener("focusin", (e) => { if (e.target.scrollIntoView) e.target.scrollIntoView({ block: "nearest", inline: "nearest" }); });
+  update();
 }
 
 async function renderSettingsView(outlet, token, rest = []) {
@@ -10531,14 +10592,15 @@ async function renderSettingsView(outlet, token, rest = []) {
   searchInput.addEventListener("input", () => {
     stSearchText = searchInput.value;
     page.querySelector("#stNavList").innerHTML = stNavListHtml(active);
+    page.querySelector("#stNavList").dispatchEvent(new Event("scroll"));
   });
   const content = page.querySelector("#stContent");
   content.appendChild(skeletonPanel(4));
   const drawSection = async () => {
     let node;
     try {
-      if (!def) node = el(`<div class="st-denied">Unknown settings section “${escapeHtml(requested)}”. <a class="st-link" href="#/settings">Back to overview</a></div>`);
-      else if (!hasPermission(def.perm)) node = el(`<div class="st-denied" role="alert">You don't have access to ${escapeHtml(def.label)}. Required permission: <code>${escapeHtml(def.perm)}</code></div>`);
+      if (!def) node = stDeniedPanel({ title: "Settings section not found", body: `There is no settings section called “${requested}”.` });
+      else if (!hasPermission(def.perm)) node = stDeniedPanel({ title: `You don't have access to ${def.label}`, body: "Your role doesn't include this part of Settings.", perm: def.perm });
       else if (ST_UNAVAILABLE[active]) node = await stRenderUnavailableSection(ST_UNAVAILABLE[active]);
       else node = await ST_RENDERERS[active](() => { content.innerHTML = ""; content.appendChild(skeletonPanel(4)); drawSection(); }, token);
     } catch (err) {
@@ -10547,8 +10609,14 @@ async function renderSettingsView(outlet, token, rest = []) {
     if (token !== state.renderToken) return;
     content.innerHTML = "";
     content.appendChild(node);
+    // a restricted or missing section moves focus to its heading so keyboard and screen-reader users hear the outcome
+    const deniedHeading = content.querySelector("#stDeniedTitle");
+    if (deniedHeading) deniedHeading.focus({ preventScroll: true });
   };
   await drawSection();
+  const activeNav = page.querySelector(".st-nav-item.active");
+  if (activeNav && activeNav.scrollIntoView) activeNav.scrollIntoView({ block: "nearest", inline: "center" });
+  stBindTabScroll(page.querySelector(".st-side"));
 }
 
 // ---------------------------------------------------------------
