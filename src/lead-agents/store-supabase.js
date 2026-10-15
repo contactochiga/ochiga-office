@@ -489,6 +489,36 @@ class SupabaseLeadAgentsStore {
     return true;
   }
 
+  // Relationship workspace read helpers (read-only).
+  async listLatestConversationsForLeads(leadIds) {
+    const ids = [...new Set((leadIds || []).filter(Boolean))];
+    const latest = {};
+    if (!ids.length) return latest;
+    const response = await this.client.get(
+      `/conversations?lead_id=in.(${ids.map(encodeURIComponent).join(",")})&order=created_at.desc&limit=${Math.min(ids.length * 4, 1000)}&select=id,lead_id,message_role,channel,content,created_at`
+    );
+    for (const row of response.data) if (!latest[row.lead_id]) latest[row.lead_id] = row;
+    return latest;
+  }
+
+  async listLeadChannelStatesForLeads(leadIds, channel = "whatsapp") {
+    const ids = [...new Set((leadIds || []).filter(Boolean))];
+    if (!ids.length) return [];
+    const response = await this.client.get(
+      `/lead_channel_states?lead_id=in.(${ids.map(encodeURIComponent).join(",")})&channel=eq.${encodeURIComponent(channel)}`
+    );
+    return response.data;
+  }
+
+  async listInboundStatusEventsByExternalIds(externalIds) {
+    const ids = [...new Set((externalIds || []).filter(Boolean))].slice(0, 200);
+    if (!ids.length) return [];
+    const response = await this.client.get(
+      `/inbound_events?external_event_id=in.(${ids.map((id) => encodeURIComponent(`"${id}"`)).join(",")})&event_type=like.status:*&select=id,event_type,external_event_id,created_at`
+    );
+    return response.data;
+  }
+
   async getLeadChannelState(leadId, channel) {
     const response = await this.client.get(
       `/lead_channel_states?lead_id=eq.${leadId}&channel=eq.${channel}&limit=1`

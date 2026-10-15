@@ -657,6 +657,27 @@ class FileLeadAgentsStore {
     return true;
   }
 
+  // Relationship workspace read helpers (read-only).
+  async listLatestConversationsForLeads(leadIds) {
+    const wanted = new Set(leadIds || []);
+    const latest = {};
+    for (const item of this.state.conversations) {
+      if (!wanted.has(item.lead_id)) continue;
+      if (!latest[item.lead_id] || String(item.created_at) > String(latest[item.lead_id].created_at)) latest[item.lead_id] = item;
+    }
+    return latest;
+  }
+
+  async listLeadChannelStatesForLeads(leadIds, channel = "whatsapp") {
+    const wanted = new Set(leadIds || []);
+    return this.state.lead_channel_states.filter((item) => wanted.has(item.lead_id) && item.channel === channel);
+  }
+
+  async listInboundStatusEventsByExternalIds(externalIds) {
+    const wanted = new Set((externalIds || []).filter(Boolean));
+    return this.state.inbound_events.filter((item) => wanted.has(item.external_event_id) && String(item.event_type).startsWith("status:"));
+  }
+
   async getLeadChannelState(leadId, channel) {
     return (
       this.state.lead_channel_states.find(

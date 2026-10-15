@@ -125,6 +125,8 @@ const { createPlanStudioRuntime } = require("./plan-studio");
 const { createOfficeSyncService } = require("./office-sync");
 const { appendAuditRecord } = require("./audit");
 const { PERMISSION_KEYS, ROLE_PERMISSIONS, hasPermission } = require("./permissions");
+const relationshipWorkspace = require("./relationship-workspace");
+const recentManualReplyIds = new Map();
 const { recallCrmMemory } = require("./crm-memory-access");
 const { createRealtimeHub } = require("./realtime");
 const { createStorageService } = require("./storage");
@@ -6720,6 +6722,102 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
         return;
       }
 
+      // Unified CRM Relationship Workspace (read model). Staff-only (crm.read); customers' external communications only -- staff_conversations/staff_messages are never read.
+      // Inbox: GET .../admin/crm/relationships?q=&filter=all|unread|mine&contact_id=&organization_id=&opportunity_id=&limit=&offset=
+      // Thread: GET .../admin/crm/relationships/:leadId?before=<cursor>&limit=&opportunity_id=&q=
+      const relationshipMatch = pathname.match(/^\/api\/lead-agents\/admin\/crm\/relationships(?:\/([^/]+))?$/);
+      if (relationshipMatch) {
+        if (req.method !== "GET") {
+          methodNotAllowed(res, "GET");
+          return;
+        }
+        authorizePermission(authContext, "crm.read");
+        const params = new URL(req.url, "http://office.local").searchParams;
+        const q = String(params.get("q") || "").trim().toLowerCase();
+        const [allLeads, opportunities] = await Promise.all([store.listLeads(), listCorporateRecords(store, "opportunities")]);
+        const leadId = relationshipMatch[1] ? decodeURIComponent(relationshipMatch[1]) : "";
+        if (!leadId) {
+          const scope = { contact_id: params.get("contact_id") || "", organization_id: params.get("organization_id") || "", opportunity_id: params.get("opportunity_id") || "" };
+          let scoped = allLeads.filter((lead) => lead.source !== "smoke_test");
+          if (scope.contact_id || scope.organization_id || scope.opportunity_id) {
+            const [contacts, activities] = await Promise.all([
+              scope.contact_id ? listCorporateRecords(store, "contacts") : [],
+              scope.contact_id ? listCorporateRecords(store, "activities") : [],
+            ]);
+            const ids = relationshipWorkspace.leadIdsForScope({ leads: scoped, contacts, opportunities, activities, scope });
+            scoped = scoped.filter((lead) => ids.has(lead.id));
+          }
+          if (q) scoped = scoped.filter((lead) => `${lead.name || ""} ${lead.company || ""} ${lead.email || ""} ${lead.phone || ""} ${lead.summary || ""}`.toLowerCase().includes(q));
+          scoped.sort((a, b) => String(b.last_contact_at || b.updated_at || b.created_at).localeCompare(String(a.last_contact_at || a.updated_at || a.created_at)));
+          const limit = Math.min(Math.max(Number(params.get("limit")) || 30, 1), 100);
+          const offset = Math.max(Number(params.get("offset")) || 0, 0);
+          const pageLeads = scoped.slice(offset, offset + limit);
+          const pageIds = pageLeads.map((lead) => lead.id);
+          const [latest, states, allActivities] = await Promise.all([store.listLatestConversationsForLeads(pageIds), store.listLeadChannelStatesForLeads(pageIds, "whatsapp"), listCorporateRecords(store, "activities")]);
+          const stateByLead = new Map(states.map((state) => [state.lead_id, state]));
+          const pageSet = new Set(pageIds);
+          const activitiesByLead = new Map();
+          for (const activity of allActivities) if (activity.lead_id && pageSet.has(activity.lead_id)) (activitiesByLead.get(activity.lead_id) || activitiesByLead.set(activity.lead_id, []).get(activity.lead_id)).push(activity);
+          let items = pageLeads.map((lead) => relationshipWorkspace.buildInboxEntry({ lead, lastMessage: relationshipWorkspace.latestMessageFor({ conversation: latest[lead.id], activities: activitiesByLead.get(lead.id) || [] }), channelState: stateByLead.get(lead.id), opportunities }));
+          const filter = String(params.get("filter") || "all");
+          if (filter === "unread") items = items.filter((item) => item.unread);
+          if (filter === "mine") items = items.filter((item) => authContext.email && [item.owner, item.human_owner].some((v) => String(v || "").toLowerCase() === String(authContext.email).toLowerCase()));
+          json(res, 200, { relationships: items, total: scoped.length, offset, limit, has_more: offset + limit < scoped.length }, { "x-request-id": ctx.requestId });
+          return;
+        }
+        const lead = await store.getLead(leadId).catch(() => null);
+        if (!lead) {
+          json(res, 404, { error: "lead_not_found" }, { "x-request-id": ctx.requestId });
+          return;
+        }
+        const [conversations, timeline, activities, documents, channelState, setting] = await Promise.all([
+          store.listConversationsForLead(leadId, 500),
+          store.listTimelineForLead(leadId, 500),
+          listCorporateRecords(store, "activities"),
+          hasPermission(authContext, "documents.generate") ? store.listOfficeDocuments().catch(() => []) : Promise.resolve([]),
+          store.getLeadChannelState(leadId, "whatsapp").catch(() => null),
+          readWhatsAppAutonomySetting(store),
+        ]);
+        const leadActivities = activities.filter((a) => a.lead_id === leadId);
+        const leadOpportunities = opportunities.filter((o) => o.lead_id === leadId);
+        const opportunityIds = new Set(leadOpportunities.map((o) => o.id));
+        const leadDocuments = documents.filter((d) => (d.related_type === "lead" && d.related_id === leadId) || (d.related_type === "opportunity" && opportunityIds.has(d.related_id)));
+        const statusEvents = await store.listInboundStatusEventsByExternalIds(conversations.map((c) => c.external_message_id).filter(Boolean)).catch(() => []);
+        const thread = relationshipWorkspace.buildThread({
+          lead, conversations, timeline, activities: leadActivities, statusEvents, documents: leadDocuments,
+          opportunityId: params.get("opportunity_id") || "", before: params.get("before") || "", limit: params.get("limit") || 50, search: q,
+        });
+        const takeoverActive = Boolean(channelState && ["human_active", "human_review"].includes(channelState.human_status));
+        const canReply = hasPermission(authContext, "manage_takeover");
+        const autonomy = describeWhatsAppAutonomyStatus(setting, { officialNumber: config.whatsappDisplayNumber });
+        const sourceInfo = relationshipWorkspace.leadSourceInfo(lead);
+        json(res, 200, {
+          lead: {
+            id: lead.id, name: lead.name || null, company: lead.company || null, email: lead.email || null, phone: lead.phone || null, whatsapp_phone: lead.whatsapp_phone || null,
+            role: lead.role || null, location: [lead.city, lead.country].filter(Boolean).join(", ") || lead.location || null, status: lead.status || lead.stage || null,
+            qualification: lead.qualification_status || lead.qualification || null, owner: lead.owner || null, business_unit: lead.business_unit || null, summary: lead.summary || null,
+            next_action: lead.next_action || null, next_action_at: lead.next_action_at || null, created_at: lead.created_at, organization_id: lead.organization_id || null,
+          },
+          source: sourceInfo,
+          thread,
+          opportunities: leadOpportunities.map((o) => ({ id: o.id, business_unit: o.business_unit, inquiry_type: o.inquiry_type, stage: o.stage, status: o.status, owner: o.owner || null })),
+          channel_state: channelState ? { human_status: channelState.human_status, human_owner: channelState.human_owner || null, ai_paused: Boolean(channelState.ai_paused), takeover_started_at: channelState.takeover_started_at || null, last_inbound_at: channelState.last_inbound_at || null, last_outbound_at: channelState.last_outbound_at || null } : { human_status: "auto", human_owner: null, ai_paused: false },
+          communication: {
+            global_autonomous_responses: autonomy.state === "on" ? "on" : autonomy.state === "off" ? "off" : "unknown",
+            takeover_active: takeoverActive,
+            mode: takeoverActive ? "human" : autonomy.state === "on" ? "autonomous_allowed" : autonomy.state === "off" ? "autonomous_off" : "autonomous_off_unreadable",
+            whatsapp_reply: { available: Boolean(lead.whatsapp_phone) && canReply && takeoverActive && whatsappAdapter.isConfigured(), can_reply_permission: canReply, takeover_required: !takeoverActive, whatsapp_number_known: Boolean(lead.whatsapp_phone) },
+          },
+          integrations: {
+            whatsapp: { connected: whatsappAdapter.isConfigured(), media_ingestion: "not_verified" },
+            email: { inbound_sync: "not_connected", note: "Website form notifications are not inbound mailbox synchronisation." },
+            linkedin: { messaging: "not_connected", lead_gen: "not_verified" },
+            facebook: { messaging: "not_connected" }, instagram: { messaging: "not_connected" },
+          },
+        }, { "x-request-id": ctx.requestId });
+        return;
+      }
+
       // Governed MANUAL WhatsApp reply by an authorised staff member. Independent of the autonomy switch (a human is sending), but only while that human owns the
       // conversation (active takeover), and always audited with the operator.
       const manualReplyMatch = pathname.match(/^\/api\/lead-agents\/admin\/leads\/([^/]+)\/whatsapp\/reply$/);
@@ -6752,8 +6850,25 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           json(res, 503, { error: "whatsapp_not_configured" }, { "x-request-id": ctx.requestId });
           return;
         }
+        // Duplicate-send guard for the relationship workspace composer: the same client request id inside five minutes is refused, not sent twice.
+        const clientRequestId = String(body.client_request_id || "").trim().slice(0, 80);
+        if (clientRequestId) {
+          const now = Date.now();
+          for (const [key, at] of recentManualReplyIds) if (now - at > 300000) recentManualReplyIds.delete(key);
+          if (recentManualReplyIds.has(`${leadId}:${clientRequestId}`)) {
+            json(res, 409, { error: "duplicate_request", detail: "This message was already submitted." }, { "x-request-id": ctx.requestId });
+            return;
+          }
+          recentManualReplyIds.set(`${leadId}:${clientRequestId}`, now);
+        }
         try {
           const result = await whatsappAdapter.sendTextMessage({ to, body: text });
+          if (result.delivered) {
+            // Recorded in the canonical conversation log ONLY when the provider accepted it, so the relationship thread never shows an unsent message as sent.
+            await store.appendConversation({ lead_id: leadId, agent_name: authContext.email || "staff", message_role: "assistant", channel: "whatsapp", external_message_id: result.external_message_id || null, content: text }).catch(() => null);
+          } else if (clientRequestId) {
+            recentManualReplyIds.delete(`${leadId}:${clientRequestId}`);
+          }
           await store.upsertLeadChannelState(leadId, "whatsapp", { last_outbound_at: new Date().toISOString(), last_external_message_id: result.external_message_id || undefined });
           await appendAuditRecord({ store, authContext, action: "communication.whatsapp.manual_reply", resourceType: "lead", resourceId: leadId, metadata: { external_message_id: result.external_message_id || null, delivered: Boolean(result.delivered), operator: authContext.email || "" }, req, status: result.delivered ? "success" : "failure" });
           json(res, 200, { ok: Boolean(result.delivered), delivered: Boolean(result.delivered), external_message_id: result.external_message_id || null }, { "x-request-id": ctx.requestId });
