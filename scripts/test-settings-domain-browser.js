@@ -113,10 +113,10 @@ async function main() {
     await go("settings/intelligence");
     assert.equal(await evalJs(`document.querySelectorAll('.st-provider').length`), 3, "OpenAI, Gemini, Claude");
     const ai = await evalJs(`document.querySelector('#stContent').innerText`);
-    assert.ok(/OpenAI/.test(ai) && /Google Gemini/.test(ai) && /Anthropic Claude/.test(ai) && /USD 0/.test(ai) && /Not qualified/i.test(ai), "provider entries show unqualified state and zero authorised spend");
+    assert.ok(/OpenAI/.test(ai) && /Google Gemini/.test(ai) && /Anthropic Claude/.test(ai) && /State unknown/.test(ai) && !/USD 0/.test(ai), "with no Backend provider status, every provider reads Unknown (no stale 'USD 0' or 'Not qualified' claim)");
     assert.equal(await evalJs(`document.querySelectorAll('.st-provider input, .st-provider button, .st-provider a').length`), 0, "provider cards offer no key entry, enable or activation control");
     await shot("settings-intelligence.png");
-    console.log("4. AI provider cards: OpenAI/Gemini/Claude shown unqualified, no activation or key entry — PASS");
+    console.log("4. AI provider cards: OpenAI/Gemini/Claude shown Unknown without Backend status, no activation or key entry — PASS");
 
     // 5. Communications keeps the existing WhatsApp autonomy panel and Backend contract
     await go("settings/communications", `!!document.querySelector('#waAutonomyBanner') && !document.querySelector('#stContent .skeleton-line')`);

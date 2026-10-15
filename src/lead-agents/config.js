@@ -217,6 +217,8 @@ function createConfig() {
     // Learning (aggregate/structural, read-only). Same safety boundary.
     officeIntelligenceMemoryContextPath:
       process.env.OFFICE_INTELLIGENCE_MEMORY_CONTEXT_PATH || "/office/intelligence/memory-context",
+    officeIntelligenceProvidersPath:
+      process.env.OFFICE_INTELLIGENCE_PROVIDERS_PATH || "/office/intelligence/providers",
     officeIntelligenceLearningPath:
       process.env.OFFICE_INTELLIGENCE_LEARNING_PATH || "/office/intelligence/learning",
     // Intelligence System Visibility, Slice 7 — durable canonical traces.

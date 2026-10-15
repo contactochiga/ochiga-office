@@ -1015,6 +1015,11 @@ async function callOyiCoreIntelligenceLearning(config = {}, options = {}) {
 // Intelligence System Visibility, Slice 7 — durable canonical traces.
 // The list call forwards only Backend's own known filter/pagination keys.
 const TRACE_QUERY_KEYS = ["since", "until", "worker", "surface", "domain", "capability", "resolution_outcome", "authority_result", "terminal_outcome", "response_status", "has_lineage", "thread_ref", "page", "page_size"];
+// Settings S5: read-only provider status owned by the Backend/IQ gateway. Office never holds or computes provider state beyond display normalisation.
+async function callOyiCoreIntelligenceProviders(config = {}, options = {}) {
+  return callOyiCoreIntelligenceGet(config, config.officeIntelligenceProvidersPath || "/office/intelligence/providers", options);
+}
+
 async function callOyiCoreIntelligenceTraces(config = {}, query = {}, options = {}) {
   const basePath = config.officeIntelligenceTracesPath || "/office/intelligence/traces";
   const params = new URLSearchParams();
@@ -1187,6 +1192,7 @@ module.exports = {
   callOyiCoreIntelligenceKnowledgeDetail,
   callOyiCoreIntelligenceMemoryContext,
   callOyiCoreIntelligenceLearning,
+  callOyiCoreIntelligenceProviders,
   callOyiCoreIntelligenceTraces,
   callOyiCoreIntelligenceTraceDetail,
   callOyiCoreCreateWorkflow,

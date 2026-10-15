@@ -64,6 +64,7 @@ const {
   callOyiCoreIntelligenceKnowledgeDetail,
   callOyiCoreIntelligenceMemoryContext,
   callOyiCoreIntelligenceLearning,
+  callOyiCoreIntelligenceProviders,
   callOyiCoreIntelligenceTraces,
   callOyiCoreIntelligenceTraceDetail,
   callOyiCoreListAutomations,
@@ -115,6 +116,7 @@ const {
 // second copy of this vocabulary in the frontend.
 const { DEFAULT_CAPABILITIES } = require("./communications-handoff");
 const { WhatsAppCloudAdapter } = require("./whatsapp");
+const { buildProviderStatusResponse } = require("./intelligence-providers");
 const { createSettingsRegistry } = require("./settings-registry");
 const { handleSettingsRequest } = require("./settings-api");
 const { handleSettingsOperations } = require("./settings-operations");
@@ -5434,6 +5436,18 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
             : { ok: false, available: false, reason: result.reason || "unavailable" },
           { "x-request-id": ctx.requestId }
         );
+        return;
+      }
+
+      // Settings S5: read-only AI provider status. State is owned by the Backend/IQ gateway; this route only bridges and normalises it (no secrets, no provider calls).
+      if (pathname === "/api/lead-agents/admin/intelligence/providers") {
+        if (req.method !== "GET") {
+          methodNotAllowed(res, "GET");
+          return;
+        }
+        authorizePermission(authContext, "view_traces");
+        const result = await callOyiCoreIntelligenceProviders(config);
+        json(res, 200, buildProviderStatusResponse(result, config), { "x-request-id": ctx.requestId });
         return;
       }
 

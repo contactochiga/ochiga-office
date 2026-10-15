@@ -10186,6 +10186,7 @@ async function stLoad(needs) {
   if (needs.includes("audit") && hasPermission("audit.read")) jobs.audit = stSafe(() => apiListAudit().then((d) => d.audit || []));
   if (needs.includes("autonomy") && hasPermission("integrations.read")) jobs.autonomy = stSafe(() => apiGetWhatsAppAutonomy().then((d) => d.whatsapp_autonomy));
   if (needs.includes("outbox") && hasPermission("integrations.manage")) jobs.outbox = stSafe(() => api("/api/lead-agents/admin/communications/outbox").then((d) => d.outbox));
+  if (needs.includes("providers") && hasPermission("audit.read")) jobs.providers = stSafe(() => api("/api/lead-agents/admin/intelligence/providers"));
   if (needs.includes("permissions") && hasPermission("staff.manage")) jobs.permissions = stSafe(() => api("/api/lead-agents/admin/permissions"));
   if (needs.includes("letterhead") && hasPermission("office.read")) jobs.letterhead = stSafe(() => fetchLetterheadConfig());
   const keys = Object.keys(jobs);
@@ -10372,27 +10373,78 @@ async function stRenderPeople(retry) {
   return wrap;
 }
 
-function stAiProviderCards() {
-  const src = "IQ-11F provider-neutral gateway decision, 2026-10-14";
-  const mk = (name, extra) => stProviderCard({ name, owner: "Backend / Core", state: "not_qualified", facts: [["Activation", "Unavailable"], ["Model", "Not selected"], ["Authorized spend", "USD 0"], ["Data-processing review", "Pending"]], note: extra || "Activation requires a separate qualification and approval." });
-  const grid = el(`<div class="st-providers"></div>`);
-  grid.appendChild(mk("OpenAI", "Existing assistant features use environment-configured OpenAI. That legacy path is not an IQ-11F qualification and is not managed here."));
-  grid.appendChild(mk("Google Gemini"));
-  grid.appendChild(mk("Anthropic Claude"));
-  return { grid, src };
+// ---- S5: AI provider management (READ-ONLY). State is owned by the Backend/IQ gateway; unknown or unverified always reads Unknown / Not verified. ----
+const ST_UNKNOWN = `<span class="st-unknown">Unknown</span>`;
+const ST_NOT_VERIFIED = `<span class="st-unknown">Not verified</span>`;
+const ST_QUAL_LABEL = { not_started: "Not started", preparation: "Preparation (not qualified)", in_progress: "In progress (not qualified)", qualified: "Qualified (not activated)", failed: "Failed" };
+const ST_MODE_NAME = { off: "Off", offline_mock_only: "Offline mock only", shadow: "Shadow (synthetic only)", live: "Live" };
+const ST_CRED_LABEL = { not_provisioned: "No credential provisioned", provisioned_unverified: "Provisioned, not verified", verified: "Verified" };
+const ST_DP_LABEL = { not_reviewed: "Not reviewed", pending: "Review pending", approved: "Approved", rejected: "Rejected" };
+const ST_ENF_LABEL = { none: "None", designed: "Designed, not enforced", tested: "Tested, not verified in production", verified: "Verified" };
+const ST_READY_LABEL = { met: "Met", not_met: "Not met", unknown: "Unknown", deferred: "Checked when requested" };
+const ST_UNAVAILABLE_REASON = { endpoint_not_available: "The Backend provider-status endpoint does not exist yet (it needs separate Backend approval).", not_configured: "The Backend bridge is not configured.", network_error: "The Backend could not be reached.", backend_rejected: "The Backend refused the request.", unavailable: "The Backend returned no provider status." };
+function stMoney(v, currency) { return v === null || v === undefined || !currency ? null : `${escapeHtml(currency)} ${Number.isInteger(v) ? v : v.toFixed(2)}`; }
+function stTime(v) { return v ? escapeHtml(fmtDateTime(v)) : null; }
+function stProviderFacts(p, office, known) {
+  const b = p.budget;
+  const U = (value, fallback = ST_UNKNOWN) => (value === null || value === undefined || value === "" ? fallback : value);
+  const knownEnum = (v, map) => (v === "unknown" || !map[v] ? ST_UNKNOWN : escapeHtml(map[v]));
+  const adapter = p.adapter.registered === true ? `Registered${p.adapter.protocol !== "unknown" ? ` · ${escapeHtml(p.adapter.protocol)}` : ""}${p.adapter.mode !== "unknown" ? ` · ${escapeHtml(ST_MODE_NAME[p.adapter.mode] || p.adapter.mode)}` : ""}` : p.adapter.registered === false ? "Not registered" : ST_UNKNOWN;
+  const officeLine = office ? `<div class="st-note">${office.assistant_configured ? `Office assistant (legacy path): configured${office.assistant_model ? ` · ${escapeHtml(office.assistant_model)}` : ""}.` : escapeHtml(office.note)} ${office.assistant_configured ? "This is not an Oyi Core qualification." : ""}</div>` : "";
+  const model = p.model.approved_model ? escapeHtml(p.model.approved_model) : p.model.status === "candidate" ? `None approved${p.model.candidates.length ? ` · candidates: ${escapeHtml(p.model.candidates.join(", "))}` : ""}` : p.model.status === "none_selected" ? "None selected" : ST_UNKNOWN;
+  const ceiling = !known ? ST_UNKNOWN : stMoney(b.approved_maximum, b.currency) ? `${stMoney(b.approved_maximum, b.currency)} <span class="st-note">approved maximum, not funded credit</span>` : "No paid-call authorization recorded";
+  return [
+    ["Adapter availability", adapter],
+    ["Connection / configuration", `${knownEnum(p.credentials.status, ST_CRED_LABEL)}${p.credentials.verified_at ? ` <span class="st-note">verified ${stTime(p.credentials.verified_at)}</span>` : ""}${officeLine}`],
+    ["Approved model", model],
+    ["Qualification", knownEnum(p.qualification.status, ST_QUAL_LABEL) + (p.qualification.scope ? ` <span class="st-note">${escapeHtml(p.qualification.scope)}</span>` : "")],
+    ["Operating mode", knownEnum(p.operating_mode, ST_MODE_NAME)],
+    ["Approved spending ceiling", ceiling],
+    ["Verified API credits", U(stMoney(b.verified_credits, b.currency), ST_NOT_VERIFIED)],
+    ["Verified actual expenditure", U(stMoney(b.verified_spend, b.currency), ST_NOT_VERIFIED)],
+    ["Remaining authorized budget", stMoney(b.remaining_authorized, b.currency) || `${ST_UNKNOWN} <span class="st-note">needs an approved maximum and verified expenditure</span>`],
+    ["Budget enforcement", knownEnum(b.enforcement, ST_ENF_LABEL)],
+    ["Data-processing review", knownEnum(p.data_processing.status, ST_DP_LABEL)],
+    ["Last verified", U(stTime(p.last_verified_at), ST_NOT_VERIFIED)],
+    ["Limitations", p.limitations.length ? `<ul class="st-lim">${p.limitations.map((l) => `<li>${escapeHtml(l)}</li>`).join("")}</ul>` : known ? "None reported" : ST_UNKNOWN],
+  ];
+}
+function stProviderReadiness(p) {
+  const icon = { met: "✓", not_met: "✕", unknown: "?", deferred: "–" };
+  return `<div class="st-ready"><h5>Activation readiness</h5><ul>${p.readiness.map((r) => `<li class="st-ready-${r.status}"><span class="st-ready-ico" aria-hidden="true">${icon[r.status]}</span><span>${escapeHtml(r.label)}</span><span class="st-ready-state">${escapeHtml(ST_READY_LABEL[r.status])}</span></li>`).join("")}</ul><p class="st-note"><strong>Activation is not available in Office in this release.</strong> Connected does not mean qualified; qualified does not mean activated.</p></div>`;
+}
+function stAiProviderGrid(data) {
+  const grid = el(`<div class="st-providers st-ai-providers"></div>`);
+  data.providers.forEach((p) => {
+    const known = Boolean(p.reported);
+    const state = !known || p.qualification.status === "unknown" ? "unavailable" : p.qualification.status === "qualified" ? "info" : "not_qualified";
+    const label = !known || p.qualification.status === "unknown" ? "State unknown" : ST_QUAL_LABEL[p.qualification.status];
+    const card = el(`<article class="st-provider st-ai-provider" data-provider="${escapeHtml(p.id)}"><header><h4>${escapeHtml(p.label)}</h4><span class="st-owner">Backend / IQ gateway</span></header>${stStatusIndicator(state, label)}${stFacts(stProviderFacts(p, data.office_local && data.office_local[p.id], known))}${stProviderReadiness(p)}</article>`);
+    grid.appendChild(card);
+  });
+  return grid;
+}
+function stProviderSourceBanner(data) {
+  if (!data.available) return el(`<div class="st-source st-source-off" role="status"><strong>Provider state unavailable.</strong> ${escapeHtml(ST_UNAVAILABLE_REASON[data.reason] || ST_UNAVAILABLE_REASON.unavailable)} Everything below reads Unknown or Not verified; nothing is inferred from Office configuration.</div>`);
+  const g = data.gateway || {};
+  const yn = (v, on, off) => (v === true ? on : v === false ? off : "Unknown");
+  const conflicts = (data.provenance || []).flatMap((x) => x.conflicts || []);
+  return el(`<div class="st-source" role="status"><strong>Backend provider status</strong>${data.source && data.source.generated_at ? ` · generated ${escapeHtml(fmtDateTime(data.source.generated_at))}` : ""}<div class="st-note">Gateway: ${escapeHtml(titleCase(g.status || "unknown"))} · Live transport: ${yn(g.live_transport_implemented, "implemented", "not implemented")} · Paid inference: ${yn(g.paid_inference_enabled, "enabled", "disabled")} · Cross-provider fallback: ${escapeHtml(titleCase(g.cross_provider_fallback || "unknown"))} · Approved cross-provider transfers: ${g.approved_cross_provider_transfers && g.approved_cross_provider_transfers.length ? escapeHtml(g.approved_cross_provider_transfers.join(", ")) : "none"}</div>${conflicts.length ? `<ul class="st-conflicts">${conflicts.map((c) => `<li>Record conflict: ${escapeHtml(c)}</li>`).join("")}</ul>` : ""}</div>`);
 }
 async function stRenderIntelligence(retry) {
-  const d = await stLoad(["integrations"]);
+  const d = await stLoad(["integrations", "providers"]);
   const wrap = el(`<div class="st-stack-col"></div>`);
-  wrap.appendChild(el(`<div class="st-title"><h2>Intelligence</h2><p>Oyi status and AI provider qualification</p></div>`));
+  wrap.appendChild(el(`<div class="st-title"><h2>Intelligence</h2><p>Oyi status and AI provider management (read-only)</p></div>`));
   const oyi = stCard({ title: "Oyi Intelligence", subtitle: "Workers, goals, decisions, actions and traces are read-only in Intelligence", actions: `<a class="btn btn-ghost btn-sm" href="#/observatory">Open Intelligence</a>` });
   const back = d.integrations && d.integrations.ok ? d.integrations.data.edge : null;
   oyi.querySelector(".st-card-body").innerHTML = back ? stFacts([["Backend control plane", stStatusIndicator(stDeriveIntegrationState("edge", back))], ["Probe", back.backend_health && back.backend_health.checked ? `/health${back.backend_health.http_status ? ` · HTTP ${back.backend_health.http_status}` : ""}` : "Not checked"]]) : `<p class="st-note">${d.integrations && !d.integrations.ok ? escapeHtml(d.integrations.error) : "Backend status requires integrations access."}</p>`;
   if (d.integrations && !d.integrations.ok) oyi.querySelector(".st-card-body").appendChild(stErrorWithRetry(d.integrations.error, retry));
   wrap.appendChild(oyi);
-  const { grid, src } = stAiProviderCards();
-  const ai = stCard({ title: "AI providers", subtitle: `Status only. Office stores no provider keys and cannot activate inference. Source: ${src}.` });
-  ai.querySelector(".st-card-body").appendChild(grid);
+  const ai = stCard({ title: "AI providers", subtitle: "Owned by the Backend and the IQ-11F provider-neutral gateway. Office displays state; it holds no keys, makes no provider calls and cannot activate inference." });
+  const body = ai.querySelector(".st-card-body");
+  if (!d.providers) body.appendChild(el(`<div class="st-denied">Requires <code>audit.read</code>.</div>`));
+  else if (!d.providers.ok) body.appendChild(stErrorWithRetry(d.providers.error, retry));
+  else { body.appendChild(stProviderSourceBanner(d.providers.data)); body.appendChild(stAiProviderGrid(d.providers.data)); }
   wrap.appendChild(ai);
   return wrap;
 }
