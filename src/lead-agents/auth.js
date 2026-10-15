@@ -4,6 +4,7 @@ const {
   hasPermission,
   permissionsForRole: unifiedPermissionsForRole,
 } = require("./permissions");
+const { validateAuthConfig } = require("./auth-config");
 
 function secureEqual(a, b) {
   const left = Buffer.from(String(a || ""));
@@ -36,6 +37,13 @@ function sessionSignature(payload, secret) {
 }
 
 function createAdminSessionToken(adminUser, config) {
+  // Settings S7.0: never sign with an invalid/absent secret. The error carries a code only, never configuration detail.
+  if (!validateAuthConfig(config).valid) {
+    const error = new Error("auth_configuration_invalid");
+    error.code = "auth_configuration_invalid";
+    error.statusCode = 503;
+    throw error;
+  }
   const payload = Buffer.from(
     JSON.stringify({
       email: normalizeEmail(adminUser.email),
@@ -52,6 +60,9 @@ function createAdminSessionToken(adminUser, config) {
 }
 
 function readAdminSession(req, config) {
+  if (!validateAuthConfig(config).valid) {
+    return null;
+  }
   const cookies = parseCookies(req.headers.cookie);
   const rawToken = cookies[config.sessionCookieName];
   if (!rawToken) {

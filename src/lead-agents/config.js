@@ -1,4 +1,5 @@
 const path = require("path");
+const { resolveSessionSecret } = require("./auth-config");
 
 function numberFromEnv(value, fallback) {
   const parsed = Number(value);
@@ -19,6 +20,7 @@ function booleanFromEnv(value, fallback = false) {
 
 function createConfig() {
   const cwd = process.cwd();
+  const sessionSecretResolution = resolveSessionSecret(process.env, process.env.NODE_ENV || "development");
 
   return {
     port: numberFromEnv(process.env.LEAD_AGENTS_PORT, 8787),
@@ -79,10 +81,13 @@ function createConfig() {
     adminEmail: process.env.LEAD_AGENTS_ADMIN_EMAIL || "",
     adminPassword: process.env.LEAD_AGENTS_ADMIN_PASSWORD || "",
     adminRole: process.env.LEAD_AGENTS_ADMIN_ROLE || "admin",
-    sessionSecret:
-      process.env.LEAD_AGENTS_SESSION_SECRET ||
-      process.env.LEAD_AGENTS_API_KEYS ||
-      "lead-agents-dev-session-secret",
+    // Dedicated secret only (Settings S7.0): never LEAD_AGENTS_API_KEYS, never a hard-coded value. Unset outside production = ephemeral random per process.
+    sessionSecret: sessionSecretResolution.secret,
+    sessionSecretEphemeral: sessionSecretResolution.ephemeral,
+    // Legacy "API key as password" sign-in (auto-provisions an admin). Disabled unless the value is exactly "true"; see docs/settings-domain/19_S7_0_AUTH_SECURITY_CONTRACT.md.
+    allowApiKeyPasswordLogin: process.env.LEAD_AGENTS_ALLOW_API_KEY_LOGIN === "true",
+    // Explicit, deployment-owner-only recovery of the bootstrap administrator (off by default).
+    adminRecovery: process.env.LEAD_AGENTS_ADMIN_RECOVERY === "true",
     sessionCookieName:
       process.env.LEAD_AGENTS_SESSION_COOKIE_NAME || "lead_agents_admin",
     sessionTtlMs: numberFromEnv(

@@ -7,6 +7,7 @@ const crypto = require("crypto");
 const axios = require("axios");
 const { createConfig } = require("./config");
 const { log } = require("./logger");
+const { validateAuthConfig } = require("./auth-config");
 const { createStore } = require("./store-factory");
 const { OpenAIResponsesClient } = require("./openai");
 const { ToolExecutor } = require("./tools");
@@ -1944,9 +1945,39 @@ async function processWhatsAppMessageEvent({ event, store, adapter, config, requ
   });
 }
 
+const ADMIN_RECOVERY_MIN_PASSWORD_LENGTH = 12;
+
+// Settings S7.0 explicit administrator recovery: only when LEAD_AGENTS_ADMIN_RECOVERY=true AND the bootstrap email/password are set. Resets that ONE account's password,
+// reactivates it and restores its role; audited by email only. Not reachable over HTTP. See docs/settings-domain/19_S7_0_AUTH_SECURITY_CONTRACT.md section 4.
+async function applyAdminRecovery(store, config) {
+  const email = normalizeEmail(config.adminEmail);
+  if (String(config.adminPassword).length < ADMIN_RECOVERY_MIN_PASSWORD_LENGTH) {
+    log("warn", "admin_recovery_refused", { reason: "recovery_password_too_short" });
+    return { applied: false, reason: "recovery_password_too_short" };
+  }
+  const existing = await store.getAdminUserByEmail(email);
+  if (!existing) {
+    const created = await store.ensureAdminUser({
+      email, password_hash: hashPassword(config.adminPassword), role: config.adminRole || "admin", display_name: email, status: "active",
+    });
+    await appendAudit(store, { email }, "admin_recovery_applied", "admin_user", created?.id || "", { email, created: true });
+    log("warn", "admin_recovery_applied", { email });
+    return { applied: true, user: created };
+  }
+  const updated = await store.updateAdminUser(existing.id, {
+    password_hash: hashPassword(config.adminPassword), status: "active", role: config.adminRole || "admin",
+  });
+  await appendAudit(store, { email }, "admin_recovery_applied", "admin_user", existing.id, { email, created: false });
+  log("warn", "admin_recovery_applied", { email });
+  return { applied: true, user: updated || existing };
+}
+
 async function bootstrapAdminUser(store, config) {
   if (!config.adminEmail || !config.adminPassword) {
     return null;
+  }
+  if (config.adminRecovery === true) {
+    return (await applyAdminRecovery(store, config)).user || null;
   }
   return store.ensureAdminUser({
     email: normalizeEmail(config.adminEmail),
@@ -2260,8 +2291,17 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           methodNotAllowed(res, "GET");
           return;
         }
-        json(res, 200, {
-          ok: true,
+        const authConfigStatus = validateAuthConfig(config);
+        json(res, authConfigStatus.valid ? 200 : 503, {
+          ok: authConfigStatus.valid,
+          ready: authConfigStatus.valid,
+          // codes and mode names only; never a secret or anything derived from one
+          auth_config: {
+            session_secret: authConfigStatus.session_secret,
+            ...(authConfigStatus.valid ? {} : { problems: authConfigStatus.problems }),
+            api_key_password_login: config.allowApiKeyPasswordLogin === true ? "enabled_deprecated" : "disabled",
+            admin_recovery: config.adminRecovery === true ? "enabled" : "disabled",
+          },
           uptime_ms: Date.now() - startedAt,
           stats: await store.stats(),
           environment: config.environment,
@@ -2768,10 +2808,16 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           methodNotAllowed(res, "POST");
           return;
         }
+        if (!validateAuthConfig(config).valid) {
+          json(res, 503, { error: "auth_configuration_invalid", message: "Sign-in is temporarily unavailable." }, { "x-request-id": ctx.requestId });
+          return;
+        }
         const body = await readJsonBody(req);
         const attemptKey = loginAttemptKey(req, body.email);
         const adminUser = await store.getAdminUserByEmail(body.email);
+        // Legacy API-key-as-password sign-in: off unless LEAD_AGENTS_ALLOW_API_KEY_LOGIN=true (transitional, audited).
         const fallbackAllowed =
+          config.allowApiKeyPasswordLogin === true &&
           !adminUser &&
           normalizeEmail(body.email) &&
           config.apiKeys.includes(String(body.password || ""));
@@ -2839,6 +2885,16 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           sessionUser.id,
           {}
         );
+        if (fallbackAllowed) {
+          await appendAudit(
+            store,
+            { userId: sessionUser.id, email: sessionUser.email, role: sessionUser.role },
+            "session_login_api_key_fallback",
+            "admin_user",
+            sessionUser.id,
+            { email: sessionUser.email }
+          );
+        }
         const token = createAdminSessionToken(sessionUser, config);
         json(
           res,
@@ -3027,6 +3083,10 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
       if (pathname === "/api/lead-agents/admin/session/invite/accept") {
         if (req.method !== "POST") {
           methodNotAllowed(res, "POST");
+          return;
+        }
+        if (!validateAuthConfig(config).valid) {
+          json(res, 503, { error: "auth_configuration_invalid", message: "Sign-in is temporarily unavailable." }, { "x-request-id": ctx.requestId });
           return;
         }
         const body = await readJsonBody(req);
@@ -9088,6 +9148,12 @@ async function start() {
   const config = createConfig();
   validateConfig(config);
 
+  const authStatus = validateAuthConfig(config);
+  if (!authStatus.valid) log("error", "auth_configuration_invalid", { problems: authStatus.problems });
+  if (config.sessionSecretEphemeral) log("warn", "session_secret_ephemeral", { note: "LEAD_AGENTS_SESSION_SECRET is unset; sessions will not survive a restart" });
+  if (config.allowApiKeyPasswordLogin) log("warn", "api_key_password_login_enabled_deprecated", {});
+  if (config.adminRecovery) log("warn", "admin_recovery_enabled", { note: "remove LEAD_AGENTS_ADMIN_RECOVERY after signing in" });
+
   const store = createStore(config);
   await store.init();
   await bootstrapAdminUser(store, config);
@@ -9158,4 +9224,5 @@ async function start() {
 module.exports = {
   buildServer,
   start,
+  bootstrapAdminUser,
 };
