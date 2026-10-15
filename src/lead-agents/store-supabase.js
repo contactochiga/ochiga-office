@@ -1484,6 +1484,28 @@ class SupabaseLeadAgentsStore {
   // auth-lifecycle rows tied 1:1 to the account); audit_events.actor_user_id
   // (its one real FK, on delete set null) nulls out while actor_email
   // keeps historical attribution intact.
+  // Settings S7.4: session revocation through the atomic SQL function (db/20261020_admin_session_generation.sql). Until that migration is applied the capability is reported
+  // unavailable (re-probed at most once a minute); nothing is written and callers answer 503 session_revocation_unavailable.
+  async supportsSessionRevocation() {
+    if (this.sessionRevocation === true) return true;
+    if (this.sessionRevocation === false && Date.now() - (this.sessionRevocationCheckedAt || 0) < 60_000) return false;
+    try {
+      await this.client.post("/rpc/office_revoke_admin_sessions", { p_user_id: "00000000-0000-0000-0000-000000000000", p_actor: "capability-probe", p_reason: null }); // matches no row
+      this.sessionRevocation = true;
+    } catch (error) {
+      if (error?.response?.status === 404 || error?.response?.data?.code === "PGRST202") { this.sessionRevocation = false; this.sessionRevocationCheckedAt = Date.now(); } else throw error;
+    }
+    return this.sessionRevocation === true;
+  }
+  async revokeAdminSessions(userId, { actor = "", reason = null } = {}) {
+    if (!(await this.supportsSessionRevocation())) { const error = new Error("session_revocation_unavailable"); error.code = "revocation_unavailable"; throw error; }
+    const response = await this.client.post("/rpc/office_revoke_admin_sessions", { p_user_id: userId, p_actor: String(actor || "").slice(0, 200), p_reason: reason });
+    const row = Array.isArray(response.data) ? response.data[0] : response.data;
+    if (!row) return null;
+    if (!Number.isInteger(row.session_generation)) throw new Error("session_revocation_malformed");
+    return { session_generation: row.session_generation, sessions_revoked_at: row.sessions_revoked_at };
+  }
+
   async deleteAdminUser(userId) {
     await this.client.delete(`/admin_users?id=eq.${userId}`, { headers: this.selectHeaders() });
     return true;

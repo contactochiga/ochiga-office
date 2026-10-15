@@ -69,3 +69,11 @@ Order: **migration → code → switch/flags**. Rolling-deployment honesty: inst
 ## 12. Required tests
 
 Copied cookies; logout vs revocation; password change/reset/admin set; deactivate→reactivate and remove→restore; deleted→recreated accounts; concurrent issuance/revocation and generation monotonicity (Postgres); legacy tokens with and without the reject flag; wrong/expired step-up purposes; API-key callers; database outage; restart persistence; migration rollback and reapply; recovery; rolling-deployment simulation (pre-S7.4 instance accepts a revoked token, S7.4 instance refuses); UI. Regressions: S7.0–S7.3, S1–S6, S3 Postgres, Team permissions, WhatsApp, full suite, gates.
+
+## 13. Implementation notes (added after build; behaviour above is unchanged)
+
+- **A second verification site was found and closed:** `GET /admin/session/me` reads the cookie itself (it is public for the login screen) and previously checked only `status`. It now applies the same generation, account-id and store-failure rules (found by the copied-cookie test, not by review).
+- **Password hash leak closed:** the self-service password-change success body returned the raw user row including `password_hash` to the account owner; it now returns `sanitizeAdminUser`.
+- **File-store race fixed during the build:** the first increment returned the post-await value, so 12 simultaneous revocations reported one generation; it now returns its own generation, rolls back only its own increment when the disk write fails, and the burst test asserts 12 distinct consecutive values.
+- Existing S7.1/S7.2 tests changed on purpose: an admin-set password or a self password change now ends the target's old sessions (the old cookie answers 401 rather than 403/`password_changed`), and a step-up grant cannot be carried onto the re-issued session (`session_revoked`).
+- Prerequisites delivered: environment duration clamp (`session_ttl` in `/healthz`), canonical permission count in the role catalogue, and the authority-boundaries stub timestamp.

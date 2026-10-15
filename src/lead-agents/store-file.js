@@ -1599,6 +1599,27 @@ class FileLeadAgentsStore {
     return this.state.admin_users[index];
   }
 
+  // Settings S7.4: session revocation. One synchronous increment (the single writer serialises it); persisted, and rolled back in memory if the write to disk fails so a
+  // revocation can never be reported (or lost on restart) inconsistently. Returns null when the account does not exist.
+  async supportsSessionRevocation() { return true; }
+  async revokeAdminSessions(userId, { actor = "" } = {}) {
+    const index = this.state.admin_users.findIndex((item) => item.id === userId);
+    if (index === -1) return null;
+    const previous = this.state.admin_users[index];
+    const revokedAt = this.nowIso();
+    const generation = (Number.isInteger(previous.session_generation) && previous.session_generation >= 0 ? previous.session_generation : 0) + 1;
+    this.state.admin_users[index] = { ...previous, session_generation: generation, sessions_revoked_at: revokedAt, sessions_revoked_by: String(actor || "").slice(0, 200), updated_at: revokedAt };
+    try {
+      await this.persist();
+    } catch (error) {
+      // undo only our own increment (a concurrent revoke may already have advanced the generation further)
+      const now = this.state.admin_users.findIndex((item) => item.id === userId);
+      if (now !== -1 && this.state.admin_users[now].session_generation === generation) this.state.admin_users[now] = previous;
+      throw error;
+    }
+    return { session_generation: generation, sessions_revoked_at: revokedAt };
+  }
+
   async deleteAdminUser(userId) {
     const index = this.state.admin_users.findIndex((item) => item.id === userId);
     if (index === -1) return false;

@@ -26,7 +26,7 @@ async function resolveSessionTtl(store, config, { log } = {}) {
   const envMs = environmentTtlMs(config);
   const fallback = (reason) => {
     if (typeof log === "function") log("warn", "session_ttl_fallback", { reason });
-    return { ttlMs: Math.min(envMs, SESSION_TTL_MAX_HOURS * HOUR_MS), hours: null, source: "environment_fallback", reason, version: null };
+    return { ttlMs: Math.max(SESSION_TTL_MIN_HOURS * HOUR_MS, Math.min(envMs, SESSION_TTL_MAX_HOURS * HOUR_MS)), hours: null, source: "environment_fallback", reason, version: null };
   };
   let row;
   try {

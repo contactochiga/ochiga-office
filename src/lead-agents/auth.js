@@ -5,6 +5,7 @@ const {
   permissionsForRole: unifiedPermissionsForRole,
 } = require("./permissions");
 const { validateAuthConfig } = require("./auth-config");
+const { effectiveGeneration, revocationEnabled } = require("./session-generation");
 
 function secureEqual(a, b) {
   const left = Buffer.from(String(a || ""));
@@ -53,6 +54,8 @@ function createAdminSessionToken(adminUser, config, ttlMs) {
         ? adminUser.permission_scopes
         : [],
       exp: Date.now() + (Number.isFinite(ttlMs) && ttlMs > 0 ? ttlMs : config.sessionTtlMs),
+      // S7.4: the account's session generation at issuance; a revocation increments it and orphans every earlier token.
+      ...(revocationEnabled(config) ? { sg: effectiveGeneration(adminUser) } : {}),
     })
   ).toString("base64url");
   const signature = sessionSignature(payload, config.sessionSecret);
@@ -96,6 +99,8 @@ function readAdminSession(req, config) {
     userId: decoded.user_id || "",
     permissionScopes: Array.isArray(decoded.permission_scopes) ? decoded.permission_scopes : [],
     expiresAt: decoded.exp,
+    // Settings S7.4: null for a legacy token (no generation claim).
+    generation: Number.isInteger(decoded.sg) ? decoded.sg : null,
     // Settings S7.2: identifies THIS session token (never the token itself) so step-up authorisations can be bound to it.
     binding: crypto.createHash("sha256").update(String(rawToken)).digest("hex"),
   };
@@ -190,6 +195,7 @@ function enforceAuth(req, config) {
       permissionScopes: session.permissionScopes,
       permissions: permissionsForRole(session.role, session.permissionScopes),
       sessionBinding: session.binding,
+      sessionGeneration: session.generation,
       sessionExpiresAt: session.expiresAt,
     };
   }

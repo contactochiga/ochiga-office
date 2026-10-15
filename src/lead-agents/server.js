@@ -10,6 +10,9 @@ const { log } = require("./logger");
 const { validateAuthConfig } = require("./auth-config");
 const { validatePassword, passwordPolicyError } = require("./password-policy");
 const { resolveSessionTtl } = require("./session-policy");
+const { effectiveGeneration, revocationEnabled, checkSessionGeneration } = require("./session-generation");
+// counters only (never audited per request: a replayed stolen cookie would flood the audit store); exposed by category through /healthz
+const revokedSessionRejections = {};
 const { STEP_UP_PURPOSES, STEP_UP_HEADER, stepUpEligibility, issueStepUpToken, verifyStepUpToken } = require("./step-up");
 const { createStore } = require("./store-factory");
 const { OpenAIResponsesClient } = require("./openai");
@@ -1950,6 +1953,50 @@ async function processWhatsAppMessageEvent({ event, store, adapter, config, requ
 
 const ADMIN_RECOVERY_MIN_PASSWORD_LENGTH = 12;
 
+// Settings S7.4: signs a session for an account. The generation is re-read immediately before signing, so a revocation that lands in between yields a token that is refused on
+// first use (fail-closed) and a revocation that landed earlier yields a token at the new generation. Duration and cookie Max-Age come from the same resolved value (S7.3).
+async function issueSession(store, config, sessionUser) {
+  let account = sessionUser;
+  if (revocationEnabled(config)) {
+    let fresh;
+    try { fresh = await store.getAdminUserById(sessionUser.id); } catch { const e = new Error("session_verification_unavailable"); e.statusCode = 503; throw e; }
+    if (!fresh || fresh.status !== "active") { const e = new Error("unauthorized"); e.statusCode = 401; throw e; }
+    account = { ...sessionUser, session_generation: fresh.session_generation };
+  }
+  const ttl = await resolveSessionTtl(store, config, { log });
+  return { token: createAdminSessionToken(account, config, ttl.ttlMs), ttl };
+}
+
+// Settings S7.4: revoke every session of `target` with one atomic generation increment, and audit it (category/ids/generations only; never a token, grant, secret or password).
+// `required: true` (explicit revocation routes) turns an unavailable capability into a 503. `required: false` (password/status flows) proceeds and audits `skipped`, because those
+// flows must stay usable before the migration exists; but if the capability IS available and the increment FAILS, both fail closed (503) so a password is never changed while
+// stolen sessions are left alive.
+async function revokeSessionsFor({ store, config, target, auditActor, trigger, requestId, req, reason = null, required = false }) {
+  const before = effectiveGeneration(target);
+  const auditRevocation = (action, status, extra) => appendAudit(store, auditActor, action, "admin_user", target.id, { request_id: requestId, target_user_id: target.id, target_email: target.email, trigger, generation_before: before, at: new Date().toISOString(), ...extra }, req, status);
+  const unavailable = async (category) => {
+    await auditRevocation(required ? "session_revocation_denied" : "sessions_revocation_skipped", required ? "failure" : "success", { outcome: required ? "unavailable" : "skipped", failure_reason: category });
+    if (required) { const e = new Error("session_revocation_unavailable"); e.statusCode = 503; throw e; }
+    return { status: "skipped", reason: category };
+  };
+  if (!revocationEnabled(config)) return unavailable("revocation_disabled");
+  let supported;
+  try { supported = typeof store.supportsSessionRevocation === "function" ? await store.supportsSessionRevocation() : false; } catch { supported = null; }
+  if (supported === false) return unavailable("migration_absent");
+  let result;
+  try {
+    if (supported === null) throw new Error("capability_probe_failed");
+    result = await store.revokeAdminSessions(target.id, { actor: auditActor?.email || "", reason });
+  } catch (error) {
+    await auditRevocation("session_revocation_denied", "failure", { outcome: "failed", failure_reason: "store_error" }).catch(() => {});
+    const e = new Error("session_revocation_unavailable"); e.statusCode = 503; throw e;
+  }
+  if (!result) { const e = new Error("user_not_found"); e.statusCode = 404; throw e; }
+  const action = { self: "sessions_revoked_self", admin: "sessions_revoked_by_admin", password_reset: "sessions_revoked_password_reset", password_change: "sessions_revoked_password_change", admin_password_set: "sessions_revoked_admin_password_set", status_change: "sessions_revoked_status_change", admin_recovery: "sessions_revoked_admin_recovery" }[trigger] || "sessions_revoked";
+  await auditRevocation(action, "success", { outcome: "revoked", generation_after: result.session_generation, reason: typeof reason === "string" ? reason.slice(0, 200) : undefined });
+  return { status: "revoked", generation_before: before, generation_after: result.session_generation, revoked_at: result.sessions_revoked_at };
+}
+
 // Settings S7.1: sends the shared 400 and returns true when a new password violates the fixed policy. Carries a code only, never password material.
 function rejectPasswordViolation(res, password, ctx) {
   const result = validatePassword(password);
@@ -1979,6 +2026,8 @@ async function applyAdminRecovery(store, config) {
   const updated = await store.updateAdminUser(existing.id, {
     password_hash: hashPassword(config.adminPassword), status: "active", role: config.adminRole || "admin",
   });
+  // S7.4: whoever held a session for this account before recovery must not keep it.
+  await revokeSessionsFor({ store, config, target: updated || existing, auditActor: { email }, trigger: "admin_recovery", requestId: "startup" }).catch((error) => log("error", "admin_recovery_revocation_failed", { message: error.message }));
   await appendAudit(store, { email }, "admin_recovery_applied", "admin_user", existing.id, { email, created: false });
   log("warn", "admin_recovery_applied", { email });
   return { applied: true, user: updated || existing };
@@ -2000,14 +2049,30 @@ async function bootstrapAdminUser(store, config) {
   });
 }
 
-async function enrichAuthContext(authContext, store) {
+async function enrichAuthContext(authContext, store, config = {}) {
   if (!authContext || authContext.type !== "session") {
     return authContext;
   }
-  const user = await store.getAdminUserByEmail(authContext.email);
+  let user;
+  try {
+    user = await store.getAdminUserByEmail(authContext.email);
+  } catch {
+    // Settings S7.4: if the account cannot be loaded the session cannot be verified. Never fail open, never trust the token alone, never leak the store error.
+    const error = new Error("session_verification_unavailable");
+    error.statusCode = 503;
+    throw error;
+  }
   if (!user || user.status !== "active") {
     const error = new Error("unauthorized");
     error.statusCode = 401;
+    throw error;
+  }
+  const generation = checkSessionGeneration({ authContext, user, config });
+  if (!generation.ok) {
+    revokedSessionRejections[generation.reason] = (revokedSessionRejections[generation.reason] || 0) + 1;
+    const error = new Error("session_revoked");
+    error.statusCode = 401;
+    error.reason = generation.reason;
     throw error;
   }
   return {
@@ -2289,7 +2354,7 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
         !isBackendBridgePath
       ) {
         authContext = tryEdgeAuth(req, config) || enforceAuth(req, config);
-        authContext = await enrichAuthContext(authContext, store);
+        authContext = await enrichAuthContext(authContext, store, config);
         const rateLimitState = officeInternalRateLimiter.check(req);
         res.setHeader("x-ratelimit-remaining", String(rateLimitState.remaining));
         res.setHeader(
@@ -2304,6 +2369,8 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           return;
         }
         const authConfigStatus = validateAuthConfig(config);
+        let revocationCapability = "unknown";
+        try { revocationCapability = typeof store.supportsSessionRevocation === "function" ? ((await store.supportsSessionRevocation()) ? "available" : "unavailable") : "unavailable"; } catch { revocationCapability = "unknown"; }
         json(res, authConfigStatus.valid ? 200 : 503, {
           ok: authConfigStatus.valid,
           ready: authConfigStatus.valid,
@@ -2313,6 +2380,15 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
             ...(authConfigStatus.valid ? {} : { problems: authConfigStatus.problems }),
             api_key_password_login: config.allowApiKeyPasswordLogin === true ? "enabled_deprecated" : "disabled",
             admin_recovery: config.adminRecovery === true ? "enabled" : "disabled",
+            session_ttl: config.sessionTtlStatus || "ok",
+          },
+          // Revocation only protects against servers that enforce it: during a rolling deploy older instances still accept revoked tokens, so operators should confirm every
+          // instance reports enforcement "active" (or rotate the session secret) before relying on a global sign-out.
+          session_revocation: {
+            enforcement: revocationEnabled(config) ? "active" : "off",
+            capability: revocationCapability,
+            legacy_tokens: config.rejectLegacySessions === true ? "rejected" : "accepted",
+            rejected_requests: { ...revokedSessionRejections },
           },
           uptime_ms: Date.now() - startedAt,
           stats: await store.stats(),
@@ -2907,9 +2983,8 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
             { email: sessionUser.email }
           );
         }
-        // S7.3: one effective duration, resolved now, drives BOTH the signed expiry and the cookie Max-Age.
-        const sessionTtl = await resolveSessionTtl(store, config, { log });
-        const token = createAdminSessionToken(sessionUser, config, sessionTtl.ttlMs);
+        // S7.3: one effective duration, resolved now, drives BOTH the signed expiry and the cookie Max-Age. S7.4: generation re-read right before signing.
+        const { token, ttl: sessionTtl } = await issueSession(store, config, sessionUser);
         json(
           res,
           200,
@@ -2966,9 +3041,17 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           json(res, 401, { error: "unauthorized" }, { "x-request-id": ctx.requestId });
           return;
         }
-        const currentUser = await store.getAdminUserByEmail(session.email);
+        // S7.4: this route reads the cookie itself (it is public for the login screen), so it must apply the SAME live checks as every other request.
+        let currentUser;
+        try { currentUser = await store.getAdminUserByEmail(session.email); } catch { json(res, 503, { error: "session_verification_unavailable" }, { "x-request-id": ctx.requestId }); return; }
         if (!currentUser || currentUser.status !== "active") {
           json(res, 401, { error: "unauthorized" }, { "x-request-id": ctx.requestId });
+          return;
+        }
+        const meGeneration = checkSessionGeneration({ authContext: { userId: session.userId, sessionGeneration: session.generation }, user: currentUser, config });
+        if (!meGeneration.ok) {
+          revokedSessionRejections[meGeneration.reason] = (revokedSessionRejections[meGeneration.reason] || 0) + 1;
+          json(res, 401, { error: "session_revoked" }, { "x-request-id": ctx.requestId });
           return;
         }
         json(
@@ -3076,6 +3159,49 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
         return;
       }
 
+      // ---- Settings S7.4 session revocation (contract: docs/settings-domain/24_S7_4_SESSION_REVOCATION_IMPLEMENTATION_CONTRACT.md) ----
+      if (pathname === "/api/lead-agents/admin/session/revoke-all") {
+        if (req.method !== "POST") {
+          methodNotAllowed(res, "POST");
+          return;
+        }
+        if (authContext?.type !== "session") {
+          await appendAudit(store, { type: authContext?.type || "unknown" }, "session_revocation_denied", "admin_user", "", { request_id: ctx.requestId, trigger: "self", outcome: "denied", failure_reason: "api_key_not_allowed", at: new Date().toISOString() }, req, "failure");
+          json(res, 403, { error: "actor_identity_required" }, { "x-request-id": ctx.requestId });
+          return;
+        }
+        let body = {};
+        try { body = await readJsonBody(req); } catch { body = {}; }
+        const keepCurrent = Boolean(body && body.keep_current === true);
+        const result = await revokeSessionsFor({ store, config, target: authContext.user, auditActor: authContext, trigger: "self", requestId: ctx.requestId, req, required: true });
+        const kept = keepCurrent ? await issueSession(store, config, await store.getAdminUserById(authContext.user.id)) : null;
+        json(res, 200, { ok: true, user_id: authContext.user.id, session_generation: result.generation_after, revoked_at: result.revoked_at, kept_current: Boolean(kept), scope: "every_server_running_this_version" }, { "x-request-id": ctx.requestId, "cache-control": "no-store", "set-cookie": kept ? createSessionCookie(kept.token, config, kept.ttl.ttlMs) : clearSessionCookie(config) });
+        return;
+      }
+
+      const revokeUserMatch = pathname.match(/^\/api\/lead-agents\/admin\/users\/([^/]+)\/revoke-sessions$/);
+      if (revokeUserMatch) {
+        if (req.method !== "POST") {
+          methodNotAllowed(res, "POST");
+          return;
+        }
+        const denied = async (status, error, category, extra = {}) => {
+          await appendAudit(store, authContext?.type === "session" ? authContext : { type: authContext?.type || "unknown" }, "session_revocation_denied", "admin_user", revokeUserMatch[1], { request_id: ctx.requestId, trigger: "admin", outcome: "denied", failure_reason: category, at: new Date().toISOString() }, req, "failure");
+          json(res, status, { error, ...extra }, { "x-request-id": ctx.requestId });
+        };
+        if (authContext?.type !== "session") return denied(403, "actor_identity_required", "api_key_not_allowed");
+        try { authorizePermission(authContext, "team.manage"); } catch { return denied(403, "forbidden", "forbidden"); }
+        const stepUp = verifyStepUpToken({ config, authContext, purpose: "session_revocation", token: req.headers[STEP_UP_HEADER] });
+        if (!stepUp.ok) return denied(403, "step_up_required", `step_up_${stepUp.reason}`, { reason: stepUp.reason, purpose: "session_revocation" });
+        const body = await readJsonBody(req).catch(() => ({}));
+        const target = await store.getAdminUserById(revokeUserMatch[1]);
+        if (!target) return denied(404, "user_not_found", "target_not_found");
+        if (String(target.id) === String(authContext.user.id)) return denied(400, "use_self_revocation", "self_target");
+        const result = await revokeSessionsFor({ store, config, target, auditActor: authContext, trigger: "admin", requestId: ctx.requestId, req, reason: body && typeof body.reason === "string" ? body.reason : null, required: true });
+        json(res, 200, { ok: true, user_id: target.id, session_generation: result.generation_after, revoked_at: result.revoked_at, scope: "every_server_running_this_version" }, { "x-request-id": ctx.requestId, "cache-control": "no-store" });
+        return;
+      }
+
       if (pathname === "/api/lead-agents/admin/session/password") {
         if (req.method !== "POST") {
           methodNotAllowed(res, "POST");
@@ -3094,12 +3220,15 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           return;
         }
         if (rejectPasswordViolation(res, body.new_password, ctx)) return;
+        // S7.4: bump first (fail-safe order), then write the password, then re-issue THIS browser's cookie at the new generation; every other session is signed out.
+        const revocation = await revokeSessionsFor({ store, config, target: currentUser, auditActor: authContext, trigger: "password_change", requestId: ctx.requestId, req });
         const updated = await store.updateAdminUser(currentUser.id, {
           password_hash: hashPassword(body.new_password),
           password_changed_at: new Date().toISOString(),
         });
         await appendAudit(store, authContext, "password_changed", "admin_user", currentUser.id, {});
-        json(res, 200, { ok: true, user: updated }, { "x-request-id": ctx.requestId });
+        const reissued = revocation.status === "revoked" ? await issueSession(store, config, updated || currentUser) : null;
+        json(res, 200, { ok: true, user: sanitizeAdminUser(updated), other_sessions_signed_out: revocation.status === "revoked" }, { "x-request-id": ctx.requestId, ...(reissued ? { "set-cookie": createSessionCookie(reissued.token, config, reissued.ttl.ttlMs) } : {}) });
         return;
       }
 
@@ -3224,8 +3353,7 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           invite.id,
           { email: invite.email }
         );
-        const sessionTtl = await resolveSessionTtl(store, config, { log });
-        const token = createAdminSessionToken(user, config, sessionTtl.ttlMs);
+        const { token, ttl: sessionTtl } = await issueSession(store, config, user);
         json(
           res,
           200,
@@ -3274,6 +3402,7 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           return;
         }
         if (rejectPasswordViolation(res, body.new_password, ctx)) return;
+        await revokeSessionsFor({ store, config, target: user, auditActor: { userId: user.id, email: user.email, role: user.role }, trigger: "password_reset", requestId: ctx.requestId, req });
         await store.updateAdminUser(user.id, {
           password_hash: hashPassword(body.new_password),
           password_changed_at: new Date().toISOString(),
@@ -8910,6 +9039,11 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           patch.password_hash = hashPassword(body.password);
           patch.password_changed_at = new Date().toISOString();
         }
+        // S7.4: a password set by an administrator, or any status change (deactivate/reactivate), ends the target's existing sessions first.
+        const existingTarget = (patch.password_hash || patch.status !== undefined) ? await store.getAdminUserById(adminUserMatch[1]) : null;
+        if (existingTarget && (patch.password_hash || patch.status !== existingTarget.status)) {
+          await revokeSessionsFor({ store, config, target: existingTarget, auditActor: authContext, trigger: patch.password_hash ? "admin_password_set" : "status_change", requestId: ctx.requestId, req });
+        }
         const user = await store.updateAdminUser(adminUserMatch[1], patch);
         if (!user) {
           notFound(res);
@@ -9132,6 +9266,7 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           json(res, 400, { error: "cannot_remove_self" }, { "x-request-id": ctx.requestId });
           return;
         }
+        await revokeSessionsFor({ store, config, target: user, auditActor: authContext, trigger: "status_change", requestId: ctx.requestId, req });
         const updated = await store.updateAdminUser(id, {
           removed_at: new Date().toISOString(),
           removed_by: authContext?.email || "office",
@@ -9158,6 +9293,7 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           notFound(res);
           return;
         }
+        await revokeSessionsFor({ store, config, target: user, auditActor: authContext, trigger: "status_change", requestId: ctx.requestId, req });
         const updated = await store.updateAdminUser(id, { removed_at: null, removed_by: null, status: "active" });
         await appendAudit(store, authContext, "admin_user_restored", "admin_user", id, { email: user.email });
         json(res, 200, { user: sanitizeAdminUser(updated) }, { "x-request-id": ctx.requestId });
@@ -9252,6 +9388,7 @@ async function start() {
   if (!authStatus.valid) log("error", "auth_configuration_invalid", { problems: authStatus.problems });
   if (config.sessionSecretEphemeral) log("warn", "session_secret_ephemeral", { note: "LEAD_AGENTS_SESSION_SECRET is unset; sessions will not survive a restart" });
   if (config.allowApiKeyPasswordLogin) log("warn", "api_key_password_login_enabled_deprecated", {});
+  if (config.sessionTtlStatus && config.sessionTtlStatus !== "ok") log("warn", "session_ttl_env_adjusted", { status: config.sessionTtlStatus, applied_hours: config.sessionTtlMs / 3_600_000 });
   if (config.adminRecovery) log("warn", "admin_recovery_enabled", { note: "remove LEAD_AGENTS_ADMIN_RECOVERY after signing in" });
 
   const store = createStore(config);

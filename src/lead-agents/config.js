@@ -13,6 +13,15 @@ function stringListFromEnv(value) {
     .filter(Boolean);
 }
 
+const SESSION_TTL_DEFAULT_MS = 168 * 3_600_000, SESSION_TTL_MIN_MS = 3_600_000, SESSION_TTL_MAX_MS = 720 * 3_600_000;
+function sessionTtlFromEnv(raw) {
+  const value = Number(raw);
+  if (raw === undefined || raw === null || String(raw).trim() === "" || !Number.isFinite(value) || value <= 0) return { ms: SESSION_TTL_DEFAULT_MS, status: raw === undefined || String(raw).trim() === "" ? "ok" : "defaulted" };
+  if (value < SESSION_TTL_MIN_MS) return { ms: SESSION_TTL_MIN_MS, status: "clamped" };
+  if (value > SESSION_TTL_MAX_MS) return { ms: SESSION_TTL_MAX_MS, status: "clamped" };
+  return { ms: value, status: "ok" };
+}
+
 function booleanFromEnv(value, fallback = false) {
   if (value === undefined || value === null || value === "") return fallback;
   return ["1", "true", "yes", "on"].includes(String(value).toLowerCase());
@@ -20,6 +29,7 @@ function booleanFromEnv(value, fallback = false) {
 
 function createConfig() {
   const cwd = process.cwd();
+  const sessionTtl = sessionTtlFromEnv(process.env.LEAD_AGENTS_SESSION_TTL_MS);
   const sessionSecretResolution = resolveSessionSecret(process.env, process.env.NODE_ENV || "development");
 
   return {
@@ -92,10 +102,13 @@ function createConfig() {
     adminRecovery: process.env.LEAD_AGENTS_ADMIN_RECOVERY === "true",
     sessionCookieName:
       process.env.LEAD_AGENTS_SESSION_COOKIE_NAME || "lead_agents_admin",
-    sessionTtlMs: numberFromEnv(
-      process.env.LEAD_AGENTS_SESSION_TTL_MS,
-      7 * 24 * 60 * 60 * 1000
-    ),
+    // Environment session duration, validated (S7.4): outside [1 h, 720 h] it is clamped, zero/negative/empty/non-numeric becomes the 168 h default.
+    sessionTtlMs: sessionTtl.ms,
+    sessionTtlStatus: sessionTtl.status,
+    // Session revocation (S7.4): on by default; `off` disables generation checks and the revocation routes without touching the schema (rollback lever).
+    sessionRevocationEnabled: String(process.env.LEAD_AGENTS_SESSION_REVOCATION || "on").toLowerCase() !== "off",
+    // After a rollout, refuse tokens issued before generations existed (they carry no `sg`).
+    rejectLegacySessions: process.env.LEAD_AGENTS_REJECT_LEGACY_SESSIONS === "true",
     rateLimitWindowMs: numberFromEnv(
       process.env.LEAD_AGENTS_RATE_LIMIT_WINDOW_MS,
       60_000

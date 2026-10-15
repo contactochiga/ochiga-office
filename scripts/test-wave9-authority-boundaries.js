@@ -28,7 +28,7 @@ async function main() {
     }
     store.getLead = async id => ({ id, owner: "actual-staff" });
     store.getAdminUserByEmail = async email => ({ id: email.split("@")[0], email, role: "ochiga_staff", status: "active", permission_scopes: [] });
-    store.getLeadMemory = async id => ({ lead_id: id, updated_at: new Date().toISOString(), known_fields: { project_type: "residential", email: "private@example.invalid" }, last_summary: "staff-private-note" });
+    store.getLeadMemory = async id => ({ lead_id: id, updated_at: new Date(Date.now() - 60_000).toISOString(), known_fields: { project_type: "residential", email: "private@example.invalid" }, last_summary: "staff-private-note" });
     for (const [id, status] of [["actual-staff", 200], ["other-staff", 403]]) {
       const token = createAdminSessionToken({ id, email: `${id}@example.invalid`, role: "ochiga_staff" }, config);
       const response = await fetch(`http://127.0.0.1:${server.address().port}/api/lead-agents/leads/private-lead/memory`, { headers: { cookie: `${config.sessionCookieName}=${token}` } });

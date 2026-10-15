@@ -10482,6 +10482,82 @@ async function stRenderAccessPolicyCard(retry) {
   } else body.appendChild(el(`<p class="st-note">Read-only for your role. Changing it requires the <code>team.manage</code> permission (Super Admin).</p>`));
   return card;
 }
+// ---- Session revocation (S7.4): sign out everywhere, and (super_admin + step-up) sign a user out everywhere. The server confirms every result; no token or secret is shown. ----
+const ST_REVOKE_ERRORS = { session_revocation_unavailable: "Session revocation isn't available on this server yet. Nothing was changed.", actor_identity_required: "Only a signed-in person can do this.", use_self_revocation: "Use \u201cSign out everywhere\u201d for your own account.", user_not_found: "That user no longer exists. Refresh the list.", session_verification_unavailable: "The server couldn't verify your session just now. Try again." };
+async function stRevocationCapability() {
+  try { const h = await stFetchHealthz(); return h.session_revocation ? h.session_revocation.capability : "unknown"; } catch { return "unknown"; }
+}
+async function stRenderSessionRevocationCards(retry) {
+  const frag = document.createElement("div"); frag.className = "st-stack-col";
+  const capability = await stRevocationCapability();
+  const unavailable = capability === "unavailable" || capability === "unknown";
+  const selfCard = stCard({ title: "Your sessions", subtitle: "Sign out of every device and browser where you are signed in, including this one." });
+  const sb = selfCard.querySelector(".st-card-body");
+  if (unavailable) sb.appendChild(el(`<p class="st-note" id="stRevokeUnavailable">Session revocation isn't available on this server yet.</p>`));
+  else {
+    const status = el(`<p class="st-note st-revoke-status" role="status" aria-live="polite"></p>`);
+    const btn = el(`<button type="button" class="btn btn-sm st-btn-primary" id="stSignOutEverywhere">Sign out everywhere</button>`);
+    btn.addEventListener("click", async () => {
+      const yes = await stConfirmDialog({ title: "Sign out everywhere?", body: "Every device and browser signed in as you, including this one, will be signed out immediately. You will need to sign in again.", confirmLabel: "Sign out everywhere" });
+      if (!yes) { status.textContent = "Cancelled. You are still signed in."; return; }
+      btn.disabled = true; status.textContent = "Signing out everywhere…";
+      try {
+        await api("/api/lead-agents/admin/session/revoke-all", { method: "POST", body: {} });
+        OfficeStepUp.clear();
+        await logout(); showLogin();
+      } catch (err) {
+        status.textContent = `Not signed out — ${ST_REVOKE_ERRORS[err.data && err.data.error] || err.message || "the request failed"}. Your sessions are unchanged.`; btn.disabled = false;
+      }
+    });
+    sb.appendChild(btn); sb.appendChild(status);
+  }
+  frag.appendChild(selfCard);
+  if (hasPermission("team.manage")) {
+    const card = stCard({ title: "Sign a user out", subtitle: "End every session of another person's account. They stay active and can sign in again. Requires your password." });
+    const body = card.querySelector(".st-card-body");
+    if (unavailable) body.appendChild(el(`<p class="st-note">Session revocation isn't available on this server yet.</p>`));
+    else {
+      const users = await stSafe(() => apiListAdminUsers());
+      if (!users.ok) body.appendChild(stErrorWithRetry(users.error, retry));
+      else {
+        const me = (state.admin && state.admin.id) || "";
+        const list = (users.data.users || []).filter((u) => u.id !== me && u.status === "active");
+        const form = el(`<form class="st-reg-editor st-revoke-user" novalidate aria-label="Sign a user out"><label class="st-field"><span>User</span><select name="user"><option value="">Choose a user…</option>${list.map((u) => `<option value="${escapeHtml(u.id)}">${escapeHtml(u.display_name || u.email)} (${escapeHtml(u.email)})</option>`).join("")}</select></label><label class="st-field"><span>Reason (optional, recorded in the audit log)</span><input type="text" name="reason" maxlength="200" autocomplete="off" /></label><div class="st-form-bar"><button type="submit" class="btn btn-sm st-btn-primary" disabled>Sign this user out everywhere</button><span class="st-form-status" role="status" aria-live="polite"></span></div></form>`);
+        const submit = form.querySelector('button[type="submit"]'), status = form.querySelector(".st-form-status"), pick = form.elements.user;
+        pick.addEventListener("change", () => { submit.disabled = !pick.value; status.textContent = ""; });
+        form.addEventListener("submit", async (event) => {
+          event.preventDefault();
+          const target = list.find((u) => u.id === pick.value); if (!target) return;
+          const yes = await stConfirmDialog({ title: `Sign ${target.display_name || target.email} out everywhere?`, body: "All of their devices and browsers will be signed out immediately. Their account stays active.", confirmLabel: "Sign out user" });
+          if (!yes) { status.textContent = "Cancelled. Nothing changed."; return; }
+          submit.disabled = true;
+          try {
+            let token = OfficeStepUp.token("session_revocation");
+            if (!token) {
+              status.textContent = "Waiting for password confirmation…";
+              const grant = await OfficeStepUp.dialog({ purpose: "session_revocation", title: "Confirm to sign this user out", body: "This ends every session of that account. Enter your current password to continue." });
+              if (!grant) { status.textContent = "Confirmation cancelled. Nothing was changed."; submit.disabled = false; return; }
+              token = grant.token;
+            }
+            status.textContent = "Signing the user out…";
+            const result = await api(`/api/lead-agents/admin/users/${encodeURIComponent(target.id)}/revoke-sessions`, { method: "POST", headers: { "x-step-up-token": token }, body: { reason: form.elements.reason.value.trim() || undefined } });
+            status.textContent = `Done. The server confirms every session of ${target.display_name || target.email} was ended (generation ${result.session_generation}). It takes effect on every server running this version.`;
+            form.elements.reason.value = "";
+          } catch (err) {
+            const d = err.data || {};
+            if (d.error === "step_up_required") { OfficeStepUp.clear("session_revocation"); status.textContent = "Your password confirmation expired or is no longer valid. Nothing was changed — press the button to confirm again."; }
+            else if (err.status === 403) status.textContent = ST_REVOKE_ERRORS[d.error] || "You don't have permission to do this. Nothing was changed.";
+            else status.textContent = `Not done — ${ST_REVOKE_ERRORS[d.error] || err.message || "the request failed"}. Nothing was changed.`;
+            submit.disabled = !pick.value;
+          }
+        });
+        body.appendChild(form);
+      }
+    }
+    frag.appendChild(card);
+  }
+  return frag;
+}
 async function stRenderPeople(retry) {
   const d = await stLoad(["permissions"]);
   const wrap = el(`<div class="st-stack-col"></div>`);
@@ -10490,16 +10566,17 @@ async function stRenderPeople(retry) {
   team.querySelector(".st-card-body").innerHTML = `<p class="st-note">Team management is unchanged and remains the only place users and per-user permission scopes are edited.</p>`;
   wrap.appendChild(team);
   wrap.appendChild(await stRenderAccessPolicyCard(retry));
+  wrap.appendChild(await stRenderSessionRevocationCards(retry));
   const roles = stCard({ title: "Role catalogue", subtitle: "Read-only. Roles are defined in code, not editable here." });
   const rb = roles.querySelector(".st-card-body");
   if (!d.permissions) rb.appendChild(el(`<div class="st-denied">Requires <code>staff.manage</code>.</div>`));
   else if (!d.permissions.ok) rb.appendChild(stErrorWithRetry(d.permissions.error, retry));
   else {
     const p = d.permissions.data; const list = p.canonical_roles || [];
-    rb.innerHTML = `<table class="st-table"><thead><tr><th>Role</th><th>Permissions</th></tr></thead><tbody>${list.map((r) => `<tr><td>${escapeHtml(titleCase(r))}</td><td>${(p.roles && p.roles[r] ? p.roles[r].length : 0)} of ${(p.scopes || []).length}</td></tr>`).join("")}</tbody></table>`;
+    rb.innerHTML = `<table class="st-table"><thead><tr><th>Role</th><th>Permissions</th></tr></thead><tbody>${list.map((r) => `<tr><td>${escapeHtml(titleCase(r))}</td><td>${(p.roles && p.roles[r] ? p.roles[r].filter((k) => (p.scopes || []).includes(k)).length : 0)} of ${(p.scopes || []).length}</td></tr>`).join("")}</tbody></table>`;
   }
   wrap.appendChild(roles);
-  wrap.appendChild(stUnavailable({ title: "MFA, password policy, session revocation", reason: "No Office contract exists for these yet. Passwords follow a fixed policy enforced by the server." }));
+  wrap.appendChild(stUnavailable({ title: "MFA, per-device session list", reason: "No Office contract exists for these yet. Passwords follow a fixed policy enforced by the server; sign-out is per account, not per device." }));
   return wrap;
 }
 

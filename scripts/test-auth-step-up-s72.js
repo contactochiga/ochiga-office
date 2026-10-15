@@ -120,8 +120,11 @@ async function main() {
   eq((await check(dea, deaGrant.token)).status, 401, "deactivated account: session and grant refused");
   eq((await call("step-up", { password: "deactivate pass phrase 55", purpose: "security_policy_write" }, { cookie: dea })).status, 401, "deactivated account cannot step up");
   const chg = await login("chg@x.test", "change me pass phrase 66"); const chgGrant = await grant(chg, "change me pass phrase 66");
-  eq((await call("password", { current_password: "change me pass phrase 66", new_password: "brand new changed phrase 77" }, { cookie: chg })).status, 200, "password changed");
-  eq((await (await check(chg, chgGrant.token)).json()).reason, "password_changed", "grant dies on password change");
+  const changed = await call("password", { current_password: "change me pass phrase 66", new_password: "brand new changed phrase 77" }, { cookie: chg }); eq(changed.status, 200, "password changed");
+  // S7.4: a password change also revokes the session generation. The old cookie is dead outright, and the grant cannot be carried onto the re-issued session either.
+  eq((await check(chg, chgGrant.token)).status, 401, "old session is revoked by the password change, so its grant dies with it");
+  const chgReissued = changed.headers.get("set-cookie").split(";")[0];
+  eq((await (await check(chgReissued, chgGrant.token)).json()).reason, "session_revoked", "grant dies on password change even on the re-issued session");
   const admChg = await store.getAdminUserByEmail("chg@x.test"); await store.updateAdminUser(admChg.id, { password_hash: hashPassword("reset by admin phrase 88") });
   const chg2 = await login("chg@x.test", "reset by admin phrase 88"); const chg2Grant = await grant(chg2, "reset by admin phrase 88");
   await store.updateAdminUser(admChg.id, { password_hash: hashPassword("reset again by admin 99x") });

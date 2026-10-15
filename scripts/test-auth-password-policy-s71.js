@@ -94,7 +94,9 @@ async function main() {
   eq((await t.patch(`/admin/users/${target.id}`, { password: "new viewer passphrase 7" }, sup.cookie)).status, 200, "patch with strong password");
   eq((await t.login("viewer@x.test", "new viewer passphrase 7")).status, 200, "patched password works");
   eq((await t.patch(`/admin/users/${target.id}`, { display_name: "Renamed" }, sup.cookie)).status, 200, "patch without password unaffected by policy");
-  eq((await t.patch(`/admin/users/${target.id}`, { password: STRONG }, viewer.cookie)).status, 403, "viewer cannot set another user's password");
+  // S7.4: the admin-set password ended the target's earlier sessions, so sign the viewer in again before testing what they may do
+  const viewerAgain = await t.login("viewer@x.test", "new viewer passphrase 7");
+  eq((await t.patch(`/admin/users/${target.id}`, { password: STRONG }, viewerAgain.cookie)).status, 403, "viewer cannot set another user's password");
 
   // ---- 3. self-service change
   const sess = await t.login("new2@x.test", STRONG);
@@ -158,7 +160,7 @@ async function main() {
   eq((await t.login("fresh@x.test", "k-s71-api-key")).status, 401, "API-key fallback still rejected");
   const vt = await t.store.getAdminUserByEmail("viewer@x.test");
   await t.store.updateAdminUser(vt.id, { status: "inactive" });
-  eq((await fetch(`${t.base}/api/lead-agents/admin/session/me`, { headers: { cookie: viewer.cookie } })).status, 401, "deactivation revokes the session");
+  eq((await fetch(`${t.base}/api/lead-agents/admin/session/me`, { headers: { cookie: viewerAgain.cookie } })).status, 401, "deactivation revokes the session");
 
   // ---- 8. administrator recovery honours the policy
   const { store: rs } = await createTempStore();
