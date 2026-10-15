@@ -192,21 +192,36 @@ class SupabaseLeadAgentsStore {
   }
 
   async appendConversation(input) {
-    const response = await this.client.post(
-      "/conversations",
-      {
-        lead_id: input.lead_id,
-        agent_name: input.agent_name,
-        message_role: input.message_role,
-        channel: input.channel || "website",
-        external_message_id: input.external_message_id || null,
-        parent_external_message_id: input.parent_external_message_id || null,
-        content: input.content,
-      },
-      {
-        headers: this.selectHeaders(),
+    // correlation_id (the manual-send id) is unique in the database; a repeated persistence attempt returns the existing row instead of creating a second one.
+    if (input.correlation_id) {
+      const existing = await this.client.get(`/conversations?correlation_id=eq.${encodeURIComponent(input.correlation_id)}&limit=1`);
+      if (Array.isArray(existing.data) && existing.data[0]) return existing.data[0];
+    }
+    let response;
+    try {
+      response = await this.client.post(
+        "/conversations",
+        {
+          lead_id: input.lead_id,
+          agent_name: input.agent_name,
+          message_role: input.message_role,
+          channel: input.channel || "website",
+          external_message_id: input.external_message_id || null,
+          parent_external_message_id: input.parent_external_message_id || null,
+          content: input.content,
+          ...(input.correlation_id ? { correlation_id: input.correlation_id } : {}),
+        },
+        {
+          headers: this.selectHeaders(),
+        }
+      );
+    } catch (error) {
+      if (input.correlation_id && error?.response?.status === 409) {
+        const raced = await this.client.get(`/conversations?correlation_id=eq.${encodeURIComponent(input.correlation_id)}&limit=1`);
+        if (Array.isArray(raced.data) && raced.data[0]) return raced.data[0];
       }
-    );
+      throw error;
+    }
     await this.appendTimelineEvent({
       lead_id: input.lead_id,
       event_type: input.message_role === "tool" ? "tool_event" : "conversation",
@@ -487,6 +502,38 @@ class SupabaseLeadAgentsStore {
   async deleteFacilityWorkspace(workspaceId) {
     await this.client.delete(`/facility_workspaces?id=eq.${workspaceId}`);
     return true;
+  }
+
+  // ---- Manual WhatsApp sends: durable intent / outcome ledger (see db/20261017_whatsapp_manual_sends.sql) ----
+  async claimManualSend(input) {
+    const key = `lead_id=eq.${encodeURIComponent(input.lead_id)}&actor_email=eq.${encodeURIComponent(input.actor_email)}&client_request_id=eq.${encodeURIComponent(input.client_request_id)}`;
+    const inserted = await this.client.post(
+      "/whatsapp_manual_sends?on_conflict=lead_id,actor_email,client_request_id",
+      { lead_id: input.lead_id, actor_email: input.actor_email, client_request_id: input.client_request_id, channel: input.channel || "whatsapp", recipient: input.recipient, body: input.body, body_hash: input.body_hash },
+      { headers: { ...this.selectHeaders(), Prefer: "resolution=ignore-duplicates,return=representation" } }
+    );
+    if (!Array.isArray(inserted.data)) throw new Error("manual_send_claim_malformed");
+    if (inserted.data.length === 1) return { claimed: true, record: inserted.data[0] };
+    const current = await this.client.get(`/whatsapp_manual_sends?${key}&limit=1`);
+    if (!Array.isArray(current.data) || !current.data[0]) throw new Error("manual_send_claim_unreadable");
+    return { claimed: false, record: current.data[0] };
+  }
+
+  async getManualSend(id) {
+    const response = await this.client.get(`/whatsapp_manual_sends?id=eq.${encodeURIComponent(id)}&limit=1`);
+    return Array.isArray(response.data) ? response.data[0] || null : null;
+  }
+
+  async updateManualSend(id, patch) {
+    const body = { updated_at: new Date().toISOString() };
+    for (const field of ["status", "provider_message_id", "provider_response_code", "failure_reason", "conversation_id", "conversation_recorded_at", "resolved_by", "resolved_at", "resolution_note"]) if (patch[field] !== undefined) body[field] = patch[field];
+    const response = await this.client.patch(`/whatsapp_manual_sends?id=eq.${encodeURIComponent(id)}`, body, { headers: this.selectHeaders() });
+    return Array.isArray(response.data) ? response.data[0] || null : null;
+  }
+
+  async listManualSendsForLead(leadId, limit = 200) {
+    const response = await this.client.get(`/whatsapp_manual_sends?lead_id=eq.${encodeURIComponent(leadId)}&order=created_at.asc&limit=${Math.min(Math.max(Number(limit) || 200, 1), 500)}`);
+    return response.data;
   }
 
   // Relationship workspace read helpers (read-only).

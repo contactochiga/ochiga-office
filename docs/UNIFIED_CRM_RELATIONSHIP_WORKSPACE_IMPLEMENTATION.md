@@ -20,3 +20,14 @@ Branch: `feature/unified-crm-relationship-workspace` (base: production `c91d5177
 
 ## Files
 `src/lead-agents/relationship-workspace.js` (new), `server.js` (2 read routes + manual-reply guard/record), `store-file.js`, `store-supabase.js` (3 helpers), `public/office/office.js`, `public/office/index.html`, `scripts/test-relationship-workspace.js`, `scripts/test-relationship-workspace-browser.js`, `package.json` (`office:relationship-workspace:test`), docs + 3 screenshots in `docs/assets/`.
+
+
+---
+# Hardening revision (release readiness)
+Three narrow engineering changes, no redesign:
+1. **Durable manual-reply idempotency** — new additive table `whatsapp_manual_sends` (+ `conversations.correlation_id`), atomic claim per (lead, staff actor, client request id), exact-content binding, forged-actor refusal, fail-closed when the ledger is unreachable. The in-memory map was removed.
+2. **Provider acceptance lifecycle and reconciliation** — `src/lead-agents/manual-whatsapp-send.js`: intent persisted before the provider call; pending / accepted / rejected / not-sent / unknown states; outcome update retried then surfaced; accepted-but-unrecorded repaired idempotently (no provider call); unknown outcomes never retried, only resolved by a governed, audited staff decision (`…/manual-sends/:id/resolve`). UI: honest wording, muted style for unconfirmed entries, two small buttons only on unresolved sends.
+3. **Evidence-safe correlation** — `relationship-workspace.js` merges only on shared provider message id / correlation id / communication id / source-event id (same direction); look-alike records without evidence stay separate and are flagged uncertain; future inbound activities carry `provider_message_id`.
+Unchanged: workspace design, autonomy switch and policy (`whatsapp-autonomy.js` has zero diff versus production; the setting is never read-modified), Backend contracts, Meta configuration.
+
+New/changed files in this revision: `db/20261017_whatsapp_manual_sends.sql`, `db/rollback/20261017_whatsapp_manual_sends.down.sql`, `src/lead-agents/manual-whatsapp-send.js`, `relationship-workspace.js`, `server.js` (reply handler, resolve route, thread reconcile, `provider_message_id` in two activity writes), `store-file.js`, `store-supabase.js`, `public/office/office.js`, `public/office/index.html`, `scripts/test-whatsapp-manual-send-durability.js`, `scripts/test-relationship-workspace*.js`, `package.json`.

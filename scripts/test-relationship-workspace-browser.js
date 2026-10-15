@@ -86,6 +86,26 @@ async function main() {
     await shot("workspace-takeover-desktop.png");
     console.log("2. Takeover enables the composer; reply shown as 'delivery not confirmed' — PASS");
 
+    // 2b. unknown / pending / rejected manual sends are visible and honest; unknown can be resolved by staff (no resend); no duplicate bubbles
+    const mk = async (rid, body, status, extra = {}) => { const c = await store.claimManualSend({ lead_id: waLead.id, actor_email: "super@ochiga.local", client_request_id: rid, channel: "whatsapp", recipient: waLead.whatsapp_phone, body, body_hash: "h".repeat(64) }); await store.updateManualSend(c.record.id, { status, ...extra }); return c.record; };
+    await mk("b-pending", "PENDING-MSG", "pending");
+    const unknownSend = await mk("b-unknown", "UNKNOWN-MSG", "outcome_unknown", { failure_reason: "ECONNABORTED" });
+    await mk("b-rejected", "REJECTED-MSG", "provider_rejected", { provider_response_code: 400 });
+    await send("Page.reload");
+    await waitFor(`document.querySelector('#relThreadPane').textContent.includes('UNKNOWN-MSG')`, "unknown send shown");
+    const txt = await evalJs(`document.querySelector('#relThreadPane').textContent`);
+    assert.ok(txt.includes("Outcome unknown") && txt.includes("Do not resend"), "unknown outcome indicator");
+    assert.ok(txt.includes("Sending — not yet confirmed"), "pending indicator");
+    assert.ok(txt.includes("Not sent — WhatsApp refused it"), "rejected indicator");
+    assert.equal(await evalJs(`[...document.querySelectorAll('.messages-bubble')].filter((b) => b.textContent.includes('sending the brochure now')).length`), 1, "the accepted reply appears exactly once");
+    assert.equal(await evalJs(`document.querySelectorAll('.rel-resolve').length`), 2, "only unresolved sends offer resolution (pending + unknown)");
+    await shot("workspace-unknown-outcome-desktop.png");
+    await evalJs(`[...document.querySelectorAll('.messages-bubble-row')].find((r) => r.textContent.includes('UNKNOWN-MSG')).querySelector("button[data-r='confirmed_not_sent']").click()`);
+    await waitFor(`document.querySelectorAll('.rel-resolve').length === 1`, "resolution applied");
+    assert.equal((await store.getManualSend(unknownSend.id)).status, "not_sent");
+    assert.ok((await store.listManualSendsForLead(waLead.id)).filter((x) => x.status === "provider_accepted").length >= 1);
+    console.log("2b. Pending/unknown/rejected indicators, staff resolution without resending, no duplicate bubbles — PASS");
+
     // 3. Website form lead: form card, two opportunities, opportunity filter keeps them separate
     await send("Page.navigate", { url: `${base}/office#/crm/leads/${formLead.id}` });
     await waitFor(`!!document.querySelector('.rel-card-form')`, "form card");

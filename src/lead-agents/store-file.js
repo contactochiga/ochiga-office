@@ -5,6 +5,8 @@ const { normalizeEmail, normalizeLeadInput, normalizeLeadPatch, normalizeText } 
 const { buildDeploymentFromLead, normalizePartner } = require("./commercial-ops");
 const { buildOfficeSnapshot, createOfficeSeedData } = require("./office-data");
 
+const MANUAL_SEND_PATCH_FIELDS = ["status", "provider_message_id", "provider_response_code", "failure_reason", "conversation_id", "conversation_recorded_at", "resolved_by", "resolved_at", "resolution_note"];
+
 class FileLeadAgentsStore {
   constructor(filePath) {
     this.filePath = path.resolve(filePath);
@@ -46,6 +48,7 @@ class FileLeadAgentsStore {
       office_letterhead_config: null,
       runtime_settings: {},
       whatsapp_inbound_claims: {},
+      whatsapp_manual_sends: [],
       office_support_mappings: [],
       office_handoffs: [],
       office_staff_profiles: [],
@@ -123,6 +126,7 @@ class FileLeadAgentsStore {
         office_document_folders: Array.isArray(parsed.office_document_folders) ? parsed.office_document_folders : [],
         office_letterhead_config: parsed.office_letterhead_config && typeof parsed.office_letterhead_config === "object" ? parsed.office_letterhead_config : null,
         runtime_settings: parsed.runtime_settings && typeof parsed.runtime_settings === "object" && !Array.isArray(parsed.runtime_settings) ? parsed.runtime_settings : {},
+        whatsapp_manual_sends: Array.isArray(parsed.whatsapp_manual_sends) ? parsed.whatsapp_manual_sends : [],
         whatsapp_inbound_claims: parsed.whatsapp_inbound_claims && typeof parsed.whatsapp_inbound_claims === "object" && !Array.isArray(parsed.whatsapp_inbound_claims) ? parsed.whatsapp_inbound_claims : {},
         office_support_mappings: Array.isArray(parsed.office_support_mappings)
           ? parsed.office_support_mappings
@@ -347,6 +351,11 @@ class FileLeadAgentsStore {
   }
 
   async appendConversation(input) {
+    // correlation_id (the manual-send id) is unique: a repeated persistence attempt returns the existing row instead of creating a second one.
+    if (input.correlation_id) {
+      const existing = this.state.conversations.find((c) => c.correlation_id === input.correlation_id);
+      if (existing) return existing;
+    }
     const item = {
       id: crypto.randomUUID(),
       lead_id: input.lead_id,
@@ -356,6 +365,7 @@ class FileLeadAgentsStore {
       external_message_id: input.external_message_id || "",
       parent_external_message_id: input.parent_external_message_id || "",
       content: input.content,
+      correlation_id: input.correlation_id || null,
       created_at: this.nowIso(),
     };
 
@@ -655,6 +665,40 @@ class FileLeadAgentsStore {
     this.state.facility_workspaces.splice(index, 1);
     await this.persist();
     return true;
+  }
+
+  // ---- Manual WhatsApp sends: durable intent / outcome ledger (see db/20261017_whatsapp_manual_sends.sql) ----
+  async claimManualSend(input) {
+    // Synchronous check-and-insert (single process); the Supabase store gets the same guarantee from the table's unique key.
+    const existing = this.state.whatsapp_manual_sends.find((r) => r.lead_id === input.lead_id && r.actor_email === input.actor_email && r.client_request_id === input.client_request_id);
+    if (existing) return { claimed: false, record: { ...existing } };
+    const now = this.nowIso();
+    const record = {
+      id: crypto.randomUUID(), lead_id: input.lead_id, actor_email: input.actor_email, client_request_id: input.client_request_id, channel: input.channel || "whatsapp",
+      recipient: input.recipient, body: input.body, body_hash: input.body_hash, status: "pending", provider_message_id: null, provider_response_code: null, failure_reason: null,
+      conversation_id: null, conversation_recorded_at: null, resolved_by: null, resolved_at: null, resolution_note: null, created_at: now, updated_at: now,
+    };
+    this.state.whatsapp_manual_sends.push(record);
+    await this.persist();
+    return { claimed: true, record: { ...record } };
+  }
+
+  async getManualSend(id) {
+    const record = this.state.whatsapp_manual_sends.find((r) => r.id === id);
+    return record ? { ...record } : null;
+  }
+
+  async updateManualSend(id, patch) {
+    const record = this.state.whatsapp_manual_sends.find((r) => r.id === id);
+    if (!record) return null;
+    for (const field of MANUAL_SEND_PATCH_FIELDS) if (patch[field] !== undefined) record[field] = patch[field];
+    record.updated_at = this.nowIso();
+    await this.persist();
+    return { ...record };
+  }
+
+  async listManualSendsForLead(leadId, limit = 200) {
+    return this.state.whatsapp_manual_sends.filter((r) => r.lead_id === leadId).sort((a, b) => String(a.created_at).localeCompare(String(b.created_at))).slice(-limit).map((r) => ({ ...r }));
   }
 
   // Relationship workspace read helpers (read-only).

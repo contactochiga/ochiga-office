@@ -11,7 +11,8 @@ No new CRM, no new intelligence system, no new Meta sender. The workspace is a *
 ## Data contracts (no schema change, no migration)
 | Source | Table | Used for |
 |---|---|---|
-| Public/agent/staff WhatsApp messages | `conversations` (role, channel, external_message_id, agent_name) | message entries; agent_name containing "@" = human staff reply |
+| Agent/legacy messages and every ACCEPTED manual staff reply | `conversations` (role, channel, external_message_id, agent_name, **correlation_id**) | message entries; agent_name containing "@" = human staff reply |
+| Manual WhatsApp send lifecycle (new) | `whatsapp_manual_sends` | durable intent/outcome ledger; pending / unknown / rejected sends are shown from here |
 | Inbound text when no conversation row exists (autonomy OFF) and form submissions | `crm_activities` (`whatsapp_message`, `website_intake_received`, notes; carries contact/organization/opportunity/lead ids) | message / form / activity entries |
 | Lead timeline | `timeline_events` | system entries (lead created, takeover, etc.); mirror/technical events (`conversation`, `tool_event`, `lead_updated`, `oyi_core_whatsapp_turn`) are excluded; suppression fact shown inline once |
 | Provider delivery truth | `inbound_events` where `event_type like 'status:%'` keyed by provider message id | outbound delivery state |
@@ -52,3 +53,31 @@ RLS/anon restrictions untouched; browser calls only authorized Office APIs; serv
 
 ## Known integration gaps
 Original raw form payload is not stored separately (the intake activity summary and lead fields are shown); WhatsApp media download/storage not verified (explicit note in UI); no Oyi qualification evidence API in the workspace (shows the lead summary; full record has the rest — Backend contract needed if richer facts are wanted); linking an existing message to an opportunity needs a small write API (not built); automated multi-opportunity creation not implemented; inbox sorts in memory over `listLeads()` (fine at current scale, needs a server-side query beyond a few thousand leads); thread caps at 500 rows per source.
+
+
+---
+# Hardening revision (release readiness)
+
+## Durable manual-send idempotency (design)
+`POST /admin/leads/:id/whatsapp/reply` now goes through `src/lead-agents/manual-whatsapp-send.js`. Existing canonical communication tables cannot own this (the Office tables hold no per-request send intent; Backend's CommunicationRuntime owns autonomous sends only), so one purpose-specific additive table is used: **`whatsapp_manual_sends`** (migration `db/20261017_whatsapp_manual_sends.sql`, rollback script provided).
+* Key: `unique (lead_id, actor_email, client_request_id)` — scoped to the lead, the authenticated staff actor and the request. The claim is an atomic insert (`on_conflict … ignore-duplicates` in Supabase; synchronous check-and-insert in the single-process file store), so concurrent requests on any instance/process produce exactly one claimant.
+* Row = authorised intent persisted BEFORE the provider call: lead, actor, client request id, recipient, exact body + SHA-256 hash, channel, created_at, status.
+* Same key + same content → `409 duplicate_request` with the recorded state (no provider call). Same key + different content → `409 request_id_reused`. A body naming a different actor → `400 forged_actor` (the sender is always the session). If the claim cannot be written → `503 send_state_unavailable` and **nothing is sent**.
+* Takeover, `manage_takeover` permission and WhatsApp configuration are checked before the claim; global autonomy is not consulted (manual communication is independent of it) and is never written.
+
+## Provider acceptance lifecycle
+`pending` → (`provider_accepted` | `provider_rejected` | `not_sent` | `outcome_unknown`), plus staff resolution of unknown/pending to `provider_accepted` or `not_sent`.
+* `provider_rejected`: the provider answered 4xx — definitively not sent.
+* `outcome_unknown`: no provider response (timeout/reset) or 5xx — the message may or may not exist.
+* `not_sent`: the adapter never reached the provider (not configured) or a staff member confirmed it was not sent.
+* `provider_accepted` records the provider message id when returned and means *accepted by the API only*. "Sent/delivered/read/failed" are never stored here: they come only from Meta status events matched by provider message id (existing `inbound_events` status rows). A state shown as delivered always has `verified: true` evidence.
+
+## Unknown outcomes and reconciliation
+* There is no transaction spanning Meta and the database, so exactly-once is not claimed. An unknown outcome is **never retried automatically**; the same request id can never trigger a second provider call after any outcome is recorded.
+* Crash windows: (1) die after claim, before the provider call or before its answer → row stays `pending`; after 2 minutes the next reconciliation marks it `outcome_unknown`. (2) provider accepted but the outcome update fails → retried 3×, then reported (`state_recorded:false`), the provider message id is written to the audit trail, and the row is handled as unknown. (3) accepted and recorded but the conversation row fails → reported (`recorded:false`), row stays `provider_accepted` with `conversation_recorded_at = null`.
+* `reconcileManualSends` (runs when a relationship thread is read; local repair only, never calls the provider): stale `pending` → `outcome_unknown`; accepted-but-unrecorded → writes the conversation row, idempotent through the unique `conversations.correlation_id` (= send id).
+* `POST /admin/leads/:id/whatsapp/manual-sends/:sendId/resolve` (`manage_takeover`, audited): `confirmed_sent` (optional provider message id) → `provider_accepted` + conversation record; `confirmed_not_sent` → `not_sent`. Only unresolved sends can be resolved; it never sends.
+* The workspace shows pending/unknown/rejected/not-sent entries with explicit wording and, only for unresolved ones, two small buttons for permitted staff.
+
+## Timeline correlation rules (evidence only)
+Merge only on an authoritative shared identifier: exact provider message id; manual-send/correlation id (`conversations.correlation_id` ↔ ledger id); communication id; source-event id — and only for the same direction. The same provider event stored twice in `conversations` collapses to one entry with `merged_from` provenance. Text/time similarity is never grounds to merge: a similar record without shared evidence stays as a separate entry flagged `correlation: "uncertain"` (`possible_duplicate_of`), so two identical legitimate messages are both kept. Future inbound WhatsApp activities now store `provider_message_id` in metadata. Mirror events written by `appendConversation` (`conversation`, `tool_event`) are excluded by event type because the store creates them as an exact mirror of the conversation row. Historical records are never rewritten. Correction to the earlier revision: in this codebase `conversations` receive WhatsApp rows only from manual replies (inbound text and suppression live in `crm_activities`/`inbound_events`; autonomous Oyi replies are sent by Backend and are not stored in Office tables — a Backend contract would be needed to show them).

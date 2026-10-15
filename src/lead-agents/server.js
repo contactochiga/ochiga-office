@@ -126,7 +126,7 @@ const { createOfficeSyncService } = require("./office-sync");
 const { appendAuditRecord } = require("./audit");
 const { PERMISSION_KEYS, ROLE_PERMISSIONS, hasPermission } = require("./permissions");
 const relationshipWorkspace = require("./relationship-workspace");
-const recentManualReplyIds = new Map();
+const { performManualSend, reconcileManualSends, resolveManualSend } = require("./manual-whatsapp-send");
 const { recallCrmMemory } = require("./crm-memory-access");
 const { createRealtimeHub } = require("./realtime");
 const { createStorageService } = require("./storage");
@@ -1750,7 +1750,7 @@ async function suppressAutonomousWhatsAppReply({ store, lead, event, requestId, 
       title: "WhatsApp message",
       body: String(event.text || "").slice(0, 2000),
       source: "whatsapp",
-      metadata: { direction: "inbound", ai_replied: false, suppressed_reason: reason, request_id: requestId },
+      metadata: { direction: "inbound", ai_replied: false, suppressed_reason: reason, request_id: requestId, provider_message_id: event.message_id || null },
     },
     { actorEmail: "whatsapp" }
   ).catch(() => null);
@@ -1979,7 +1979,7 @@ async function processWhatsAppMessageEvent({ event, store, adapter, config, requ
       title: "WhatsApp message",
       body: String(event.text || "").slice(0, 2000),
       source: "whatsapp",
-      metadata: { direction: "inbound", ai_replied: Boolean(sendResult && sendResult.delivered), request_id: requestId },
+      metadata: { direction: "inbound", ai_replied: Boolean(sendResult && sendResult.delivered), request_id: requestId, provider_message_id: event.message_id || null },
     },
     { actorEmail: "whatsapp" }
   ).catch(() => null);
@@ -6770,21 +6770,24 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           json(res, 404, { error: "lead_not_found" }, { "x-request-id": ctx.requestId });
           return;
         }
-        const [conversations, timeline, activities, documents, channelState, setting] = await Promise.all([
+        // Local repair only (never calls WhatsApp): stale pending sends become "outcome unknown"; accepted sends missing their conversation record get it written.
+        await reconcileManualSends(store, leadId, { log }).catch(() => null);
+        const [conversations, timeline, activities, documents, channelState, setting, manualSends] = await Promise.all([
           store.listConversationsForLead(leadId, 500),
           store.listTimelineForLead(leadId, 500),
           listCorporateRecords(store, "activities"),
           hasPermission(authContext, "documents.generate") ? store.listOfficeDocuments().catch(() => []) : Promise.resolve([]),
           store.getLeadChannelState(leadId, "whatsapp").catch(() => null),
           readWhatsAppAutonomySetting(store),
+          store.listManualSendsForLead(leadId, 200).catch(() => []),
         ]);
         const leadActivities = activities.filter((a) => a.lead_id === leadId);
         const leadOpportunities = opportunities.filter((o) => o.lead_id === leadId);
         const opportunityIds = new Set(leadOpportunities.map((o) => o.id));
         const leadDocuments = documents.filter((d) => (d.related_type === "lead" && d.related_id === leadId) || (d.related_type === "opportunity" && opportunityIds.has(d.related_id)));
-        const statusEvents = await store.listInboundStatusEventsByExternalIds(conversations.map((c) => c.external_message_id).filter(Boolean)).catch(() => []);
+        const statusEvents = await store.listInboundStatusEventsByExternalIds([...conversations.map((c) => c.external_message_id), ...manualSends.map((m) => m.provider_message_id)].filter(Boolean)).catch(() => []);
         const thread = relationshipWorkspace.buildThread({
-          lead, conversations, timeline, activities: leadActivities, statusEvents, documents: leadDocuments,
+          lead, conversations, timeline, activities: leadActivities, statusEvents, documents: leadDocuments, manualSends,
           opportunityId: params.get("opportunity_id") || "", before: params.get("before") || "", limit: params.get("limit") || 50, search: q,
         });
         const takeoverActive = Boolean(channelState && ["human_active", "human_review"].includes(channelState.human_status));
@@ -6849,32 +6852,42 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           json(res, 503, { error: "whatsapp_not_configured" }, { "x-request-id": ctx.requestId });
           return;
         }
-        // Duplicate-send guard for the relationship workspace composer: the same client request id inside five minutes is refused, not sent twice.
-        const clientRequestId = String(body.client_request_id || "").trim().slice(0, 80);
-        if (clientRequestId) {
-          const now = Date.now();
-          for (const [key, at] of recentManualReplyIds) if (now - at > 300000) recentManualReplyIds.delete(key);
-          if (recentManualReplyIds.has(`${leadId}:${clientRequestId}`)) {
-            json(res, 409, { error: "duplicate_request", detail: "This message was already submitted." }, { "x-request-id": ctx.requestId });
+        // The sender is ALWAYS the authenticated session; a body that names a different actor is refused rather than ignored.
+        for (const field of ["actor_email", "sent_by", "operator", "actor"]) {
+          if (body[field] !== undefined && String(body[field] || "").trim().toLowerCase() !== String(authContext.email || "").toLowerCase()) {
+            json(res, 400, { error: "forged_actor", detail: "The sender is taken from the signed-in session." }, { "x-request-id": ctx.requestId });
             return;
           }
-          recentManualReplyIds.set(`${leadId}:${clientRequestId}`, now);
         }
-        try {
-          const result = await whatsappAdapter.sendTextMessage({ to, body: text });
-          if (result.delivered) {
-            // Recorded in the canonical conversation log ONLY when the provider accepted it, so the relationship thread never shows an unsent message as sent.
-            await store.appendConversation({ lead_id: leadId, agent_name: authContext.email || "staff", message_role: "assistant", channel: "whatsapp", external_message_id: result.external_message_id || null, content: text }).catch(() => null);
-          } else if (clientRequestId) {
-            recentManualReplyIds.delete(`${leadId}:${clientRequestId}`);
-          }
-          await store.upsertLeadChannelState(leadId, "whatsapp", { last_outbound_at: new Date().toISOString(), last_external_message_id: result.external_message_id || undefined });
-          await appendAuditRecord({ store, authContext, action: "communication.whatsapp.manual_reply", resourceType: "lead", resourceId: leadId, metadata: { external_message_id: result.external_message_id || null, delivered: Boolean(result.delivered), operator: authContext.email || "" }, req, status: result.delivered ? "success" : "failure" });
-          json(res, 200, { ok: Boolean(result.delivered), delivered: Boolean(result.delivered), external_message_id: result.external_message_id || null }, { "x-request-id": ctx.requestId });
-        } catch (error) {
-          await appendAuditRecord({ store, authContext, action: "communication.whatsapp.manual_reply", resourceType: "lead", resourceId: leadId, metadata: { operator: authContext.email || "", provider_status: error?.response?.status || null }, req, status: "failure" }).catch(() => null);
-          json(res, 502, { ok: false, delivered: false, error: "provider_unavailable" }, { "x-request-id": ctx.requestId });
+        const outcome = await performManualSend({
+          store, adapter: whatsappAdapter, lead, actorEmail: authContext.email || "staff", clientRequestId: body.client_request_id, text, log,
+          audit: (action, status, metadata) => appendAuditRecord({ store, authContext, action, resourceType: "lead", resourceId: leadId, metadata, req, status }),
+        });
+        if (outcome.body.accepted) await store.upsertLeadChannelState(leadId, "whatsapp", { last_outbound_at: new Date().toISOString(), last_external_message_id: outcome.body.external_message_id || undefined }).catch(() => null);
+        json(res, outcome.httpStatus, outcome.body, { "x-request-id": ctx.requestId });
+        return;
+      }
+
+      // Governed resolution of an UNKNOWN manual-send outcome. A staff member who has checked WhatsApp records what happened; this never sends a message.
+      const manualSendResolveMatch = pathname.match(/^\/api\/lead-agents\/admin\/leads\/([^/]+)\/whatsapp\/manual-sends\/([^/]+)\/resolve$/);
+      if (manualSendResolveMatch) {
+        if (req.method !== "POST") {
+          methodNotAllowed(res, "POST");
+          return;
         }
+        authorizePermission(authContext, "manage_takeover");
+        const body = await readJsonBody(req);
+        requireObject(body, "body");
+        const sendId = decodeURIComponent(manualSendResolveMatch[2]);
+        const leadIdForSend = decodeURIComponent(manualSendResolveMatch[1]);
+        const record = await store.getManualSend(sendId).catch(() => null);
+        if (!record || record.lead_id !== leadIdForSend) {
+          json(res, 404, { error: "send_not_found" }, { "x-request-id": ctx.requestId });
+          return;
+        }
+        const outcome = await resolveManualSend(store, sendId, { resolution: String(body.resolution || ""), providerMessageId: body.provider_message_id, actorEmail: authContext.email || "staff", note: body.note });
+        await appendAuditRecord({ store, authContext, action: "communication.whatsapp.manual_send_resolved", resourceType: "lead", resourceId: leadIdForSend, metadata: { send_id: sendId, resolution: String(body.resolution || ""), result_state: outcome.body.state || null, operator: authContext.email || "" }, req, status: outcome.httpStatus === 200 ? "success" : "failure" }).catch(() => null);
+        json(res, outcome.httpStatus, outcome.body, { "x-request-id": ctx.requestId });
         return;
       }
 

@@ -102,7 +102,7 @@ function decodeCursor(cursor) {
   }
 }
 
-function buildThread({ lead, conversations = [], timeline = [], activities = [], statusEvents = [], documents = [], opportunityId = "", before = "", limit = 50, search = "" }) {
+function buildThread({ lead, conversations = [], timeline = [], activities = [], statusEvents = [], documents = [], manualSends = [], opportunityId = "", before = "", limit = 50, search = "" }) {
   const entries = [];
   const conversationKeys = [];
   const statusByMessage = new Map();
@@ -113,24 +113,35 @@ function buildThread({ lead, conversations = [], timeline = [], activities = [],
     statusByMessage.get(key).push(event);
   }
 
+  // Correlation rules (evidence only): records are merged ONLY when they share an authoritative identifier -- the exact provider message id, the manual-send/correlation id,
+  // a communication id or a source-event id. Similar text and nearby timestamps are never grounds to merge; at most they are flagged as an UNCERTAIN possible duplicate.
+  const byKey = new Map();
+  const indexKeys = (entry, keys) => { entry.correlation_keys = keys; for (const key of keys) if (!byKey.has(key)) byKey.set(key, entry); };
   for (const row of conversations) {
     const inbound = row.message_role === "user";
-    const channel = clean(row.channel) || "website";
+    const channel = clean(row.channel) || "whatsapp_or_web";
     const providerId = clean(row.external_message_id);
+    const keys = [providerId && `provider:${providerId}`, clean(row.correlation_id) && `corr:${clean(row.correlation_id)}`].filter(Boolean);
+    const duplicateOf = keys.map((k) => byKey.get(k)).find(Boolean);
+    if (duplicateOf && duplicateOf.provenance.table === "conversations" && (duplicateOf.direction === "inbound") === inbound) {
+      duplicateOf.merged_from.push({ table: "conversations", id: row.id });
+      continue;
+    }
     let delivery = { state: "not_applicable", verified: false };
-    if (!inbound && channel === "whatsapp") {
+    if (!inbound && clean(row.channel) === "whatsapp") {
       const state = deliveryFromStatuses(statusByMessage.get(providerId));
       delivery = state ? { state, verified: true } : { state: "unverified", verified: false };
     }
+    const staffReply = clean(row.agent_name).includes("@");
     const entry = {
       id: entryId("message", "conversations", row.id),
       kind: "message",
       direction: inbound ? "inbound" : "outbound",
-      channel,
+      channel: clean(row.channel) || "website",
       sender: inbound ? "customer" : clean(row.agent_name) || "oyi",
       // a human operator's manual reply is stored with the staff e-mail as agent_name; every other assistant row is an Oyi/agent message
-      sender_type: inbound ? "customer" : clean(row.agent_name).includes("@") ? "staff" : "oyi",
-      origin: inbound ? "customer" : clean(row.agent_name).includes("@") ? "human" : "ai",
+      sender_type: inbound ? "customer" : staffReply ? "staff" : "oyi",
+      origin: inbound ? "customer" : staffReply ? "human" : "ai",
       text: clean(row.content),
       occurred_at: row.created_at,
       delivery,
@@ -140,8 +151,49 @@ function buildThread({ lead, conversations = [], timeline = [], activities = [],
       provenance: { table: "conversations", id: row.id },
       merged_from: [],
     };
+    indexKeys(entry, keys);
     entries.push(entry);
-    conversationKeys.push({ entry, text: normalizeText(row.content), at: ts(row.created_at), inbound, channel });
+    conversationKeys.push({ entry, text: normalizeText(row.content), at: ts(row.created_at), inbound, channel: clean(row.channel) });
+  }
+
+  // Manual WhatsApp sends (durable ledger). A send already represented by its conversation row (same correlation id) is merged into it; otherwise the ledger row itself is the
+  // record, shown with its honest state (pending / outcome unknown / rejected / not sent / accepted-but-not-yet-recorded).
+  const SEND_DELIVERY = { pending: "pending", outcome_unknown: "outcome_unknown", provider_rejected: "rejected", not_sent: "not_sent" };
+  for (const send of manualSends) {
+    const twin = byKey.get(`corr:${send.id}`);
+    if (twin) {
+      twin.merged_from.push({ table: "whatsapp_manual_sends", id: send.id });
+      twin.manual_send = { id: send.id, status: send.status, resolved_by: send.resolved_by || null };
+      continue;
+    }
+    const providerId = clean(send.provider_message_id);
+    let delivery;
+    if (send.status === "provider_accepted") {
+      const state = deliveryFromStatuses(statusByMessage.get(providerId));
+      delivery = state ? { state, verified: true } : { state: "unverified", verified: false };
+    } else {
+      delivery = { state: SEND_DELIVERY[send.status] || "unverified", verified: false };
+    }
+    const entry = {
+      id: entryId("message", "whatsapp_manual_sends", send.id),
+      kind: "message",
+      direction: "outbound",
+      channel: clean(send.channel) || "whatsapp",
+      sender: clean(send.actor_email),
+      sender_type: "staff",
+      origin: "human",
+      text: clean(send.body),
+      occurred_at: send.created_at,
+      delivery,
+      provider_message_id: providerId || null,
+      opportunity_id: null,
+      attachments: [],
+      manual_send: { id: send.id, status: send.status, resolvable: send.status === "outcome_unknown" || send.status === "pending", failure_reason: send.failure_reason || null, resolved_by: send.resolved_by || null },
+      provenance: { table: "whatsapp_manual_sends", id: send.id },
+      merged_from: [],
+    };
+    indexKeys(entry, [`corr:${send.id}`, providerId && `provider:${providerId}`].filter(Boolean));
+    entries.push(entry);
   }
 
   for (const activity of activities) {
@@ -156,26 +208,32 @@ function buildThread({ lead, conversations = [], timeline = [], activities = [],
     };
     if (activity.activity_type === "whatsapp_message") {
       const text = normalizeText(activity.body);
-      const twin = conversationKeys.find((c) => c.channel === "whatsapp" && c.inbound === (meta.direction !== "outbound") && c.text === text && Math.abs(c.at - ts(at)) <= 120000);
-      if (twin) {
-        twin.entry.merged_from.push({ table: "crm_activities", id: activity.id });
-        if (meta.suppressed_reason) twin.entry.reply_suppressed = { reason: meta.suppressed_reason, text: TIMELINE_REASON_TEXT[meta.suppressed_reason] || "No automatic reply was sent." };
-        if (!twin.entry.opportunity_id && activity.opportunity_id) twin.entry.opportunity_id = activity.opportunity_id;
+      const inboundActivity = meta.direction !== "outbound";
+      const activityKeys = [meta.provider_message_id, meta.external_message_id].map(clean).filter(Boolean).map((k) => `provider:${k}`)
+        .concat([meta.correlation_id].map(clean).filter(Boolean).map((k) => `corr:${k}`), [meta.communication_id].map(clean).filter(Boolean).map((k) => `comm:${k}`), [meta.source_event_id].map(clean).filter(Boolean).map((k) => `event:${k}`));
+      const proven = activityKeys.map((k) => byKey.get(k)).find((e) => e && e.kind === "message" && (e.direction === "inbound") === inboundActivity);
+      if (proven) {
+        proven.merged_from.push({ table: "crm_activities", id: activity.id });
+        if (meta.suppressed_reason) proven.reply_suppressed = { reason: meta.suppressed_reason, text: TIMELINE_REASON_TEXT[meta.suppressed_reason] || "No automatic reply was sent." };
+        if (!proven.opportunity_id && activity.opportunity_id) proven.opportunity_id = activity.opportunity_id;
         continue;
       }
+      // No shared identifier: keep BOTH records. If a conversation row looks similar, say so honestly instead of merging.
+      const lookalike = conversationKeys.find((c) => c.channel === "whatsapp" && c.inbound === inboundActivity && c.text === text && Math.abs(c.at - ts(at)) <= 120000);
       entries.push({
         ...base,
         id: entryId("message", "crm_activities", activity.id),
         kind: "message",
-        direction: meta.direction === "outbound" ? "outbound" : "inbound",
+        direction: inboundActivity ? "inbound" : "outbound",
         channel: "whatsapp",
-        sender: meta.direction === "outbound" ? clean(activity.actor) || "staff" : "customer",
-        sender_type: meta.direction === "outbound" ? "unknown" : "customer",
-        origin: meta.direction === "outbound" ? "unknown" : "customer",
+        sender: inboundActivity ? "customer" : clean(activity.actor) || "staff",
+        sender_type: inboundActivity ? "customer" : "unknown",
+        origin: inboundActivity ? "customer" : "unknown",
         text: clean(activity.body),
-        delivery: meta.direction === "outbound" ? { state: "unverified", verified: false } : { state: "not_applicable", verified: false },
-        provider_message_id: null,
-        correlation: "single_source",
+        delivery: inboundActivity ? { state: "not_applicable", verified: false } : { state: "unverified", verified: false },
+        provider_message_id: clean(meta.provider_message_id) || null,
+        correlation: lookalike ? "uncertain" : "single_source",
+        ...(lookalike ? { possible_duplicate_of: lookalike.entry.id } : {}),
         reply_suppressed: meta.suppressed_reason ? { reason: meta.suppressed_reason, text: TIMELINE_REASON_TEXT[meta.suppressed_reason] || "No automatic reply was sent." } : undefined,
       });
       continue;

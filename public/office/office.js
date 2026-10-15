@@ -17110,13 +17110,16 @@ function relSourceIcon(info, size = "") {
   if (!glyph) return `<span class="rel-src rel-src-neutral ${size}" title="${escapeHtml(label)}"><i></i></span>`;
   return `<span class="rel-src rel-src-${glyph.cls} ${size}" title="${escapeHtml(label)}">${glyph.svg || `<b>${glyph.text}</b>`}</span>`;
 }
+function newRelRequestId() {
+  return (window.crypto && crypto.randomUUID) ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
 function relInitials(name) {
   return String(name || "?").split(/\s+/).filter(Boolean).slice(0, 2).map((p) => p[0].toUpperCase()).join("") || "?";
 }
 function relDeliveryText(entry) {
   if (entry.direction !== "outbound") return "";
   const d = entry.delivery || {};
-  const map = { read: "Read", delivered: "Delivered", sent: "Sent (provider confirmed)", failed: "Failed", unverified: "Accepted by provider — delivery not confirmed", not_applicable: "" };
+  const map = { read: "Read", delivered: "Delivered", sent: "Sent (provider confirmed)", failed: "Failed", unverified: "Accepted by provider — delivery not confirmed", pending: "Sending — not yet confirmed by WhatsApp", outcome_unknown: "Outcome unknown — it may or may not have been sent. Do not resend.", rejected: "Not sent — WhatsApp refused it", not_sent: "Not sent", not_applicable: "" };
   return map[d.state] || "";
 }
 function relOriginText(entry) {
@@ -17232,14 +17235,29 @@ function renderRelEntry(entry) {
   const delivery = relDeliveryText(entry);
   const CHANNEL_NAMES = { whatsapp: "WhatsApp", website: "Website", website_form: "Website form", website_widget: "Website widget", email: "Email", linkedin: "LinkedIn" };
   const chan = entry.channel ? (CHANNEL_NAMES[entry.channel] || titleCase(String(entry.channel).replace(/_/g, " "))) : "";
-  return el(`
-    <div class="messages-bubble-row ${mine ? "mine" : "theirs"}">
+  const row = el(`
+    <div class="messages-bubble-row ${mine ? "mine" : "theirs"}${["pending", "outcome_unknown", "rejected", "not_sent"].includes(entry.delivery && entry.delivery.state) ? " rel-unconfirmed" : ""}">
       <div class="rel-bubble-head">${escapeHtml(entry.sender === "customer" ? "Customer" : entry.sender)}${chan ? ` · ${escapeHtml(chan)}` : ""}</div>
       <div class="messages-bubble">${escapeHtml(entry.text || "")}</div>
       <div class="messages-bubble-meta"><span>${escapeHtml(relTime(entry.occurred_at))}</span><span>${escapeHtml(relOriginText(entry))}</span>${delivery ? `<span class="rel-delivery rel-delivery-${escapeHtml(entry.delivery.state)}">${escapeHtml(delivery)}</span>` : ""}</div>
       ${entry.reply_suppressed ? `<div class="rel-suppressed">${escapeHtml(entry.reply_suppressed.text)}</div>` : ""}
       ${entry.correlation === "single_source" && entry.direction === "outbound" ? `<div class="rel-suppressed">Recorded as a CRM activity only; not correlated to a provider message.</div>` : ""}
+      ${entry.correlation === "uncertain" ? `<div class="rel-suppressed">A similar message exists in another record; they could not be proven to be the same message, so both are shown.</div>` : ""}
     </div>`);
+  const ms = entry.manual_send;
+  if (ms && ms.resolvable && hasPermission("manage_takeover")) {
+    const actions = el(`<div class="rel-resolve"><span>Check WhatsApp, then record what happened:</span><button type="button" class="btn btn-sm" data-r="confirmed_sent">It was sent</button><button type="button" class="btn btn-sm" data-r="confirmed_not_sent">It was not sent</button></div>`);
+    actions.querySelectorAll("button").forEach((b) => b.addEventListener("click", async () => {
+      actions.querySelectorAll("button").forEach((x) => { x.disabled = true; });
+      try {
+        await api(`/api/lead-agents/admin/leads/${encodeURIComponent(relState.leadId)}/whatsapp/manual-sends/${encodeURIComponent(ms.id)}/resolve`, { method: "POST", body: { resolution: b.dataset.r } });
+        toast("Recorded. Nothing was sent.");
+        await relLoadThread(false);
+      } catch (err) { toast(err.message || "Could not record the decision.", "error"); actions.querySelectorAll("button").forEach((x) => { x.disabled = false; }); }
+    }));
+    row.appendChild(actions);
+  }
+  return row;
 }
 
 function relRenderEntries(scroll, entries) {
@@ -17349,7 +17367,7 @@ function relRenderComposer(data) {
         <button type="submit" class="btn btn-primary btn-sm">Send on WhatsApp</button>
       </form>`);
     const ta = form.querySelector("textarea");
-    let requestId = (crypto.randomUUID ? crypto.randomUUID() : String(Date.now()) + Math.random());
+    let requestId = newRelRequestId();
     form.addEventListener("submit", async (e) => {
       e.preventDefault();
       const text = ta.value.trim();
@@ -17358,12 +17376,17 @@ function relRenderComposer(data) {
       btn.disabled = true; ta.disabled = true;
       try {
         const res = await api(`/api/lead-agents/admin/leads/${encodeURIComponent(data.lead.id)}/whatsapp/reply`, { method: "POST", body: { body: text, client_request_id: requestId } });
-        toast(res.delivered ? "Message accepted by WhatsApp. Delivery is confirmed separately." : "WhatsApp did not accept this message.", res.delivered ? "default" : "error");
-        requestId = (crypto.randomUUID ? crypto.randomUUID() : String(Date.now()) + Math.random());
-        if (res.delivered) ta.value = "";
+        // A 202 means "no answer from WhatsApp": the send is stored as UNKNOWN and is never retried automatically. Each attempt gets a fresh request id afterwards.
+        requestId = newRelRequestId();
+        ta.value = "";
+        if (res && res.error === "outcome_unknown") toast("WhatsApp did not confirm. Do not resend: check WhatsApp, then resolve the entry in the thread.", "error");
+        else toast(res.recorded === false ? "Accepted by WhatsApp; the CRM record is still being saved and will appear shortly." : "Message accepted by WhatsApp. Delivery is confirmed separately.");
         await relLoadThread(false);
       } catch (err) {
-        toast(err.message || "The message was not sent.", "error");
+        const definitive = err.status === 409 || err.status === 502 || (err.status === 503 && err.data && err.data.state);
+        if (err.status === 409 && err.data && err.data.error === "duplicate_request") toast(`Already submitted (${String(err.data.state || "recorded").replace(/_/g, " ")}). It was not sent again.`, "error");
+        else toast(err.message || "The message was not sent.", "error");
+        if (definitive) { requestId = newRelRequestId(); await relLoadThread(false); return; }
         btn.disabled = false; ta.disabled = false;
       }
     });

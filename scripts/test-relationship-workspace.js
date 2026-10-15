@@ -77,12 +77,18 @@ async function main() {
     assert.ok(msgs.every((e) => e.direction === "inbound" && e.channel === "whatsapp"));
     assert.ok(msgs.every((e) => e.provenance.table === "crm_activities" && e.correlation === "single_source"), "with autonomy OFF the CRM activity is the only record of the inbound text and is shown as such");
     assert.equal(waThread.thread.entries.filter((e) => e.event_type === "whatsapp_autonomous_reply_suppressed").length, 0, "the suppression fact is shown once, inline");
-    // when BOTH a conversation row and the CRM activity exist for one provider message they are merged into one entry (unit-level, synthetic rows)
-    const twin = rw.buildThread({ lead: { id: "L" }, conversations: [{ id: "c1", message_role: "user", channel: "whatsapp", external_message_id: "wamid.x", content: "Same text", created_at: "2026-01-01T10:00:00Z" }], activities: [{ id: "a1", activity_type: "whatsapp_message", body: "Same   text", metadata: { direction: "inbound" }, occurred_at: "2026-01-01T10:00:02Z" }] });
-    assert.equal(twin.entries.length, 1); assert.equal(twin.entries[0].merged_from.length, 1);
-    const unrelated = rw.buildThread({ lead: { id: "L" }, conversations: [{ id: "c1", message_role: "user", channel: "whatsapp", content: "Same text", created_at: "2026-01-01T10:00:00Z" }], activities: [{ id: "a1", activity_type: "whatsapp_message", body: "Same text", metadata: { direction: "inbound" }, occurred_at: "2026-01-01T12:00:00Z" }] });
-    assert.equal(unrelated.entries.length, 2, "identical text hours apart is NOT merged");
-    assert.ok(msgs.some((e) => e.reply_suppressed), "the suppressed-reply fact is attached (no reply sent)");
+    // Evidence-safe correlation (unit level, synthetic rows): records merge ONLY on an authoritative shared identifier.
+    const withId = rw.buildThread({ lead: { id: "L" }, conversations: [{ id: "c1", message_role: "user", channel: "whatsapp", external_message_id: "wamid.x", content: "Same text", created_at: "2026-01-01T10:00:00Z" }], activities: [{ id: "a1", activity_type: "whatsapp_message", body: "Same   text", metadata: { direction: "inbound", provider_message_id: "wamid.x" }, occurred_at: "2026-01-01T10:00:02Z" }] });
+    assert.equal(withId.entries.length, 1, "exact provider message id => ONE entry"); assert.deepEqual(withId.entries[0].merged_from, [{ table: "crm_activities", id: "a1" }], "provenance of the merged source is kept");
+    const noId = rw.buildThread({ lead: { id: "L" }, conversations: [{ id: "c1", message_role: "user", channel: "whatsapp", content: "Same text", created_at: "2026-01-01T10:00:00Z" }], activities: [{ id: "a1", activity_type: "whatsapp_message", body: "Same text", metadata: { direction: "inbound" }, occurred_at: "2026-01-01T10:00:02Z" }] });
+    assert.equal(noId.entries.length, 2, "similar text + nearby time WITHOUT shared evidence is NOT merged");
+    assert.equal(noId.entries.find((e) => e.provenance.table === "crm_activities").correlation, "uncertain", "the relationship is flagged uncertain, not fabricated");
+    const repeated = rw.buildThread({ lead: { id: "L" }, conversations: [{ id: "c1", message_role: "user", channel: "whatsapp", external_message_id: "wamid.1", content: "ok", created_at: "2026-01-01T10:00:00Z" }, { id: "c2", message_role: "user", channel: "whatsapp", external_message_id: "wamid.2", content: "ok", created_at: "2026-01-01T10:00:01Z" }] });
+    assert.equal(repeated.entries.length, 2, "two legitimate identical customer messages (different provider ids) stay distinct");
+    const sameProviderTwice = rw.buildThread({ lead: { id: "L" }, conversations: [{ id: "c1", message_role: "user", channel: "whatsapp", external_message_id: "wamid.1", content: "ok", created_at: "2026-01-01T10:00:00Z" }, { id: "c2", message_role: "user", channel: "whatsapp", external_message_id: "wamid.1", content: "ok", created_at: "2026-01-01T10:00:09Z" }] });
+    assert.equal(sameProviderTwice.entries.length, 1, "one provider event stored twice is one entry"); assert.equal(sameProviderTwice.entries[0].merged_from.length, 1);
+    const wrongDirection = rw.buildThread({ lead: { id: "L" }, conversations: [{ id: "c1", message_role: "assistant", channel: "whatsapp", external_message_id: "wamid.1", agent_name: "oyi", content: "ok", created_at: "2026-01-01T10:00:00Z" }], activities: [{ id: "a1", activity_type: "whatsapp_message", body: "ok", metadata: { direction: "inbound", provider_message_id: "wamid.1" }, occurred_at: "2026-01-01T10:00:01Z" }] });
+    assert.equal(wrongDirection.entries.length, 2, "an id match across opposite directions is not merged");
     const times = waThread.thread.entries.map((e) => Date.parse(e.occurred_at)); assert.deepEqual(times, [...times].sort((a, b) => a - b), "chronological");
     assert.equal(waThread.source.original_source.kind, "whatsapp");
     assert.equal(waThread.communication.global_autonomous_responses, "off"); assert.equal(waThread.communication.mode, "autonomous_off");
