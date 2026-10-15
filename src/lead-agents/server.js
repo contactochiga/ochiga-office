@@ -117,6 +117,7 @@ const {
 const { DEFAULT_CAPABILITIES } = require("./communications-handoff");
 const { WhatsAppCloudAdapter } = require("./whatsapp");
 const { buildProviderStatusResponse } = require("./intelligence-providers");
+const { resolveDocumentBrandName } = require("./document-brand");
 const { createSettingsRegistry } = require("./settings-registry");
 const { handleSettingsRequest } = require("./settings-api");
 const { handleSettingsOperations } = require("./settings-operations");
@@ -1032,7 +1033,7 @@ function documentHtml(config, input) {
 <body>
   <main class="page">
     <section class="head">
-      <div class="brand">${config.officeDocumentBrandName}</div>
+      <div class="brand">${escapeHtmlText(config.officeDocumentBrandName)}</div>
       <h1>${safeTitle}</h1>
       <div>${type} · ${new Date().toLocaleDateString("en-NG")}</div>
     </section>
@@ -7058,8 +7059,11 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           return;
         }
         const id = `doc_${Date.now().toString(36)}_${crypto.randomBytes(5).toString("hex")}`;
-        const templateHtml = body.template_id && body.template_id !== "basic" ? renderDocumentFromTemplate(body.template_id, config, body) : null;
-        const html = templateHtml || documentHtml(config, body);
+        // Governed document brand name (Settings S6.1): read at generation time; any failure falls back to the environment value and is recorded on the document.
+        const brand = await resolveDocumentBrandName(store, config, { log, requestId: ctx.requestId });
+        const documentConfig = { ...config, officeDocumentBrandName: brand.name };
+        const templateHtml = body.template_id && body.template_id !== "basic" ? renderDocumentFromTemplate(body.template_id, documentConfig, body) : null;
+        const html = templateHtml || documentHtml(documentConfig, body);
         const storedHtmlRaw = await storageService.putText({
           purpose: "office_document",
           extension: ".html",
@@ -7107,6 +7111,8 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
             generated_format: "printable_html",
             pdf_status: "print_ready",
             source_file_url: body.file_url || "",
+            brand_name_source: brand.source,
+            brand_setting_version: brand.version,
           },
         });
         // A staff session URL (storedHtml.url) 401s for anyone without an

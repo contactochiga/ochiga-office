@@ -11,6 +11,7 @@ const path = require("node:path");
 const { execFileSync } = require("node:child_process");
 const { Client } = require("pg");
 const { SupabaseLeadAgentsStore } = require("../src/lead-agents/store-supabase");
+const { resolveDocumentBrandName, BRAND_KEY } = require("../src/lead-agents/document-brand");
 
 const ROOT = path.join(__dirname, "..");
 const sql = (f) => fs.readFileSync(path.join(ROOT, "db", f), "utf8");
@@ -130,6 +131,9 @@ async function partB() {
     await assert.rejects(() => s1.writeRuntimeSetting("k", 1, "a", { expectedVersion: 0 }), (e) => e.code === "versioning_unavailable", "conditional writes fail loudly without the migration");
     assert.deepEqual(await s1.listRuntimeSettingHistory("k"), { supported: false, rows: [] }, "history reports unsupported, not empty-success");
     assert.equal(await s1.recordRuntimeSettingAttempt({ key: "k", actor: "a", requestId: "r", outcome: "rejected", reason: "x", attempted: 1 }), false);
+    // S6.1: the document-brand consumer before the migration reads the environment default; a versioned save refuses (so the API answers 503, never a fake success)
+    assert.deepEqual((({ name, source }) => ({ name, source }))(await resolveDocumentBrandName(s1, { officeDocumentBrandName: "OCHIGA OFFICE" })), { name: "OCHIGA OFFICE", source: "default" }, "brand consumer works before the migration");
+    await assert.rejects(() => s1.writeRuntimeSetting(BRAND_KEY, "Ochiga Group", "alice", { expectedVersion: 0 }), (e) => e.code === "versioning_unavailable", "saving the brand name needs the migration");
     console.log("B1. Code before migration: autonomy write works, versioned writes refuse, history unsupported — PASS");
 
     // B2: apply the migration; the running store re-probes within a minute (simulated by clearing the timestamp)
@@ -148,6 +152,12 @@ async function partB() {
     const byReq = Object.fromEntries(h.rows.map((r) => [r.request_id, r])); assert.equal(byReq["req-a"].outcome, "success"); assert.equal(byReq["req-b"].outcome, "conflict"); assert.equal(byReq["req-d"].outcome, "denied"); assert.equal(byReq["req-c"].previous_value.n, 1);
     await s1.setRuntimeSetting("whatsapp_webhook_signature_stats", { counts: { x: 1 } }, "monitor", { history: false });
     assert.equal((await s1.listRuntimeSettingHistory("whatsapp_webhook_signature_stats")).rows.length, 0, "system counters write no history through PostgREST");
+    // S6.1 on real PostgREST: governed brand-name save, conflict, and the document consumer reading the stored value
+    const bn1 = await s1.writeRuntimeSetting(BRAND_KEY, "Ochiga & Sons (Nigeria)", "alice", { expectedVersion: 0, requestId: "brand-1" }); assert.equal(bn1.status, "ok"); assert.equal(bn1.current.version, 1);
+    const bnStale = await s2.writeRuntimeSetting(BRAND_KEY, "Stale", "bob", { expectedVersion: 0, requestId: "brand-2" }); assert.equal(bnStale.status, "conflict"); assert.equal(bnStale.current.value, "Ochiga & Sons (Nigeria)");
+    const bnRace = await Promise.all(Array.from({ length: 6 }, (_, i) => (i % 2 ? s1 : s2).writeRuntimeSetting(BRAND_KEY, `Racer ${i}`, `r${i}`, { expectedVersion: 1, requestId: `brand-race-${i}` }))); assert.equal(bnRace.filter((x) => x.status === "ok").length, 1, "one winner for the brand key across two clients");
+    const resolved = await resolveDocumentBrandName(s2, { officeDocumentBrandName: "OCHIGA OFFICE" }); assert.equal(resolved.source, "stored"); assert.equal(resolved.version, 2); assert.match(resolved.name, /^Racer \d$/);
+    assert.equal((await s1.listRuntimeSettingHistory(BRAND_KEY, { limit: 50 })).rows.filter((r) => r.outcome === "success").length, 2, "brand history recorded atomically");
     console.log("B2. Migration applied under a running store: versioned writes, conflict, 8-way race across two clients, history, legacy writer — PASS");
 
     // B3: Data API roles are refused for the new table and functions, and nothing changes

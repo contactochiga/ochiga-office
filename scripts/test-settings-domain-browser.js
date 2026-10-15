@@ -133,10 +133,10 @@ async function main() {
     assert.ok(/valid email/.test(await evalJs(`document.querySelector('.st-field-error[data-for=email]').textContent`)), "invalid email is rejected inline");
     assert.equal((await (await api(superCookie, "/api/lead-agents/admin/letterhead-config")).json()).config.email || "", "", "nothing was saved for the invalid value");
     await evalJs(`(() => { const f = document.querySelector('.st-form'); f.elements.email.value = 'hello@ochiga.example'; f.elements.tagline.value = 'Settings S1 test'; f.elements.tagline.dispatchEvent(new Event('input', {bubbles:true})); f.requestSubmit(); })()`);
-    await waitFor(`document.querySelector('.st-form-status').textContent === 'Saved.'`, "save confirmed");
+    await waitFor(`document.querySelector('form.st-form .st-form-status').textContent === 'Saved.'`, "save confirmed");
     const saved = (await (await api(superCookie, "/api/lead-agents/admin/letterhead-config")).json()).config;
     assert.equal(saved.tagline, "Settings S1 test"); assert.equal(saved.email, "hello@ochiga.example");
-    assert.ok(/Settings S1 test/.test(await evalJs(`document.querySelector('.st-preview').innerText`)), "preview reflects values");
+    assert.ok(/Settings S1 test/.test(await evalJs(`document.querySelector('.st-preview-sheet').innerText`)), "preview reflects values");
     console.log("6. Letterhead: dirty-gated save, inline validation, same PATCH contract, persisted — PASS");
 
     // 7. Integrations: honest states, no config values, sync dialog
@@ -213,11 +213,11 @@ async function main() {
     await waitFor(`!!document.querySelector('.st-tile') && !document.querySelector('#stContent .skeleton-line')`, "overview against dead backend");
     const deadText = await evalJs(`document.querySelector('.st-page').innerText`);
     assert.ok(/Oyi Intelligence[\s\S]{0,40}Not reachable/.test(deadText), "unreachable Backend shown as Not reachable");
-    // the dead server has no injected descriptors, i.e. it is production-shaped: the registry lists the nine governed entries and no editor exists
+    // the dead server has no injected descriptors, i.e. it is production-shaped: the registry lists the ten governed entries and no editor exists
     await send("Page.navigate", { url: `${deadBase}/office#/settings/security` });
     await waitFor(`!!document.querySelector('.st-reg-table') && !document.querySelector('#stContent .skeleton-line')`, "production-shaped registry card");
     assert.equal(await evalJs(`document.querySelectorAll('.st-reg-editor').length`), 0, "production registry exposes no editable setting yet");
-    assert.ok(/9 entries/.test(await evalJs(`document.querySelector('.st-reg-table').closest('.st-card-body').innerText`)), "production registry lists the nine governed entries");
+    assert.ok(/10 entries/.test(await evalJs(`document.querySelector('.st-reg-table').closest('.st-card-body').innerText`)), "production registry lists the ten governed entries");
     assert.ok(!/Oyi Intelligence[\s\S]{0,40}Reachable\n/.test(deadText.replace(/Not reachable/g, "")), "never shown as reachable");
     console.log("11. Dead Backend reports Not reachable (no fabricated healthy state) — PASS");
 

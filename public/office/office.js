@@ -10238,6 +10238,7 @@ function stTileEl(t) {
 const ST_CONFIG_ACTIONS = {
   whatsapp_autonomy_setting_changed: "WhatsApp autonomous replies changed",
   office_letterhead_config_updated: "Corporate letterhead updated",
+  office_document_brand_name_changed: "Document brand name changed",
   admin_user_created: "Team member added",
   "staff.created": "Team member added",
   "user.invited": "Team invitation created",
@@ -10267,6 +10268,7 @@ function stActivityDetail(e) {
     else parts.push(`${m.old_value ? "ON" : "OFF"} → ${to}`);
   }
   else if (e.action === "whatsapp_autonomy_setting_changed" && m.requested !== undefined) parts.push("Change was not saved");
+  if (e.action === "office_document_brand_name_changed" && m.new_value !== undefined) parts.push(`${m.old_value ? `“${m.old_value}”` : "default"} → “${m.new_value}”`);
   if (m.email && /^(admin_|staff\.|user\.invited)/.test(e.action)) parts.push(String(m.email));
   if (m.role && /^(admin_user_(created|updated)|staff\.created)/.test(e.action)) parts.push(`role ${titleCase(m.role)}`);
   if (m.dry_run === true) parts.push("dry run");
@@ -10321,10 +10323,37 @@ async function stRenderOverview(retry) {
   return wrap;
 }
 
+// ---- S6.1: Company profile -> document brand name (the first production-writable registry setting). Governed by the S3 API: expected version, server-confirmed result. ----
+const ST_BRAND_PATTERN = /^[\p{L}\p{N} &.,'()-]+$/u;
+function stBrandClientValidate(value) { const v = String(value).trim(); if (!v) return "Enter a name."; if (v.length > 60) return ST_VALIDATION_TEXT.must_be_at_most_60_characters; if (!ST_BRAND_PATTERN.test(v)) return ST_VALIDATION_TEXT.invalid_characters; return null; }
+async function stRenderCompanyProfileCard(retry) {
+  const card = stCard({ title: "Company profile", subtitle: "The document brand name is printed in the header of newly generated documents. Existing documents keep the header they were created with. It is a display name, not a legal entity name, and it does not change the letterhead." });
+  const body = card.querySelector(".st-card-body");
+  const res = await stSafe(() => api("/api/lead-agents/admin/settings/office_document_brand_name"));
+  if (!res.ok) { body.appendChild(res.status === 403 ? el(`<div class="st-denied">Requires <code>office.read</code>.</div>`) : stErrorWithRetry(res.error, retry)); return card; }
+  const entry = res.data.setting;
+  const preview = el(`<div class="st-brand-preview" aria-label="Document header preview"><div class="st-brand-head"><div class="st-brand-name"></div><div class="st-brand-title">Sample document</div><div class="st-brand-meta">Proposal · today</div></div><p class="st-note">Preview of the header on new documents. Unsaved text is shown as you type.</p></div>`);
+  const drawPreview = (text) => { preview.querySelector(".st-brand-name").textContent = String(text || "").trim() || entry.default; };
+  drawPreview(entry.value);
+  const layout = el(`<div class="st-split"><div class="st-split-form"></div><aside class="st-preview"></aside></div>`);
+  layout.querySelector(".st-preview").appendChild(preview);
+  const left = layout.querySelector(".st-split-form");
+  left.appendChild(el(`<dl class="st-facts"><div><dt>Current document brand name</dt><dd id="stBrandCurrent">${escapeHtml(entry.value)}</dd></div><div><dt>Version</dt><dd id="stBrandVersion">${escapeHtml(String(entry.version))}${entry.updated_by ? ` · changed by ${escapeHtml(entry.updated_by)}` : " · default"}</dd></div></dl>`));
+  if (entry.editable) {
+    const editor = stRegistryEditor(entry, (saved) => { left.querySelector("#stBrandCurrent").textContent = saved.value; left.querySelector("#stBrandVersion").textContent = `${saved.version}${saved.updated_by ? ` · changed by ${saved.updated_by}` : ""}`; drawPreview(saved.value); }, { validate: stBrandClientValidate });
+    editor.addEventListener("input", () => drawPreview(editor.elements.value.value));
+    editor.addEventListener("click", (e) => { if (e.target && e.target.dataset && e.target.dataset.act === "reload") setTimeout(() => drawPreview(editor.elements.value.value), 0); });
+    left.appendChild(editor);
+  } else left.appendChild(el(`<p class="st-note">Read-only for your role. Changing it requires <code>settings.manage</code>.</p>`));
+  body.appendChild(layout);
+  return card;
+}
+
 async function stRenderOrganization(retry) {
   const d = await stLoad(["letterhead"]);
   const wrap = el(`<div class="st-stack-col"></div>`);
   wrap.appendChild(el(`<div class="st-title"><h2>Organization</h2><p>Company identity used on generated documents</p></div>`));
+  wrap.appendChild(await stRenderCompanyProfileCard(retry));
   const card = stCard({ title: "Corporate Letterhead", subtitle: "Default header and footer for new documents. Changes affect documents created from now on; existing letters keep their original letterhead." });
   const body = card.querySelector(".st-card-body");
   if (!d.letterhead) body.appendChild(el(`<div class="st-denied">Requires <code>office.read</code>.</div>`));
@@ -10349,7 +10378,7 @@ async function stRenderOrganization(retry) {
     body.appendChild(layout);
   }
   wrap.appendChild(card);
-  wrap.appendChild(stUnavailable({ title: "Company profile, locale, timezone, currency", reason: "Office has no settings contract for these yet. They are not shown as editable controls." }));
+  wrap.appendChild(stUnavailable({ title: "Legal entity details, locale, timezone, currency", reason: "Office has no settings contract for these yet. They are not shown as editable controls." }));
   return wrap;
 }
 
@@ -10622,7 +10651,8 @@ function stSummarizeValue(entry) {
   if (typeof v === "object") { if (v.configured !== undefined && Object.keys(v).length === 1) return v.configured ? "Configured" : "Not configured"; if (v.mode) return String(v.mode); const vals = Object.values(v); if (vals.length && vals.every((x) => typeof x === "string")) return `${vals.filter(Boolean).length} of ${vals.length} fields set`; const s = JSON.stringify(v); return s.length > 60 ? `${s.slice(0, 57)}…` : s; }
   return String(v);
 }
-function stRegistryEditor(entry, onChange) {
+const ST_VALIDATION_TEXT = { invalid_characters: "Use letters, numbers, spaces and & . , ' ( ) - only.", must_be_at_least_1_characters: "Enter a name.", must_be_at_most_60_characters: "Use 60 characters or fewer.", must_be_string: "Enter text." };
+function stRegistryEditor(entry, onChange, options = {}) {
   const choice = entry.type === "enum" ? (entry.choices || []) : null;
   const inputHtml = entry.type === "boolean" ? `<select name="value"><option value="true">ON</option><option value="false">OFF</option></select>` : choice ? `<select name="value">${choice.map((c) => `<option value="${escapeHtml(c)}">${escapeHtml(c)}</option>`).join("")}</select>` : `<input name="value" ${entry.type === "integer" ? 'type="number" step="1"' : 'type="text"'} autocomplete="off" />`;
   const form = el(`<form class="st-reg-editor" novalidate aria-label="Edit ${escapeHtml(entry.label)}"><label class="st-field"><span>${escapeHtml(entry.label)}</span>${inputHtml}<small class="st-field-error" role="alert"></small></label>${entry.requires_confirmation ? `<label class="st-confirm"><input type="checkbox" name="confirm" /> I confirm this change</label>` : ""}<div class="st-form-bar"><button type="submit" class="btn btn-sm st-btn-primary" disabled>Save</button><span class="st-form-status" role="status" aria-live="polite"></span></div><div class="st-conflict" hidden role="alert"></div></form>`);
@@ -10632,7 +10662,10 @@ function stRegistryEditor(entry, onChange) {
   const load = (e) => { current = e; input.value = toDisplay(e.value); if (form.elements.confirm) form.elements.confirm.checked = false; errEl.textContent = ""; conflict.hidden = true; conflict.textContent = ""; refresh(); };
   const parsed = () => (entry.type === "integer" ? (input.value.trim() === "" ? undefined : Number(input.value)) : entry.type === "boolean" ? input.value === "true" : input.value);
   const dirty = () => toDisplay(current.value) !== toDisplay(parsed());
-  const refresh = () => { saveBtn.disabled = !dirty(); };
+  // Optional immediate feedback that mirrors the server rule; the server stays authoritative and re-validates every save.
+  let liveMsg = false; // only ever clears a message this function set itself, never a server-side error
+  const live = () => { const msg = options.validate && entry.type === "string" ? options.validate(input.value) : null; if (msg) { errEl.textContent = msg; liveMsg = true; } else if (liveMsg) { errEl.textContent = ""; liveMsg = false; } return !msg; };
+  const refresh = () => { saveBtn.disabled = !dirty() || !live(); };
   form.addEventListener("input", () => { status.textContent = ""; refresh(); });
   form.addEventListener("change", refresh);
   form.addEventListener("submit", async (event) => {
@@ -10653,7 +10686,7 @@ function stRegistryEditor(entry, onChange) {
         conflict.innerHTML = `<strong>Not saved — this setting changed.</strong> It is now “${escapeHtml(stSummarizeValue({ value: d.current.value }))}” (version ${escapeHtml(String(d.current.version))}${d.current.updated_by ? `, by ${escapeHtml(d.current.updated_by)}` : ""}). Your edit was not applied. <button type="button" class="btn btn-ghost btn-sm" data-act="reload">Load current value</button>`;
         conflict.querySelector('[data-act="reload"]').addEventListener("click", () => { load({ ...current, value: d.current.value, version: d.current.version, updated_by: d.current.updated_by, updated_at: d.current.updated_at }); status.textContent = "Loaded the current stored value."; });
         status.textContent = "";
-      } else if (err.status === 400 && d.error === "invalid_value") { errEl.textContent = `Invalid value: ${String(d.detail || "rejected by the server").replace(/_/g, " ")}.`; status.textContent = ""; }
+      } else if (err.status === 400 && d.error === "invalid_value") { errEl.textContent = ST_VALIDATION_TEXT[d.detail] || `Invalid value: ${String(d.detail || "rejected by the server").replace(/_/g, " ")}.`; status.textContent = ""; }
       else if (err.status === 400 && d.error === "confirmation_required") { errEl.textContent = "This change must be confirmed."; status.textContent = ""; }
       else if (err.status === 403) { status.textContent = "You don't have permission to change this setting. Nothing was changed."; }
       else if (err.status === 405 || (err.status === 403 && d.error === "read_only_setting")) { status.textContent = "This setting cannot be changed here."; }
@@ -10674,14 +10707,14 @@ async function stRenderRegistryCard(retry) {
   const tbody = table.querySelector("tbody");
   const rowFor = (entry) => {
     const section = ST_DELEGATED_SECTION[entry.key];
-    const how = entry.editable ? ST_MODE_LABEL.generic : entry.mode === "delegated" ? (entry.edit_via && entry.edit_via.can_write && section ? `Dedicated endpoint · <a class="st-link" href="#/settings/${section[0]}">${escapeHtml(section[1])}</a>` : "Dedicated endpoint (administrators)") : entry.mode === "generic" ? "Read-only for your role" : ST_MODE_LABEL[entry.mode] || entry.mode;
+    const how = entry.edit_section ? `${entry.editable ? "Editable in" : "Read-only for your role · see"} <a class="st-link" href="#/settings/${escapeHtml(entry.edit_section)}">${escapeHtml(titleCase(entry.edit_section))}</a>` : entry.editable ? ST_MODE_LABEL.generic : entry.mode === "delegated" ? (entry.edit_via && entry.edit_via.can_write && section ? `Dedicated endpoint · <a class="st-link" href="#/settings/${section[0]}">${escapeHtml(section[1])}</a>` : "Dedicated endpoint (administrators)") : entry.mode === "generic" ? "Read-only for your role" : ST_MODE_LABEL[entry.mode] || entry.mode;
     return stRow(`<tr data-key="${escapeHtml(entry.key)}"><td><strong>${escapeHtml(entry.label)}</strong><div class="st-note"><code>${escapeHtml(entry.key)}</code></div></td><td>${escapeHtml(titleCase(entry.owner))}</td><td>${how}</td><td class="st-reg-value">${escapeHtml(stSummarizeValue(entry))}</td><td>${entry.version === null || entry.version === undefined ? "—" : escapeHtml(String(entry.version))}</td><td>${entry.history_supported ? `<button type="button" class="btn btn-ghost btn-sm" data-act="history" aria-expanded="false">History</button>` : ""}</td></tr>`);
   };
   list.forEach((entry) => {
     const row = rowFor(entry); tbody.appendChild(row);
     const detail = stRow(`<tr class="st-reg-detail" hidden><td colspan="6"></td></tr>`); tbody.appendChild(detail);
     const cell = detail.firstElementChild;
-    if (entry.editable) {
+    if (entry.editable && !entry.edit_section) {
       const editor = stRegistryEditor(entry, (saved) => { row.querySelector(".st-reg-value").textContent = stSummarizeValue(saved); row.children[4].textContent = String(saved.version); });
       cell.appendChild(editor); detail.hidden = false;
     }

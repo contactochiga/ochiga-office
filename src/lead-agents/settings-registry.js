@@ -6,6 +6,7 @@
 
 const { WHATSAPP_AUTONOMY_SETTING_KEY, readWhatsAppAutonomySetting } = require("./whatsapp-autonomy");
 const { settings: outboxSettings } = require("./communication-outbox");
+const { BRAND_KEY, validateBrandName, environmentBrandName } = require("./document-brand");
 
 const MODES = Object.freeze(["generic", "delegated", "mirror", "system"]);
 const OWNERS = Object.freeze(["office", "backend", "facility", "consumer", "edge", "platform"]);
@@ -71,6 +72,11 @@ function productionDescriptors(config) {
         const row = setting.source === "stored" || setting.source === "malformed" ? await store.getRuntimeSetting(WHATSAPP_AUTONOMY_SETTING_KEY).catch(() => null) : null;
         return { value: setting.known ? setting.enabled : null, version: row ? (row.version ?? null) : 0, updated_by: setting.updated_by, updated_at: setting.updated_at, source: setting.source, history_supported: true };
       },
+    }),
+    defineSetting({
+      key: BRAND_KEY, label: "Document brand name", description: "The display name printed in the header of newly generated documents. Existing documents keep the header they were created with. It is not a legal entity name and does not change the letterhead.",
+      type: "string", default: environmentBrandName(config), owner: "office", mode: "generic", storage: "runtime_settings", read_permission: "office.read", write_permission: "settings.manage",
+      validator: validateBrandName, audit_action: "office_document_brand_name_changed", edit_section: "organization",
     }),
     defineSetting({
       key: "office_letterhead_config", label: "Corporate letterhead", description: "Default header and footer for new documents (logo, tagline, contact details).",
@@ -162,6 +168,7 @@ async function describeEntry(descriptor, store, can) {
     read_permission: descriptor.read_permission, write_permission: generic ? descriptor.write_permission : null, sensitive: descriptor.sensitive, requires_confirmation: descriptor.requires_confirmation,
     default: publicValue(descriptor, descriptor.default),
     choices: descriptor.type === "enum" ? descriptor.choices : undefined,
+    edit_section: descriptor.edit_section || null,
     editable: generic && can(descriptor.write_permission) && typeof state.version === "number",
     edit_via: descriptor.mode === "delegated" ? { path: descriptor.delegated_route.path, methods: descriptor.delegated_route.methods, write_permission: descriptor.delegated_route.write_permission, can_write: can(descriptor.delegated_route.write_permission) } : null,
     value: state.value, version: state.version, updated_by: state.updated_by, updated_at: state.updated_at, source: state.source, history_supported: state.history_supported, read_error: state.error,
