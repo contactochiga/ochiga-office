@@ -10136,6 +10136,48 @@ function stConfirmDialog({ title, body, confirmLabel = "Confirm", cancelLabel = 
     backdrop.querySelector('[data-act="cancel"]').focus();
   });
 }
+// ---- Step-up confirmation (S7.2): reusable current-password dialog. Resolves { token, expiresAt } on success or null on cancel. The password lives only in the input
+// element: it is cleared and the dialog removed in `finally`; it is never put in state, storage, logs or error text. Nothing in Settings requires it yet. ----
+const stStepUpState = { grants: {} };
+function stStepUpActive(purpose) { const g = stStepUpState.grants[purpose]; return Boolean(g && g.expiresAt > Date.now()); }
+function stStepUpToken(purpose) { return stStepUpActive(purpose) ? stStepUpState.grants[purpose].token : null; }
+function stStepUpClear(purpose) { if (purpose) delete stStepUpState.grants[purpose]; else stStepUpState.grants = {}; }
+function stStepUpDialog({ purpose, title = "Confirm your password", body = "For your security, enter your current password to continue." }) {
+  return new Promise((resolve) => {
+    const previous = document.activeElement;
+    const backdrop = el(`<div class="st-modal-backdrop"><form class="st-modal" role="dialog" aria-modal="true" aria-labelledby="stStepUpTitle" autocomplete="off" novalidate><h3 id="stStepUpTitle">${escapeHtml(title)}</h3><p>${escapeHtml(body)}</p><label class="st-field"><span>Current password</span><input type="password" name="current_password" autocomplete="current-password" maxlength="128" /></label><div class="st-field-error" role="alert" data-for="current_password"></div><div class="st-modal-actions"><button type="button" class="btn btn-ghost btn-sm" data-act="cancel">Cancel</button><button type="submit" class="btn btn-sm st-btn-primary" data-act="ok">Confirm</button></div></form></div>`);
+    const form = backdrop.querySelector("form"); const input = form.elements.current_password; const errorBox = form.querySelector(".st-field-error"); const submit = form.querySelector('[data-act="ok"]');
+    const finish = (value) => { input.value = ""; document.removeEventListener("keydown", onKey, true); backdrop.remove(); if (previous && previous.focus) previous.focus(); resolve(value); };
+    const buttons = () => [input, ...backdrop.querySelectorAll("button")].filter((n) => !n.disabled);
+    function onKey(e) {
+      if (e.key === "Escape") { e.preventDefault(); finish(null); return; }
+      if (e.key === "Tab") { const b = buttons(); const i = b.indexOf(document.activeElement); e.preventDefault(); b[(i + (e.shiftKey ? b.length - 1 : 1)) % b.length].focus(); }
+    }
+    backdrop.addEventListener("click", (e) => { if (e.target === backdrop) finish(null); });
+    backdrop.querySelector('[data-act="cancel"]').addEventListener("click", () => finish(null));
+    input.addEventListener("input", () => { errorBox.textContent = ""; });
+    form.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      if (!input.value) { errorBox.textContent = "Enter your current password."; input.focus(); return; }
+      submit.disabled = true; submit.textContent = "Verifying…";
+      try {
+        const result = await api("/api/lead-agents/admin/session/step-up", { method: "POST", body: { password: input.value, purpose } });
+        const grant = { token: result.step_up.token, expiresAt: Date.parse(result.step_up.expires_at) };
+        stStepUpState.grants[purpose] = grant;
+        finish({ token: grant.token, expiresAt: grant.expiresAt });
+      } catch (err) {
+        input.value = "";
+        errorBox.textContent = err.status === 401 ? "That password is incorrect." : err.status === 429 ? "Too many attempts. Please wait a few minutes and try again." : err.status === 403 ? "Your account is not permitted to confirm this action." : "Could not verify right now. Try again.";
+        submit.disabled = false; submit.textContent = "Confirm"; input.focus();
+      }
+    });
+    document.addEventListener("keydown", onKey, true);
+    document.body.appendChild(backdrop);
+    input.focus();
+  });
+}
+// The single public handle for the step-up helpers (the script is a module, so nothing else is global). S7.3 will call these before security-policy writes.
+window.OfficeStepUp = { dialog: stStepUpDialog, active: stStepUpActive, token: stStepUpToken, clear: stStepUpClear, state: stStepUpState };
 // Reusable form: dirty tracking, inline validation, Save/Discard, server-confirmed result. The caller supplies
 // the real save function; the form never claims success the server did not confirm.
 function stForm({ fields, values, canEdit, validate, onSave, saveLabel = "Save" }) {
@@ -10667,7 +10709,7 @@ async function stRenderSecurity(retry) {
   const h = d.health && d.health.ok ? d.health.data : null;
   const c = stCard({ title: "Verified controls", subtitle: "Reported by the running server" });
   if (!h) c.querySelector(".st-card-body").appendChild(stErrorWithRetry(d.health ? d.health.error : "Health unavailable", retry));
-  else c.querySelector(".st-card-body").innerHTML = stFacts([["Webhook signature mode", escapeHtml(h.whatsapp_webhook ? h.whatsapp_webhook.signature_mode : "unknown")], ["Meta app secret", stSecretIndicator("Meta app secret", Boolean(h.whatsapp_webhook && h.whatsapp_webhook.app_secret_configured))], ["Authentication mode", escapeHtml(h.tier1 && h.tier1.auth ? h.tier1.auth.mode : "unknown")], ["Roles / permission keys", h.tier1 && h.tier1.permissions ? `${h.tier1.permissions.roles.length} / ${h.tier1.permissions.permission_count}` : "unknown"]]);
+  else c.querySelector(".st-card-body").innerHTML = stFacts([["Webhook signature mode", escapeHtml(h.whatsapp_webhook ? h.whatsapp_webhook.signature_mode : "unknown")], ["Meta app secret", stSecretIndicator("Meta app secret", Boolean(h.whatsapp_webhook && h.whatsapp_webhook.app_secret_configured))], ["Authentication mode", escapeHtml(h.tier1 && h.tier1.auth ? h.tier1.auth.mode : "unknown")], ["Roles / permission keys", h.tier1 && h.tier1.permissions ? `${h.tier1.permissions.roles.length} / ${h.tier1.permissions.permission_count}` : "unknown"], ["Step-up confirmation", "Available (current password, 5 minutes). Not yet required for any setting."]]);
   wrap.appendChild(c);
   wrap.appendChild(await stRenderRegistryCard(retry));
   wrap.appendChild(stUnavailable({ title: "MFA, password policy, session revocation, secrets rotation log", reason: "No Office contract exists. Secrets stay in deployment configuration and are never shown or entered here." }));

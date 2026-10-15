@@ -9,6 +9,7 @@ const { createConfig } = require("./config");
 const { log } = require("./logger");
 const { validateAuthConfig } = require("./auth-config");
 const { validatePassword, passwordPolicyError } = require("./password-policy");
+const { STEP_UP_PURPOSES, STEP_UP_HEADER, stepUpEligibility, issueStepUpToken, verifyStepUpToken } = require("./step-up");
 const { createStore } = require("./store-factory");
 const { OpenAIResponsesClient } = require("./openai");
 const { ToolExecutor } = require("./tools");
@@ -2989,6 +2990,86 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           },
           { "x-request-id": ctx.requestId }
         );
+        return;
+      }
+
+      // ---- Settings S7.2 step-up authentication (contract: docs/settings-domain/21_S7_2_STEP_UP_AUTH_CONTRACT.md) ----
+      // Enforcement middleware for future security-policy writes. Sends the 403 and returns null when the step-up authorisation is missing or invalid.
+      const requireStepUp = (purpose) => {
+        const result = verifyStepUpToken({ config, authContext, purpose, token: req.headers[STEP_UP_HEADER] });
+        if (!result.ok) {
+          json(res, 403, { error: "step_up_required", reason: result.reason, purpose }, { "x-request-id": ctx.requestId });
+          return null;
+        }
+        return result;
+      };
+
+      if (pathname === "/api/lead-agents/admin/session/step-up") {
+        if (req.method !== "POST") {
+          methodNotAllowed(res, "POST");
+          return;
+        }
+        if (!validateAuthConfig(config).valid) {
+          json(res, 503, { error: "auth_configuration_invalid", message: "Verification is temporarily unavailable." }, { "x-request-id": ctx.requestId });
+          return;
+        }
+        const body = await readJsonBody(req);
+        requireObject(body, "body");
+        const purpose = String(body.purpose || "");
+        const stepUpAudit = (outcome, failureReason) => appendAudit(
+          store,
+          authContext && authContext.type === "session" ? authContext : { type: authContext?.type || "unknown" },
+          outcome === "verified" ? "step_up_verified" : "step_up_failed",
+          "admin_user",
+          authContext?.user?.id || "",
+          { request_id: ctx.requestId, purpose: STEP_UP_PURPOSES.includes(purpose) ? purpose : "invalid", outcome, ...(failureReason ? { failure_reason: failureReason } : {}), at: new Date().toISOString() },
+          req
+        );
+        if (authContext?.type !== "session") {
+          await stepUpAudit("failed", "api_key_not_allowed");
+          json(res, 403, { error: "step_up_session_required", message: "Step-up verification requires a signed-in administrator." }, { "x-request-id": ctx.requestId });
+          return;
+        }
+        if (stepUpEligibility(authContext)) {
+          await stepUpAudit("failed", "forbidden");
+          json(res, 403, { error: "forbidden" }, { "x-request-id": ctx.requestId });
+          return;
+        }
+        if (!STEP_UP_PURPOSES.includes(purpose)) {
+          await stepUpAudit("failed", "invalid_purpose");
+          json(res, 400, { error: "invalid_purpose" }, { "x-request-id": ctx.requestId });
+          return;
+        }
+        const stepUpKeyId = `step-up|${loginAttemptKey(req, authContext.user.email)}`;
+        try {
+          adminLoginRateLimiter.checkKey(stepUpKeyId);
+        } catch (error) {
+          await stepUpAudit("failed", "rate_limited");
+          json(res, 429, { error: "step_up_rate_limit_exceeded", message: "Too many verification attempts. Please wait a few minutes and try again." }, { "x-request-id": ctx.requestId });
+          return;
+        }
+        if (typeof body.password !== "string" || !body.password || !verifyPassword(body.password, authContext.user.password_hash)) {
+          await stepUpAudit("failed", "invalid_password");
+          json(res, 401, { error: "step_up_failed", message: "That password is incorrect." }, { "x-request-id": ctx.requestId });
+          return;
+        }
+        adminLoginRateLimiter.resetKey(stepUpKeyId);
+        const grant = issueStepUpToken({ config, authContext, purpose });
+        await stepUpAudit("verified");
+        json(res, 200, { ok: true, step_up: grant }, { "x-request-id": ctx.requestId, "cache-control": "no-store" });
+        return;
+      }
+
+      if (pathname === "/api/lead-agents/admin/session/step-up/check") {
+        if (req.method !== "POST") {
+          methodNotAllowed(res, "POST");
+          return;
+        }
+        const body = await readJsonBody(req);
+        requireObject(body, "body");
+        const verified = requireStepUp(String(body.purpose || ""));
+        if (!verified) return;
+        json(res, 200, { valid: true, purpose: verified.purpose, expires_at: new Date(verified.expiresAt).toISOString() }, { "x-request-id": ctx.requestId, "cache-control": "no-store" });
         return;
       }
 

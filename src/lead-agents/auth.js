@@ -96,6 +96,8 @@ function readAdminSession(req, config) {
     userId: decoded.user_id || "",
     permissionScopes: Array.isArray(decoded.permission_scopes) ? decoded.permission_scopes : [],
     expiresAt: decoded.exp,
+    // Settings S7.2: identifies THIS session token (never the token itself) so step-up authorisations can be bound to it.
+    binding: crypto.createHash("sha256").update(String(rawToken)).digest("hex"),
   };
 }
 
@@ -186,6 +188,8 @@ function enforceAuth(req, config) {
       userId: session.userId,
       permissionScopes: session.permissionScopes,
       permissions: permissionsForRole(session.role, session.permissionScopes),
+      sessionBinding: session.binding,
+      sessionExpiresAt: session.expiresAt,
     };
   }
 

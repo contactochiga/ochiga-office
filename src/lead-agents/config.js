@@ -86,6 +86,8 @@ function createConfig() {
     sessionSecretEphemeral: sessionSecretResolution.ephemeral,
     // Legacy "API key as password" sign-in (auto-provisions an admin). Disabled unless the value is exactly "true"; see docs/settings-domain/19_S7_0_AUTH_SECURITY_CONTRACT.md.
     allowApiKeyPasswordLogin: process.env.LEAD_AGENTS_ALLOW_API_KEY_LOGIN === "true",
+    // Step-up authorisation lifetime (S7.2): default 5 minutes, hard-clamped to 10 minutes in step-up.js.
+    stepUpTtlMs: numberFromEnv(process.env.LEAD_AGENTS_STEP_UP_TTL_MS, 5 * 60 * 1000),
     // Explicit, deployment-owner-only recovery of the bootstrap administrator (off by default).
     adminRecovery: process.env.LEAD_AGENTS_ADMIN_RECOVERY === "true",
     sessionCookieName:
