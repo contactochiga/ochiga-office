@@ -5,7 +5,7 @@ const {
   permissionsForRole: unifiedPermissionsForRole,
 } = require("./permissions");
 const { validateAuthConfig } = require("./auth-config");
-const { effectiveGeneration, revocationEnabled } = require("./session-generation");
+const { effectiveGeneration, revocationEnabled, passwordFingerprint } = require("./session-generation");
 
 function secureEqual(a, b) {
   const left = Buffer.from(String(a || ""));
@@ -56,6 +56,8 @@ function createAdminSessionToken(adminUser, config, ttlMs) {
       exp: Date.now() + (Number.isFinite(ttlMs) && ttlMs > 0 ? ttlMs : config.sessionTtlMs),
       // S7.4: the account's session generation at issuance; a revocation increments it and orphans every earlier token.
       ...(revocationEnabled(config) ? { sg: effectiveGeneration(adminUser) } : {}),
+      // S7.5.0: fingerprint of the password hash this session was authenticated with. Any later change of the hash, in any order relative to the generation bump, ends the session.
+      ...(adminUser.password_hash ? { pf: passwordFingerprint(config, adminUser.password_hash) } : {}),
     })
   ).toString("base64url");
   const signature = sessionSignature(payload, config.sessionSecret);
@@ -101,6 +103,8 @@ function readAdminSession(req, config) {
     expiresAt: decoded.exp,
     // Settings S7.4: null for a legacy token (no generation claim).
     generation: Number.isInteger(decoded.sg) ? decoded.sg : null,
+    // Settings S7.5.0: null for a token issued before password binding existed.
+    passwordFingerprint: typeof decoded.pf === "string" && decoded.pf ? decoded.pf : null,
     // Settings S7.2: identifies THIS session token (never the token itself) so step-up authorisations can be bound to it.
     binding: crypto.createHash("sha256").update(String(rawToken)).digest("hex"),
   };
@@ -180,24 +184,33 @@ function authorizePermission(session, permission) {
   throw error;
 }
 
+// Settings S7.5.0: the ONE place a session cookie is read and turned into an auth context. enforceAuth (every protected route) and GET /admin/session/me both use it, and
+// both then pass the context through server.js enrichAuthContext (the ONE place live account state is checked). An inventory test fails if another reader appears.
+function authenticateSessionCookie(req, config) {
+  const session = readAdminSession(req, config);
+  if (!session) return null;
+  return {
+    type: "session",
+    email: session.email,
+    role: session.role,
+    userId: session.userId,
+    permissionScopes: session.permissionScopes,
+    permissions: permissionsForRole(session.role, session.permissionScopes),
+    sessionBinding: session.binding,
+    sessionGeneration: session.generation,
+    sessionPasswordFingerprint: session.passwordFingerprint,
+    sessionExpiresAt: session.expiresAt,
+  };
+}
+
 function enforceAuth(req, config) {
   if (config.authMode === "off") {
     return;
   }
 
-  const session = readAdminSession(req, config);
-  if (session) {
-    return {
-      type: "session",
-      email: session.email,
-      role: session.role,
-      userId: session.userId,
-      permissionScopes: session.permissionScopes,
-      permissions: permissionsForRole(session.role, session.permissionScopes),
-      sessionBinding: session.binding,
-      sessionGeneration: session.generation,
-      sessionExpiresAt: session.expiresAt,
-    };
+  const sessionContext = authenticateSessionCookie(req, config);
+  if (sessionContext) {
+    return sessionContext;
   }
 
   const apiKey = getApiKey(req);
@@ -234,6 +247,7 @@ function enforceAuth(req, config) {
 
 module.exports = {
   authorizeRole,
+  authenticateSessionCookie,
   authorizePermission,
   clearSessionCookie,
   createAdminSessionToken,

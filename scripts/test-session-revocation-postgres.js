@@ -1,4 +1,4 @@
-// Settings S7.4 session generations against real databases (disposable Docker containers only; never a real project):
+// Settings S7.4 session generations and S7.5.0 atomic credential updates against real databases (disposable Docker containers only; never a real project):
 //   A. plain Postgres 16: the migration is additive and idempotent, preserves every account, the increment is atomic under true concurrency, rollback keeps the columns
 //   B. Supabase Postgres 17 + PostgREST + the real SupabaseLeadAgentsStore: code deployed before the migration, capability re-probe, concurrent increments across two clients,
 //      and the Data API roles (anon/authenticated) being refused for the new function.
@@ -15,6 +15,7 @@ const { SupabaseLeadAgentsStore } = require("../src/lead-agents/store-supabase")
 const ROOT = path.join(__dirname, "..");
 const sql = (f) => fs.readFileSync(path.join(ROOT, "db", f), "utf8");
 const MIG = "20261020_admin_session_generation.sql", DOWN = "rollback/20261020_admin_session_generation.down.sql";
+const MIG2 = "20261021_admin_atomic_credential_updates.sql", DOWN2 = "rollback/20261021_admin_atomic_credential_updates.down.sql";
 const docker = (...a) => execFileSync("docker", a, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const PLAIN_PORT = 54371, SB_PORT = 54372, REST_PORT = 54373, PROXY_PORT = 54374, SUF = process.pid;
@@ -26,7 +27,9 @@ const client = async (port, user = "postgres", password = "x") => { const c = ne
 const waitClient = async (port, user, password) => { for (let i = 0; i < 90; i++) { try { return await client(port, user, password); } catch { await sleep(1000); } } throw new Error("database did not become ready"); };
 const names = [];
 
-const TABLE = `create table if not exists admin_users (id uuid primary key default gen_random_uuid(), email text not null unique, password_hash text not null, role text not null default 'admin', status text not null default 'active', display_name text, permission_scopes text[] not null default '{}'::text[], created_at timestamptz not null default now(), updated_at timestamptz not null default now())`;
+const TABLE = `create table if not exists admin_users (id uuid primary key default gen_random_uuid(), email text not null unique, password_hash text not null, role text not null default 'admin', status text not null default 'active', display_name text, permission_scopes text[] not null default '{}'::text[], password_changed_at timestamptz, removed_at timestamptz, removed_by text, created_at timestamptz not null default now(), updated_at timestamptz not null default now())`;
+const CLAIM_TABLES = `create table if not exists password_reset_tokens (id uuid primary key default gen_random_uuid(), admin_user_id uuid, email text, token_hash text, status text not null default 'pending', used_at timestamptz, expires_at timestamptz, requested_by text, created_at timestamptz not null default now(), updated_at timestamptz not null default now());
+create table if not exists admin_invites (id uuid primary key default gen_random_uuid(), admin_user_id uuid, email text, token_hash text, status text not null default 'pending', accepted_at timestamptz, expires_at timestamptz, created_at timestamptz not null default now(), updated_at timestamptz not null default now());`;
 const SNAP = "select id, email, password_hash, role, status, display_name, permission_scopes from admin_users order by email";
 const snapHash = async (c) => crypto.createHash("sha256").update(JSON.stringify((await c.query(SNAP)).rows)).digest("hex");
 const seed = (c) => c.query("insert into admin_users (email, password_hash, role, status, display_name, permission_scopes) values ('boss@ochiga.test','salt:hash-1','super_admin','active','Boss','{}'), ('staff@ochiga.test','salt:hash-2','ochiga_staff','active','Staff','{crm.read}'), ('gone@ochiga.test','salt:hash-3','ochiga_staff','inactive','Gone','{}')");
@@ -71,6 +74,27 @@ async function partA() {
   const again = (await admin.query("insert into admin_users (email, password_hash, role) values ('boss@ochiga.test','salt:new','super_admin') returning id, session_generation g")).rows[0];
   assert.ok(again.id !== boss && again.g === 0, "recreated account: new id, generation 0");
   console.log("A4. Recreated account is a new row (new id, generation 0) — PASS");
+
+  // S7.5.0: one statement changes credentials/status AND revokes
+  await admin.query(sql(MIG2)); await admin.query(sql(MIG2));
+  const staff = (await admin.query("select id from admin_users where email='staff@ochiga.test'")).rows[0].id;
+  const upd = (c, id, o = {}) => c.query("select * from office_admin_update_revoking_sessions($1::uuid,$2,$3,$4::timestamptz,$5,$6,$7::timestamptz,$8)", [id, o.actor || "t", o.hash ?? null, o.changed ?? null, o.status ?? null, o.setRemoved ?? false, o.removedAt ?? null, o.removedBy ?? null]).then((x) => x.rows);
+  const row = async (id) => (await admin.query("select password_hash h, password_changed_at c, status s, removed_at ra, removed_by rb, role r, display_name d, session_generation g from admin_users where id=$1", [id])).rows[0];
+  const s0 = await row(staff);
+  let u = await upd(admin, staff, { actor: "alice", hash: "salt:changed", changed: "2026-10-16T10:00:00Z" });
+  let r1 = await row(staff); assert.deepEqual([u[0].session_generation, r1.h, r1.s, r1.r, r1.d, r1.g], [s0.g + 1, "salt:changed", s0.s, s0.r, s0.d, s0.g + 1], "password written and generation bumped together; status, role and name untouched (NULL = unchanged)");
+  await upd(admin, staff, { status: "removed", setRemoved: true, removedAt: "2026-10-16T11:00:00Z", removedBy: "boss" }); r1 = await row(staff); assert.deepEqual([r1.s, r1.rb, r1.h], ["removed", "boss", "salt:changed"], "status and removal fields applied, hash untouched");
+  await upd(admin, staff, { status: "active", setRemoved: true, removedAt: null, removedBy: null }); r1 = await row(staff); assert.deepEqual([r1.s, r1.ra, r1.rb], ["active", null, null], "restore clears removal fields");
+  assert.deepEqual(await upd(admin, "00000000-0000-0000-0000-000000000000", { hash: "x" }), [], "unknown account matches nothing");
+  const cc = await Promise.all(Array.from({ length: 10 }, () => client(PLAIN_PORT)));
+  const before2 = (await row(staff)).g;
+  const out = (await Promise.all(cc.map(async (c, ci) => { const o = []; for (let k = 0; k < 5; k += 1) o.push((await upd(c, staff, { hash: `salt:c${ci}-${k}` }))[0].session_generation); return o; }))).flat().sort((a, b) => a - b);
+  assert.deepEqual(out, Array.from({ length: 50 }, (_, i) => before2 + 1 + i), "50 simultaneous credential changes: 50 distinct consecutive generations, no lost update");
+  const fin = await row(staff); assert.ok(/^salt:c\d+-\d+$/.test(fin.h) && fin.g === before2 + 50, "the stored hash is one of the writers' values and the generation counted every one");
+  await Promise.all(cc.map((c) => c.end()));
+  await admin.query(sql(DOWN2)); assert.equal(Number((await admin.query("select count(*) c from pg_proc where proname='office_admin_update_revoking_sessions'")).rows[0].c), 0, "rollback drops only the function");
+  assert.equal((await row(staff)).g, before2 + 50, "rollback keeps every generation and hash"); await admin.query(sql(MIG2));
+  console.log("A5. Atomic credential update: one statement, NULL = unchanged, restore clears removal, 50 concurrent writers consistent, rollback drops only the function — PASS");
   await admin.end();
 }
 
@@ -95,7 +119,7 @@ async function partB() {
   docker("run", "-d", "--rm", "--name", pg, "-e", "POSTGRES_PASSWORD=testpw", "-p", `${SB_PORT}:5432`, IMG_PG);
   let admin = await waitClient(SB_PORT, "postgres", "testpw");
   await admin.end(); const sa = await waitClient(SB_PORT, "supabase_admin", "testpw"); await sa.query("alter role authenticator with password 'testpw'"); await sa.end(); admin = await client(SB_PORT, "postgres", "testpw");
-  await admin.query(TABLE); await admin.query("alter table admin_users enable row level security"); await admin.query("revoke all on admin_users from anon, authenticated"); await seed(admin);
+  await admin.query(TABLE); await admin.query(CLAIM_TABLES); await admin.query("alter table password_reset_tokens enable row level security"); await admin.query("alter table admin_invites enable row level security"); await admin.query("revoke all on password_reset_tokens, admin_invites from anon, authenticated"); await admin.query("alter table admin_users enable row level security"); await admin.query("revoke all on admin_users from anon, authenticated"); await seed(admin);
   docker("run", "-d", "--rm", "--name", pr, "-p", `${REST_PORT}:3000`, "-e", `PGRST_DB_URI=postgres://authenticator:testpw@host.docker.internal:${SB_PORT}/postgres`, "-e", "PGRST_DB_SCHEMAS=public", "-e", "PGRST_DB_ANON_ROLE=anon", "-e", `PGRST_JWT_SECRET=${JWT_SECRET}`, "-e", "PGRST_DB_POOL=10", IMG_REST);
   for (let i = 0; i < 60; i++) { try { if ((await fetch(`http://127.0.0.1:${REST_PORT}/`, { headers: { apikey: jwt("service_role") } })).status < 500) break; } catch { /* starting */ } await sleep(1000); }
   const proxy = await startProxy();
@@ -133,6 +157,28 @@ async function partB() {
     const priv = (await admin.query("select has_function_privilege('anon','office_revoke_admin_sessions(uuid,text,text)','EXECUTE') a, has_function_privilege('authenticated','office_revoke_admin_sessions(uuid,text,text)','EXECUTE') u, has_function_privilege('service_role','office_revoke_admin_sessions(uuid,text,text)','EXECUTE') s")).rows[0];
     assert.deepEqual(priv, { a: false, u: false, s: true }, "only service_role may execute the function");
     console.log("B3. anon/authenticated refused for the function and the table; only service_role executes — PASS");
+
+    // B4 (S7.5.0): code deployed before the atomic function, then the migration; the store probes and uses it
+    assert.equal(await s1.supportsAtomicCredentialUpdate(), false, "before the second migration the capability is unavailable");
+    await assert.rejects(() => s1.updateAdminUserRevokingSessions(u.id, { password_hash: "salt:x" }, { actor: "a" }), (e) => e.code === "atomic_unavailable", "and the call refuses loudly (the server then uses the two-step fallback)");
+    await admin.query(sql(MIG2)); await admin.query("notify pgrst, 'reload schema'"); await sleep(2500); s1.atomicCredentialUpdateCheckedAt = 0; s2.atomicCredentialUpdateCheckedAt = 0;
+    assert.equal(await s1.supportsAtomicCredentialUpdate(), true, "re-probe finds it");
+    const g1 = (await s1.getAdminUserByEmail("boss@ochiga.test")).session_generation;
+    const res = await s1.updateAdminUserRevokingSessions(u.id, { password_hash: "salt:atomic", password_changed_at: new Date().toISOString() }, { actor: "alice" });
+    assert.equal(res.session_generation, g1 + 1); assert.equal(res.user.password_hash, "salt:atomic"); assert.equal(res.user.session_generation, g1 + 1, "the returned user already carries the new generation");
+    assert.equal(await s1.updateAdminUserRevokingSessions("00000000-0000-0000-0000-000000000000", { password_hash: "x" }, {}), null);
+    const gens2 = (await Promise.all(Array.from({ length: 16 }, (_, i) => (i % 2 ? s1 : s2).updateAdminUserRevokingSessions(u.id, { password_hash: `salt:r${i}` }, { actor: `r${i}` })))).map((x) => x.session_generation).sort((a, b) => a - b);
+    assert.deepEqual(gens2, Array.from({ length: 16 }, (_, i) => g1 + 2 + i), "16 concurrent credential changes through PostgREST and two clients: distinct and consecutive");
+    for (const role of ["anon", "authenticated"]) { const r = await rest(role, "POST", "/rpc/office_admin_update_revoking_sessions", { p_user_id: u.id, p_actor: "pwn", p_password_hash: "salt:pwn" }); assert.ok([401, 403, 404].includes(r.status), `${role} refused (${r.status})`); }
+    assert.notEqual((await s1.getAdminUserByEmail("boss@ochiga.test")).password_hash, "salt:pwn", "the Data API roles changed nothing");
+    // single-use claims through PostgREST: exactly one of many simultaneous claimants wins; release re-opens it
+    const prt = (await admin.query("insert into password_reset_tokens (admin_user_id, email, token_hash) values ($1,'boss@ochiga.test','h') returning id", [u.id])).rows[0].id;
+    const claims = await Promise.all(Array.from({ length: 12 }, (_, i) => (i % 2 ? s1 : s2).claimPasswordResetToken(prt))); assert.equal(claims.filter(Boolean).length, 1, "12 simultaneous claims of one reset token: exactly one wins");
+    assert.ok(await s1.releasePasswordResetToken(prt) && (await s2.claimPasswordResetToken(prt)), "release re-opens it for exactly one more claim"); assert.equal(await s1.claimPasswordResetToken(prt), null);
+    const inv = (await admin.query("insert into admin_invites (admin_user_id, email, token_hash) values ($1,'boss@ochiga.test','h') returning id", [u.id])).rows[0].id;
+    const ic = await Promise.all(Array.from({ length: 12 }, (_, i) => (i % 2 ? s1 : s2).claimAdminInvite(inv))); assert.equal(ic.filter(Boolean).length, 1, "12 simultaneous claims of one invite: exactly one wins");
+    assert.ok(await s1.releaseAdminInvite(inv), "released");
+    console.log("B4. Second migration under a running store: probe, atomic change through PostgREST (concurrent, consistent), Data API refused, single-use claims race-free — PASS");
   } finally { proxy.close(); await admin.end().catch(() => {}); }
 }
 

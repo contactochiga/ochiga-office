@@ -128,7 +128,11 @@ async function main() {
   const admChg = await store.getAdminUserByEmail("chg@x.test"); await store.updateAdminUser(admChg.id, { password_hash: hashPassword("reset by admin phrase 88") });
   const chg2 = await login("chg@x.test", "reset by admin phrase 88"); const chg2Grant = await grant(chg2, "reset by admin phrase 88");
   await store.updateAdminUser(admChg.id, { password_hash: hashPassword("reset again by admin 99x") });
-  eq((await (await check(chg2, chg2Grant.token)).json()).reason, "password_changed", "grant dies on any password-hash change");
+  // S7.5.0: the session itself is now bound to the password hash, so a hash changed behind the application's back ends the SESSION (401) before the grant is even read.
+  eq((await check(chg2, chg2Grant.token)).status, 401, "any password-hash change ends the session, and with it the grant");
+  // the grant's own password-state binding still stands for a caller that verifies without session enrichment
+  const liveChg = await store.getAdminUserByEmail("chg@x.test");
+  eq(verifyStepUpToken({ config, authContext: { ...ctxFor(liveChg, "bx"), user: liveChg }, purpose: "security_policy_write", token: chg2Grant.token }).ok, false, "unenriched verification also refuses a grant from the old password state");
 
   // ---- API key caller
   const ak = await call("step-up", { password: PW, purpose: "security_policy_write" }, { apiKey: API_KEY });

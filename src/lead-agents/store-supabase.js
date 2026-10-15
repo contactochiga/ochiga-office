@@ -1506,6 +1506,49 @@ class SupabaseLeadAgentsStore {
     return { session_generation: row.session_generation, sessions_revoked_at: row.sessions_revoked_at };
   }
 
+  // Settings S7.5.0: one SQL statement applies the patch and revokes sessions (db/20261021_admin_atomic_credential_updates.sql). Capability re-probed at most once a minute.
+  async supportsAtomicCredentialUpdate() {
+    if (this.atomicCredentialUpdate === true) return true;
+    if (this.atomicCredentialUpdate === false && Date.now() - (this.atomicCredentialUpdateCheckedAt || 0) < 60_000) return false;
+    try {
+      await this.client.post("/rpc/office_admin_update_revoking_sessions", { p_user_id: "00000000-0000-0000-0000-000000000000", p_actor: "capability-probe" }); // matches no row
+      this.atomicCredentialUpdate = true;
+    } catch (error) {
+      if (error?.response?.status === 404 || error?.response?.data?.code === "PGRST202") { this.atomicCredentialUpdate = false; this.atomicCredentialUpdateCheckedAt = Date.now(); } else throw error;
+    }
+    return this.atomicCredentialUpdate === true;
+  }
+  async updateAdminUserRevokingSessions(userId, patch, { actor = "" } = {}) {
+    if (!(await this.supportsAtomicCredentialUpdate())) { const error = new Error("atomic_credential_update_unavailable"); error.code = "atomic_unavailable"; throw error; }
+    const has = (k) => Object.prototype.hasOwnProperty.call(patch || {}, k);
+    const response = await this.client.post("/rpc/office_admin_update_revoking_sessions", {
+      p_user_id: userId, p_actor: String(actor || "").slice(0, 200),
+      p_password_hash: has("password_hash") ? patch.password_hash : null, p_password_changed_at: has("password_changed_at") ? patch.password_changed_at : null,
+      p_status: has("status") ? patch.status : null, p_set_removed: has("removed_at") || has("removed_by"), p_removed_at: has("removed_at") ? patch.removed_at : null, p_removed_by: has("removed_by") ? patch.removed_by : null,
+    });
+    const row = Array.isArray(response.data) ? response.data[0] : response.data;
+    if (!row) return null;
+    if (!Number.isInteger(row.session_generation)) throw new Error("atomic_credential_update_malformed");
+    return { user: await this.getAdminUserById(userId), session_generation: row.session_generation, sessions_revoked_at: row.sessions_revoked_at };
+  }
+
+  async claimPasswordResetToken(tokenId) {
+    const response = await this.client.patch(`/password_reset_tokens?id=eq.${tokenId}&status=eq.pending`, { status: "used", used_at: new Date().toISOString() }, { headers: this.selectHeaders() });
+    return response.data[0] || null;
+  }
+  async releasePasswordResetToken(tokenId) {
+    const response = await this.client.patch(`/password_reset_tokens?id=eq.${tokenId}&status=eq.used`, { status: "pending", used_at: null }, { headers: this.selectHeaders() });
+    return response.data[0] || null;
+  }
+  async claimAdminInvite(inviteId) {
+    const response = await this.client.patch(`/admin_invites?id=eq.${inviteId}&status=eq.pending`, { status: "accepted", accepted_at: new Date().toISOString() }, { headers: this.selectHeaders() });
+    return response.data[0] || null;
+  }
+  async releaseAdminInvite(inviteId) {
+    const response = await this.client.patch(`/admin_invites?id=eq.${inviteId}&status=eq.accepted`, { status: "pending", accepted_at: null }, { headers: this.selectHeaders() });
+    return response.data[0] || null;
+  }
+
   async deleteAdminUser(userId) {
     await this.client.delete(`/admin_users?id=eq.${userId}`, { headers: this.selectHeaders() });
     return true;

@@ -1620,6 +1620,55 @@ class FileLeadAgentsStore {
     return { session_generation: generation, sessions_revoked_at: revokedAt };
   }
 
+  // Settings S7.5.0: apply a credential/status patch AND revoke sessions as ONE mutation (nothing can interleave between them), persisted together and rolled back together.
+  async supportsAtomicCredentialUpdate() { return true; }
+  async updateAdminUserRevokingSessions(userId, patch, { actor = "" } = {}) {
+    const allowed = ["password_hash", "password_changed_at", "status", "removed_at", "removed_by"];
+    const index = this.state.admin_users.findIndex((item) => item.id === userId);
+    if (index === -1) return null;
+    const previous = this.state.admin_users[index];
+    const safe = {}; for (const key of allowed) if (Object.prototype.hasOwnProperty.call(patch || {}, key)) safe[key] = patch[key];
+    const revokedAt = this.nowIso();
+    const generation = (Number.isInteger(previous.session_generation) && previous.session_generation >= 0 ? previous.session_generation : 0) + 1;
+    this.state.admin_users[index] = { ...previous, ...safe, session_generation: generation, sessions_revoked_at: revokedAt, sessions_revoked_by: String(actor || "").slice(0, 200), updated_at: revokedAt };
+    try { await this.persist(); } catch (error) {
+      const now = this.state.admin_users.findIndex((item) => item.id === userId);
+      if (now !== -1 && this.state.admin_users[now].session_generation === generation) this.state.admin_users[now] = previous;
+      throw error;
+    }
+    return { user: this.state.admin_users[index], session_generation: generation, sessions_revoked_at: revokedAt };
+  }
+
+  // Single-use tokens are CLAIMED (compare-and-set) before the password is written, so two simultaneous confirmations cannot both succeed.
+  async claimPasswordResetToken(tokenId) {
+    const index = this.state.password_reset_tokens.findIndex((item) => item.id === tokenId);
+    if (index === -1 || this.state.password_reset_tokens[index].status !== "pending") return null;
+    this.state.password_reset_tokens[index] = { ...this.state.password_reset_tokens[index], status: "used", used_at: this.nowIso(), updated_at: this.nowIso() };
+    await this.persist();
+    return this.state.password_reset_tokens[index];
+  }
+  async releasePasswordResetToken(tokenId) {
+    const index = this.state.password_reset_tokens.findIndex((item) => item.id === tokenId);
+    if (index === -1 || this.state.password_reset_tokens[index].status !== "used") return null;
+    this.state.password_reset_tokens[index] = { ...this.state.password_reset_tokens[index], status: "pending", used_at: null, updated_at: this.nowIso() };
+    await this.persist();
+    return this.state.password_reset_tokens[index];
+  }
+  async claimAdminInvite(inviteId) {
+    const index = this.state.admin_invites.findIndex((item) => item.id === inviteId);
+    if (index === -1 || this.state.admin_invites[index].status !== "pending") return null;
+    this.state.admin_invites[index] = { ...this.state.admin_invites[index], status: "accepted", accepted_at: this.nowIso(), updated_at: this.nowIso() };
+    await this.persist();
+    return this.state.admin_invites[index];
+  }
+  async releaseAdminInvite(inviteId) {
+    const index = this.state.admin_invites.findIndex((item) => item.id === inviteId);
+    if (index === -1 || this.state.admin_invites[index].status !== "accepted") return null;
+    this.state.admin_invites[index] = { ...this.state.admin_invites[index], status: "pending", accepted_at: null, updated_at: this.nowIso() };
+    await this.persist();
+    return this.state.admin_invites[index];
+  }
+
   async deleteAdminUser(userId) {
     const index = this.state.admin_users.findIndex((item) => item.id === userId);
     if (index === -1) return false;

@@ -196,15 +196,15 @@ async function main() {
   store.getAdminUserByEmail = realByEmail; eq(await app.me(okCookie), 200, "recovers when the store returns");
   const realById2 = store.getAdminUserById.bind(store); store.getAdminUserById = async () => { throw new Error("boom"); };
   eq((await app.login("u1@x.test", PW.u1)).status, 503, "issuance fails closed when the generation cannot be read"); store.getAdminUserById = realById2;
-  const realRevoke = store.revokeAdminSessions.bind(store); store.revokeAdminSessions = async () => { throw new Error("write failed"); };
+  const realRevoke = store.revokeAdminSessions.bind(store); const realAtomic = store.updateAdminUserRevokingSessions.bind(store); store.revokeAdminSessions = async () => { throw new Error("write failed"); }; store.updateAdminUserRevokingSessions = async () => { throw new Error("write failed"); };
   const g0 = await gen("u1@x.test"); const selfFail = await app.call("POST", `${A}/session/revoke-all`, { cookie: okCookie, body: {} }); eq(selfFail.status, 503, "failed revocation write -> 503"); eq((await selfFail.json()).error, "session_revocation_unavailable"); eq(await gen("u1@x.test"), g0, "nothing changed"); eq(await app.me(okCookie), 200);
   const pwFail = await app.call("POST", `${A}/session/password`, { cookie: okCookie, body: { current_password: PW.u1, new_password: "should never be applied 11" } }); eq(pwFail.status, 503, "password change fails closed when the bump fails");
-  eq((await app.login("u1@x.test", PW.u1)).status, 200, "password unchanged"); store.revokeAdminSessions = realRevoke;
-  const realSupports = store.supportsSessionRevocation.bind(store); store.supportsSessionRevocation = async () => false; // migration not applied
+  eq((await app.login("u1@x.test", PW.u1)).status, 200, "password unchanged"); store.revokeAdminSessions = realRevoke; store.updateAdminUserRevokingSessions = realAtomic;
+  const realSupports = store.supportsSessionRevocation.bind(store); const realSupportsAtomic = store.supportsAtomicCredentialUpdate.bind(store); store.supportsSessionRevocation = async () => false; store.supportsAtomicCredentialUpdate = async () => false; // migration not applied
   eq((await app.call("POST", `${A}/session/revoke-all`, { cookie: okCookie, body: {} })).status, 503, "migration absent: revoke-all 503"); const supAbsent = await app.session("sup@x.test", PW.sup); eq((await adminRevoke(supAbsent, target.id, { token: await app.grant(supAbsent, PW.sup, "session_revocation") })).status, 503, "migration absent: admin revoke 503");
   const absentPw = await app.call("POST", `${A}/session/password`, { cookie: okCookie, body: { current_password: PW.u1, new_password: "password change before migration 22" } }); eq(absentPw.status, 200, "password flows still work before the migration"); PW.u1 = "password change before migration 22";
   eq((await (await app.call("GET", "/healthz")).json()).session_revocation.capability, "unavailable", "healthz shows the capability gap"); eq((await app.login("u1@x.test", PW.u1)).status, 200, "sign-in unaffected");
-  ok(JSON.stringify(await store.listAuditEvents(2000)).includes("sessions_revocation_skipped"), "skipped revocation is audited"); store.supportsSessionRevocation = realSupports;
+  ok(JSON.stringify(await store.listAuditEvents(2000)).includes("sessions_revocation_skipped"), "skipped revocation is audited"); store.supportsSessionRevocation = realSupports; store.supportsAtomicCredentialUpdate = realSupportsAtomic;
 
   // ---- 13. persistence: restart and failed disk write
   const gKnown = await gen("racer@x.test"); const stale = claims(racedCookie).sg; await app.close();

@@ -26,7 +26,7 @@ const {
   enforceAuth,
   hashPassword,
   permissionsForRole,
-  readAdminSession,
+  authenticateSessionCookie,
   verifyPassword,
 } = require("./auth");
 const { MemoryRateLimiter } = require("./rate-limit");
@@ -1971,7 +1971,7 @@ async function issueSession(store, config, sessionUser) {
 // `required: true` (explicit revocation routes) turns an unavailable capability into a 503. `required: false` (password/status flows) proceeds and audits `skipped`, because those
 // flows must stay usable before the migration exists; but if the capability IS available and the increment FAILS, both fail closed (503) so a password is never changed while
 // stolen sessions are left alive.
-async function revokeSessionsFor({ store, config, target, auditActor, trigger, requestId, req, reason = null, required = false }) {
+async function revokeSessionsFor({ store, config, target, auditActor, trigger, requestId, req, reason = null, required = false, auditExtra = {} }) {
   const before = effectiveGeneration(target);
   const auditRevocation = (action, status, extra) => appendAudit(store, auditActor, action, "admin_user", target.id, { request_id: requestId, target_user_id: target.id, target_email: target.email, trigger, generation_before: before, at: new Date().toISOString(), ...extra }, req, status);
   const unavailable = async (category) => {
@@ -1993,8 +1993,44 @@ async function revokeSessionsFor({ store, config, target, auditActor, trigger, r
   }
   if (!result) { const e = new Error("user_not_found"); e.statusCode = 404; throw e; }
   const action = { self: "sessions_revoked_self", admin: "sessions_revoked_by_admin", password_reset: "sessions_revoked_password_reset", password_change: "sessions_revoked_password_change", admin_password_set: "sessions_revoked_admin_password_set", status_change: "sessions_revoked_status_change", admin_recovery: "sessions_revoked_admin_recovery" }[trigger] || "sessions_revoked";
-  await auditRevocation(action, "success", { outcome: "revoked", generation_after: result.session_generation, reason: typeof reason === "string" ? reason.slice(0, 200) : undefined });
+  await auditRevocation(action, "success", { outcome: "revoked", generation_after: result.session_generation, reason: typeof reason === "string" ? reason.slice(0, 200) : undefined, ...auditExtra });
   return { status: "revoked", generation_before: before, generation_after: result.session_generation, revoked_at: result.sessions_revoked_at };
+}
+
+const REVOCATION_AUDIT_ACTIONS = { self: "sessions_revoked_self", admin: "sessions_revoked_by_admin", password_reset: "sessions_revoked_password_reset", password_change: "sessions_revoked_password_change", admin_password_set: "sessions_revoked_admin_password_set", status_change: "sessions_revoked_status_change", admin_recovery: "sessions_revoked_admin_recovery" };
+
+// Settings S7.5.0: apply a credential/status patch (password_hash, password_changed_at, status, removed_at, removed_by only) TOGETHER with the session revocation, as one atomic step
+// when the store supports it (single SQL statement / single mutation), otherwise by the S7.4 two-step path, which password binding (`pf`) keeps safe. Fails closed: when revocation
+// is available and cannot be applied, nothing changes and the caller gets a 503. Returns { user, status, atomic, generation_after }.
+async function applyCredentialChange({ store, config, target, patch, auditActor, trigger, requestId, req }) {
+  let atomicSupported = false;
+  if (revocationEnabled(config) && typeof store.updateAdminUserRevokingSessions === "function" && typeof store.supportsAtomicCredentialUpdate === "function") {
+    try { atomicSupported = await store.supportsAtomicCredentialUpdate(); } catch { atomicSupported = false; }
+  }
+  if (atomicSupported) {
+    const before = effectiveGeneration(target);
+    let result;
+    try {
+      result = await store.updateAdminUserRevokingSessions(target.id, patch, { actor: auditActor?.email || "" });
+    } catch {
+      await appendAudit(store, auditActor, "session_revocation_denied", "admin_user", target.id, { request_id: requestId, target_user_id: target.id, trigger, outcome: "failed", failure_reason: "store_error", generation_before: before, at: new Date().toISOString() }, req, "failure").catch(() => {});
+      const e = new Error("session_revocation_unavailable"); e.statusCode = 503; throw e;
+    }
+    if (!result) { const e = new Error("user_not_found"); e.statusCode = 404; throw e; }
+    await appendAudit(store, auditActor, REVOCATION_AUDIT_ACTIONS[trigger] || "sessions_revoked", "admin_user", target.id, { request_id: requestId, target_user_id: target.id, target_email: target.email, trigger, outcome: "revoked", atomic: true, generation_before: before, generation_after: result.session_generation, at: new Date().toISOString() }, req, "success");
+    return { user: result.user, status: "revoked", atomic: true, generation_after: result.session_generation };
+  }
+  const revocation = await revokeSessionsFor({ store, config, target, auditActor, trigger, requestId, req, auditExtra: { atomic: false } });
+  const user = await store.updateAdminUser(target.id, patch);
+  return { user, status: revocation.status, atomic: false, generation_after: revocation.generation_after };
+}
+
+// Settings S7.5.0: human-account mutations need an accountable person. API keys and edge tokens (machine credentials) are refused, audited by route category only.
+async function denyNonHumanActor({ store, authContext, res, ctx, req, category }) {
+  if (authContext?.type === "session") return false;
+  await appendAudit(store, { type: authContext?.type || "unknown" }, "human_account_change_denied", "admin_user", "", { request_id: ctx.requestId, route_category: category, outcome: "denied", failure_reason: "api_key_not_allowed", at: new Date().toISOString() }, req, "failure").catch(() => {});
+  json(res, 403, { error: "actor_identity_required", message: "Account changes need a signed-in person." }, { "x-request-id": ctx.requestId });
+  return true;
 }
 
 // Settings S7.1: sends the shared 400 and returns true when a new password violates the fixed policy. Carries a code only, never password material.
@@ -2023,11 +2059,15 @@ async function applyAdminRecovery(store, config) {
     log("warn", "admin_recovery_applied", { email });
     return { applied: true, user: created };
   }
-  const updated = await store.updateAdminUser(existing.id, {
-    password_hash: hashPassword(config.adminPassword), status: "active", role: config.adminRole || "admin",
-  });
-  // S7.4: whoever held a session for this account before recovery must not keep it.
-  await revokeSessionsFor({ store, config, target: updated || existing, auditActor: { email }, trigger: "admin_recovery", requestId: "startup" }).catch((error) => log("error", "admin_recovery_revocation_failed", { message: error.message }));
+  // S7.4/S7.5.0: whoever held a session for this account before recovery must not keep it; the password reset, reactivation and revocation are one atomic step where supported.
+  let updated;
+  try {
+    ({ user: updated } = await applyCredentialChange({ store, config, target: existing, patch: { password_hash: hashPassword(config.adminPassword), status: "active" }, auditActor: { email }, trigger: "admin_recovery", requestId: "startup" }));
+  } catch (error) {
+    log("error", "admin_recovery_revocation_failed", { message: error.message });
+    updated = await store.updateAdminUser(existing.id, { password_hash: hashPassword(config.adminPassword), status: "active" }); // recovery must still succeed
+  }
+  updated = (await store.updateAdminUser(existing.id, { role: config.adminRole || "admin" })) || updated;
   await appendAudit(store, { email }, "admin_recovery_applied", "admin_user", existing.id, { email, created: false });
   log("warn", "admin_recovery_applied", { email });
   return { applied: true, user: updated || existing };
@@ -3036,22 +3076,17 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           methodNotAllowed(res, "GET");
           return;
         }
-        const session = readAdminSession(req, config);
-        if (!session) {
+        // S7.5.0: the same single cookie reader and the same single live-state check as every protected route (no private copy of either).
+        const meContext = authenticateSessionCookie(req, config);
+        if (!meContext) {
           json(res, 401, { error: "unauthorized" }, { "x-request-id": ctx.requestId });
           return;
         }
-        // S7.4: this route reads the cookie itself (it is public for the login screen), so it must apply the SAME live checks as every other request.
         let currentUser;
-        try { currentUser = await store.getAdminUserByEmail(session.email); } catch { json(res, 503, { error: "session_verification_unavailable" }, { "x-request-id": ctx.requestId }); return; }
-        if (!currentUser || currentUser.status !== "active") {
-          json(res, 401, { error: "unauthorized" }, { "x-request-id": ctx.requestId });
-          return;
-        }
-        const meGeneration = checkSessionGeneration({ authContext: { userId: session.userId, sessionGeneration: session.generation }, user: currentUser, config });
-        if (!meGeneration.ok) {
-          revokedSessionRejections[meGeneration.reason] = (revokedSessionRejections[meGeneration.reason] || 0) + 1;
-          json(res, 401, { error: "session_revoked" }, { "x-request-id": ctx.requestId });
+        try {
+          currentUser = (await enrichAuthContext(meContext, store, config)).user;
+        } catch (meError) {
+          json(res, meError.statusCode === 503 ? 503 : 401, { error: meError.statusCode === 503 ? "session_verification_unavailable" : (meError.message === "session_revoked" ? "session_revoked" : "unauthorized") }, { "x-request-id": ctx.requestId });
           return;
         }
         json(
@@ -3221,11 +3256,8 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
         }
         if (rejectPasswordViolation(res, body.new_password, ctx)) return;
         // S7.4: bump first (fail-safe order), then write the password, then re-issue THIS browser's cookie at the new generation; every other session is signed out.
-        const revocation = await revokeSessionsFor({ store, config, target: currentUser, auditActor: authContext, trigger: "password_change", requestId: ctx.requestId, req });
-        const updated = await store.updateAdminUser(currentUser.id, {
-          password_hash: hashPassword(body.new_password),
-          password_changed_at: new Date().toISOString(),
-        });
+        const { user: updated, status: revocationStatus } = await applyCredentialChange({ store, config, target: currentUser, patch: { password_hash: hashPassword(body.new_password), password_changed_at: new Date().toISOString() }, auditActor: authContext, trigger: "password_change", requestId: ctx.requestId, req });
+        const revocation = { status: revocationStatus };
         await appendAudit(store, authContext, "password_changed", "admin_user", currentUser.id, {});
         const reissued = revocation.status === "revoked" ? await issueSession(store, config, updated || currentUser) : null;
         json(res, 200, { ok: true, user: sanitizeAdminUser(updated), other_sessions_signed_out: revocation.status === "revoked" }, { "x-request-id": ctx.requestId, ...(reissued ? { "set-cookie": createSessionCookie(reissued.token, config, reissued.ttl.ttlMs) } : {}) });
@@ -3332,19 +3364,27 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           return;
         }
         if (rejectPasswordViolation(res, body.password, ctx)) return;
-        const user = await store.updateAdminUser(existingUser.id, {
-          password_hash: hashPassword(body.password),
-          role: invite.role || "viewer",
-          display_name: body.display_name || invite.display_name || invite.email,
-          office_position: invite.office_position || "",
-          phone: invite.phone || existingUser.phone || "",
-          status: "active",
-          password_changed_at: new Date().toISOString(),
-        });
-        await store.updateAdminInvite(invite.id, {
-          status: "accepted",
-          accepted_at: new Date().toISOString(),
-        });
+        // S7.5.0: claim the single-use invite first; release it if the account could not be activated.
+        const claimedInvite = await store.claimAdminInvite(invite.id);
+        if (!claimedInvite) {
+          json(res, 400, { error: "invalid_or_expired_invite" });
+          return;
+        }
+        let user;
+        try {
+          user = await store.updateAdminUser(existingUser.id, {
+            password_hash: hashPassword(body.password),
+            role: invite.role || "viewer",
+            display_name: body.display_name || invite.display_name || invite.email,
+            office_position: invite.office_position || "",
+            phone: invite.phone || existingUser.phone || "",
+            status: "active",
+            password_changed_at: new Date().toISOString(),
+          });
+        } catch (error) {
+          await store.releaseAdminInvite(invite.id).catch(() => {});
+          throw error;
+        }
         await appendAudit(
           store,
           { userId: user.id, email: user.email, role: user.role },
@@ -3402,15 +3442,18 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           return;
         }
         if (rejectPasswordViolation(res, body.new_password, ctx)) return;
-        await revokeSessionsFor({ store, config, target: user, auditActor: { userId: user.id, email: user.email, role: user.role }, trigger: "password_reset", requestId: ctx.requestId, req });
-        await store.updateAdminUser(user.id, {
-          password_hash: hashPassword(body.new_password),
-          password_changed_at: new Date().toISOString(),
-        });
-        await store.updatePasswordResetToken(reset.id, {
-          status: "used",
-          used_at: new Date().toISOString(),
-        });
+        // S7.5.0: claim the single-use token FIRST (compare-and-set), so two simultaneous confirmations cannot both succeed; release it if the password could not be written.
+        const claimedReset = await store.claimPasswordResetToken(reset.id);
+        if (!claimedReset) {
+          json(res, 400, { error: "invalid_or_expired_reset" });
+          return;
+        }
+        try {
+          await applyCredentialChange({ store, config, target: user, patch: { password_hash: hashPassword(body.new_password), password_changed_at: new Date().toISOString() }, auditActor: { userId: user.id, email: user.email, role: user.role }, trigger: "password_reset", requestId: ctx.requestId, req });
+        } catch (error) {
+          await store.releasePasswordResetToken(reset.id).catch(() => {});
+          throw error;
+        }
         await appendAudit(
           store,
           { userId: user.id, email: user.email, role: user.role },
@@ -8854,6 +8897,7 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           return;
         }
         if (req.method === "POST") {
+          if (await denyNonHumanActor({ store, authContext, res, ctx, req, category: "admin_user_create" })) return;
           authorizePermission(authContext, "manage_users");
           const body = await readJsonBody(req);
           requireObject(body, "body");
@@ -8917,6 +8961,7 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           methodNotAllowed(res, "POST");
           return;
         }
+        if (await denyNonHumanActor({ store, authContext, res, ctx, req, category: "admin_user_invite" })) return;
         // Adding a team member is organisation-controlled -- super_admin
         // only (team.manage), same gate as every other Team-management
         // mutation.
@@ -9022,6 +9067,7 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           methodNotAllowed(res, "PATCH");
           return;
         }
+        if (await denyNonHumanActor({ store, authContext, res, ctx, req, category: "admin_user_update" })) return;
         authorizePermission(authContext, "manage_users");
         const body = await readJsonBody(req);
         requireObject(body, "body");
@@ -9039,17 +9085,24 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           patch.password_hash = hashPassword(body.password);
           patch.password_changed_at = new Date().toISOString();
         }
-        // S7.4: a password set by an administrator, or any status change (deactivate/reactivate), ends the target's existing sessions first.
+        // S7.4/S7.5.0: a password set by an administrator, or any status change, is applied TOGETHER with the revocation of the target's sessions; other edits follow separately.
         const existingTarget = (patch.password_hash || patch.status !== undefined) ? await store.getAdminUserById(adminUserMatch[1]) : null;
-        if (existingTarget && (patch.password_hash || patch.status !== existingTarget.status)) {
-          await revokeSessionsFor({ store, config, target: existingTarget, auditActor: authContext, trigger: patch.password_hash ? "admin_password_set" : "status_change", requestId: ctx.requestId, req });
+        const statusChanged = Boolean(existingTarget && patch.status !== undefined && patch.status !== existingTarget.status);
+        let user;
+        if (existingTarget && (patch.password_hash || statusChanged)) {
+          const credentialPatch = {}; const rest = { ...patch };
+          if (patch.password_hash) { credentialPatch.password_hash = patch.password_hash; credentialPatch.password_changed_at = patch.password_changed_at; delete rest.password_hash; delete rest.password_changed_at; }
+          if (statusChanged) { credentialPatch.status = patch.status; delete rest.status; }
+          const changed = await applyCredentialChange({ store, config, target: existingTarget, patch: credentialPatch, auditActor: authContext, trigger: patch.password_hash ? "admin_password_set" : "status_change", requestId: ctx.requestId, req });
+          user = Object.keys(rest).length ? await store.updateAdminUser(adminUserMatch[1], rest) : changed.user;
+        } else {
+          user = await store.updateAdminUser(adminUserMatch[1], patch);
         }
-        const user = await store.updateAdminUser(adminUserMatch[1], patch);
         if (!user) {
           notFound(res);
           return;
         }
-        await appendAudit(store, authContext, "admin_user_updated", "admin_user", user.id, patch);
+        { const { password_hash: _hash, password_changed_at: _changedAt, ...auditablePatch } = patch; await appendAudit(store, authContext, "admin_user_updated", "admin_user", user.id, { ...auditablePatch, ...(patch.password_hash ? { password_set: true } : {}) }); }
         eventBus.publish("office.staff", {
           action: "updated",
           actor: authContext?.email || "",
@@ -9070,6 +9123,7 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           methodNotAllowed(res, "POST");
           return;
         }
+        if (await denyNonHumanActor({ store, authContext, res, ctx, req, category: "admin_user_photo" })) return;
         authorizePermission(authContext, "manage_users");
         const body = await readJsonBody(req);
         requireObject(body, "body");
@@ -9121,6 +9175,7 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           methodNotAllowed(res, "POST");
           return;
         }
+        if (await denyNonHumanActor({ store, authContext, res, ctx, req, category: "admin_user_reset" })) return;
         // Resetting ANOTHER member's credentials is organisation-
         // controlled, same gate as the rest of Team management.
         authorizePermission(authContext, "team.manage");
@@ -9255,6 +9310,7 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           methodNotAllowed(res, "POST");
           return;
         }
+        if (await denyNonHumanActor({ store, authContext, res, ctx, req, category: "admin_user_remove" })) return;
         authorizePermission(authContext, "team.manage");
         const id = adminUserRemoveMatch[1];
         const user = await store.getAdminUserById(id);
@@ -9266,15 +9322,14 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           json(res, 400, { error: "cannot_remove_self" }, { "x-request-id": ctx.requestId });
           return;
         }
-        await revokeSessionsFor({ store, config, target: user, auditActor: authContext, trigger: "status_change", requestId: ctx.requestId, req });
-        const updated = await store.updateAdminUser(id, {
+        const { user: updated } = await applyCredentialChange({ store, config, target: user, auditActor: authContext, trigger: "status_change", requestId: ctx.requestId, req, patch: {
           removed_at: new Date().toISOString(),
           removed_by: authContext?.email || "office",
           // Reuses the existing, already-immediate access-revocation
           // check (enrichAuthContext rejects any status != "active") --
           // no separate revocation logic needed.
           status: "removed",
-        });
+        } });
         await appendAudit(store, authContext, "admin_user_removed", "admin_user", id, { email: user.email });
         json(res, 200, { user: sanitizeAdminUser(updated) }, { "x-request-id": ctx.requestId });
         return;
@@ -9286,6 +9341,7 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           methodNotAllowed(res, "POST");
           return;
         }
+        if (await denyNonHumanActor({ store, authContext, res, ctx, req, category: "admin_user_restore" })) return;
         authorizePermission(authContext, "team.manage");
         const id = adminUserRestoreMatch[1];
         const user = await store.getAdminUserById(id);
@@ -9293,8 +9349,7 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           notFound(res);
           return;
         }
-        await revokeSessionsFor({ store, config, target: user, auditActor: authContext, trigger: "status_change", requestId: ctx.requestId, req });
-        const updated = await store.updateAdminUser(id, { removed_at: null, removed_by: null, status: "active" });
+        const { user: updated } = await applyCredentialChange({ store, config, target: user, auditActor: authContext, trigger: "status_change", requestId: ctx.requestId, req, patch: { removed_at: null, removed_by: null, status: "active" } });
         await appendAudit(store, authContext, "admin_user_restored", "admin_user", id, { email: user.email });
         json(res, 200, { user: sanitizeAdminUser(updated) }, { "x-request-id": ctx.requestId });
         return;
@@ -9306,6 +9361,7 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           methodNotAllowed(res, "DELETE");
           return;
         }
+        if (await denyNonHumanActor({ store, authContext, res, ctx, req, category: "admin_user_permanent_delete" })) return;
         authorizePermission(authContext, "team.manage");
         const id = adminUserPermanentMatch[1];
         const user = await store.getAdminUserById(id);

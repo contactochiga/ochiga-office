@@ -69,6 +69,16 @@ function normalizeAuditInput(input = {}) {
   });
 }
 
+// Settings S7.5.0: defence in depth. A credential-bearing key can never reach the audit store, whatever a caller passes (an admin-set password once logged its hash here).
+const REDACTED_AUDIT_KEYS = new Set(["password", "password_hash", "passwordhash", "new_password", "current_password", "token", "step_up_token", "stepuptoken", "secret", "session_secret", "authorization", "cookie"]);
+function redactAuditMetadata(value, depth = 0) {
+  if (!value || typeof value !== "object" || depth > 5) return value;
+  if (Array.isArray(value)) return value.map((item) => redactAuditMetadata(item, depth + 1));
+  const out = {};
+  for (const [key, item] of Object.entries(value)) out[key] = REDACTED_AUDIT_KEYS.has(key.toLowerCase()) ? "[redacted]" : redactAuditMetadata(item, depth + 1);
+  return out;
+}
+
 async function appendAuditRecord({ store, authContext, action, resourceType, resourceId, metadata, req, status = "success" }) {
   if (!store?.appendAuditEvent) return null;
   const audit = normalizeAuditInput({
@@ -78,7 +88,7 @@ async function appendAuditRecord({ store, authContext, action, resourceType, res
     action,
     resourceType,
     resourceId,
-    metadata,
+    metadata: redactAuditMetadata(metadata),
     ip: requestIp(req),
     userAgent: req?.headers?.["user-agent"] || "",
     status,
@@ -107,5 +117,6 @@ module.exports = {
   LEGACY_ACTION_NAMES,
   appendAuditRecord,
   normalizeAuditInput,
+  redactAuditMetadata,
   requestIp,
 };
