@@ -1,0 +1,381 @@
+{
+  "captured": [
+    {
+      "file": "shots/overview-1440.png",
+      "label": "overview — 1440px"
+    },
+    {
+      "file": "shots/intelligence-1440.png",
+      "label": "intelligence — 1440px"
+    },
+    {
+      "file": "shots/integrations-1440.png",
+      "label": "integrations — 1440px"
+    },
+    {
+      "file": "shots/communications-1440.png",
+      "label": "communications — 1440px"
+    },
+    {
+      "file": "shots/organization-1440.png",
+      "label": "organization — 1440px"
+    },
+    {
+      "file": "shots/security-1440.png",
+      "label": "security — 1440px"
+    },
+    {
+      "file": "shots/overview-1100.png",
+      "label": "overview — 1100px"
+    },
+    {
+      "file": "shots/intelligence-1100.png",
+      "label": "intelligence — 1100px"
+    },
+    {
+      "file": "shots/integrations-1100.png",
+      "label": "integrations — 1100px"
+    },
+    {
+      "file": "shots/communications-1100.png",
+      "label": "communications — 1100px"
+    },
+    {
+      "file": "shots/organization-1100.png",
+      "label": "organization — 1100px"
+    },
+    {
+      "file": "shots/security-1100.png",
+      "label": "security — 1100px"
+    },
+    {
+      "file": "shots/overview-900.png",
+      "label": "overview — 900px"
+    },
+    {
+      "file": "shots/intelligence-900.png",
+      "label": "intelligence — 900px"
+    },
+    {
+      "file": "shots/integrations-900.png",
+      "label": "integrations — 900px"
+    },
+    {
+      "file": "shots/communications-900.png",
+      "label": "communications — 900px"
+    },
+    {
+      "file": "shots/organization-900.png",
+      "label": "organization — 900px"
+    },
+    {
+      "file": "shots/security-900.png",
+      "label": "security — 900px"
+    },
+    {
+      "file": "shots/landing-900.png",
+      "label": "Settings landing (list) — 900px"
+    },
+    {
+      "file": "shots/overview-768.png",
+      "label": "overview — 768px"
+    },
+    {
+      "file": "shots/intelligence-768.png",
+      "label": "intelligence — 768px"
+    },
+    {
+      "file": "shots/integrations-768.png",
+      "label": "integrations — 768px"
+    },
+    {
+      "file": "shots/communications-768.png",
+      "label": "communications — 768px"
+    },
+    {
+      "file": "shots/organization-768.png",
+      "label": "organization — 768px"
+    },
+    {
+      "file": "shots/security-768.png",
+      "label": "security — 768px"
+    },
+    {
+      "file": "shots/landing-768.png",
+      "label": "Settings landing (list) — 768px"
+    },
+    {
+      "file": "shots/overview-390.png",
+      "label": "overview — 390px"
+    },
+    {
+      "file": "shots/intelligence-390.png",
+      "label": "intelligence — 390px"
+    },
+    {
+      "file": "shots/integrations-390.png",
+      "label": "integrations — 390px"
+    },
+    {
+      "file": "shots/communications-390.png",
+      "label": "communications — 390px"
+    },
+    {
+      "file": "shots/organization-390.png",
+      "label": "organization — 390px"
+    },
+    {
+      "file": "shots/security-390.png",
+      "label": "security — 390px"
+    },
+    {
+      "file": "shots/landing-390.png",
+      "label": "Settings landing (list) — 390px"
+    },
+    {
+      "file": "shots/denied-section-1440.png",
+      "label": "Denied deep link (settings/people, user lacks staff.manage) — 1440px"
+    },
+    {
+      "file": "shots/denied-section-390.png",
+      "label": "Denied deep link (settings/people, user lacks staff.manage) — 390px"
+    },
+    {
+      "file": "shots/limited-overview-1440.png",
+      "label": "Limited user (settings.manage only): sidebar shows only permitted domains — 1440px"
+    },
+    {
+      "file": "shots/denied-page-1440.png",
+      "label": "No settings.manage: Settings forbidden view — 1440px"
+    },
+    {
+      "file": "shots/denied-page-390.png",
+      "label": "No settings.manage: Settings forbidden view — 390px"
+    },
+    {
+      "file": "shots/keyboard-focus-1440.png",
+      "label": "Keyboard focus ring on first sidebar item (real Tab key) — 1440px"
+    },
+    {
+      "file": "shots/communications-autonomy-on-1440.png",
+      "label": "Communications with autonomy ON (test data only; restored immediately) — 1440px"
+    }
+  ],
+  "permission_matrix": {
+    "super": {
+      "shown": [
+        "overview",
+        "organization",
+        "people",
+        "intelligence",
+        "integrations",
+        "communications",
+        "automation",
+        "buildings",
+        "crm",
+        "finance",
+        "security",
+        "infrastructure",
+        "audit",
+        "system-health"
+      ],
+      "expected": [
+        "overview",
+        "organization",
+        "people",
+        "intelligence",
+        "integrations",
+        "communications",
+        "automation",
+        "buildings",
+        "crm",
+        "finance",
+        "security",
+        "infrastructure",
+        "audit",
+        "system-health"
+      ],
+      "match": true,
+      "denied_deep_links_checked": []
+    },
+    "admin": {
+      "shown": [
+        "overview",
+        "organization",
+        "people",
+        "intelligence",
+        "integrations",
+        "communications",
+        "automation",
+        "buildings",
+        "crm",
+        "finance",
+        "security",
+        "infrastructure",
+        "audit",
+        "system-health"
+      ],
+      "expected": [
+        "overview",
+        "organization",
+        "people",
+        "intelligence",
+        "integrations",
+        "communications",
+        "automation",
+        "buildings",
+        "crm",
+        "finance",
+        "security",
+        "infrastructure",
+        "audit",
+        "system-health"
+      ],
+      "match": true,
+      "denied_deep_links_checked": []
+    },
+    "limited": {
+      "shown": [
+        "overview",
+        "organization",
+        "integrations",
+        "communications",
+        "automation",
+        "buildings",
+        "crm",
+        "security",
+        "infrastructure",
+        "system-health"
+      ],
+      "expected": [
+        "overview",
+        "organization",
+        "integrations",
+        "communications",
+        "automation",
+        "buildings",
+        "crm",
+        "security",
+        "infrastructure",
+        "system-health"
+      ],
+      "match": true,
+      "denied_deep_links_checked": [
+        "people",
+        "intelligence",
+        "finance",
+        "audit"
+      ]
+    }
+  },
+  "accessibility": {
+    "390": {
+      "landmarks": {
+        "nav_labelled": true,
+        "main": true,
+        "h1": 1,
+        "h2": 1
+      },
+      "active_nav_aria_current": 1,
+      "inputs_without_label": 0,
+      "buttons_without_name": 0,
+      "images_without_alt": 0,
+      "status_live_regions": 1,
+      "focus_outline_on_nav_item": null,
+      "targets_under_24px": [
+        "‹ All settings"
+      ],
+      "contrast": {
+        "title": 18.76,
+        "nav_label": 16.93,
+        "nav_sub": 5.31,
+        "card_subtitle": 11.66,
+        "field_label": 11.66,
+        "note": 4.83,
+        "nav_tag": 5.31
+      },
+      "reduced_motion_rule_present": true
+    },
+    "1440": {
+      "landmarks": {
+        "nav_labelled": true,
+        "main": true,
+        "h1": 1,
+        "h2": 1
+      },
+      "active_nav_aria_current": 1,
+      "inputs_without_label": 0,
+      "buttons_without_name": 0,
+      "images_without_alt": 0,
+      "status_live_regions": 1,
+      "focus_outline_on_nav_item": null,
+      "targets_under_24px": [],
+      "contrast": {
+        "title": 18.76,
+        "nav_label": 16.93,
+        "nav_sub": 5.31,
+        "card_subtitle": 11.66,
+        "field_label": 11.66,
+        "note": 4.83,
+        "nav_tag": 5.31
+      },
+      "reduced_motion_rule_present": true
+    },
+    "keyboard_focus": {
+      "element": "st-nav-item active",
+      "text": "OverviewSystem status and quic",
+      "outline_style": "solid",
+      "outline_width": "2px",
+      "outline_color": "rgb(211, 55, 44)",
+      "matches_focus_visible": true
+    },
+    "tab_order": true
+  },
+  "function": {
+    "autonomy": {
+      "before": false,
+      "after_on": true,
+      "after_off": false,
+      "ok": true
+    },
+    "letterhead": {
+      "saved_tagline": "Acceptance tagline",
+      "ok": true
+    },
+    "customer_messages_sent": 0,
+    "backend_non_get_requests": 0
+  },
+  "overflow": {
+    "overview@1440": true,
+    "intelligence@1440": true,
+    "integrations@1440": true,
+    "communications@1440": true,
+    "organization@1440": true,
+    "security@1440": true,
+    "overview@1100": true,
+    "intelligence@1100": true,
+    "integrations@1100": true,
+    "communications@1100": true,
+    "organization@1100": true,
+    "security@1100": true,
+    "overview@900": true,
+    "intelligence@900": true,
+    "integrations@900": true,
+    "communications@900": true,
+    "organization@900": true,
+    "security@900": true,
+    "overview@768": true,
+    "intelligence@768": true,
+    "integrations@768": true,
+    "communications@768": true,
+    "organization@768": true,
+    "security@768": true,
+    "overview@390": true,
+    "intelligence@390": true,
+    "integrations@390": true,
+    "communications@390": true,
+    "organization@390": true,
+    "security@390": true
+  },
+  "console_errors": []
+}
