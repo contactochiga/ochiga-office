@@ -49,6 +49,7 @@ class FileLeadAgentsStore {
       runtime_settings: {},
       whatsapp_inbound_claims: {},
       whatsapp_manual_sends: [],
+      communication_delivery_outbox: [],
       office_support_mappings: [],
       office_handoffs: [],
       office_staff_profiles: [],
@@ -127,6 +128,7 @@ class FileLeadAgentsStore {
         office_letterhead_config: parsed.office_letterhead_config && typeof parsed.office_letterhead_config === "object" ? parsed.office_letterhead_config : null,
         runtime_settings: parsed.runtime_settings && typeof parsed.runtime_settings === "object" && !Array.isArray(parsed.runtime_settings) ? parsed.runtime_settings : {},
         whatsapp_manual_sends: Array.isArray(parsed.whatsapp_manual_sends) ? parsed.whatsapp_manual_sends : [],
+        communication_delivery_outbox: Array.isArray(parsed.communication_delivery_outbox) ? parsed.communication_delivery_outbox : [],
         whatsapp_inbound_claims: parsed.whatsapp_inbound_claims && typeof parsed.whatsapp_inbound_claims === "object" && !Array.isArray(parsed.whatsapp_inbound_claims) ? parsed.whatsapp_inbound_claims : {},
         office_support_mappings: Array.isArray(parsed.office_support_mappings)
           ? parsed.office_support_mappings
@@ -699,6 +701,73 @@ class FileLeadAgentsStore {
 
   async listManualSendsForLead(leadId, limit = 200) {
     return this.state.whatsapp_manual_sends.filter((r) => r.lead_id === leadId).sort((a, b) => String(a.created_at).localeCompare(String(b.created_at))).slice(-limit).map((r) => ({ ...r }));
+  }
+
+  // ---- Communication delivery outbox (see db/20261018_communication_delivery_outbox.sql and communication-outbox.js) ----
+  async enqueueCommunicationDelivery(input) {
+    const existing = this.state.communication_delivery_outbox.find((e) => e.delivery_key === input.delivery_key);
+    if (existing) return { created: false, entry: { ...existing } };
+    const now = this.nowIso();
+    const entry = { id: crypto.randomUUID(), delivery_key: input.delivery_key, channel: input.channel || "whatsapp", event_type: input.event_type, provider_message_id: input.provider_message_id, status_value: input.status_value || null, source_event_id: input.source_event_id || null, lead_id: input.lead_id || null, payload: input.payload, mode: input.mode === "replay" ? "replay" : "live", status: "pending", attempts: 0, next_attempt_at: now, lease_until: null, leased_by: null, last_error: null, last_http_status: null, last_attempt_at: null, delivered_at: null, dead_at: null, created_at: now, updated_at: now };
+    this.state.communication_delivery_outbox.push(entry);
+    await this.persist();
+    return { created: true, entry: { ...entry } };
+  }
+
+  async findCommunicationDeliveriesByKeys(keys) {
+    const wanted = new Set(keys || []);
+    return this.state.communication_delivery_outbox.filter((e) => wanted.has(e.delivery_key)).map((e) => ({ ...e }));
+  }
+
+  // Compare-and-set lease: exactly one caller wins an entry that is pending and not currently leased.
+  async leaseCommunicationDelivery(id, { workerId, leaseMs, now }) {
+    const entry = this.state.communication_delivery_outbox.find((e) => e.id === id);
+    const nowIso = new Date(now).toISOString();
+    if (!entry || entry.status !== "pending" || (entry.lease_until && entry.lease_until > nowIso)) return null;
+    entry.attempts += 1; entry.lease_until = new Date(now + leaseMs).toISOString(); entry.leased_by = workerId; entry.last_attempt_at = nowIso; entry.updated_at = nowIso;
+    await this.persist();
+    return { ...entry };
+  }
+
+  async completeCommunicationDelivery(id, patch) {
+    const entry = this.state.communication_delivery_outbox.find((e) => e.id === id);
+    if (!entry) return null;
+    for (const field of ["status", "next_attempt_at", "lease_until", "leased_by", "last_error", "last_http_status", "delivered_at", "dead_at"]) if (patch[field] !== undefined) entry[field] = patch[field];
+    entry.updated_at = this.nowIso();
+    await this.persist();
+    return { ...entry };
+  }
+
+  async listDueCommunicationDeliveries({ now, limit = 5 }) {
+    const nowIso = new Date(now).toISOString();
+    return this.state.communication_delivery_outbox.filter((e) => e.status === "pending" && e.next_attempt_at <= nowIso && !(e.lease_until && e.lease_until > nowIso)).sort((a, b) => String(a.next_attempt_at).localeCompare(String(b.next_attempt_at))).slice(0, limit).map((e) => ({ ...e }));
+  }
+
+  async listCommunicationDeliveries({ statuses = ["pending", "dead"], limit = 50 } = {}) {
+    return this.state.communication_delivery_outbox.filter((e) => statuses.includes(e.status)).sort((a, b) => String(b.created_at).localeCompare(String(a.created_at))).slice(0, limit).map((e) => ({ ...e }));
+  }
+
+  async communicationDeliverySummary({ now = Date.now() } = {}) {
+    const nowIso = new Date(now).toISOString();
+    const all = this.state.communication_delivery_outbox;
+    const pending = all.filter((e) => e.status === "pending");
+    return { counts: { pending: pending.length, delivered: all.filter((e) => e.status === "delivered").length, dead: all.filter((e) => e.status === "dead").length }, due_now: pending.filter((e) => e.next_attempt_at <= nowIso && !(e.lease_until && e.lease_until > nowIso)).length, in_flight: pending.filter((e) => e.lease_until && e.lease_until > nowIso).length, oldest_pending_at: pending.map((e) => e.created_at).sort()[0] || null };
+  }
+
+  async requeueCommunicationDelivery(id, { mode = "replay", now = Date.now() } = {}) {
+    const entry = this.state.communication_delivery_outbox.find((e) => e.id === id);
+    if (!entry || entry.status === "delivered") return entry ? { ...entry } : null;
+    entry.status = "pending"; entry.mode = mode === "live" ? "live" : "replay"; entry.next_attempt_at = new Date(now).toISOString(); entry.lease_until = null; entry.leased_by = null; entry.dead_at = null; entry.updated_at = this.nowIso();
+    await this.persist();
+    return { ...entry };
+  }
+
+  async listInboundEventsForOutbox({ since, limit = 500 }) {
+    return this.state.inbound_events.filter((e) => e.channel === "whatsapp" && (e.event_type === "message" || String(e.event_type).startsWith("status:")) && String(e.created_at) >= since).sort((a, b) => String(a.created_at).localeCompare(String(b.created_at))).slice(-limit).map((e) => ({ ...e }));
+  }
+
+  async findInboundEventsByExternalId(externalId) {
+    return this.state.inbound_events.filter((e) => e.channel === "whatsapp" && e.external_event_id === externalId).map((e) => ({ ...e }));
   }
 
   // ---- WhatsApp inbound CRM visibility helpers ----

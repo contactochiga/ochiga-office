@@ -536,6 +536,92 @@ class SupabaseLeadAgentsStore {
     return response.data;
   }
 
+  // ---- Communication delivery outbox (see db/20261018_communication_delivery_outbox.sql and communication-outbox.js) ----
+  async enqueueCommunicationDelivery(input) {
+    const inserted = await this.client.post(
+      "/communication_delivery_outbox?on_conflict=delivery_key",
+      { delivery_key: input.delivery_key, channel: input.channel || "whatsapp", event_type: input.event_type, provider_message_id: input.provider_message_id, status_value: input.status_value || null, source_event_id: input.source_event_id || null, lead_id: input.lead_id || null, payload: input.payload, mode: input.mode === "replay" ? "replay" : "live" },
+      { headers: { ...this.selectHeaders(), Prefer: "resolution=ignore-duplicates,return=representation" } }
+    );
+    if (!Array.isArray(inserted.data)) throw new Error("outbox_enqueue_malformed");
+    if (inserted.data.length === 1) return { created: true, entry: inserted.data[0] };
+    const current = await this.client.get(`/communication_delivery_outbox?delivery_key=eq.${encodeURIComponent(input.delivery_key)}&limit=1`);
+    if (!Array.isArray(current.data) || !current.data[0]) throw new Error("outbox_enqueue_unreadable");
+    return { created: false, entry: current.data[0] };
+  }
+
+  async findCommunicationDeliveriesByKeys(keys) {
+    const unique = [...new Set(keys || [])];
+    const found = [];
+    for (let i = 0; i < unique.length; i += 40) {
+      const chunk = unique.slice(i, i + 40).map((k) => `"${k.replace(/"/g, "")}"`).join(",");
+      const response = await this.client.get(`/communication_delivery_outbox?delivery_key=in.(${encodeURIComponent(chunk)})&select=id,delivery_key,status`);
+      found.push(...(response.data || []));
+    }
+    return found;
+  }
+
+  // Compare-and-set lease: the PATCH only matches while `attempts` still has the value that was read, so exactly one concurrent caller wins.
+  async leaseCommunicationDelivery(id, { workerId, leaseMs, now }) {
+    const nowIso = new Date(now).toISOString();
+    const current = await this.client.get(`/communication_delivery_outbox?id=eq.${encodeURIComponent(id)}&limit=1`);
+    const row = Array.isArray(current.data) ? current.data[0] : null;
+    if (!row || row.status !== "pending" || (row.lease_until && row.lease_until > nowIso)) return null;
+    const response = await this.client.patch(
+      `/communication_delivery_outbox?id=eq.${encodeURIComponent(id)}&status=eq.pending&attempts=eq.${row.attempts}`,
+      { attempts: row.attempts + 1, lease_until: new Date(now + leaseMs).toISOString(), leased_by: workerId, last_attempt_at: nowIso, updated_at: nowIso },
+      { headers: this.selectHeaders() }
+    );
+    return Array.isArray(response.data) ? response.data[0] || null : null;
+  }
+
+  async completeCommunicationDelivery(id, patch) {
+    const body = { updated_at: new Date().toISOString() };
+    for (const field of ["status", "next_attempt_at", "lease_until", "leased_by", "last_error", "last_http_status", "delivered_at", "dead_at"]) if (patch[field] !== undefined) body[field] = patch[field];
+    const response = await this.client.patch(`/communication_delivery_outbox?id=eq.${encodeURIComponent(id)}`, body, { headers: this.selectHeaders() });
+    return Array.isArray(response.data) ? response.data[0] || null : null;
+  }
+
+  async listDueCommunicationDeliveries({ now, limit = 5 }) {
+    const nowIso = new Date(now).toISOString();
+    const response = await this.client.get(`/communication_delivery_outbox?status=eq.pending&next_attempt_at=lte.${encodeURIComponent(nowIso)}&order=next_attempt_at.asc&limit=${Math.min(Math.max(Number(limit) || 5, 1), 50) * 2}`);
+    return (response.data || []).filter((e) => !(e.lease_until && e.lease_until > nowIso)).slice(0, limit);
+  }
+
+  async listCommunicationDeliveries({ statuses = ["pending", "dead"], limit = 50 } = {}) {
+    const response = await this.client.get(`/communication_delivery_outbox?status=in.(${statuses.join(",")})&order=created_at.desc&limit=${Math.min(Math.max(Number(limit) || 50, 1), 200)}`);
+    return response.data || [];
+  }
+
+  async communicationDeliverySummary({ now = Date.now() } = {}) {
+    const nowIso = new Date(now).toISOString();
+    const rows = await this.client.get("/communication_delivery_outbox?select=status,next_attempt_at,lease_until,created_at&limit=5000");
+    const all = rows.data || [];
+    const pending = all.filter((e) => e.status === "pending");
+    return { counts: { pending: pending.length, delivered: all.filter((e) => e.status === "delivered").length, dead: all.filter((e) => e.status === "dead").length }, due_now: pending.filter((e) => e.next_attempt_at <= nowIso && !(e.lease_until && e.lease_until > nowIso)).length, in_flight: pending.filter((e) => e.lease_until && e.lease_until > nowIso).length, oldest_pending_at: pending.map((e) => e.created_at).sort()[0] || null };
+  }
+
+  async requeueCommunicationDelivery(id, { mode = "replay", now = Date.now() } = {}) {
+    const response = await this.client.patch(
+      `/communication_delivery_outbox?id=eq.${encodeURIComponent(id)}&status=neq.delivered`,
+      { status: "pending", mode: mode === "live" ? "live" : "replay", next_attempt_at: new Date(now).toISOString(), lease_until: null, leased_by: null, dead_at: null, updated_at: new Date().toISOString() },
+      { headers: this.selectHeaders() }
+    );
+    if (Array.isArray(response.data) && response.data[0]) return response.data[0];
+    const current = await this.client.get(`/communication_delivery_outbox?id=eq.${encodeURIComponent(id)}&limit=1`);
+    return Array.isArray(current.data) ? current.data[0] || null : null;
+  }
+
+  async listInboundEventsForOutbox({ since, limit = 500 }) {
+    const response = await this.client.get(`/inbound_events?channel=eq.whatsapp&created_at=gte.${encodeURIComponent(since)}&or=(event_type.eq.message,event_type.like.status:*)&order=created_at.desc&limit=${Math.min(Math.max(Number(limit) || 500, 1), 2000)}`);
+    return (response.data || []).reverse();
+  }
+
+  async findInboundEventsByExternalId(externalId) {
+    const response = await this.client.get(`/inbound_events?channel=eq.whatsapp&external_event_id=eq.${encodeURIComponent(externalId)}&order=created_at.asc&limit=20`);
+    return response.data || [];
+  }
+
   // ---- WhatsApp inbound CRM visibility helpers ----
   async findCrmActivityByProviderMessageId(providerMessageId) {
     const id = String(providerMessageId || "");

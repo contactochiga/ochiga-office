@@ -128,6 +128,7 @@ const { PERMISSION_KEYS, ROLE_PERMISSIONS, hasPermission } = require("./permissi
 const relationshipWorkspace = require("./relationship-workspace");
 const signatureStats = require("./webhook-signature-stats");
 const inboundVisibility = require("./whatsapp-inbound-visibility");
+const communicationOutbox = require("./communication-outbox");
 const { performManualSend, reconcileManualSends, resolveManualSend } = require("./manual-whatsapp-send");
 const { recallCrmMemory } = require("./crm-memory-access");
 const { createRealtimeHub } = require("./realtime");
@@ -1684,52 +1685,6 @@ async function resolveLeadForChannel(store, phone, source) {
   });
 }
 
-// Best-effort forward to Backend's Communication Runtime canonical event
-// log (/office/communications/webhook-event) -- same Office->Backend
-// direction/credential every other officeExport.ts call already uses.
-// Returns a coarse outcome for logging; NEVER throws (a forward failure
-// must not break WhatsApp webhook processing itself).
-async function forwardCommunicationWebhookEvent(config, payload, requestId) {
-  if (!config.officeBackendBaseUrl || !config.officeBackendApiKey) {
-    return { forwarded: false, reason: "backend_bridge_not_configured" };
-  }
-  try {
-    const response = await axios.post(
-      `${config.officeBackendBaseUrl.replace(/\/$/, "")}/office/communications/webhook-event`,
-      payload,
-      { headers: { "x-api-key": config.officeBackendApiKey }, timeout: 8000 }
-    );
-    log("info", "whatsapp_webhook.backend_forward_result", {
-      request_id: requestId,
-      provider_event_type: payload.provider_event_type,
-      status_code: response.status,
-      // "status" events return matched (an existing row was found to
-      // update); "message" events return matched_outbound (correlated
-      // to a prior send on the same thread) -- distinct response shapes.
-      matched: Boolean(response.data?.matched),
-      matched_outbound: Boolean(response.data?.matched_outbound),
-      thread_reference: response.data?.thread_reference || null,
-      ok: Boolean(response.data?.ok),
-    });
-    // Oyi Communications Convergence, Slice 1 -- goal_active means an
-    // existing autonomous follow-up Goal is already watching this
-    // thread on Backend. processWhatsAppEvent uses this to decide
-    // whether IT should reply directly or defer entirely to the Goal's
-    // own (event-driven) evaluation -- the single-responder rule that
-    // prevents Office's direct AI-reply path and Backend's
-    // GoalRuntime/CommunicationRuntime path from both answering the
-    // same inbound message.
-    return { forwarded: true, ok: Boolean(response.data?.ok), goalActive: Boolean(response.data?.goal_active) };
-  } catch (error) {
-    log("error", "whatsapp_webhook.backend_forward_failed", {
-      request_id: requestId,
-      provider_event_type: payload.provider_event_type,
-      error: error?.message || String(error),
-    });
-    return { forwarded: false, reason: "request_failed" };
-  }
-}
-
 // OFF / unreadable / takeover: the inbound message is kept as CRM activity and a timeline note records that no reply was sent. The suppressed reply is NOT stored for
 // later: switching the setting ON never replays it.
 async function suppressAutonomousWhatsAppReply({ store, lead, event, requestId, reason, stage, paused = false }) {
@@ -1752,7 +1707,7 @@ const inflightWhatsAppMessageIds = new Set();
 
 async function processWhatsAppEvent({ event, store, adapter, config, requestId }) {
   if (event.kind === "status") {
-    await store.appendInboundEvent({
+    const statusEventRow = await store.appendInboundEvent({
       channel: "whatsapp",
       provider: "meta",
       event_type: `status:${event.status}`,
@@ -1765,9 +1720,9 @@ async function processWhatsAppEvent({ event, store, adapter, config, requestId }
       // template is required) -- forwarded so the canonical record
       // reports the ACTUAL provider reason, not a generic "failed".
       const providerError = Array.isArray(event.raw?.errors) ? event.raw.errors[0] : null;
-      await forwardCommunicationWebhookEvent(
-        config,
-        {
+      // Durable delivery to Backend (communication outbox): first attempt inline, retried in the background with replay semantics if Backend is cold or unreachable.
+      await communicationOutbox.enqueueAndAttempt(store, config, {
+        payload: {
           channel: "whatsapp",
           provider_event_type: "status",
           provider_message_id: event.message_id,
@@ -1776,8 +1731,9 @@ async function processWhatsAppEvent({ event, store, adapter, config, requestId }
           error_title: providerError?.title || providerError?.message || null,
           occurred_at: new Date(Number(event.timestamp || 0) * 1000 || Date.now()).toISOString(),
         },
-        requestId
-      );
+        sourceEventId: statusEventRow?.id || null,
+        log,
+      });
     }
     return {
       kind: "status",
@@ -1849,9 +1805,10 @@ async function processWhatsAppMessageEvent({ event, store, adapter, config, requ
   // in the SAME thread as any prior outbound send to this person.
   let forwardResult = { forwarded: false, goalActive: false };
   if (event.message_id) {
-    forwardResult = await forwardCommunicationWebhookEvent(
-      config,
-      {
+    // Durable delivery to Backend: the first attempt is inline and LIVE (Backend may wake a goal exactly as before, so the single-responder rule below still works);
+    // if it fails or times out the entry stays queued and is retried in the background with non-sending replay semantics.
+    forwardResult = await communicationOutbox.enqueueAndAttempt(store, config, {
+      payload: {
         channel: "whatsapp",
         provider_event_type: "message",
         provider_message_id: event.message_id,
@@ -1860,8 +1817,9 @@ async function processWhatsAppMessageEvent({ event, store, adapter, config, requ
         lead_id: lead.id,
         occurred_at: new Date(Number(event.timestamp || 0) * 1000 || Date.now()).toISOString(),
       },
-      requestId
-    );
+      sourceEventId: inboundEventRow?.id || null,
+      log,
+    });
   }
 
   const channelState = await store.upsertLeadChannelState(lead.id, "whatsapp", {
@@ -2158,7 +2116,8 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
     "app.js"
   );
 
-  return http.createServer(async (req, res) => {
+  let communicationOutboxWorkerHandle = null;
+  const server = http.createServer(async (req, res) => {
     const ctx = createRequestContext(req);
     const pathname = getPathname(req);
     const corsAccepted = setCorsHeaders(req, res, config.allowedOrigins);
@@ -6839,6 +6798,43 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
         return;
       }
 
+      // Communication delivery outbox (admin only). GET = diagnostics (counts, recent undelivered entries; provider ids and leads are shortened, no message text).
+      // POST reconcile = find stored WhatsApp events that were never queued (dry_run defaults to TRUE; entries are created as non-sending REPLAY deliveries).
+      // POST recover = re-queue and attempt ONE stored message as a replay. POST retry = put a dead-lettered entry back in the queue as a replay.
+      const outboxMatch = pathname.match(/^\/api\/lead-agents\/admin\/communications\/outbox(?:\/(reconcile|recover|retry))?$/);
+      if (outboxMatch) {
+        const action = outboxMatch[1] || "";
+        const mask = (e) => ({ id: e.id, event_type: e.event_type, status_value: e.status_value || null, status: e.status, mode: e.mode, attempts: e.attempts, next_attempt_at: e.next_attempt_at, last_attempt_at: e.last_attempt_at, last_error: e.last_error, last_http_status: e.last_http_status, provider_message_id_tail: String(e.provider_message_id || "").slice(-8), lead: e.lead_id ? String(e.lead_id).slice(0, 8) : null, created_at: e.created_at, delivered_at: e.delivered_at, dead_at: e.dead_at });
+        if (!action) {
+          if (req.method !== "GET") { methodNotAllowed(res, "GET"); return; }
+          authorizePermission(authContext, "manage_integrations"); // admin-only (view_integrations is also held by ordinary staff)
+          const [summary, undelivered] = await Promise.all([store.communicationDeliverySummary(), store.listCommunicationDeliveries({ statuses: ["pending", "dead"], limit: 50 })]);
+          json(res, 200, { outbox: { ...summary, worker: Boolean(communicationOutboxWorkerHandle), settings: communicationOutbox.settings(config), undelivered: undelivered.map(mask) } }, { "x-request-id": ctx.requestId });
+          return;
+        }
+        if (req.method !== "POST") { methodNotAllowed(res, "POST"); return; }
+        authorizePermission(authContext, "manage_integrations");
+        const body = await readJsonBody(req);
+        requireObject(body, "body");
+        let result;
+        if (action === "reconcile") {
+          const dryRun = body.dry_run !== false;
+          result = await communicationOutbox.reconcileOutbox(store, config, { dryRun, windowMinutes: Math.min(Math.max(Number(body.window_minutes) || 180, 1), 10080), limit: Math.min(Math.max(Number(body.limit) || 500, 1), 2000), log });
+        } else if (action === "recover") {
+          const providerMessageId = String(body.provider_message_id || "").trim();
+          if (!providerMessageId) { json(res, 400, { error: "provider_message_id_required" }, { "x-request-id": ctx.requestId }); return; }
+          result = await communicationOutbox.recoverMessage(store, config, { providerMessageId, log });
+        } else {
+          const id = String(body.id || "").trim();
+          const entry = id ? await store.requeueCommunicationDelivery(id, { mode: "replay" }) : null;
+          if (!entry) { json(res, 404, { error: "outbox_entry_not_found" }, { "x-request-id": ctx.requestId }); return; }
+          result = { ok: true, requeued: mask(entry) };
+        }
+        await appendAuditRecord({ store, authContext, action: `communication.outbox.${action}`, resourceType: "communication_outbox", resourceId: action, metadata: { dry_run: action === "reconcile" ? result.dry_run : undefined, scanned_events: result.scanned_events, missing_deliveries: result.missing_deliveries, enqueued: result.enqueued, delivered: result.delivered, error: result.error || null, operator: authContext.email || "" }, req, status: result.ok === false ? "failure" : "success" }).catch(() => null);
+        json(res, result.ok === false ? 404 : 200, { ok: result.ok !== false, ...result }, { "x-request-id": ctx.requestId });
+        return;
+      }
+
       // Governed MANUAL WhatsApp reply by an authorised staff member. Independent of the autonomy switch (a human is sending), but only while that human owns the
       // conversation (active takeover), and always audited with the operator.
       const manualReplyMatch = pathname.match(/^\/api\/lead-agents\/admin\/leads\/([^/]+)\/whatsapp\/reply$/);
@@ -9040,6 +9036,13 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
       );
     }
   });
+
+  // Background delivery of queued communication evidence to Backend (production by default; tests opt in explicitly). Stops with the server.
+  if ((config.communicationOutboxWorker ?? config.environment === "production") && config.officeBackendBaseUrl && config.officeBackendApiKey && typeof store.listDueCommunicationDeliveries === "function") {
+    communicationOutboxWorkerHandle = communicationOutbox.startOutboxWorker({ store, config, log });
+    server.on("close", () => communicationOutboxWorkerHandle.stop());
+  }
+  return server;
 }
 
 async function start() {
