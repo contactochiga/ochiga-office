@@ -36,7 +36,7 @@ function sessionSignature(payload, secret) {
   return crypto.createHmac("sha256", String(secret || "")).update(payload).digest("hex");
 }
 
-function createAdminSessionToken(adminUser, config) {
+function createAdminSessionToken(adminUser, config, ttlMs) {
   // Settings S7.0: never sign with an invalid/absent secret. The error carries a code only, never configuration detail.
   if (!validateAuthConfig(config).valid) {
     const error = new Error("auth_configuration_invalid");
@@ -52,7 +52,7 @@ function createAdminSessionToken(adminUser, config) {
       permission_scopes: Array.isArray(adminUser.permission_scopes)
         ? adminUser.permission_scopes
         : [],
-      exp: Date.now() + config.sessionTtlMs,
+      exp: Date.now() + (Number.isFinite(ttlMs) && ttlMs > 0 ? ttlMs : config.sessionTtlMs),
     })
   ).toString("base64url");
   const signature = sessionSignature(payload, config.sessionSecret);
@@ -101,8 +101,9 @@ function readAdminSession(req, config) {
   };
 }
 
-function createSessionCookie(token, config) {
-  const maxAgeSeconds = Math.max(60, Math.floor(config.sessionTtlMs / 1000));
+function createSessionCookie(token, config, ttlMs) {
+  const effectiveMs = Number.isFinite(ttlMs) && ttlMs > 0 ? ttlMs : config.sessionTtlMs;
+  const maxAgeSeconds = Math.max(60, Math.floor(effectiveMs / 1000));
   const secureFlag = config.environment === "production" ? "; Secure" : "";
   return `${config.sessionCookieName}=${encodeURIComponent(token)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${maxAgeSeconds}${secureFlag}`;
 }

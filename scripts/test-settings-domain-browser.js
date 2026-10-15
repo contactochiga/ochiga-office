@@ -213,11 +213,11 @@ async function main() {
     await waitFor(`!!document.querySelector('.st-tile') && !document.querySelector('#stContent .skeleton-line')`, "overview against dead backend");
     const deadText = await evalJs(`document.querySelector('.st-page').innerText`);
     assert.ok(/Oyi Intelligence[\s\S]{0,40}Not reachable/.test(deadText), "unreachable Backend shown as Not reachable");
-    // the dead server has no injected descriptors, i.e. it is production-shaped: the registry lists the eleven governed entries and no editor exists
+    // the dead server has no injected descriptors, i.e. it is production-shaped: the registry lists the twelve governed entries (S7.3 added the session duration) and no editor exists
     await send("Page.navigate", { url: `${deadBase}/office#/settings/security` });
     await waitFor(`!!document.querySelector('.st-reg-table') && !document.querySelector('#stContent .skeleton-line')`, "production-shaped registry card");
     assert.equal(await evalJs(`document.querySelectorAll('.st-reg-editor').length`), 0, "production registry exposes no editable setting yet");
-    assert.ok(/11 entries/.test(await evalJs(`document.querySelector('.st-reg-table').closest('.st-card-body').innerText`)), "production registry lists the eleven governed entries");
+    assert.ok(/12 entries/.test(await evalJs(`document.querySelector('.st-reg-table').closest('.st-card-body').innerText`)), "production registry lists the twelve governed entries");
     assert.ok(!/Oyi Intelligence[\s\S]{0,40}Reachable\n/.test(deadText.replace(/Not reachable/g, "")), "never shown as reachable");
     console.log("11. Dead Backend reports Not reachable (no fabricated healthy state) — PASS");
 

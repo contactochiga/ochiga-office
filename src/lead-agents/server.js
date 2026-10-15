@@ -9,6 +9,7 @@ const { createConfig } = require("./config");
 const { log } = require("./logger");
 const { validateAuthConfig } = require("./auth-config");
 const { validatePassword, passwordPolicyError } = require("./password-policy");
+const { resolveSessionTtl } = require("./session-policy");
 const { STEP_UP_PURPOSES, STEP_UP_HEADER, stepUpEligibility, issueStepUpToken, verifyStepUpToken } = require("./step-up");
 const { createStore } = require("./store-factory");
 const { OpenAIResponsesClient } = require("./openai");
@@ -2906,7 +2907,9 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
             { email: sessionUser.email }
           );
         }
-        const token = createAdminSessionToken(sessionUser, config);
+        // S7.3: one effective duration, resolved now, drives BOTH the signed expiry and the cookie Max-Age.
+        const sessionTtl = await resolveSessionTtl(store, config, { log });
+        const token = createAdminSessionToken(sessionUser, config, sessionTtl.ttlMs);
         json(
           res,
           200,
@@ -2928,7 +2931,7 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
             },
           },
           {
-            "set-cookie": createSessionCookie(token, config),
+            "set-cookie": createSessionCookie(token, config, sessionTtl.ttlMs),
             "x-request-id": ctx.requestId,
           }
         );
@@ -3221,7 +3224,8 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           invite.id,
           { email: invite.email }
         );
-        const token = createAdminSessionToken(user, config);
+        const sessionTtl = await resolveSessionTtl(store, config, { log });
+        const token = createAdminSessionToken(user, config, sessionTtl.ttlMs);
         json(
           res,
           200,
@@ -3241,7 +3245,7 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
             },
           },
           {
-            "set-cookie": createSessionCookie(token, config),
+            "set-cookie": createSessionCookie(token, config, sessionTtl.ttlMs),
             "x-request-id": ctx.requestId,
           }
         );
@@ -6853,7 +6857,7 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
         // S4: allowlisted connection tests and dry-run-only diagnostics (never the apply paths)
         const opsHandled = await handleSettingsOperations({ req, res, pathname, authContext, store, config, ctx, deps: { json, readJsonBody, appendAuditRecord, authorizePermission, probeEndpoint, authHeadersFromConfig, digitalTwinRuntime, communicationOutbox, inboundVisibility, log } });
         if (opsHandled) return;
-        const handled = await handleSettingsRequest({ req, res, pathname, authContext, store, registry: settingsRegistry, ctx, deps: { json, readJsonBody, appendAuditRecord, authorizePermission } });
+        const handled = await handleSettingsRequest({ req, res, pathname, authContext, store, registry: settingsRegistry, ctx, deps: { json, readJsonBody, appendAuditRecord, authorizePermission, verifyStepUp: (purpose) => verifyStepUpToken({ config, authContext, purpose, token: req.headers[STEP_UP_HEADER] }) } });
         if (handled) return;
       }
 

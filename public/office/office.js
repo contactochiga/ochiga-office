@@ -10037,7 +10037,7 @@ async function renderWhatsAppAutonomyPanel(outlet, token) {
 const SETTINGS_SECTIONS = [
   { key: "overview", label: "Overview", sub: "System status and quick actions", perm: "settings.manage", icon: "st-clock", mode: "live", words: "status dashboard summary" },
   { key: "organization", label: "Organization", sub: "Company, letterhead, branding", perm: "settings.manage", icon: "st-org", mode: "partial", words: "company letterhead logo brand address" },
-  { key: "people", label: "People & Access", sub: "Users, roles, permissions", perm: "staff.manage", icon: "team", mode: "readonly", words: "team users roles permissions access" },
+  { key: "people", label: "People & Access", sub: "Users, roles, permissions", perm: "staff.manage", icon: "team", mode: "partial", words: "team users roles permissions access session duration" },
   { key: "intelligence", label: "Intelligence", sub: "Oyi status, AI providers", perm: "audit.read", icon: "observatory", mode: "readonly", words: "oyi ai openai gemini claude anthropic provider model" },
   { key: "integrations", label: "Integrations", sub: "APIs, services, sync", perm: "integrations.read", icon: "st-link", mode: "partial", words: "api sync facility consumer email maps meta linkedin" },
   { key: "communications", label: "Communications", sub: "WhatsApp, delivery, channels", perm: "integrations.read", icon: "messages", mode: "partial", words: "whatsapp autonomy webhook signature outbox delivery email" },
@@ -10459,6 +10459,29 @@ async function stRenderOrganization(retry) {
   return wrap;
 }
 
+// ---- Access Policy (S7.3): session duration, governed by the S3 registry and protected by S7.2 step-up ----
+const ST_TTL_SOURCES = { stored: "Set in Settings", default: "Default (7 days)", environment: "Deployment configuration", environment_fallback: "Deployment configuration (stored value unavailable)" };
+function stTtlDays(hours) { const d = hours / 24; return Number.isInteger(d) ? `${d} day${d === 1 ? "" : "s"}` : `${hours} hours`; }
+async function stRenderAccessPolicyCard(retry) {
+  const card = stCard({ title: "Access policy", subtitle: "How long a new Office sign-in lasts. Existing sessions keep their original expiry." });
+  const body = card.querySelector(".st-card-body");
+  const res = await stSafe(() => api("/api/lead-agents/admin/settings/office_session_ttl_hours"));
+  if (!res.ok) { body.appendChild(res.status === 403 ? el(`<div class="st-denied">Requires <code>staff.manage</code>.</div>`) : stErrorWithRetry(res.error, retry)); return card; }
+  const entry = res.data.setting; const range = entry.range || { min: 1, max: 720 };
+  const facts = el(`<dl class="st-facts st-access-facts"><div><dt>Current duration</dt><dd id="stTtlCurrent"></dd></div><div><dt>Effective source</dt><dd id="stTtlSource"></dd></div><div><dt>Version</dt><dd id="stTtlVersion"></dd></div><div><dt>Allowed range</dt><dd>${range.min}–${range.max} hours (up to ${stTtlDays(range.max)})</dd></div></dl>`);
+  const draw = (e) => {
+    facts.querySelector("#stTtlCurrent").textContent = e.value === null || e.value === undefined ? "Unavailable" : `${e.value} hours${e.value % 24 === 0 ? ` (${stTtlDays(e.value)})` : ""}`;
+    facts.querySelector("#stTtlSource").textContent = ST_TTL_SOURCES[e.source] || e.source || "Unknown";
+    facts.querySelector("#stTtlVersion").textContent = `${e.version ?? "—"}${e.updated_by ? ` · changed by ${e.updated_by}` : ""}`;
+  };
+  draw(entry);
+  body.appendChild(facts);
+  if (entry.editable) {
+    body.appendChild(stRegistryEditor(entry, draw));
+    body.appendChild(el(`<p class="st-note">Changing this requires your current password. It applies to sign-ins after the change; people already signed in are not affected.</p>`));
+  } else body.appendChild(el(`<p class="st-note">Read-only for your role. Changing it requires the <code>team.manage</code> permission (Super Admin).</p>`));
+  return card;
+}
 async function stRenderPeople(retry) {
   const d = await stLoad(["permissions"]);
   const wrap = el(`<div class="st-stack-col"></div>`);
@@ -10466,6 +10489,7 @@ async function stRenderPeople(retry) {
   const team = stCard({ title: "Team", subtitle: "Invite, edit, deactivate and assign per-user permissions", actions: `<a class="btn btn-ghost btn-sm" href="#/team">Open Team</a>` });
   team.querySelector(".st-card-body").innerHTML = `<p class="st-note">Team management is unchanged and remains the only place users and per-user permission scopes are edited.</p>`;
   wrap.appendChild(team);
+  wrap.appendChild(await stRenderAccessPolicyCard(retry));
   const roles = stCard({ title: "Role catalogue", subtitle: "Read-only. Roles are defined in code, not editable here." });
   const rb = roles.querySelector(".st-card-body");
   if (!d.permissions) rb.appendChild(el(`<div class="st-denied">Requires <code>staff.manage</code>.</div>`));
@@ -10475,7 +10499,7 @@ async function stRenderPeople(retry) {
     rb.innerHTML = `<table class="st-table"><thead><tr><th>Role</th><th>Permissions</th></tr></thead><tbody>${list.map((r) => `<tr><td>${escapeHtml(titleCase(r))}</td><td>${(p.roles && p.roles[r] ? p.roles[r].length : 0)} of ${(p.scopes || []).length}</td></tr>`).join("")}</tbody></table>`;
   }
   wrap.appendChild(roles);
-  wrap.appendChild(stUnavailable({ title: "Session policy, MFA, password policy, session revocation", reason: "No Office contract exists for these. Session length is set by deployment configuration and is not editable here." }));
+  wrap.appendChild(stUnavailable({ title: "MFA, password policy, session revocation", reason: "No Office contract exists for these yet. Passwords follow a fixed policy enforced by the server." }));
   return wrap;
 }
 
@@ -10728,7 +10752,7 @@ function stSummarizeValue(entry) {
   if (typeof v === "object") { if (v.configured !== undefined && Object.keys(v).length === 1) return v.configured ? "Configured" : "Not configured"; if (v.mode) return String(v.mode); const vals = Object.values(v); if (vals.length && vals.every((x) => typeof x === "string")) return `${vals.filter(Boolean).length} of ${vals.length} fields set`; const s = JSON.stringify(v); return s.length > 60 ? `${s.slice(0, 57)}…` : s; }
   return String(v);
 }
-const ST_VALIDATION_TEXT = { invalid_characters: "Use letters, numbers, spaces and & . , ' ( ) - only.", must_be_at_least_1_characters: "Enter a name.", must_be_at_most_60_characters: "Use 60 characters or fewer.", must_be_string: "Enter text." };
+const ST_VALIDATION_TEXT = { must_be_integer: "Enter a whole number of hours.", must_be_between_1_and_720: "Enter between 1 and 720 hours.", invalid_characters: "Use letters, numbers, spaces and & . , ' ( ) - only.", must_be_at_least_1_characters: "Enter a name.", must_be_at_most_60_characters: "Use 60 characters or fewer.", must_be_string: "Enter text." };
 function stRegistryEditor(entry, onChange, options = {}) {
   const choice = entry.type === "enum" ? (entry.choices || []) : null;
   const inputHtml = entry.type === "boolean" ? `<select name="value"><option value="true">ON</option><option value="false">OFF</option></select>` : choice ? `<select name="value">${choice.map((c) => `<option value="${escapeHtml(c)}">${escapeHtml(c)}</option>`).join("")}</select>` : `<input name="value" ${entry.type === "integer" ? 'type="number" step="1"' : 'type="text"'} autocomplete="off" />`;
@@ -10752,7 +10776,18 @@ function stRegistryEditor(entry, onChange, options = {}) {
     if (entry.requires_confirmation && !confirmed) { errEl.textContent = "Tick the confirmation box to apply this change."; return; }
     saveBtn.disabled = true; status.textContent = "Saving…";
     try {
-      const result = await api(`/api/lead-agents/admin/settings/${encodeURIComponent(entry.key)}`, { method: "PUT", body: { value: parsed(), expected_version: current.version, confirm: entry.requires_confirmation ? true : undefined } });
+      // Security-policy settings: the server requires a fresh step-up grant. Use a live one or ask for the password; cancelling saves nothing.
+      let stepUpToken = null;
+      if (entry.requires_step_up) {
+        stepUpToken = OfficeStepUp.token(entry.requires_step_up);
+        if (!stepUpToken) {
+          status.textContent = "Waiting for password confirmation…";
+          const grant = await OfficeStepUp.dialog({ purpose: entry.requires_step_up, title: `Confirm to change ${entry.label.toLowerCase()}`, body: "This is a security setting. Enter your current password to continue." });
+          if (!grant) { status.textContent = "Confirmation cancelled. Nothing was saved."; refresh(); return; }
+          stepUpToken = grant.token; status.textContent = "Saving…";
+        }
+      }
+      const result = await api(`/api/lead-agents/admin/settings/${encodeURIComponent(entry.key)}`, { method: "PUT", headers: stepUpToken ? { "x-step-up-token": stepUpToken } : undefined, body: { value: parsed(), expected_version: current.version, confirm: entry.requires_confirmation ? true : undefined } });
       load(result.setting);
       status.textContent = `Saved. The server confirms the stored value is “${stSummarizeValue(result.setting)}” (version ${result.setting.version}).`;
       if (onChange) onChange(result.setting);
@@ -10765,6 +10800,7 @@ function stRegistryEditor(entry, onChange, options = {}) {
         status.textContent = "";
       } else if (err.status === 400 && d.error === "invalid_value") { errEl.textContent = ST_VALIDATION_TEXT[d.detail] || `Invalid value: ${String(d.detail || "rejected by the server").replace(/_/g, " ")}.`; status.textContent = ""; }
       else if (err.status === 400 && d.error === "confirmation_required") { errEl.textContent = "This change must be confirmed."; status.textContent = ""; }
+      else if (err.status === 403 && d.error === "step_up_required") { if (entry.requires_step_up) OfficeStepUp.clear(entry.requires_step_up); status.textContent = "Your password confirmation expired or is no longer valid. Nothing was saved — press Save to confirm again."; }
       else if (err.status === 403) { status.textContent = "You don't have permission to change this setting. Nothing was changed."; }
       else if (err.status === 405 || (err.status === 403 && d.error === "read_only_setting")) { status.textContent = "This setting cannot be changed here."; }
       else { status.textContent = `Not saved — ${d.detail || err.message || "the setting could not be changed"}. Stored value unchanged.`; }

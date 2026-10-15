@@ -7,6 +7,7 @@
 const { WHATSAPP_AUTONOMY_SETTING_KEY, readWhatsAppAutonomySetting } = require("./whatsapp-autonomy");
 const { settings: outboxSettings } = require("./communication-outbox");
 const { BRAND_KEY, validateBrandName, environmentBrandName } = require("./document-brand");
+const { SESSION_TTL_KEY, SESSION_TTL_DEFAULT_HOURS, SESSION_TTL_MIN_HOURS, SESSION_TTL_MAX_HOURS, validateSessionTtlHours, resolveSessionTtl } = require("./session-policy");
 const { LOCALE_KEY, SUPPORTED_LOCALES, DEFAULT_LOCALE, validateLocale } = require("./document-locale");
 
 const MODES = Object.freeze(["generic", "delegated", "mirror", "system"]);
@@ -48,6 +49,7 @@ function defineSetting(d) {
     if (!d.write_permission) problems.push("generic settings need write_permission");
     if (typeof d.validator !== "function") problems.push("generic settings need a validator");
     if (!d.audit_action) problems.push("generic settings need audit_action");
+    if (d.requires_step_up && !d.write_permission) problems.push("step-up settings need write_permission");
     if (d.sensitive) problems.push("secrets are never stored through the registry (sensitive settings cannot be generic)");
     if (d.default === undefined) problems.push("generic settings need a default");
   } else {
@@ -55,7 +57,7 @@ function defineSetting(d) {
     if (d.mode === "delegated" && !d.delegated_route) problems.push("delegated settings need delegated_route");
   }
   if (problems.length) throw new Error(`settings registry: ${d.key || "?"}: ${problems.join(", ")}`);
-  const out = { scope: "global", sensitive: false, requires_confirmation: false, write_permission: null, description: "", ...d };
+  const out = { scope: "global", sensitive: false, requires_confirmation: false, write_permission: null, description: "", requires_step_up: null, ...d };
   if (out.mode === "generic" && !out.read) out.read = genericRead(out);
   return Object.freeze(out);
 }
@@ -83,6 +85,17 @@ function productionDescriptors(config) {
       key: LOCALE_KEY, label: "Document locale", description: "How the date is presented on newly generated documents (en-NG, en-GB or en-US). Existing documents keep the date they were created with. Timestamps, scheduling, meeting times and currency are not affected.",
       type: "enum", choices: [...SUPPORTED_LOCALES], default: DEFAULT_LOCALE, owner: "office", mode: "generic", storage: "runtime_settings", read_permission: "office.read", write_permission: "settings.manage",
       validator: validateLocale, audit_action: "office_document_locale_changed", edit_section: "organization",
+    }),
+    defineSetting({
+      key: SESSION_TTL_KEY, label: "Session duration", description: `How long a new Office sign-in lasts, in whole hours (${SESSION_TTL_MIN_HOURS}-${SESSION_TTL_MAX_HOURS}). Applies to sessions issued after the change; existing sessions keep their original expiry.`,
+      type: "integer", default: SESSION_TTL_DEFAULT_HOURS, owner: "office", mode: "generic", storage: "runtime_settings", read_permission: "staff.manage", write_permission: "team.manage",
+      validator: validateSessionTtlHours, audit_action: "office_session_ttl_hours_changed", edit_section: "people", requires_step_up: "security_policy_write", range: { min: SESSION_TTL_MIN_HOURS, max: SESSION_TTL_MAX_HOURS },
+      // effective value as sessions are actually issued: stored, else the environment duration (default 7 days = 168 h); an invalid stored row reads as the fallback it would use
+      read: async (store) => {
+        const [row, effective] = await Promise.all([store.getRuntimeSetting(SESSION_TTL_KEY), resolveSessionTtl(store, config)]);
+        const hours = effective.hours === null ? Math.round(effective.ttlMs / 3_600_000) : effective.hours;
+        return { value: hours, version: row ? (row.version ?? null) : 0, updated_by: row ? row.updated_by || null : null, updated_at: row ? row.updated_at || null : null, source: effective.source === "stored" ? "stored" : effective.source === "default" ? "default" : effective.source, history_supported: true };
+      },
     }),
     defineSetting({
       key: "office_letterhead_config", label: "Corporate letterhead", description: "Default header and footer for new documents (logo, tagline, contact details).",
@@ -175,6 +188,7 @@ async function describeEntry(descriptor, store, can) {
     default: publicValue(descriptor, descriptor.default),
     choices: descriptor.type === "enum" ? descriptor.choices : undefined,
     edit_section: descriptor.edit_section || null,
+    requires_step_up: generic ? descriptor.requires_step_up : null, range: descriptor.range || undefined,
     editable: generic && can(descriptor.write_permission) && typeof state.version === "number",
     edit_via: descriptor.mode === "delegated" ? { path: descriptor.delegated_route.path, methods: descriptor.delegated_route.methods, write_permission: descriptor.delegated_route.write_permission, can_write: can(descriptor.delegated_route.write_permission) } : null,
     value: state.value, version: state.version, updated_by: state.updated_by, updated_at: state.updated_at, source: state.source, history_supported: state.history_supported, read_error: state.error,

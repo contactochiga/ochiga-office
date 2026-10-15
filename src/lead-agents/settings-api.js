@@ -82,6 +82,11 @@ async function handleSettingsRequest({ req, res, pathname, authContext, store, r
   if (descriptor.mode !== "generic" || descriptor.owner !== "office") return fail(403, "read_only_setting", "rejected", { owner: descriptor.owner, detail: `This setting is owned by ${descriptor.owner} and is read-only in Office.` });
   // 4. permission
   if (!can(descriptor.write_permission)) return fail(403, "forbidden", "denied", { required_permission: descriptor.write_permission });
+  // 4b. step-up (S7.2/S7.3): security-policy settings need a fresh, session-bound, purpose-bound password confirmation, enforced here on the server. Only a reason category is recorded.
+  if (descriptor.requires_step_up) {
+    const stepUp = deps.verifyStepUp ? deps.verifyStepUp(descriptor.requires_step_up) : { ok: false, reason: "invalid" };
+    if (!stepUp.ok) return fail(403, "step_up_required", "denied", { reason: stepUp.reason, purpose: descriptor.requires_step_up });
+  }
   // 5. body
   let body;
   try { body = await readJsonBody(req); } catch { return fail(400, "invalid_json", "rejected"); }
