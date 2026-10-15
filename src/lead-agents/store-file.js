@@ -47,6 +47,7 @@ class FileLeadAgentsStore {
       office_document_folders: [],
       office_letterhead_config: null,
       runtime_settings: {},
+      runtime_setting_history: [],
       whatsapp_inbound_claims: {},
       whatsapp_manual_sends: [],
       communication_delivery_outbox: [],
@@ -127,6 +128,7 @@ class FileLeadAgentsStore {
         office_document_folders: Array.isArray(parsed.office_document_folders) ? parsed.office_document_folders : [],
         office_letterhead_config: parsed.office_letterhead_config && typeof parsed.office_letterhead_config === "object" ? parsed.office_letterhead_config : null,
         runtime_settings: parsed.runtime_settings && typeof parsed.runtime_settings === "object" && !Array.isArray(parsed.runtime_settings) ? parsed.runtime_settings : {},
+        runtime_setting_history: Array.isArray(parsed.runtime_setting_history) ? parsed.runtime_setting_history : [],
         whatsapp_manual_sends: Array.isArray(parsed.whatsapp_manual_sends) ? parsed.whatsapp_manual_sends : [],
         communication_delivery_outbox: Array.isArray(parsed.communication_delivery_outbox) ? parsed.communication_delivery_outbox : [],
         whatsapp_inbound_claims: parsed.whatsapp_inbound_claims && typeof parsed.whatsapp_inbound_claims === "object" && !Array.isArray(parsed.whatsapp_inbound_claims) ? parsed.whatsapp_inbound_claims : {},
@@ -867,17 +869,47 @@ class FileLeadAgentsStore {
     return value;
   }
 
-  // Durable runtime settings (key -> {key, value, updated_by, updated_at}); a missing key is null, never an invented default.
+  // Durable runtime settings (key -> {key, value, updated_by, updated_at, version}); a missing key is null, never an invented default. Rows written before
+  // versioning existed read as version 1.
   async getRuntimeSetting(key) {
-    return this.state.runtime_settings[key] || null;
+    const row = this.state.runtime_settings[key];
+    return row ? { ...row, version: Number.isInteger(row.version) && row.version >= 1 ? row.version : 1 } : null;
   }
 
-  async setRuntimeSetting(key, value, actor) {
-    const previous = this.state.runtime_settings[key] || null;
-    const current = { key, value, updated_by: actor || "", updated_at: this.nowIso() };
+  // Atomic compare-and-set + history in one synchronous section (single process). expectedVersion null = unconditional (legacy callers); 0 = "no row yet".
+  // -> { status: "ok"|"conflict", previous, current }
+  async writeRuntimeSetting(key, value, actor, { expectedVersion = null, requestId = "", redact = false, history = true } = {}) {
+    const prevRaw = this.state.runtime_settings[key];
+    const previous = prevRaw ? await this.getRuntimeSetting(key) : null;
+    const currentVersion = previous ? previous.version : 0;
+    const shown = (v) => (redact ? "[redacted]" : v);
+    if (expectedVersion !== null && expectedVersion !== currentVersion) {
+      this.state.runtime_setting_history.push({ id: crypto.randomUUID(), setting_key: key, version: currentVersion, previous_value: previous ? shown(previous.value) : null, new_value: shown(value), actor: actor || "", request_id: requestId || null, outcome: "conflict", reason: `expected_version_${expectedVersion}_but_current_${currentVersion}`, created_at: this.nowIso() });
+      await this.persist();
+      return { status: "conflict", previous, current: previous };
+    }
+    const current = { key, value, updated_by: actor || "", updated_at: this.nowIso(), version: currentVersion + 1 };
     this.state.runtime_settings[key] = current;
+    if (history !== false) this.state.runtime_setting_history.push({ id: crypto.randomUUID(), setting_key: key, version: current.version, previous_value: previous ? shown(previous.value) : null, new_value: shown(value), actor: actor || "", request_id: requestId || null, outcome: "success", reason: null, created_at: current.updated_at });
     await this.persist();
-    return { previous, current };
+    return { status: "ok", previous, current: { ...current } };
+  }
+
+  // Legacy writer (autonomy route): last-write-wins, still versioned and recorded.
+  async setRuntimeSetting(key, value, actor, options = {}) {
+    const result = await this.writeRuntimeSetting(key, value, actor, { expectedVersion: null, requestId: options.requestId, redact: options.redact, history: options.history });
+    return { previous: result.previous, current: result.current };
+  }
+
+  async recordRuntimeSettingAttempt({ key, actor, requestId, outcome, reason, attempted, redact = false }) {
+    const row = this.state.runtime_settings[key];
+    this.state.runtime_setting_history.push({ id: crypto.randomUUID(), setting_key: key, version: row && Number.isInteger(row.version) ? row.version : row ? 1 : 0, previous_value: null, new_value: redact ? "[redacted]" : (attempted === undefined ? null : attempted), actor: actor || "", request_id: requestId || null, outcome, reason: String(reason || "").slice(0, 200), created_at: this.nowIso() });
+    await this.persist();
+  }
+
+  async listRuntimeSettingHistory(key, { limit = 50 } = {}) {
+    const rows = this.state.runtime_setting_history.filter((r) => r.setting_key === key).sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)) || b.version - a.version);
+    return { supported: true, rows: rows.slice(0, Math.min(Math.max(Number(limit) || 50, 1), 200)).map((r) => ({ ...r })) };
   }
 
   // Provider-message claim (idempotency for inbound webhooks). Synchronous check-and-set, so concurrent callers in this process cannot both win.

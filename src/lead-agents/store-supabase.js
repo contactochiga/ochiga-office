@@ -719,7 +719,29 @@ class SupabaseLeadAgentsStore {
     return response.data[0] || null;
   }
 
-  async setRuntimeSetting(key, value, actor) {
+  // Atomic compare-and-set + history through one Postgres function (db/20261019_office_runtime_settings_versioning.sql). expectedVersion null = unconditional
+  // (legacy callers); 0 = "no row yet". If the migration has not been applied the legacy upsert is used for unconditional writes (so deploy order does not matter)
+  // and conditional writes fail loudly: versioning cannot be honoured without the function.
+  async writeRuntimeSetting(key, value, actor, { expectedVersion = null, requestId = "", redact = false, history = true } = {}) {
+    if (this.runtimeVersioning !== false || this.versioningRecheckDue()) {
+      try {
+        const response = await this.client.post("/rpc/office_runtime_setting_write", { p_key: key, p_value: value, p_actor: actor || "", p_expected_version: expectedVersion, p_request_id: requestId || null, p_redact: Boolean(redact), p_history: history !== false });
+        const body = response.data;
+        if (!body || typeof body !== "object" || !["ok", "conflict"].includes(body.status)) throw new Error("runtime_setting_write_malformed");
+        this.runtimeVersioning = true;
+        return { status: body.status, previous: body.previous || null, current: body.current || null };
+      } catch (error) {
+        const missing = error?.response?.status === 404 && error?.response?.data?.code === "PGRST202";
+        if (!missing) throw error;
+        this.runtimeVersioning = false;
+        this.runtimeVersioningCheckedAt = Date.now();
+      }
+    }
+    if (expectedVersion !== null) {
+      const error = new Error("runtime_setting_versioning_unavailable");
+      error.code = "versioning_unavailable";
+      throw error;
+    }
     const previous = await this.getRuntimeSetting(key);
     const response = await this.client.post(
       "/office_runtime_settings?on_conflict=key",
@@ -728,7 +750,41 @@ class SupabaseLeadAgentsStore {
     );
     const current = Array.isArray(response.data) ? response.data[0] : null;
     if (!current) throw new Error("runtime_setting_write_unconfirmed");
-    return { previous, current };
+    return { status: "ok", previous, current };
+  }
+
+  async setRuntimeSetting(key, value, actor, options = {}) {
+    const result = await this.writeRuntimeSetting(key, value, actor, { expectedVersion: null, requestId: options.requestId, redact: options.redact, history: options.history });
+    return { previous: result.previous, current: result.current };
+  }
+
+  // After a miss the versioning functions are re-probed at most once a minute, so applying the migration after the code is deployed needs no restart.
+  versioningRecheckDue() {
+    return this.runtimeVersioning === false && Date.now() - (this.runtimeVersioningCheckedAt || 0) > 60_000;
+  }
+
+  // Evidence for attempts that never reached the write. Returns false (not an error) when versioning is not installed.
+  async recordRuntimeSettingAttempt({ key, actor, requestId, outcome, reason, attempted, redact = false }) {
+    if (this.runtimeVersioning === false && !this.versioningRecheckDue()) return false;
+    try {
+      await this.client.post("/rpc/office_runtime_setting_record_attempt", { p_key: key, p_actor: actor || "", p_request_id: requestId || null, p_outcome: outcome, p_reason: String(reason || "").slice(0, 200), p_attempted: attempted === undefined ? null : attempted, p_redact: Boolean(redact) });
+      return true;
+    } catch (error) {
+      if (error?.response?.status === 404 && error?.response?.data?.code === "PGRST202") { this.runtimeVersioning = false; this.runtimeVersioningCheckedAt = Date.now(); return false; }
+      throw error;
+    }
+  }
+
+  async listRuntimeSettingHistory(key, { limit = 50 } = {}) {
+    const n = Math.min(Math.max(Number(limit) || 50, 1), 200);
+    try {
+      const response = await this.client.get(`/office_runtime_setting_history?setting_key=eq.${encodeURIComponent(key)}&order=created_at.desc,version.desc&limit=${n}`);
+      if (!Array.isArray(response.data)) throw new Error("runtime_setting_history_malformed");
+      return { supported: true, rows: response.data };
+    } catch (error) {
+      if (error?.response?.status === 404) return { supported: false, rows: [] };
+      throw error;
+    }
   }
 
   // Provider-message claim: INSERT ... ON CONFLICT DO NOTHING on the primary key (PostgREST `resolution=ignore-duplicates`), so exactly one concurrent caller across

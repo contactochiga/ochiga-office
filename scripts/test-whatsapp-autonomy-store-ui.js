@@ -11,7 +11,7 @@ const { evaluateAutonomousWhatsAppPolicy, readWhatsAppAutonomySetting, WHATSAPP_
   const store = new SupabaseLeadAgentsStore({ url: "https://example.supabase.co", serviceRoleKey: "k", requestTimeoutMs: 1000 });
   store.client = {
     get: async (url) => { calls.push(["GET", url]); const m = url.match(/office_runtime_settings\?key=eq\.([^&]+)/); if (m) { const r = table.get(decodeURIComponent(m[1])); return { data: r ? [r] : [] }; } return { data: [] }; },
-    post: async (url, body, options) => { calls.push(["POST", url, body, options?.headers?.Prefer]); const row = { ...body }; table.set(body.key, row); return { data: [row] }; },
+    post: async (url, body, options) => { if (/\/rpc\//.test(url)) { const e = new Error("PGRST202"); e.response = { status: 404, data: { code: "PGRST202" } }; throw e; } /* a database without the S3 versioning functions: the legacy upsert below must keep working */ calls.push(["POST", url, body, options?.headers?.Prefer]); const row = { ...body }; table.set(body.key, row); return { data: [row] }; },
   };
 
   // missing row -> default OFF, known (not an error)

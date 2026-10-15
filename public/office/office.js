@@ -10238,6 +10238,8 @@ const ST_CONFIG_ACTIONS = {
   whatsapp_autonomy_setting_changed: "WhatsApp autonomous replies changed",
   office_letterhead_config_updated: "Corporate letterhead updated",
   admin_user_created: "Team member added",
+  "staff.created": "Team member added",
+  "user.invited": "Team invitation created",
   admin_user_updated: "Team member updated",
   admin_user_removed: "Team member removed",
   admin_user_restored: "Team member restored",
@@ -10264,8 +10266,8 @@ function stActivityDetail(e) {
     else parts.push(`${m.old_value ? "ON" : "OFF"} → ${to}`);
   }
   else if (e.action === "whatsapp_autonomy_setting_changed" && m.requested !== undefined) parts.push("Change was not saved");
-  if (m.email && /^admin_/.test(e.action)) parts.push(String(m.email));
-  if (m.role && /^admin_user_(created|updated)/.test(e.action)) parts.push(`role ${titleCase(m.role)}`);
+  if (m.email && /^(admin_|staff\.|user\.invited)/.test(e.action)) parts.push(String(m.email));
+  if (m.role && /^(admin_user_(created|updated)|staff\.created)/.test(e.action)) parts.push(`role ${titleCase(m.role)}`);
   if (m.dry_run === true) parts.push("dry run");
   if (e.status && e.status !== "success") parts.push(titleCase(e.status));
   return parts.join(" · ");
@@ -10497,9 +10499,105 @@ async function stRenderSecurity(retry) {
   if (!h) c.querySelector(".st-card-body").appendChild(stErrorWithRetry(d.health ? d.health.error : "Health unavailable", retry));
   else c.querySelector(".st-card-body").innerHTML = stFacts([["Webhook signature mode", escapeHtml(h.whatsapp_webhook ? h.whatsapp_webhook.signature_mode : "unknown")], ["Meta app secret", stSecretIndicator("Meta app secret", Boolean(h.whatsapp_webhook && h.whatsapp_webhook.app_secret_configured))], ["Authentication mode", escapeHtml(h.tier1 && h.tier1.auth ? h.tier1.auth.mode : "unknown")], ["Roles / permission keys", h.tier1 && h.tier1.permissions ? `${h.tier1.permissions.roles.length} / ${h.tier1.permissions.permission_count}` : "unknown"]]);
   wrap.appendChild(c);
+  wrap.appendChild(await stRenderRegistryCard(retry));
   wrap.appendChild(stUnavailable({ title: "MFA, password policy, session revocation, secrets rotation log", reason: "No Office contract exists. Secrets stay in deployment configuration and are never shown or entered here." }));
   return wrap;
 }
+// ---- Settings registry (S3): governed list, history drill-down, and a server-confirmed editor that exists ONLY for generic (Office-owned, writable) entries ----
+// <tr> markup must be parsed inside a table context (a bare <div> drops table rows).
+function stRow(html) { const t = document.createElement("tbody"); t.innerHTML = html.trim(); return t.firstElementChild; }
+const ST_MODE_LABEL = { generic: "Editable here", delegated: "Dedicated endpoint", mirror: "Read-only mirror", system: "System-written" };
+const ST_DELEGATED_SECTION = { whatsapp_autonomous_responses_enabled: ["communications", "Communications"], office_letterhead_config: ["organization", "Organization"] };
+function stSummarizeValue(entry) {
+  const v = entry.value;
+  if (entry.read_error) return "Unavailable";
+  if (v === null || v === undefined) return "—";
+  if (typeof v === "boolean") return v ? "ON" : "OFF";
+  if (typeof v === "object") { if (v.configured !== undefined && Object.keys(v).length === 1) return v.configured ? "Configured" : "Not configured"; if (v.mode) return String(v.mode); const vals = Object.values(v); if (vals.length && vals.every((x) => typeof x === "string")) return `${vals.filter(Boolean).length} of ${vals.length} fields set`; const s = JSON.stringify(v); return s.length > 60 ? `${s.slice(0, 57)}…` : s; }
+  return String(v);
+}
+function stRegistryEditor(entry, onChange) {
+  const choice = entry.type === "enum" ? (entry.choices || []) : null;
+  const inputHtml = entry.type === "boolean" ? `<select name="value"><option value="true">ON</option><option value="false">OFF</option></select>` : choice ? `<select name="value">${choice.map((c) => `<option value="${escapeHtml(c)}">${escapeHtml(c)}</option>`).join("")}</select>` : `<input name="value" ${entry.type === "integer" ? 'type="number" step="1"' : 'type="text"'} autocomplete="off" />`;
+  const form = el(`<form class="st-reg-editor" novalidate aria-label="Edit ${escapeHtml(entry.label)}"><label class="st-field"><span>${escapeHtml(entry.label)}</span>${inputHtml}<small class="st-field-error" role="alert"></small></label>${entry.requires_confirmation ? `<label class="st-confirm"><input type="checkbox" name="confirm" /> I confirm this change</label>` : ""}<div class="st-form-bar"><button type="submit" class="btn btn-sm st-btn-primary" disabled>Save</button><span class="st-form-status" role="status" aria-live="polite"></span></div><div class="st-conflict" hidden role="alert"></div></form>`);
+  const input = form.elements.value, saveBtn = form.querySelector('button[type="submit"]'), status = form.querySelector(".st-form-status"), errEl = form.querySelector(".st-field-error"), conflict = form.querySelector(".st-conflict");
+  let current = entry;
+  const toDisplay = (v) => (v === null || v === undefined ? "" : String(v));
+  const load = (e) => { current = e; input.value = toDisplay(e.value); if (form.elements.confirm) form.elements.confirm.checked = false; errEl.textContent = ""; conflict.hidden = true; conflict.textContent = ""; refresh(); };
+  const parsed = () => (entry.type === "integer" ? (input.value.trim() === "" ? undefined : Number(input.value)) : entry.type === "boolean" ? input.value === "true" : input.value);
+  const dirty = () => toDisplay(current.value) !== toDisplay(parsed());
+  const refresh = () => { saveBtn.disabled = !dirty(); };
+  form.addEventListener("input", () => { status.textContent = ""; refresh(); });
+  form.addEventListener("change", refresh);
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    errEl.textContent = ""; conflict.hidden = true;
+    const confirmed = !form.elements.confirm || form.elements.confirm.checked;
+    if (entry.requires_confirmation && !confirmed) { errEl.textContent = "Tick the confirmation box to apply this change."; return; }
+    saveBtn.disabled = true; status.textContent = "Saving…";
+    try {
+      const result = await api(`/api/lead-agents/admin/settings/${encodeURIComponent(entry.key)}`, { method: "PUT", body: { value: parsed(), expected_version: current.version, confirm: entry.requires_confirmation ? true : undefined } });
+      load(result.setting);
+      status.textContent = `Saved. The server confirms the stored value is “${stSummarizeValue(result.setting)}” (version ${result.setting.version}).`;
+      if (onChange) onChange(result.setting);
+    } catch (err) {
+      const d = err.data || {};
+      if (err.status === 409 && d.current) {
+        conflict.hidden = false;
+        conflict.innerHTML = `<strong>Not saved — this setting changed.</strong> It is now “${escapeHtml(stSummarizeValue({ value: d.current.value }))}” (version ${escapeHtml(String(d.current.version))}${d.current.updated_by ? `, by ${escapeHtml(d.current.updated_by)}` : ""}). Your edit was not applied. <button type="button" class="btn btn-ghost btn-sm" data-act="reload">Load current value</button>`;
+        conflict.querySelector('[data-act="reload"]').addEventListener("click", () => { load({ ...current, value: d.current.value, version: d.current.version, updated_by: d.current.updated_by, updated_at: d.current.updated_at }); status.textContent = "Loaded the current stored value."; });
+        status.textContent = "";
+      } else if (err.status === 400 && d.error === "invalid_value") { errEl.textContent = `Invalid value: ${String(d.detail || "rejected by the server").replace(/_/g, " ")}.`; status.textContent = ""; }
+      else if (err.status === 400 && d.error === "confirmation_required") { errEl.textContent = "This change must be confirmed."; status.textContent = ""; }
+      else if (err.status === 403) { status.textContent = "You don't have permission to change this setting. Nothing was changed."; }
+      else if (err.status === 405 || (err.status === 403 && d.error === "read_only_setting")) { status.textContent = "This setting cannot be changed here."; }
+      else { status.textContent = `Not saved — ${d.detail || err.message || "the setting could not be changed"}. Stored value unchanged.`; }
+      refresh();
+    }
+  });
+  load(entry);
+  return form;
+}
+async function stRenderRegistryCard(retry) {
+  const card = stCard({ title: "Settings registry", subtitle: "Every governed setting, who owns it and how it can change. Values shown are the server-stored, non-secret values." });
+  const body = card.querySelector(".st-card-body");
+  const res = await stSafe(() => api("/api/lead-agents/admin/settings"));
+  if (!res.ok) { body.appendChild(stErrorWithRetry(res.error, retry)); return card; }
+  const list = res.data.settings || [];
+  const table = el(`<table class="st-table st-reg-table"><thead><tr><th>Setting</th><th>Owner</th><th>How it changes</th><th>Value</th><th>Version</th><th><span class="st-sr">Actions</span></th></tr></thead><tbody></tbody></table>`);
+  const tbody = table.querySelector("tbody");
+  const rowFor = (entry) => {
+    const section = ST_DELEGATED_SECTION[entry.key];
+    const how = entry.editable ? ST_MODE_LABEL.generic : entry.mode === "delegated" ? (entry.edit_via && entry.edit_via.can_write && section ? `Dedicated endpoint · <a class="st-link" href="#/settings/${section[0]}">${escapeHtml(section[1])}</a>` : "Dedicated endpoint (administrators)") : entry.mode === "generic" ? "Read-only for your role" : ST_MODE_LABEL[entry.mode] || entry.mode;
+    return stRow(`<tr data-key="${escapeHtml(entry.key)}"><td><strong>${escapeHtml(entry.label)}</strong><div class="st-note"><code>${escapeHtml(entry.key)}</code></div></td><td>${escapeHtml(titleCase(entry.owner))}</td><td>${how}</td><td class="st-reg-value">${escapeHtml(stSummarizeValue(entry))}</td><td>${entry.version === null || entry.version === undefined ? "—" : escapeHtml(String(entry.version))}</td><td>${entry.history_supported ? `<button type="button" class="btn btn-ghost btn-sm" data-act="history" aria-expanded="false">History</button>` : ""}</td></tr>`);
+  };
+  list.forEach((entry) => {
+    const row = rowFor(entry); tbody.appendChild(row);
+    const detail = stRow(`<tr class="st-reg-detail" hidden><td colspan="6"></td></tr>`); tbody.appendChild(detail);
+    const cell = detail.firstElementChild;
+    if (entry.editable) {
+      const editor = stRegistryEditor(entry, (saved) => { row.querySelector(".st-reg-value").textContent = stSummarizeValue(saved); row.children[4].textContent = String(saved.version); });
+      cell.appendChild(editor); detail.hidden = false;
+    }
+    const hbtn = row.querySelector('[data-act="history"]');
+    if (hbtn) hbtn.addEventListener("click", async () => {
+      const open = hbtn.getAttribute("aria-expanded") === "true";
+      let panel = cell.querySelector(".st-history");
+      if (open) { hbtn.setAttribute("aria-expanded", "false"); if (panel) panel.hidden = true; if (!entry.editable) detail.hidden = true; return; }
+      hbtn.setAttribute("aria-expanded", "true"); detail.hidden = false;
+      if (!panel) { panel = el(`<div class="st-history" aria-live="polite"><p class="st-note">Loading history…</p></div>`); cell.appendChild(panel); }
+      panel.hidden = false;
+      const h = await stSafe(() => api(`/api/lead-agents/admin/settings/${encodeURIComponent(entry.key)}/history?limit=20`));
+      if (!h.ok) { panel.innerHTML = ""; panel.appendChild(stErrorWithRetry(h.error, () => { hbtn.click(); hbtn.click(); })); return; }
+      const rows = h.data.history || [];
+      panel.innerHTML = !h.data.supported ? `<p class="st-note">History is not available for this setting.</p>` : !rows.length ? `<p class="st-note">No changes recorded yet.</p>` : `<table class="st-table"><thead><tr><th>When</th><th>Version</th><th>Outcome</th><th>Change</th><th>By</th></tr></thead><tbody>${rows.map((r) => `<tr><td>${escapeHtml(fmtDateTime(r.created_at))}</td><td>${escapeHtml(String(r.version))}</td><td>${badge(titleCase(r.outcome), r.outcome === "success" ? "green" : r.outcome === "conflict" ? "amber" : "red")}</td><td>${escapeHtml(`${r.previous_value === null || r.previous_value === undefined ? "—" : stSummarizeValue({ value: r.previous_value })} → ${r.new_value === null || r.new_value === undefined ? "—" : stSummarizeValue({ value: r.new_value })}`)}${r.reason ? `<div class="st-note">${escapeHtml(String(r.reason).replace(/_/g, " "))}</div>` : ""}</td><td>${escapeHtml(r.actor || "system")}</td></tr>`).join("")}</tbody></table>`;
+    });
+  });
+  body.appendChild(el(`<div class="st-table-wrap"></div>`)).appendChild(table);
+  body.appendChild(el(`<p class="st-note">${list.length} entries visible for your role. Delegated entries keep their own validation and audit. Mirrors describe settings owned by Backend, Facility, Consumer or Edge and cannot be changed from Office.</p>`));
+  return card;
+}
+
 async function stRenderInfrastructure(retry) {
   const d = await stLoad(["health"]);
   const wrap = el(`<div class="st-stack-col"></div>`);

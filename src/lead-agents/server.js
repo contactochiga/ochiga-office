@@ -115,6 +115,8 @@ const {
 // second copy of this vocabulary in the frontend.
 const { DEFAULT_CAPABILITIES } = require("./communications-handoff");
 const { WhatsAppCloudAdapter } = require("./whatsapp");
+const { createSettingsRegistry } = require("./settings-registry");
+const { handleSettingsRequest } = require("./settings-api");
 const { evaluateAutonomousWhatsAppPolicy, readWhatsAppAutonomySetting, verifyStaffConfirmedSend, describeWhatsAppAutonomyStatus, WHATSAPP_AUTONOMY_SETTING_KEY } = require("./whatsapp-autonomy");
 const { resolveRecipient, resolveRecipientByEntity } = require("./recipient-resolution");
 const { buildCalendarLinks, parsePreferredSchedule } = require("./scheduling");
@@ -1972,8 +1974,10 @@ async function enrichAuthContext(authContext, store) {
   };
 }
 
-function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRateLimiter, loginRateLimiter, whatsappAdapter, openaiClient, toolExecutor }) {
+function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRateLimiter, loginRateLimiter, whatsappAdapter, openaiClient, toolExecutor, settingsRegistryExtras }) {
   const startedAt = Date.now();
+  // Governed Settings registry (S3). `settingsRegistryExtras` is a test seam for generic descriptors; production passes none.
+  const settingsRegistry = createSettingsRegistry({ config, extras: Array.isArray(settingsRegistryExtras) ? settingsRegistryExtras : [] });
   const widgetRateLimiter = publicRateLimiter || rateLimiter;
   const officeInternalRateLimiter = officeRateLimiter || rateLimiter;
   const adminLoginRateLimiter =
@@ -6653,7 +6657,7 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           }
           let change;
           try {
-            change = await store.setRuntimeSetting(WHATSAPP_AUTONOMY_SETTING_KEY, body.enabled, authContext.email || "");
+            change = await store.setRuntimeSetting(WHATSAPP_AUTONOMY_SETTING_KEY, body.enabled, authContext.email || "", { requestId: ctx.requestId });
           } catch (error) {
             await appendAuditRecord({ store, authContext, action: "whatsapp_autonomy_setting_changed", resourceType: "runtime_setting", resourceId: WHATSAPP_AUTONOMY_SETTING_KEY, metadata: { requested: body.enabled, error: String(error?.message || error).slice(0, 200) }, req, status: "failure" }).catch(() => null);
             json(res, 503, { error: "setting_not_saved", detail: "The setting could not be saved. Nothing was changed." }, { "x-request-id": ctx.requestId });
@@ -6671,6 +6675,12 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
         }
         methodNotAllowed(res, "GET,PUT");
         return;
+      }
+
+      // Governed Settings registry (S3). The legacy path /admin/settings/whatsapp-autonomy above matches first and keeps its own contract.
+      if (pathname.startsWith("/api/lead-agents/admin/settings")) {
+        const handled = await handleSettingsRequest({ req, res, pathname, authContext, store, registry: settingsRegistry, ctx, deps: { json, readJsonBody, appendAuditRecord, authorizePermission } });
+        if (handled) return;
       }
 
       // Unified CRM Relationship Workspace (read model). Staff-only (crm.read); customers' external communications only -- staff_conversations/staff_messages are never read.

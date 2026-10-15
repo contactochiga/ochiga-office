@@ -44,7 +44,7 @@ async function flush(store, mode) {
     phone_number_mismatch: (previous.phone_number_mismatch || 0) + pending.phone_number_mismatch,
   };
   pending.counts = {}; pending.phone_number_mismatch = 0;
-  await store.setRuntimeSetting(STATS_KEY, value, "webhook-signature-monitor");
+  await store.setRuntimeSetting(STATS_KEY, value, "webhook-signature-monitor", { history: false });
 }
 
 function notePhoneMismatch(count) { pending.phone_number_mismatch += count; }

@@ -2048,6 +2048,19 @@
   .st-modal h3 { margin: 0 0 8px; font-size: 16px; color: var(--white); }
   .st-modal p { margin: 0 0 16px; font-size: 13px; color: var(--text-secondary); line-height: 1.55; }
   .st-modal-actions { display: flex; justify-content: flex-end; gap: 8px; }
+  .st-table-wrap { overflow-x: auto; }
+  .st-reg-table td, .st-reg-table th { vertical-align: top; }
+  .st-reg-table .btn { white-space: nowrap; }
+  .st-reg-table code { overflow-wrap: anywhere; }
+  .st-reg-detail td { background: rgba(255,255,255,0.02); }
+  .st-reg-editor { display: flex; flex-direction: column; gap: 10px; max-width: 420px; padding: 6px 0; }
+  .st-reg-editor select, .st-reg-editor input[type=text], .st-reg-editor input[type=number] { background: var(--black); border: 1px solid var(--line-strong); border-radius: var(--radius-sm); color: var(--text-primary); font: inherit; font-size: 13px; padding: 9px 11px; min-height: 40px; }
+  .st-reg-editor select:focus, .st-reg-editor input:focus { outline: 2px solid var(--red-bright); outline-offset: 1px; }
+  .st-confirm { display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--text-secondary); min-height: 32px; }
+  .st-conflict { border: 1px solid rgba(201,134,43,0.5); background: rgba(201,134,43,0.08); border-radius: var(--radius-sm); padding: 10px 12px; font-size: 12.5px; color: var(--text-secondary); line-height: 1.55; }
+  .st-conflict strong { color: var(--amber); }
+  .st-history { margin-top: 8px; }
+  .st-sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
   @media (max-width: 1100px) {
     .st-shell { grid-template-columns: minmax(0, 1fr); }
     .st-side { border-right: 0; border-bottom: 1px solid var(--line); padding: 10px 12px; }
@@ -2092,7 +2105,8 @@
     .st-modal { max-width: none; border-radius: var(--radius) var(--radius) 0 0; }
   }
   @media (max-width: 860px), (pointer: coarse) {
-    .st-main .btn, .st-main .st-field input, .st-modal .btn, .st-search input { min-height: 44px; }
+    .st-main .btn, .st-main .st-field input, .st-modal .btn, .st-search input, .st-reg-editor select, .st-reg-editor input[type=text], .st-reg-editor input[type=number] { min-height: 44px; }
+    .st-confirm { min-height: 44px; }
     .st-link { display: inline-flex; align-items: center; min-height: 44px; }
   }
   @media (prefers-reduced-motion: reduce) { .st-tile, .st-action { transition: none; } .st-tile:hover, .st-action:hover { transform: none; } }

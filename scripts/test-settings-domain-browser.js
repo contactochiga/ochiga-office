@@ -21,9 +21,9 @@ const SECTION_KEYS = ["overview", "organization", "people", "intelligence", "int
 const SECRET = "st-bridge-secret-value";
 
 function limiter(max) { return new MemoryRateLimiter({ windowMs: 60000, maxRequests: max }); }
-function makeServer({ config, store }) {
+function makeServer({ config, store, extras }) {
   const adapter = { verifyWebhook: () => null, verifySignature: () => ({ ok: true }), extractEvents: (b) => b.events || [], isConfigured: () => true, sendTextMessage: async () => ({ delivered: true }), sendTemplateMessage: async () => ({ delivered: false }), listApprovedTemplates: async () => [] };
-  return buildServer({ config, store, rateLimiter: limiter(5000), publicRateLimiter: limiter(5000), officeRateLimiter: limiter(5000), loginRateLimiter: limiter(100), whatsappAdapter: adapter, openaiClient: {}, toolExecutor: new ToolExecutor({ store, config, log: () => {}, webhooks: new WebhookDispatcher({ config }) }) });
+  return buildServer({ config, store, rateLimiter: limiter(5000), publicRateLimiter: limiter(5000), officeRateLimiter: limiter(5000), loginRateLimiter: limiter(100), whatsappAdapter: adapter, openaiClient: {}, toolExecutor: new ToolExecutor({ store, config, log: () => {}, webhooks: new WebhookDispatcher({ config }) }), settingsRegistryExtras: extras });
 }
 
 async function main() {
@@ -56,7 +56,7 @@ async function main() {
     ws = new WebSocket(targets.find((t) => t.type === "page").webSocketDebuggerUrl);
     await new Promise((r, j) => { ws.onopen = r; ws.onerror = j; });
     ws.onmessage = (m) => { const d = JSON.parse(m.data); if (d.id && pending.has(d.id)) { pending.get(d.id)(d); pending.delete(d.id); } };
-    const send = (method, params = {}) => new Promise((resolve) => { const n = ++id; pending.set(n, resolve); ws.send(JSON.stringify({ id: n, method, params })); });
+    const send = (method, params = {}) => new Promise((resolve, reject) => { const n = ++id; const t = setTimeout(() => { pending.delete(n); reject(new Error(`CDP call timed out: ${method} ${JSON.stringify(params).slice(0, 160)}`)); }, 20000); pending.set(n, (d) => { clearTimeout(t); resolve(d); }); ws.send(JSON.stringify({ id: n, method, params })); });
     const evalJs = async (expr) => { const r = await send("Runtime.evaluate", { expression: expr, awaitPromise: true, returnByValue: true }); if (r.result.exceptionDetails) throw new Error(JSON.stringify(r.result.exceptionDetails).slice(0, 400)); return r.result.result.value; };
     const waitFor = async (expr, label, ms = 8000) => { const end = Date.now() + ms; while (Date.now() < end) { try { if (await evalJs(expr)) return true; } catch { /* navigating */ } await sleep(120); } throw new Error(`timeout waiting for: ${label} | page errors: ${errors.slice(-2).join(' / ').slice(0, 400)} | hash: ${await evalJs(`location.hash + " segs=" + document.title`).catch(() => "?")} | body: ${(await evalJs(`document.querySelector('#viewOutlet')?.innerText?.slice(0, 300)`).catch(() => '?'))}`); };
     const shot = async (name) => { if (!process.env.OFFICE_ST_SHOTS) return; const r = await send("Page.captureScreenshot", { format: "png" }); fs.writeFileSync(path.join(process.env.OFFICE_ST_SHOTS, name), Buffer.from(r.result.data, "base64")); };
@@ -96,7 +96,7 @@ async function main() {
     for (const key of SECTION_KEYS) {
       await go(`settings/${key}`, `document.querySelector('.st-page')?.dataset.section === '${key}' && !document.querySelector('#stContent .skeleton-line')`);
       assert.ok(await evalJs(`document.querySelector('.st-nav-item.active')?.getAttribute('href') === '#/settings/${key}'`), `${key} active in sidebar`);
-      assert.ok(await evalJs(`document.querySelector('#stContent h2')?.textContent.length > 0`), `${key} has a heading`);
+      assert.ok(await evalJs(`document.querySelector('#stContent h2')?.textContent.length > 0`), `${key} has a heading: ${await evalJs(`document.querySelector('#stContent').innerText.slice(0, 300)`)}`);
       assert.ok(await noOverflow(), `${key}: no horizontal overflow`);
       assert.ok(!(await evalJs(`document.querySelector('.st-page').innerText`)).includes(SECRET), `${key}: no secret`);
     }
@@ -213,6 +213,11 @@ async function main() {
     await waitFor(`!!document.querySelector('.st-tile') && !document.querySelector('#stContent .skeleton-line')`, "overview against dead backend");
     const deadText = await evalJs(`document.querySelector('.st-page').innerText`);
     assert.ok(/Oyi Intelligence[\s\S]{0,40}Not reachable/.test(deadText), "unreachable Backend shown as Not reachable");
+    // the dead server has no injected descriptors, i.e. it is production-shaped: the registry lists the nine governed entries and no editor exists
+    await send("Page.navigate", { url: `${deadBase}/office#/settings/security` });
+    await waitFor(`!!document.querySelector('.st-reg-table') && !document.querySelector('#stContent .skeleton-line')`, "production-shaped registry card");
+    assert.equal(await evalJs(`document.querySelectorAll('.st-reg-editor').length`), 0, "production registry exposes no editable setting yet");
+    assert.ok(/9 entries/.test(await evalJs(`document.querySelector('.st-reg-table').closest('.st-card-body').innerText`)), "production registry lists the nine governed entries");
     assert.ok(!/Oyi Intelligence[\s\S]{0,40}Reachable\n/.test(deadText.replace(/Not reachable/g, "")), "never shown as reachable");
     console.log("11. Dead Backend reports Not reachable (no fabricated healthy state) — PASS");
 
