@@ -73,7 +73,7 @@ function matchLegacyActivities(inboundEvents, activities, { windowMs = LEGACY_MA
 }
 
 // Writes (or finds) the canonical activity for one stored inbound event. Never throws: returns { ok, activity, created, error }.
-async function recordInboundActivity(store, { lead, event, inboundEvent, requestId = "", log = () => {} }) {
+async function recordInboundActivity(store, { lead, event, inboundEvent, requestId = "", extraMetadata = null, log = () => {} }) {
   const providerId = clean(event?.message_id || inboundEvent?.external_event_id);
   try {
     if (providerId) {
@@ -103,6 +103,7 @@ async function recordInboundActivity(store, { lead, event, inboundEvent, request
           request_id: requestId || null,
           ai_replied: false,
           recorded_by: "inbound_webhook",
+          ...(extraMetadata || {}),
         },
       },
       { actorEmail: "whatsapp" }
@@ -132,26 +133,86 @@ async function annotateInboundActivity(store, { lead, event, inboundEvent, reque
   }
 }
 
-// Inbound messages that have no CRM activity (by provider id, nor by the strict legacy match). Read-only.
+// ---- Historical visibility repair: works on DISTINCT provider message ids, never on raw (possibly duplicated) event rows ----
+//
+// Meta delivered some messages more than once before claim-first de-duplication existed, so `inbound_events` can hold several rows for one provider message id. The plan
+// groups rows by provider message id, picks ONE canonical row per id by a fixed order (earliest `created_at`, then smallest `id`), and proposes at most one CRM activity per id.
+// A message counts as already represented when ANY of its rows has an activity by provider id or by the strict one-to-one legacy match. Rows of one message that name DIFFERENT
+// leads are a conflicting identity: they are reported and left alone (never merged automatically). Rows with no lead at all are invalid and reported.
+function planInboundVisibilityRepair(events, activities) {
+  const providerIdsWithActivity = new Set(activities.map(activityProviderId).filter(Boolean));
+  const legacy = matchLegacyActivities(events, activities);
+  const order = (a, b) => String(a.created_at || "").localeCompare(String(b.created_at || "")) || String(a.id).localeCompare(String(b.id));
+  const groups = new Map();
+  for (const event of events) {
+    const providerId = clean(event.external_event_id);
+    if (!providerId) continue; // no provider id: nothing to key a record on
+    if (!groups.has(providerId)) groups.set(providerId, []);
+    groups.get(providerId).push(event);
+  }
+  const plan = { raw_event_rows: events.length, distinct_provider_ids: groups.size, raw_missing_event_rows: 0, unique_missing_messages: 0, duplicate_event_rows: 0, invalid_records: [], conflicting_lead_groups: [], already_represented_messages: 0, would_create: [] };
+  for (const [providerId, rows] of [...groups.entries()].sort((x, y) => order(x[1].slice().sort(order)[0], y[1].slice().sort(order)[0]))) {
+    rows.sort(order);
+    const represented = providerIdsWithActivity.has(providerId) || rows.some((row) => legacy.has(row.id));
+    if (represented) { plan.already_represented_messages++; continue; }
+    plan.raw_missing_event_rows += rows.length;
+    plan.unique_missing_messages++;
+    plan.duplicate_event_rows += rows.length - 1;
+    const leadIds = [...new Set(rows.map((row) => clean(row.lead_id)).filter(Boolean))];
+    if (leadIds.length === 0) { plan.invalid_records.push({ provider_message_id: providerId, reason: "no_lead_on_any_event_row", event_ids: rows.map((r) => r.id) }); continue; }
+    if (leadIds.length > 1) { plan.conflicting_lead_groups.push({ provider_message_id: providerId, lead_ids: leadIds, event_ids: rows.map((r) => r.id) }); continue; }
+    const canonical = rows[0];
+    plan.would_create.push({ provider_message_id: providerId, lead_id: leadIds[0], occurred_at: inboundOccurredAt(canonical), canonical_event_id: canonical.id, duplicate_event_ids: rows.slice(1).map((r) => r.id), canonical_event: canonical });
+  }
+  return plan;
+}
+
 async function findMissingInboundActivities(store, { limit = 1000 } = {}) {
   const events = await store.listInboundMessageEvents({ limit });
   const activities = await store.listCrmActivitiesForWhatsApp();
-  const ids = new Set(activities.map(activityProviderId).filter(Boolean));
-  const legacy = matchLegacyActivities(events, activities);
-  return events.filter((e) => e.lead_id && !ids.has(clean(e.external_event_id)) && !legacy.has(e.id));
+  return planInboundVisibilityRepair(events, activities);
 }
 
-// Idempotent historical visibility repair. dryRun (default) only reports. Creates ONLY missing activities, with the original provider id, timestamp and lead; never touches
-// inbound_events, never sends anything, safe to re-run (a second run finds nothing missing).
+const REPAIR_CLAIM_PREFIX = "visibility-repair:";
+
+// Idempotent historical visibility repair. dryRun (default) only reports. Creates at most ONE activity per distinct provider message id, with the original provider id,
+// timestamp and lead; never touches inbound_events, never sends anything and never wakes Oyi (it does not call any reply or Backend path). Safe to re-run (a second run
+// finds nothing missing) and safe to run concurrently: each message id is claimed atomically (primary key of whatsapp_inbound_claims, key prefix "visibility-repair:") before
+// the find-then-create, so two runs, in one process or several, cannot both create its record.
 async function repairInboundVisibility(store, { dryRun = true, limit = 1000, log = () => {} } = {}) {
-  const missing = await findMissingInboundActivities(store, { limit });
-  const summary = { dry_run: dryRun, missing: missing.length, created: 0, failed: 0 };
-  if (dryRun) return { ...summary, would_create_for: missing.map((e) => ({ provider_message_id: e.external_event_id, lead_id: e.lead_id, occurred_at: inboundOccurredAt(e) })) };
-  for (const e of missing) {
-    const recorded = await recordInboundActivity(store, { lead: { id: e.lead_id }, event: { message_id: e.external_event_id }, inboundEvent: e, requestId: "visibility-repair", log });
-    if (recorded.ok && recorded.created) summary.created++; else if (!recorded.ok) summary.failed++;
+  const plan = await findMissingInboundActivities(store, { limit });
+  const report = {
+    dry_run: dryRun,
+    raw_event_rows: plan.raw_event_rows,
+    distinct_provider_ids: plan.distinct_provider_ids,
+    already_represented_messages: plan.already_represented_messages,
+    raw_missing_event_rows: plan.raw_missing_event_rows,
+    unique_missing_messages: plan.unique_missing_messages,
+    duplicate_event_rows: plan.duplicate_event_rows,
+    invalid_records: plan.invalid_records.length,
+    conflicting_lead_groups: plan.conflicting_lead_groups.length,
+    proposed_activities: plan.would_create.length,
+    // kept for older callers: the number of records that WOULD be created (one per distinct message)
+    missing: plan.would_create.length,
+    created: 0, skipped_existing: 0, skipped_claimed_elsewhere: 0, failed: 0,
+  };
+  const summary = (item) => ({ provider_message_id: item.provider_message_id, lead_id: item.lead_id, occurred_at: item.occurred_at, canonical_event_id: item.canonical_event_id, duplicate_event_ids: item.duplicate_event_ids });
+  if (dryRun) return { ...report, would_create_for: plan.would_create.map(summary), invalid: plan.invalid_records, conflicts: plan.conflicting_lead_groups };
+  for (const item of plan.would_create) {
+    const claimKey = `${REPAIR_CLAIM_PREFIX}${item.provider_message_id}`;
+    let claim;
+    try {
+      claim = await store.claimInboundMessage({ providerMessageId: claimKey, channel: "visibility_repair", requestId: "visibility-repair" });
+    } catch (error) {
+      report.failed++; log("error", "whatsapp_visibility_repair.claim_failed", { message_id: item.provider_message_id, error: String(error?.message || error).slice(0, 200) }); continue;
+    }
+    if (claim.status === "duplicate") { report.skipped_claimed_elsewhere++; continue; }
+    const recorded = await recordInboundActivity(store, { lead: { id: item.lead_id }, event: { message_id: item.provider_message_id }, inboundEvent: item.canonical_event, requestId: "visibility-repair", extraMetadata: { recorded_by: "visibility_repair", duplicate_event_ids: item.duplicate_event_ids }, log });
+    if (!recorded.ok) { report.failed++; continue; }
+    if (recorded.created) report.created++; else report.skipped_existing++;
+    await store.updateInboundClaim(claimKey, { status: "completed", completed_at: new Date().toISOString() }).catch(() => null);
   }
-  return summary;
+  return { ...report, invalid: plan.invalid_records, conflicts: plan.conflicting_lead_groups };
 }
 
-module.exports = { inboundMessageText, inboundOccurredAt, activityProviderId, matchLegacyActivities, recordInboundActivity, annotateInboundActivity, findMissingInboundActivities, repairInboundVisibility, LEGACY_MATCH_WINDOW_MS };
+module.exports = { planInboundVisibilityRepair, REPAIR_CLAIM_PREFIX, inboundMessageText, inboundOccurredAt, activityProviderId, matchLegacyActivities, recordInboundActivity, annotateInboundActivity, findMissingInboundActivities, repairInboundVisibility, LEGACY_MATCH_WINDOW_MS };

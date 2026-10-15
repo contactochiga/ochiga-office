@@ -6834,7 +6834,7 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
         requireObject(body, "body");
         const dryRun = body.dry_run !== false;
         const summary = await inboundVisibility.repairInboundVisibility(store, { dryRun, limit: Math.min(Math.max(Number(body.limit) || 1000, 1), 2000), log });
-        await appendAuditRecord({ store, authContext, action: dryRun ? "whatsapp.inbound_visibility.dry_run" : "whatsapp.inbound_visibility.repair", resourceType: "whatsapp_inbound", resourceId: "inbound_events", metadata: { missing: summary.missing, created: summary.created || 0, failed: summary.failed || 0, operator: authContext.email || "" }, req, status: "success" }).catch(() => null);
+        await appendAuditRecord({ store, authContext, action: dryRun ? "whatsapp.inbound_visibility.dry_run" : "whatsapp.inbound_visibility.repair", resourceType: "whatsapp_inbound", resourceId: "inbound_events", metadata: { raw_missing_event_rows: summary.raw_missing_event_rows, unique_missing_messages: summary.unique_missing_messages, duplicate_event_rows: summary.duplicate_event_rows, invalid_records: summary.invalid_records, conflicting_lead_groups: summary.conflicting_lead_groups, created: summary.created, skipped_existing: summary.skipped_existing, skipped_claimed_elsewhere: summary.skipped_claimed_elsewhere, failed: summary.failed, operator: authContext.email || "" }, req, status: "success" }).catch(() => null);
         json(res, 200, { ok: true, ...summary }, { "x-request-id": ctx.requestId });
         return;
       }

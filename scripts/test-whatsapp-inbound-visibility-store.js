@@ -33,8 +33,8 @@ async function main() {
   await eventFor("wamid.store.2", "Please call me", now - 500); await eventFor("wamid.store.3", "Second identical", now - 400); await eventFor("wamid.store.4", "Second identical", now - 399);
   const listed = await store.listInboundMessageEvents({ leadId: lead.id, limit: 100 }); assert.equal(listed.length, 4); assert.deepEqual(listed.map((e) => e.external_event_id), ["wamid.store.1", "wamid.store.2", "wamid.store.3", "wamid.store.4"], "ordered oldest to newest");
   const eventsBefore = JSON.stringify(listed.map((e) => [e.id, e.external_event_id, e.payload]));
-  const missing = await visibility.findMissingInboundActivities(store); assert.deepEqual(missing.filter((e) => e.lead_id === lead.id).map((e) => e.external_event_id).sort(), ["wamid.store.2", "wamid.store.3", "wamid.store.4"]);
-  const dry = await visibility.repairInboundVisibility(store, { dryRun: true }); assert.equal(dry.dry_run, true); assert.ok(dry.missing >= 3); assert.equal((await store.listCrmActivitiesForWhatsApp()).filter((a) => a.lead_id === lead.id).length, 1, "a dry run writes nothing");
+  const missing = (await visibility.findMissingInboundActivities(store)).would_create; assert.deepEqual(missing.filter((e) => e.lead_id === lead.id).map((e) => e.provider_message_id).sort(), ["wamid.store.2", "wamid.store.3", "wamid.store.4"]);
+  const dry = await visibility.repairInboundVisibility(store, { dryRun: true }); assert.equal(dry.dry_run, true); assert.ok(dry.unique_missing_messages >= 3); assert.equal((await store.listCrmActivitiesForWhatsApp()).filter((a) => a.lead_id === lead.id).length, 1, "a dry run writes nothing");
   const applied = await visibility.repairInboundVisibility(store, { dryRun: false }); assert.equal(applied.failed, 0); assert.ok(applied.created >= 3);
   const activities = (await store.listCrmActivitiesForWhatsApp()).filter((a) => a.lead_id === lead.id); assert.equal(activities.length, 4, "exactly one activity per message, identical texts included");
   assert.deepEqual(activities.map((a) => a.metadata.provider_message_id).sort(), ["wamid.store.1", "wamid.store.2", "wamid.store.3", "wamid.store.4"]);

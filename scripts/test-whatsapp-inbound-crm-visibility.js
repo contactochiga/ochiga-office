@@ -129,16 +129,16 @@ async function main() {
     const tHist = await thread(l5.id); const histTexts = inboundEntries(tHist).filter((e) => ["Interested in land", "Please call me", "ok"].includes(e.text));
     assert.equal(histTexts.filter((e) => e.text === "Interested in land").length, 1, "a legacy activity and its event are ONE entry"); assert.equal(histTexts.filter((e) => e.text === "Please call me").length, 1, "a message with no activity is recovered from its event");
     assert.equal(histTexts.filter((e) => e.text === "ok").length, 2, "identical messages are not collapsed");
-    const missing = await visibility.findMissingInboundActivities(store); const missingIds = missing.map((e) => e.external_event_id).sort();
+    const missing = (await visibility.findMissingInboundActivities(store)).would_create; const missingIds = missing.map((e) => e.provider_message_id).sort();
     assert.deepEqual(missingIds.filter((id) => id.startsWith("wamid.hist.")), ["wamid.hist.b", "wamid.hist.d"], "exactly the two messages without any CRM record are missing");
     const repairUrl = `${base}/api/lead-agents/admin/whatsapp/inbound-visibility/repair`;
     assert.equal((await fetch(repairUrl, { method: "POST", headers: { "content-type": "application/json", cookie: staff }, body: "{}" })).status, 403, "repair needs an integrations manager");
-    const dry = await (await fetch(repairUrl, { method: "POST", headers: { "content-type": "application/json", cookie: sup }, body: "{}" })).json(); assert.equal(dry.dry_run, true, "dry run is the default"); assert.ok(dry.missing >= 2);
+    const dry = await (await fetch(repairUrl, { method: "POST", headers: { "content-type": "application/json", cookie: sup }, body: "{}" })).json(); assert.equal(dry.dry_run, true, "dry run is the default"); assert.ok(dry.unique_missing_messages >= 2);
     assert.equal(activitiesOf(l5.id).filter((a) => ["wamid.hist.b", "wamid.hist.d"].includes(a.metadata.provider_message_id)).length, 0, "a dry run writes nothing");
     const applied = await (await fetch(repairUrl, { method: "POST", headers: { "content-type": "application/json", cookie: sup }, body: JSON.stringify({ dry_run: false }) })).json(); assert.equal(applied.dry_run, false); assert.ok(applied.created >= 2); assert.equal(applied.failed, 0);
     const created = activitiesOf(l5.id).filter((a) => ["wamid.hist.b", "wamid.hist.d"].includes(a.metadata.provider_message_id)); assert.equal(created.length, 2);
     for (const a of created) { const ev = store.state.inbound_events.find((e) => e.external_event_id === a.metadata.provider_message_id); assert.equal(a.occurred_at, new Date(Number(ev.payload.timestamp) * 1000).toISOString(), "original timestamp preserved"); assert.equal(a.lead_id, l5.id); }
-    const again = await (await fetch(repairUrl, { method: "POST", headers: { "content-type": "application/json", cookie: sup }, body: JSON.stringify({ dry_run: false }) })).json(); assert.equal(again.created, 0, "the repair is idempotent"); assert.equal(again.missing, 0);
+    const again = await (await fetch(repairUrl, { method: "POST", headers: { "content-type": "application/json", cookie: sup }, body: JSON.stringify({ dry_run: false }) })).json(); assert.equal(again.created, 0, "the repair is idempotent"); assert.equal(again.unique_missing_messages, 0);
     assert.equal(JSON.stringify(store.state.inbound_events), eventsBefore, "original inbound events were not modified or deleted"); assert.equal(sent.length, sentBeforeRepair, "the repair sent nothing");
     const afterRepair = inboundEntries(await thread(l5.id)).filter((e) => ["Interested in land", "Please call me", "ok"].includes(e.text)); assert.equal(afterRepair.length, 4, "after repair every message still appears exactly once");
     assert.ok((await store.listAuditEvents(500)).some((e) => e.action === "whatsapp.inbound_visibility.repair"), "the repair is audited");

@@ -31,3 +31,41 @@ The conversation view already shows every stored message (change 3), so history 
 
 ## Deployment recommendation
 **Recommend deploying** (frontend + server change; **no migration**, no Supabase/permission change, autonomy and signature mode untouched). Order: (1) approve a fast-forward of `codex/office-extraction` to this branch (clean fast-forward from production `1e7b9526…`); (2) verify the served `office.js` hash, `/healthz` (report mode still shown, autonomy OFF); (3) with the approved test number send one message while the lead is under takeover and confirm it appears in the open conversation within ~15 s and that a new `crm_activities` row carries its provider id; (4) run the repair dry run, review the 18 ids, and only after separate approval apply it. Rollback: push the previous SHA (`1e7b9526…`) as a new fast-forward commit; nothing to undo in the database (the repair is additive).
+
+---
+# Repair de-duplication revision (branch `fix/whatsapp-visibility-repair-dedup`)
+
+The production dry run reported 24 raw rows / 18 provider ids and the owner stopped it correctly: the repair counted and wrote **event rows**, but Meta had delivered some messages several times before claim-first de-duplication existed, so one provider message can have several `inbound_events` rows.
+
+## Fix
+`planInboundVisibilityRepair()` (pure, unit-tested) now:
+1. groups rows by provider message id and picks ONE canonical row per id by a fixed order (earliest `created_at`, then smallest `id` — independent of input order);
+2. treats a message as already represented when **any** of its rows has an activity by provider id or by the strict one-to-one legacy match (not row by row);
+3. keeps the lead association of the rows; rows of one id naming **different leads** are reported as `conflicting_lead_groups` and are never created or merged; a row without a lead beside a row with one is not a conflict; an id whose rows have no lead at all is an `invalid_records` entry;
+4. reports raw missing rows, unique missing messages, duplicate rows, invalid and conflicting groups, already-represented messages and `proposed_activities` (at most one per id); occurred_at is the original provider timestamp; duplicate row ids are kept as provenance in `metadata.duplicate_event_ids`.
+`repairInboundVisibility()` claims each message id atomically (`whatsapp_inbound_claims`, key prefix `visibility-repair:`) before find-then-create, so concurrent runs — in one process or several — cannot both create a record; it never modifies/deletes events, never sends and never calls any reply, Oyi or Backend path. The audit event now records raw/unique/duplicate/invalid/conflict counts.
+
+## Tests (`scripts/test-whatsapp-visibility-repair-dedup.js`, store API only — also runs on the real Supabase store)
+Production-shaped fixture (18 distinct missing ids, 6 of them delivered twice = 24 rows; plus already-represented messages by id, by legacy match, and legacy match with a duplicate row) → dry run reports **24 / 18 / 6 / 0**, 18 proposals, represented messages excluded, original timestamp and lead kept, deterministic, writes nothing; canonical row independent of order (and tie-break by id); conflicting leads reported and skipped (the 18 proposals unaffected), partial-lead tolerated, no-lead invalid; apply creates exactly one activity per id with duplicate provenance, original events byte-for-byte unchanged and none deleted; repeat run creates nothing; **4 concurrent repairs create exactly one activity per id** (negative control: without the claim guard the same run creates 13 records for 10 messages); strict one-to-one legacy matching preserved (two identical messages, one legacy activity ⇒ one proposal).
+
+## Corrected dry run on PRODUCTION data (local read-only computation with the same code; counts only; nothing was written)
+| | |
+|---|---|
+| inbound message event rows | 63 (one more than when first counted: a test message arrived) |
+| distinct provider message ids | 51 |
+| already represented by a CRM activity | 34 messages |
+| **raw missing event rows / unique missing messages / duplicate rows** | **21 / 17 / 4** |
+| invalid records | 0 |
+| **conflicting lead identities** | **1 message (excluded)** |
+| **proposed new activities** | **16**, on 6 leads (2026-08-22: 2, 10-10: 3, 10-12: 2, 10-13: 1, 10-14: 2, 10-15: 6) |
+Why this is not 24 / 18 / 6: the previous per-row counting included **one provider message delivered five times that already has a CRM record** (one of its rows matched a legacy activity, its other rows looked "missing"): applying the old logic would have created duplicate activities for it. Excluding it gives 17 unique missing; one of those is the conflicting identity below, so 16 are proposed.
+**Conflict (needs your decision):** two provider message ids (one already represented, one missing) were each delivered twice within one second on 2026-10-13 and the two deliveries created **two different leads for the same phone number** (two pairs of duplicate leads). The repair will not choose a lead. Merging duplicate leads is a CRM data decision that is not authorised here; until then the conversation view still shows that missing message under each lead that stores it.
+
+## Test results for the de-duplication revision
+Gates PASS (`check` 120 files, `lint`, `build`, `security:secrets`, `deployment:validate`); visibility suites (server-level 7 states, store contract, **dedup**) PASS; autonomy and workspace suites incl. browser PASS; **full Office suite 49/49**. Hardened-database run: the dedup suite (including four concurrent repairs through the real claims table) and the store suite pass through the real `SupabaseLeadAgentsStore`; Office suite 36/47 identical before/after the P0 migration, 5,280 service-role requests, 0 refused (the 11 file-store-only scripts fail in both phases). Not executed: any production repair (no write was made to production).
+
+## Exact approval needed to run the repair (after deployment of this branch)
+1. Approve deploying this branch (fast-forward of `codex/office-extraction`; code only, no migration).
+2. Re-run the dry run in the browser console (it will print the corrected numbers above, possibly +1 if a new message arrived) and confirm 16 proposals / 1 conflict.
+3. Decide how to treat the conflicting identity (leave it, or authorise a separate CRM clean-up of the duplicate leads).
+4. Approve `{"dry_run": false}`.
