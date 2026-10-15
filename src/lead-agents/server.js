@@ -8,6 +8,7 @@ const axios = require("axios");
 const { createConfig } = require("./config");
 const { log } = require("./logger");
 const { validateAuthConfig } = require("./auth-config");
+const { validatePassword, passwordPolicyError } = require("./password-policy");
 const { createStore } = require("./store-factory");
 const { OpenAIResponsesClient } = require("./openai");
 const { ToolExecutor } = require("./tools");
@@ -1947,13 +1948,22 @@ async function processWhatsAppMessageEvent({ event, store, adapter, config, requ
 
 const ADMIN_RECOVERY_MIN_PASSWORD_LENGTH = 12;
 
+// Settings S7.1: sends the shared 400 and returns true when a new password violates the fixed policy. Carries a code only, never password material.
+function rejectPasswordViolation(res, password, ctx) {
+  const result = validatePassword(password);
+  if (result.valid) return false;
+  json(res, 400, passwordPolicyError(result.code), { "x-request-id": ctx.requestId });
+  return true;
+}
+
 // Settings S7.0 explicit administrator recovery: only when LEAD_AGENTS_ADMIN_RECOVERY=true AND the bootstrap email/password are set. Resets that ONE account's password,
 // reactivates it and restores its role; audited by email only. Not reachable over HTTP. See docs/settings-domain/19_S7_0_AUTH_SECURITY_CONTRACT.md section 4.
 async function applyAdminRecovery(store, config) {
   const email = normalizeEmail(config.adminEmail);
-  if (String(config.adminPassword).length < ADMIN_RECOVERY_MIN_PASSWORD_LENGTH) {
-    log("warn", "admin_recovery_refused", { reason: "recovery_password_too_short" });
-    return { applied: false, reason: "recovery_password_too_short" };
+  const recoveryPolicy = validatePassword(config.adminPassword);
+  if (!recoveryPolicy.valid || String(config.adminPassword).length < ADMIN_RECOVERY_MIN_PASSWORD_LENGTH) {
+    log("warn", "admin_recovery_refused", { reason: recoveryPolicy.code || "recovery_password_too_short" });
+    return { applied: false, reason: recoveryPolicy.code || "recovery_password_too_short" };
   }
   const existing = await store.getAdminUserByEmail(email);
   if (!existing) {
@@ -2999,6 +3009,7 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           json(res, 401, { error: "unauthorized" });
           return;
         }
+        if (rejectPasswordViolation(res, body.new_password, ctx)) return;
         const updated = await store.updateAdminUser(currentUser.id, {
           password_hash: hashPassword(body.new_password),
           password_changed_at: new Date().toISOString(),
@@ -3107,6 +3118,7 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           json(res, 409, { error: "staff_linkage_invalid", message: "This invitation is no longer linked to a pending staff account." });
           return;
         }
+        if (rejectPasswordViolation(res, body.password, ctx)) return;
         const user = await store.updateAdminUser(existingUser.id, {
           password_hash: hashPassword(body.password),
           role: invite.role || "viewer",
@@ -3173,9 +3185,10 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
         }
         const user = await store.getAdminUserByEmail(reset.email);
         if (!user) {
-          json(res, 404, { error: "user_not_found" });
+          json(res, 400, { error: "invalid_or_expired_reset" });
           return;
         }
+        if (rejectPasswordViolation(res, body.new_password, ctx)) return;
         await store.updateAdminUser(user.id, {
           password_hash: hashPassword(body.new_password),
           password_changed_at: new Date().toISOString(),
@@ -8634,6 +8647,7 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
             json(res, 400, { error: "email and password are required" });
             return;
           }
+          if (rejectPasswordViolation(res, body.password, ctx)) return;
           const user = await store.ensureAdminUser({
             email: normalizeEmail(body.email),
             password_hash: hashPassword(body.password),
@@ -8806,7 +8820,8 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
         if (body.passport_photo_url !== undefined) patch.passport_photo_url = body.passport_photo_url;
         if (body.qr_credential !== undefined) patch.qr_credential = body.qr_credential;
         if (Array.isArray(body.permission_scopes)) patch.permission_scopes = body.permission_scopes;
-        if (body.password) {
+        if (body.password !== undefined && body.password !== null && body.password !== "") {
+          if (rejectPasswordViolation(res, body.password, ctx)) return;
           patch.password_hash = hashPassword(body.password);
           patch.password_changed_at = new Date().toISOString();
         }
