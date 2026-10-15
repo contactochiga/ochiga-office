@@ -24,6 +24,7 @@
     "office:communications-handoff:test": "node scripts/test-communications-handoff.js",
     "office:relationship-workspace:test": "node scripts/test-relationship-workspace.js && node scripts/test-whatsapp-manual-send-durability.js && node scripts/test-relationship-workspace-browser.js",
     "office:settings:test": "node scripts/test-settings-domain-browser.js && node scripts/test-settings-registry-browser.js && node scripts/test-settings-operations-browser.js && node scripts/test-settings-providers-browser.js",
+    "office:s5-integration:test": "node scripts/test-s5-integration-acceptance.js",
     "office:settings-registry:test": "node scripts/test-settings-registry.js && node scripts/test-settings-registry-postgres.js && node scripts/test-settings-operations.js && node scripts/test-settings-intelligence-providers.js",
     "office:communication-outbox:test": "node scripts/test-communication-delivery-outbox.js && node scripts/test-communication-outbox-store.js",
     "office:whatsapp-inbound-visibility:test": "node scripts/test-whatsapp-inbound-crm-visibility.js && node scripts/test-whatsapp-inbound-visibility-store.js && node scripts/test-whatsapp-visibility-repair-dedup.js",

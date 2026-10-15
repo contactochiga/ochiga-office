@@ -10382,20 +10382,21 @@ const ST_CRED_LABEL = { not_provisioned: "No credential provisioned", provisione
 const ST_DP_LABEL = { not_reviewed: "Not reviewed", pending: "Review pending", approved: "Approved", rejected: "Rejected" };
 const ST_ENF_LABEL = { none: "None", designed: "Designed, not enforced", tested: "Tested, not verified in production", verified: "Verified" };
 const ST_READY_LABEL = { met: "Met", not_met: "Not met", unknown: "Unknown", deferred: "Checked when requested" };
-const ST_UNAVAILABLE_REASON = { endpoint_not_available: "The Backend provider-status endpoint does not exist yet (it needs separate Backend approval).", not_configured: "The Backend bridge is not configured.", network_error: "The Backend could not be reached.", backend_rejected: "The Backend refused the request.", unavailable: "The Backend returned no provider status." };
+const ST_UNAVAILABLE_REASON = { endpoint_not_available: "The Backend provider-status endpoint does not exist yet (it needs separate Backend approval).", not_configured: "The Backend bridge is not configured.", network_error: "The Backend could not be reached.", backend_rejected: "The Backend refused the request (the bridge credential or permission was not accepted).", backend_error: "The Backend reported an internal error.", unavailable: "The Backend returned no provider status." };
 function stMoney(v, currency) { return v === null || v === undefined || !currency ? null : `${escapeHtml(currency)} ${Number.isInteger(v) ? v : v.toFixed(2)}`; }
 function stTime(v) { return v ? escapeHtml(fmtDateTime(v)) : null; }
-function stProviderFacts(p, office, known) {
+function stProviderFacts(p, office, known, budgetUnresolved = false, budgetEvidence = true) {
   const b = p.budget;
   const U = (value, fallback = ST_UNKNOWN) => (value === null || value === undefined || value === "" ? fallback : value);
   const knownEnum = (v, map) => (v === "unknown" || !map[v] ? ST_UNKNOWN : escapeHtml(map[v]));
   const adapter = p.adapter.registered === true ? `Registered${p.adapter.protocol !== "unknown" ? ` · ${escapeHtml(p.adapter.protocol)}` : ""}${p.adapter.mode !== "unknown" ? ` · ${escapeHtml(ST_MODE_NAME[p.adapter.mode] || p.adapter.mode)}` : ""}` : p.adapter.registered === false ? "Not registered" : ST_UNKNOWN;
   const officeLine = office ? `<div class="st-note">${office.assistant_configured ? `Office assistant (legacy path): configured${office.assistant_model ? ` · ${escapeHtml(office.assistant_model)}` : ""}.` : escapeHtml(office.note)} ${office.assistant_configured ? "This is not an Oyi Core qualification." : ""}</div>` : "";
   const model = p.model.approved_model ? escapeHtml(p.model.approved_model) : p.model.status === "candidate" ? `None approved${p.model.candidates.length ? ` · candidates: ${escapeHtml(p.model.candidates.join(", "))}` : ""}` : p.model.status === "none_selected" ? "None selected" : ST_UNKNOWN;
-  const ceiling = !known ? ST_UNKNOWN : stMoney(b.approved_maximum, b.currency) ? `${stMoney(b.approved_maximum, b.currency)} <span class="st-note">approved maximum, not funded credit</span>` : "No paid-call authorization recorded";
+  // An unresolved conflict between approval records means the ceiling is UNKNOWN, which is different from "no authorization recorded".
+  const ceiling = !known ? ST_UNKNOWN : stMoney(b.approved_maximum, b.currency) ? `${stMoney(b.approved_maximum, b.currency)} <span class="st-note">approved maximum, not funded credit</span>` : budgetUnresolved ? `${ST_UNKNOWN} <span class="st-note">conflicting approval records</span>` : !budgetEvidence ? `${ST_UNKNOWN} <span class="st-note">no budget record exists</span>` : "No paid-call authorization recorded";
   return [
     ["Adapter availability", adapter],
-    ["Connection / configuration", `${knownEnum(p.credentials.status, ST_CRED_LABEL)}${p.credentials.verified_at ? ` <span class="st-note">verified ${stTime(p.credentials.verified_at)}</span>` : ""}${officeLine}`],
+    ["Connection / configuration", `${knownEnum(p.credentials.status, ST_CRED_LABEL)}${p.credentials.verified_at ? ` <span class="st-note">as of ${stTime(p.credentials.verified_at)}</span>` : ""}${officeLine}`],
     ["Approved model", model],
     ["Qualification", knownEnum(p.qualification.status, ST_QUAL_LABEL) + (p.qualification.scope ? ` <span class="st-note">${escapeHtml(p.qualification.scope)}</span>` : "")],
     ["Operating mode", knownEnum(p.operating_mode, ST_MODE_NAME)],
@@ -10419,7 +10420,7 @@ function stAiProviderGrid(data) {
     const known = Boolean(p.reported);
     const state = !known || p.qualification.status === "unknown" ? "unavailable" : p.qualification.status === "qualified" ? "info" : "not_qualified";
     const label = !known || p.qualification.status === "unknown" ? "State unknown" : ST_QUAL_LABEL[p.qualification.status];
-    const card = el(`<article class="st-provider st-ai-provider" data-provider="${escapeHtml(p.id)}"><header><h4>${escapeHtml(p.label)}</h4><span class="st-owner">Backend / IQ gateway</span></header>${stStatusIndicator(state, label)}${stFacts(stProviderFacts(p, data.office_local && data.office_local[p.id], known))}${stProviderReadiness(p)}</article>`);
+    const card = el(`<article class="st-provider st-ai-provider" data-provider="${escapeHtml(p.id)}"><header><h4>${escapeHtml(p.label)}</h4><span class="st-owner">Backend / IQ gateway</span></header>${stStatusIndicator(state, label)}${stFacts(stProviderFacts(p, data.office_local && data.office_local[p.id], known, (data.provenance || []).some((x) => x.group === `${p.id}.budget` && (x.conflicts || []).some((c) => /^Unresolved/.test(c))), (data.provenance || []).some((x) => x.group === `${p.id}.budget`)))}${stProviderReadiness(p)}</article>`);
     grid.appendChild(card);
   });
   return grid;

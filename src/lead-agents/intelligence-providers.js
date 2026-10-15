@@ -40,7 +40,7 @@ function makeCleaner() {
   const bool = (v) => (typeof v === "boolean" ? v : null);
   const money = (v) => (typeof v === "number" && Number.isFinite(v) && v >= 0 && v <= 1e9 ? Math.round(v * 100) / 100 : null);
   const iso = (v) => { if (typeof v !== "string") return null; const d = new Date(v); return Number.isNaN(d.getTime()) ? null : d.toISOString(); };
-  const list = (v, max = MAX_LIST) => (Array.isArray(v) ? v.slice(0, max).map((x) => str(x)).filter(Boolean) : []);
+  const list = (v, max = MAX_LIST, len = MAX_TEXT) => (Array.isArray(v) ? v.slice(0, max).map((x) => str(x, len)).filter(Boolean) : []);
   const obj = (v) => (v && typeof v === "object" && !Array.isArray(v) ? v : {});
   return { state, str, oneOf, bool, money, iso, list, obj };
 }
@@ -120,7 +120,10 @@ function buildProviderStatusResponse(result, config = {}) {
   const activation = { available: false, note: "Provider activation is not available in Office in this release. Connected does not mean qualified; qualified does not mean activated." };
   const skeleton = { generated_at: fetchedAt, office_local, activation, providers: PROVIDERS.map((def) => ({ ...emptyProvider(def), readiness: activationReadiness(emptyProvider(def)) })), gateway: null, provenance: [], redaction_applied: 0 };
   if (!result || !result.ok) {
-    const reason = result && result.status === 404 ? "endpoint_not_available" : (result && result.reason) || "unavailable";
+    // Classify, never echo: the Backend's own error text is not shown. 401/403 mean the bridge credential or permission was refused.
+    const status = result && Number(result.status);
+    const raw = result && result.reason;
+    const reason = status === 404 ? "endpoint_not_available" : status === 401 || status === 403 ? "backend_rejected" : status >= 500 ? "backend_error" : raw === "not_configured" || raw === "network_error" ? raw : status >= 400 ? "backend_rejected" : "unavailable";
     return { ok: false, available: false, reason, ...skeleton };
   }
   const c = makeCleaner();
@@ -128,7 +131,7 @@ function buildProviderStatusResponse(result, config = {}) {
   const g = c.obj(body.gateway);
   const reported = new Map(Array.isArray(body.providers) ? body.providers.filter((x) => x && typeof x === "object").map((x) => [x.id, x]) : []);
   const providers = PROVIDERS.map((def) => { const p = reported.has(def.id) ? normalizeProvider(def, reported.get(def.id), c) : emptyProvider(def); return { ...p, readiness: activationReadiness(p) }; });
-  const provenance = (Array.isArray(body.provenance) ? body.provenance.slice(0, 12) : []).map((x) => { const o = c.obj(x); return { group: c.str(o.group, 40), source_record: c.str(o.source_record, 120), recorded_at: c.iso(o.recorded_at), conflicts: c.list(o.conflicts, 6) }; });
+  const provenance = (Array.isArray(body.provenance) ? body.provenance.slice(0, 12) : []).map((x) => { const o = c.obj(x); return { group: c.str(o.group, 40), source_record: c.str(o.source_record, 120), recorded_at: c.iso(o.recorded_at), conflicts: c.list(o.conflicts, 6, 400) }; });
   return {
     ok: true, available: true, reason: null, ...skeleton, providers, provenance,
     source: { schema_version: Number.isInteger(body.schema_version) ? body.schema_version : null, generated_at: c.iso(body.generated_at) },
