@@ -284,8 +284,15 @@ function buildThread({ lead, conversations = [], timeline = [], activities = [],
   return { entries: page, total, has_more: hasMore, next_before: hasMore && page.length ? encodeCursor(page[0]) : null, unlinked_count: opportunityId ? unlinked : undefined };
 }
 
+// Same derivation the Office UI uses for the Qualification column (explicit field first, otherwise the stored score band) -- nothing new is inferred.
 function qualificationOf(lead) {
-  return clean(lead.qualification_status || lead.qualification || lead.lead_status || "");
+  if (clean(lead.qualification_status)) return clean(lead.qualification_status);
+  const score = Number(lead.score ?? lead.lead_score);
+  if (!Number.isFinite(score) || (lead.score == null && lead.lead_score == null)) return "";
+  return score >= 75 ? "qualified" : score >= 50 ? "needs_discovery" : score >= 25 ? "nurture" : "unqualified";
+}
+function stageOf(lead) {
+  return clean(lead.stage || lead.commercial_stage || lead.status) || null;
 }
 
 // The latest customer-visible message for a lead, from whichever record exists: the conversation log (when Oyi/staff replied) or a CRM activity (inbound WhatsApp text
@@ -308,14 +315,14 @@ function buildInboxEntry({ lead, lastMessage, channelState, opportunities = [] }
   const last = lastMessage ? lastMessage.at : lead.last_contact_at || lead.updated_at || lead.created_at;
   return {
     lead_id: lead.id,
-    name: lead.name || lead.company || lead.email || lead.phone || "Unnamed lead",
+    name: lead.name || lead.company || lead.email || lead.phone || lead.whatsapp_phone || "Unnamed lead",
     company: lead.company || null,
     preview,
     preview_direction: lastMessage ? lastMessage.direction : null,
     last_activity_at: last || null,
     original_source: source.original_source,
     delivery_channel: source.delivery_channel,
-    stage: lead.status || lead.stage || null,
+    stage: stageOf(lead),
     qualification: qualificationOf(lead) || null,
     owner: lead.owner || null,
     human_owner: channelState?.human_owner || null,
@@ -361,4 +368,4 @@ function newRequestKey() {
   return crypto.randomUUID();
 }
 
-module.exports = { latestMessageFor, classifySource, leadSourceInfo, buildThread, buildInboxEntry, leadIdsForScope, deliveryFromStatuses, encodeCursor, decodeCursor, newRequestKey };
+module.exports = { qualificationOf, stageOf, latestMessageFor, classifySource, leadSourceInfo, buildThread, buildInboxEntry, leadIdsForScope, deliveryFromStatuses, encodeCursor, decodeCursor, newRequestKey };

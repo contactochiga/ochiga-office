@@ -6793,9 +6793,8 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
         const sourceInfo = relationshipWorkspace.leadSourceInfo(lead);
         json(res, 200, {
           lead: {
-            id: lead.id, name: lead.name || null, company: lead.company || null, email: lead.email || null, phone: lead.phone || null, whatsapp_phone: lead.whatsapp_phone || null,
-            role: lead.role || null, location: [lead.city, lead.country].filter(Boolean).join(", ") || lead.location || null, status: lead.status || lead.stage || null,
-            qualification: lead.qualification_status || lead.qualification || null, owner: lead.owner || null, business_unit: lead.business_unit || null, summary: lead.summary || null,
+            id: lead.id, display_name: lead.name || lead.company || lead.email || lead.phone || lead.whatsapp_phone || "Unnamed lead", name: lead.name || null, company: lead.company || null, email: lead.email || null, phone: lead.phone || null, whatsapp_phone: lead.whatsapp_phone || null,
+            role: lead.role || null, location: [lead.city, lead.country].filter(Boolean).join(", ") || lead.location || null, status: relationshipWorkspace.stageOf(lead), qualification: relationshipWorkspace.qualificationOf(lead) || null, owner: lead.owner || null, business_unit: lead.business_unit || null, summary: lead.summary || null,
             next_action: lead.next_action || null, next_action_at: lead.next_action_at || null, created_at: lead.created_at, organization_id: lead.organization_id || null,
           },
           source: sourceInfo,

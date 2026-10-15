@@ -2388,7 +2388,7 @@ const CRM_TABS = [
 ];
 
 async function renderCrmRoute(outlet, rest, token) {
-  const [subKey = "overview", objectId] = rest;
+  const [subKey = "overview", objectId, recordView] = rest;
   setTopbar("CRM", objectId ? "" : titleCase(subKey));
 
   outlet.innerHTML = "";
@@ -2416,7 +2416,7 @@ async function renderCrmRoute(outlet, rest, token) {
 
   try {
     if (objectId) {
-      await renderCrmDetail(body, subKey, objectId, token);
+      await renderCrmDetail(body, subKey, objectId, token, recordView);
     } else if (subKey === "overview") {
       await renderCrmOverview(body, token);
     } else if (["leads", "contacts", "organizations", "opportunities"].includes(subKey)) {
@@ -3028,11 +3028,13 @@ function renderStandardList(body, { title, records, columns, searchFields, filte
 // filtered client-side from the already-fetched collections, since
 // the backend has no query-by-relation endpoints yet.
 // ---------------------------------------------------------------
-async function renderCrmDetail(body, type, id, token) {
-  if (type === "leads") return renderLeadDetail(body, id, token);
-  if (type === "contacts") return renderContactDetail(body, id, token);
-  if (type === "organizations") return renderOrganizationDetail(body, id, token);
-  if (type === "opportunities") return renderOpportunityDetail(body, id, token);
+async function renderCrmDetail(body, type, id, token, view) {
+  // Unified Relationship Workspace: opening a Lead, Contact, Organization or Opportunity opens the conversation workspace. "record" keeps the full record view reachable.
+  const canWorkspace = hasPermission("crm.read") && view !== "record";
+  if (type === "leads") return canWorkspace ? renderRelationshipWorkspace(body, { leadId: id, token }) : renderLeadDetail(body, id, token);
+  if (type === "contacts") return canWorkspace ? renderRelationshipWorkspace(body, { scope: { route: "contacts", param: "contact_id", id }, token, fallback: () => renderContactDetail(body, id, token) }) : renderContactDetail(body, id, token);
+  if (type === "organizations") return canWorkspace ? renderRelationshipWorkspace(body, { scope: { route: "organizations", param: "organization_id", id }, token, fallback: () => renderOrganizationDetail(body, id, token) }) : renderOrganizationDetail(body, id, token);
+  if (type === "opportunities") return canWorkspace ? renderRelationshipWorkspace(body, { scope: { route: "opportunities", param: "opportunity_id", id }, opportunityId: id, token, fallback: () => renderOpportunityDetail(body, id, token) }) : renderOpportunityDetail(body, id, token);
   body.innerHTML = "";
   body.appendChild(errorPanel("Unknown record type."));
 }
@@ -17069,6 +17071,422 @@ async function boot() {
   const authed = await fetchSession();
   if (authed) showShell();
   else showLogin();
+}
+
+// ---------------------------------------------------------------
+// Unified CRM Relationship Workspace (three columns: relationship inbox / customer conversation / relationship profile).
+// Customer-facing external communications only; staff Messages (staff_conversations) are a separate system and are never shown here.
+// Data comes from the authorized read model: GET /api/lead-agents/admin/crm/relationships[/:leadId]. Manual WhatsApp replies reuse the existing governed endpoint.
+// ---------------------------------------------------------------
+const relState = { items: [], total: 0, offset: 0, q: "", filter: "all", scope: null, leadId: null, opportunityId: "", data: null, entries: [], nextBefore: null, hasMore: false, token: 0 };
+
+async function apiRelInbox(params) {
+  const qs = new URLSearchParams();
+  Object.entries(params).forEach(([k, v]) => { if (v !== undefined && v !== null && v !== "") qs.set(k, v); });
+  return api(`/api/lead-agents/admin/crm/relationships?${qs.toString()}`);
+}
+async function apiRelThread(leadId, params) {
+  const qs = new URLSearchParams();
+  Object.entries(params).forEach(([k, v]) => { if (v !== undefined && v !== null && v !== "") qs.set(k, v); });
+  return api(`/api/lead-agents/admin/crm/relationships/${encodeURIComponent(leadId)}?${qs.toString()}`);
+}
+
+const REL_SOURCE_GLYPHS = {
+  whatsapp: { cls: "wa", svg: `<svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 3a9 9 0 0 0-7.7 13.6L3 21l4.5-1.2A9 9 0 1 0 12 3Zm0 1.8a7.2 7.2 0 1 1-3.9 13.3l-.3-.2-2.4.6.7-2.3-.2-.3A7.2 7.2 0 0 1 12 4.8Zm-2.6 3.4c-.2 0-.5 0-.7.3-.3.3-1 1-1 2.4s1 2.8 1.2 3c.1.2 2 3.1 4.9 4.2 2.4.9 2.9.7 3.4.7.5-.1 1.7-.7 1.9-1.4.2-.7.2-1.2.2-1.4-.1-.1-.3-.2-.6-.3l-1.9-.9c-.3-.1-.4-.1-.6.1l-.8 1c-.1.2-.3.2-.6.1-.3-.1-1.1-.4-2.1-1.3-.8-.7-1.3-1.5-1.4-1.8-.2-.3 0-.4.1-.5l.4-.5.3-.5c.1-.2 0-.3 0-.5l-.9-2.1c-.2-.5-.4-.5-.6-.5Z"/></svg>` },
+  ochiga_website: { cls: "web", svg: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c3 3 3 15 0 18M12 3c-3 3-3 15 0 18"/></svg>` },
+  website_widget: { cls: "web", svg: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M4 5h16v11H9l-5 4V5z"/></svg>` },
+  oyi_website: { cls: "oyi", svg: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="2.5"/></svg>` },
+  oyi: { cls: "oyi", svg: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="2.5"/></svg>` },
+  email: { cls: "mail", svg: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="m3 7 9 6 9-6"/></svg>` },
+  linkedin: { cls: "li", text: "in" },
+  facebook: { cls: "fb", text: "f" },
+  instagram: { cls: "ig", svg: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="4" y="4" width="16" height="16" rx="5"/><circle cx="12" cy="12" r="3.5"/></svg>` },
+};
+// A provider glyph appears ONLY when the stored value maps to one; anything else gets a neutral dot with the real label in the tooltip.
+function relSourceIcon(info, size = "") {
+  const kind = info && info.kind;
+  const glyph = REL_SOURCE_GLYPHS[kind];
+  const label = (info && info.label) || "Unknown";
+  if (!glyph) return `<span class="rel-src rel-src-neutral ${size}" title="${escapeHtml(label)}"><i></i></span>`;
+  return `<span class="rel-src rel-src-${glyph.cls} ${size}" title="${escapeHtml(label)}">${glyph.svg || `<b>${glyph.text}</b>`}</span>`;
+}
+function relInitials(name) {
+  return String(name || "?").split(/\s+/).filter(Boolean).slice(0, 2).map((p) => p[0].toUpperCase()).join("") || "?";
+}
+function relDeliveryText(entry) {
+  if (entry.direction !== "outbound") return "";
+  const d = entry.delivery || {};
+  const map = { read: "Read", delivered: "Delivered", sent: "Sent (provider confirmed)", failed: "Failed", unverified: "Accepted by provider — delivery not confirmed", not_applicable: "" };
+  return map[d.state] || "";
+}
+function relOriginText(entry) {
+  if (entry.direction === "inbound") return "Customer";
+  return entry.origin === "human" ? "Staff" : entry.origin === "ai" ? "Oyi" : "Unknown sender";
+}
+function relDayLabel(iso) {
+  const d = new Date(iso);
+  const today = new Date();
+  const same = (a, b) => a.toDateString() === b.toDateString();
+  const yesterday = new Date(today.getTime() - 86400000);
+  if (same(d, today)) return "Today";
+  if (same(d, yesterday)) return "Yesterday";
+  return d.toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" });
+}
+function relTime(iso) {
+  return new Date(iso).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
+}
+
+function renderRelInboxRow(item) {
+  const active = item.lead_id === relState.leadId ? " active" : "";
+  const row = el(`
+    <div class="rel-row${active}" data-lead="${escapeHtml(item.lead_id)}" tabindex="0">
+      <div class="messages-avatar">${escapeHtml(relInitials(item.name))}</div>
+      <div class="rel-row-main">
+        <div class="rel-row-top"><span class="rel-row-name">${escapeHtml(item.name)}</span><span class="rel-row-time">${item.last_activity_at ? escapeHtml(fmtRelative(item.last_activity_at)) : ""}</span></div>
+        <div class="rel-row-preview">${item.preview_direction === "outbound" ? "You: " : ""}${escapeHtml(item.preview || "No messages yet")}</div>
+        <div class="rel-row-meta">
+          ${relSourceIcon(item.original_source, "sm")}<span class="rel-row-source">${escapeHtml(item.original_source.label)}</span>
+          ${item.stage ? badge(titleCase(item.stage), toneForStatus(item.stage)) : ""}
+          ${item.qualification ? badge(titleCase(item.qualification), "default") : ""}
+          ${item.opportunity_count ? `<span class="rel-chip" title="Linked opportunities">${item.opportunity_count} opp.</span>` : ""}
+          ${item.human_status && item.human_status !== "auto" ? `<span class="rel-chip rel-chip-human" title="Human takeover${item.human_owner ? ` · ${escapeHtml(item.human_owner)}` : ""}">Human</span>` : ""}
+        </div>
+      </div>
+      ${item.unread ? `<span class="rel-dot" title="Awaiting a reply"></span>` : ""}
+    </div>`);
+  row.addEventListener("click", () => { relState.leadId = item.lead_id; relState.opportunityId = ""; relLoadThread(true); relMarkActive(); });
+  row.addEventListener("keydown", (e) => { if (e.key === "Enter") row.click(); });
+  return row;
+}
+function relMarkActive() {
+  document.querySelectorAll(".rel-row").forEach((r) => r.classList.toggle("active", r.dataset.lead === relState.leadId));
+  const page = document.querySelector(".rel-page");
+  if (page) page.classList.add("rel-thread-open");
+}
+
+async function relLoadInbox(reset) {
+  const list = document.getElementById("relInboxList");
+  if (!list) return;
+  if (reset) { relState.offset = 0; relState.items = []; list.innerHTML = ""; list.appendChild(skeletonPanel(4)); }
+  try {
+    const params = { q: relState.q, filter: relState.filter, limit: 30, offset: relState.offset };
+    if (relState.scope) params[relState.scope.param] = relState.scope.id;
+    const data = await apiRelInbox(params);
+    if (reset) list.innerHTML = "";
+    list.querySelector(".rel-more")?.remove();
+    relState.items = relState.items.concat(data.relationships);
+    relState.total = data.total;
+    data.relationships.forEach((item) => list.appendChild(renderRelInboxRow(item)));
+    if (!relState.items.length) list.appendChild(el(`<div class="rel-empty">${relState.q ? "No relationships match this search." : "No relationships to show."}</div>`));
+    if (data.has_more) {
+      const more = el(`<button type="button" class="btn btn-sm rel-more">Load more</button>`);
+      more.addEventListener("click", () => { relState.offset += 30; relLoadInbox(false); });
+      list.appendChild(more);
+    }
+    const count = document.getElementById("relInboxCount");
+    if (count) count.textContent = `(${relState.total})`;
+  } catch (err) {
+    list.innerHTML = "";
+    list.appendChild(errorPanel(err.message || "Could not load relationships."));
+  }
+}
+
+function renderRelEntry(entry) {
+  if (entry.kind === "form_submission") {
+    const form = entry.form || {};
+    return el(`
+      <div class="rel-card rel-card-form">
+        <div class="rel-card-icon">${relSourceIcon({ kind: "ochiga_website", label: "Website form" })}</div>
+        <div class="rel-card-body">
+          <div class="rel-card-title">${escapeHtml(entry.title || "Website form submission")}<span class="rel-card-time">${escapeHtml(relTime(entry.occurred_at))}</span></div>
+          <div class="rel-card-sub">${form.source_site ? `Source: ${escapeHtml(form.source_site)}` : ""}${form.business_unit ? ` · ${escapeHtml(titleCase(form.business_unit))}` : ""}</div>
+          <div class="rel-card-quote">${escapeHtml(entry.text || "(no message text recorded)")}</div>
+        </div>
+      </div>`);
+  }
+  if (entry.kind === "attachment") {
+    const a = (entry.attachments || [])[0] || {};
+    const card = el(`
+      <div class="rel-card rel-card-file">
+        <div class="rel-card-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M6 3h8l4 4v14H6z"/><path d="M14 3v4h4"/></svg></div>
+        <div class="rel-card-body">
+          <div class="rel-card-title">Document · ${escapeHtml(entry.title || a.title || "Document")}<span class="rel-card-time">${escapeHtml(relTime(entry.occurred_at))}</span></div>
+          <div class="rel-card-sub">${escapeHtml(titleCase(a.document_type || "document"))} · ${escapeHtml(titleCase(a.status || ""))}</div>
+          <button type="button" class="btn btn-sm rel-open-doc">Open in Documents</button>
+        </div>
+      </div>`);
+    card.querySelector(".rel-open-doc").addEventListener("click", () => navigate(a.open_route || "documents"));
+    return card;
+  }
+  if (entry.kind === "activity" || entry.kind === "system") {
+    return el(`
+      <div class="rel-card rel-card-note ${entry.kind}">
+        <div class="rel-card-body">
+          <div class="rel-card-title">${escapeHtml(entry.title || titleCase(entry.activity_type || entry.event_type || "Activity"))}<span class="rel-card-time">${escapeHtml(relTime(entry.occurred_at))}</span></div>
+          ${entry.text ? `<div class="rel-card-sub">${escapeHtml(entry.text)}</div>` : ""}
+          <div class="rel-card-sub rel-faint">${escapeHtml(entry.sender || "")}${entry.opportunity_id ? " · linked to an opportunity" : ""}</div>
+        </div>
+      </div>`);
+  }
+  const mine = entry.direction === "outbound";
+  const delivery = relDeliveryText(entry);
+  const CHANNEL_NAMES = { whatsapp: "WhatsApp", website: "Website", website_form: "Website form", website_widget: "Website widget", email: "Email", linkedin: "LinkedIn" };
+  const chan = entry.channel ? (CHANNEL_NAMES[entry.channel] || titleCase(String(entry.channel).replace(/_/g, " "))) : "";
+  return el(`
+    <div class="messages-bubble-row ${mine ? "mine" : "theirs"}">
+      <div class="rel-bubble-head">${escapeHtml(entry.sender === "customer" ? "Customer" : entry.sender)}${chan ? ` · ${escapeHtml(chan)}` : ""}</div>
+      <div class="messages-bubble">${escapeHtml(entry.text || "")}</div>
+      <div class="messages-bubble-meta"><span>${escapeHtml(relTime(entry.occurred_at))}</span><span>${escapeHtml(relOriginText(entry))}</span>${delivery ? `<span class="rel-delivery rel-delivery-${escapeHtml(entry.delivery.state)}">${escapeHtml(delivery)}</span>` : ""}</div>
+      ${entry.reply_suppressed ? `<div class="rel-suppressed">${escapeHtml(entry.reply_suppressed.text)}</div>` : ""}
+      ${entry.correlation === "single_source" && entry.direction === "outbound" ? `<div class="rel-suppressed">Recorded as a CRM activity only; not correlated to a provider message.</div>` : ""}
+    </div>`);
+}
+
+function relRenderEntries(scroll, entries) {
+  scroll.innerHTML = "";
+  let lastDay = "";
+  entries.forEach((entry) => {
+    const day = relDayLabel(entry.occurred_at);
+    if (day !== lastDay) { scroll.appendChild(el(`<div class="rel-day"><span>${escapeHtml(day)}</span></div>`)); lastDay = day; }
+    scroll.appendChild(renderRelEntry(entry));
+  });
+  if (!entries.length) scroll.appendChild(el(`<div class="rel-empty">${relState.opportunityId ? "No communication is explicitly linked to this opportunity yet." : "No communication recorded for this relationship yet."}</div>`));
+}
+
+async function relLoadThread(reset) {
+  const threadPane = document.getElementById("relThreadPane");
+  const detailsPane = document.getElementById("relDetailsPane");
+  if (!threadPane || !relState.leadId) return;
+  const myToken = ++relState.token;
+  if (reset) { threadPane.innerHTML = ""; threadPane.appendChild(skeletonPanel(5)); detailsPane.innerHTML = ""; }
+  try {
+    const data = await apiRelThread(relState.leadId, { limit: 50, opportunity_id: relState.opportunityId });
+    if (myToken !== relState.token) return;
+    relState.data = data;
+    relState.entries = data.thread.entries;
+    relState.nextBefore = data.thread.next_before;
+    relState.hasMore = data.thread.has_more;
+    relRenderThreadPane(threadPane, data);
+    relRenderDetailsPane(detailsPane, data);
+  } catch (err) {
+    if (myToken !== relState.token) return;
+    threadPane.innerHTML = "";
+    threadPane.appendChild(errorPanel(err.message || "Could not load this conversation."));
+  }
+}
+
+function relRenderThreadPane(pane, data) {
+  const lead = data.lead;
+  const shownName = lead.display_name;
+  pane.innerHTML = "";
+  const head = el(`
+    <div class="rel-thread-head">
+      <button type="button" class="rel-back" aria-label="Back to relationships">‹</button>
+      <div class="messages-avatar lg">${escapeHtml(relInitials(shownName))}</div>
+      <div class="rel-thread-title">
+        <div class="rel-thread-name">${escapeHtml(shownName)} ${lead.status ? badge(titleCase(lead.status), toneForStatus(lead.status)) : ""}</div>
+        <div class="rel-thread-sub">${escapeHtml([lead.company, lead.location].filter(Boolean).join(" · ") || "Relationship")}</div>
+      </div>
+      <div class="rel-thread-chips">
+        <span class="rel-chip-src" title="Original source">${relSourceIcon(data.source.original_source, "sm")} ${escapeHtml(data.source.original_source.label)}</span>
+        ${data.source.delivery_channel.kind !== "unknown" && data.source.delivery_channel.kind !== data.source.original_source.kind ? `<span class="rel-chip-src" title="Communication channel">${relSourceIcon(data.source.delivery_channel, "sm")} ${escapeHtml(data.source.delivery_channel.label)}</span>` : ""}
+      </div>
+      <button type="button" class="btn btn-sm rel-details-toggle">Details</button>
+    </div>`);
+  head.querySelector(".rel-back").addEventListener("click", () => document.querySelector(".rel-page")?.classList.remove("rel-thread-open"));
+  head.querySelector(".rel-details-toggle").addEventListener("click", () => document.querySelector(".rel-page")?.classList.toggle("rel-details-open"));
+  pane.appendChild(head);
+
+  if (data.opportunities.length > 1 || relState.opportunityId) {
+    const bar = el(`<div class="rel-oppbar"></div>`);
+    const mk = (id, label) => {
+      const b = el(`<button type="button" class="rel-oppchip ${relState.opportunityId === id ? "active" : ""}">${escapeHtml(label)}</button>`);
+      b.addEventListener("click", () => { relState.opportunityId = id; relLoadThread(true); });
+      bar.appendChild(b);
+    };
+    mk("", "Whole relationship");
+    data.opportunities.forEach((o) => mk(o.id, `${titleCase(o.business_unit || "")} — ${titleCase(String(o.inquiry_type || "").replace(/_/g, " "))}`));
+    pane.appendChild(bar);
+    if (relState.opportunityId && data.thread.unlinked_count) pane.appendChild(el(`<div class="rel-note">Showing only communication explicitly linked to this opportunity. ${data.thread.unlinked_count} other entries in this relationship are not linked to any opportunity.</div>`));
+  }
+
+  const scroll = el(`<div class="rel-scroll" id="relScroll"></div>`);
+  if (data.thread.has_more) {
+    const earlier = el(`<button type="button" class="btn btn-sm rel-earlier">Load earlier messages</button>`);
+    earlier.addEventListener("click", async () => {
+      earlier.disabled = true;
+      try {
+        const older = await apiRelThread(relState.leadId, { limit: 50, before: relState.nextBefore, opportunity_id: relState.opportunityId });
+        relState.entries = older.thread.entries.concat(relState.entries);
+        relState.nextBefore = older.thread.next_before; relState.hasMore = older.thread.has_more;
+        const previousHeight = scroll.scrollHeight;
+        relRenderEntries(scroll, relState.entries);
+        if (relState.hasMore) scroll.prepend(earlier);
+        scroll.scrollTop = scroll.scrollHeight - previousHeight;
+        earlier.disabled = false;
+      } catch (err) { toast(err.message || "Could not load earlier messages.", "error"); earlier.disabled = false; }
+    });
+    scroll.appendChild(earlier);
+  }
+  const holder = el(`<div></div>`);
+  relRenderEntries(holder, data.thread.entries);
+  Array.from(holder.childNodes).forEach((n) => scroll.appendChild(n));
+  pane.appendChild(scroll);
+  pane.appendChild(relRenderComposer(data));
+  requestAnimationFrame(() => { scroll.scrollTop = scroll.scrollHeight; });
+}
+
+function relRenderComposer(data) {
+  const wrap = el(`<div class="messages-composer-wrap rel-composer"></div>`);
+  const c = data.communication;
+  const modeText = c.takeover_active ? `Human conversation${data.channel_state.human_owner ? ` — owned by ${data.channel_state.human_owner}` : ""}` : c.global_autonomous_responses === "on" ? "Autonomous responses ON (eligible conversations only)" : c.global_autonomous_responses === "off" ? "Autonomous responses OFF — Oyi will not reply" : "Autonomous response state unreadable — treated as OFF";
+  wrap.appendChild(el(`<div class="rel-modeline"><span class="rel-mode rel-mode-${escapeHtml(c.mode)}">${escapeHtml(modeText)}</span></div>`));
+  const reply = c.whatsapp_reply;
+  if (reply.available) {
+    const form = el(`
+      <form class="messages-composer rel-send">
+        <textarea rows="1" maxlength="4000" placeholder="Reply on WhatsApp as ${escapeHtml(currentEmail())}…" aria-label="WhatsApp reply"></textarea>
+        <button type="submit" class="btn btn-primary btn-sm">Send on WhatsApp</button>
+      </form>`);
+    const ta = form.querySelector("textarea");
+    let requestId = (crypto.randomUUID ? crypto.randomUUID() : String(Date.now()) + Math.random());
+    form.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const text = ta.value.trim();
+      if (!text) return;
+      const btn = form.querySelector("button");
+      btn.disabled = true; ta.disabled = true;
+      try {
+        const res = await api(`/api/lead-agents/admin/leads/${encodeURIComponent(data.lead.id)}/whatsapp/reply`, { method: "POST", body: { body: text, client_request_id: requestId } });
+        toast(res.delivered ? "Message accepted by WhatsApp. Delivery is confirmed separately." : "WhatsApp did not accept this message.", res.delivered ? "default" : "error");
+        requestId = (crypto.randomUUID ? crypto.randomUUID() : String(Date.now()) + Math.random());
+        if (res.delivered) ta.value = "";
+        await relLoadThread(false);
+      } catch (err) {
+        toast(err.message || "The message was not sent.", "error");
+        btn.disabled = false; ta.disabled = false;
+      }
+    });
+    wrap.appendChild(form);
+  } else {
+    let reason = "Replies are sent from here through the governed WhatsApp reply path.";
+    if (!reply.whatsapp_number_known) reason = "This relationship has no WhatsApp number, so it cannot be replied to on WhatsApp from here.";
+    else if (!reply.can_reply_permission) reason = "Your role cannot send customer replies. A manager can take over this conversation.";
+    else if (reply.takeover_required) reason = "Take over this conversation to reply as a human. Oyi will stop replying while you own it.";
+    else if (!data.integrations.whatsapp.connected) reason = "WhatsApp is not connected on this server.";
+    const box = el(`<div class="rel-locked"><div>${escapeHtml(reason)}</div></div>`);
+    if (reply.whatsapp_number_known && reply.can_reply_permission && reply.takeover_required) {
+      const take = el(`<button type="button" class="btn btn-primary btn-sm">Take over conversation</button>`);
+      take.addEventListener("click", async () => {
+        take.disabled = true;
+        try {
+          await api(`/api/lead-agents/leads/${encodeURIComponent(data.lead.id)}/channel-state/whatsapp`, { method: "PATCH", body: { human_status: "human_active", human_owner: currentEmail(), ai_paused: true, takeover_started_at: new Date().toISOString(), takeover_reason: "Taken over from the CRM relationship workspace" } });
+          toast("You now own this conversation.");
+          await relLoadThread(false);
+        } catch (err) { toast(err.message || "Could not take over.", "error"); take.disabled = false; }
+      });
+      box.appendChild(take);
+    } else if (data.communication.takeover_active && reply.can_reply_permission) {
+      /* takeover active but reply unavailable (no number / not connected): nothing to add */
+    }
+    wrap.appendChild(box);
+  }
+  if (data.communication.takeover_active && reply.can_reply_permission) {
+    const rel = el(`<button type="button" class="btn btn-sm rel-release">Release takeover</button>`);
+    rel.addEventListener("click", async () => {
+      rel.disabled = true;
+      try {
+        await api(`/api/lead-agents/leads/${encodeURIComponent(data.lead.id)}/channel-state/whatsapp`, { method: "PATCH", body: { human_status: "auto", human_owner: null } });
+        toast("Takeover released. Oyi's global setting still decides whether it may reply.");
+        await relLoadThread(false);
+      } catch (err) { toast(err.message || "Could not release.", "error"); rel.disabled = false; }
+    });
+    wrap.appendChild(rel);
+  }
+  return wrap;
+}
+
+function relRenderDetailsPane(pane, data) {
+  const lead = data.lead;
+  pane.innerHTML = "";
+  const section = (title, html, open = true) => el(`<details class="rel-section" ${open ? "open" : ""}><summary>${escapeHtml(title)}</summary><div class="rel-section-body">${html}</div></details>`);
+  const row = (label, value) => (value === null || value === undefined || String(value).trim() === "" ? "" : `<div class="rel-fact"><span>${escapeHtml(label)}</span><b>${escapeHtml(value)}</b></div>`);
+  pane.appendChild(el(`<div class="rel-details-head"><div class="messages-avatar xl">${escapeHtml(relInitials(lead.display_name))}</div><div class="rel-details-name">${escapeHtml(lead.display_name)}</div><div class="rel-faint">${escapeHtml(lead.role || "")}</div></div>`));
+  pane.appendChild(section("Identity", row("Phone", lead.phone) + row("WhatsApp", lead.whatsapp_phone) + row("Email", lead.email) + row("Organization", lead.company) + row("Location", lead.location)));
+  pane.appendChild(section("Source", row("Original source", data.source.original_source.label) + row("Raw source value", data.source.original_source.raw) + row("Communication channel", data.source.delivery_channel.kind === "unknown" ? "" : data.source.delivery_channel.label) + row("Form / inquiry", data.source.source_form ? titleCase(String(data.source.source_form).replace(/_/g, " ")) : "") + row("First contact", lead.created_at ? new Date(lead.created_at).toLocaleDateString() : "")));
+  pane.appendChild(section("CRM", row("Stage", lead.status ? titleCase(lead.status) : "") + row("Qualification", lead.qualification ? titleCase(lead.qualification) : "") + row("Owner", lead.owner) + row("Business unit", lead.business_unit ? titleCase(lead.business_unit) : "")));
+  const opps = el(`<div></div>`);
+  if (!data.opportunities.length) opps.innerHTML = `<div class="rel-faint">No opportunity records linked to this relationship.</div>`;
+  data.opportunities.forEach((o) => {
+    const b = el(`<button type="button" class="rel-opp ${relState.opportunityId === o.id ? "active" : ""}"><b>${escapeHtml(titleCase(o.business_unit || ""))}</b><span>${escapeHtml(titleCase(String(o.inquiry_type || "").replace(/_/g, " ")))} · ${escapeHtml(titleCase(String(o.stage || "")))}</span></button>`);
+    b.addEventListener("click", () => { relState.opportunityId = relState.opportunityId === o.id ? "" : o.id; relLoadThread(true); });
+    opps.appendChild(b);
+  });
+  const oppLink = el(`<div class="rel-faint">Messages are shown against an opportunity only when explicitly linked.</div>`);
+  opps.appendChild(oppLink);
+  const oppSection = section("Opportunities", "");
+  oppSection.querySelector(".rel-section-body").appendChild(opps);
+  pane.appendChild(oppSection);
+  const comm = data.communication;
+  pane.appendChild(section("Communication", row("Global autonomous responses", comm.global_autonomous_responses.toUpperCase()) + row("Mode", titleCase(comm.mode.replace(/_/g, " "))) + row("Human owner", data.channel_state.human_owner) + row("Last inbound", data.channel_state.last_inbound_at ? fmtRelative(data.channel_state.last_inbound_at) : "") + row("Last outbound", data.channel_state.last_outbound_at ? fmtRelative(data.channel_state.last_outbound_at) : "")));
+  pane.appendChild(section("Operations", row("Next action", lead.next_action) + row("Due", lead.next_action_at ? new Date(lead.next_action_at).toLocaleDateString() : "")));
+  const files = data.thread.entries.filter((e) => e.kind === "attachment");
+  const filesBody = el(`<div></div>`);
+  filesBody.innerHTML = files.length ? "" : `<div class="rel-faint">No documents linked. Customer media from WhatsApp is not ingested (not verified).</div>`;
+  files.forEach((f) => { const a = f.attachments[0]; const b = el(`<button type="button" class="rel-file">${escapeHtml(a.title)}<span>${escapeHtml(titleCase(a.document_type || ""))}</span></button>`); b.addEventListener("click", () => navigate(a.open_route)); filesBody.appendChild(b); });
+  const filesSection = section("Files", ""); filesSection.querySelector(".rel-section-body").appendChild(filesBody); pane.appendChild(filesSection);
+  pane.appendChild(section("Oyi intelligence", lead.summary ? `<div class="rel-summary">${escapeHtml(lead.summary)}</div><div class="rel-faint">Summary recorded on the lead. Detailed qualification evidence is in the full record.</div>` : `<div class="rel-faint">No Oyi summary has been recorded for this relationship.</div>`));
+  const integ = data.integrations;
+  pane.appendChild(section("Channel connections", `<div class="rel-fact"><span>WhatsApp</span><b>${integ.whatsapp.connected ? "Connected" : "Not connected"}</b></div><div class="rel-fact"><span>Email</span><b>Inbound sync not connected</b></div><div class="rel-fact"><span>LinkedIn</span><b>Messaging not connected</b></div>`, false));
+  const actions = el(`<div class="rel-actions"></div>`);
+  if (hasPermission("crm.manage")) {
+    const note = el(`<button type="button" class="btn btn-sm">Add note</button>`);
+    note.addEventListener("click", () => promptAddNote({ lead_id: lead.id, related_type: "lead", related_id: lead.id }));
+    actions.appendChild(note);
+  }
+  const full = el(`<button type="button" class="btn btn-sm">Open full record</button>`);
+  full.addEventListener("click", () => navigate(`crm/leads/${lead.id}/record`));
+  actions.appendChild(full);
+  pane.appendChild(actions);
+  if (typeof setSelectedObject === "function") setSelectedObject({ type: "lead", id: lead.id, label: lead.name || lead.company || "Lead" });
+}
+
+// Entry point used by the CRM detail router. scope = { route, param, id } for contacts/organizations/opportunities; null for a lead.
+async function renderRelationshipWorkspace(body, { leadId, scope, opportunityId, token, fallback }) {
+  relState.scope = scope || null; relState.q = ""; relState.filter = "all"; relState.opportunityId = opportunityId || "";
+  let startLead = leadId || null;
+  if (scope) {
+    const probe = await apiRelInbox({ [scope.param]: scope.id, limit: 30 });
+    if (token !== state.renderToken) return;
+    if (!probe.relationships.length) { if (fallback) return fallback(); body.innerHTML = ""; body.appendChild(errorPanel("No communication history is linked to this record yet.")); return; }
+    const requested = new URLSearchParams((window.location.hash.split("?")[1] || "")).get("lead");
+    startLead = (requested && probe.relationships.some((r) => r.lead_id === requested) ? requested : probe.relationships[0].lead_id);
+  }
+  relState.leadId = startLead;
+  body.innerHTML = "";
+  const page = el(`
+    <div class="rel-page messages-page rel-thread-open">
+      <div class="messages-list-pane rel-list-pane">
+        <div class="rel-list-head">
+          <h2>${scope ? "Relationships" : "Leads"} <span id="relInboxCount" class="rel-faint"></span></h2>
+          <input type="search" id="relSearch" class="rel-search" placeholder="Search relationships…" aria-label="Search relationships" />
+          <div class="rel-filters">
+            <button type="button" class="rel-filter active" data-filter="all">All</button>
+            <button type="button" class="rel-filter" data-filter="unread">Awaiting reply</button>
+            <button type="button" class="rel-filter" data-filter="mine">Mine</button>
+          </div>
+        </div>
+        <div class="rel-list" id="relInboxList"></div>
+      </div>
+      <div class="messages-thread-pane rel-thread-pane" id="relThreadPane"></div>
+      <div class="messages-details-pane rel-details-pane" id="relDetailsPane"></div>
+    </div>`);
+  body.appendChild(page);
+  let timer = null;
+  page.querySelector("#relSearch").addEventListener("input", (e) => { clearTimeout(timer); timer = setTimeout(() => { relState.q = e.target.value.trim(); relLoadInbox(true); }, 250); });
+  page.querySelectorAll(".rel-filter").forEach((b) => b.addEventListener("click", () => { relState.filter = b.dataset.filter; page.querySelectorAll(".rel-filter").forEach((x) => x.classList.toggle("active", x === b)); relLoadInbox(true); }));
+  relLoadInbox(true);
+  await relLoadThread(true);
 }
 
 boot();

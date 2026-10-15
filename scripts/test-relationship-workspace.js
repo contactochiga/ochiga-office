@@ -136,21 +136,18 @@ async function main() {
     assert.equal(out.delivery.state, "unverified", "provider acceptance is not delivery: no verified status yet"); assert.equal(out.delivery.verified, false);
     await store.appendInboundEvent({ channel: "whatsapp", provider: "meta", event_type: "status:delivered", external_event_id: "wamid.out.1", payload: {} });
     const delivered = (await json(`/${waLead.id}`, sup)).thread.entries.find((e) => e.direction === "outbound"); assert.equal(delivered.delivery.state, "delivered"); assert.equal(delivered.delivery.verified, true);
-    assert.ok(store.state.audit_events.some((e) => e.action === "communication.whatsapp.manual_reply"), "manual reply audited");
+    assert.ok((await store.listAuditEvents(500)).some((e) => e.action === "communication.whatsapp.manual_reply"), "manual reply audited");
     console.log("13/14/9. Takeover, manual-reply permissions, duplicate guard, honest delivery state, audit — PASS");
 
     // staff messages are isolated
-    const { createStaffConversationFixture } = {};
-    void createStaffConversationFixture;
-    store.state.staff_messages.push({ id: "sm-1", conversation_id: "sc-1", sender_email: "super@ochiga.local", body: "PRIVATE-STAFF-ONLY-TEXT", created_at: new Date().toISOString() });
+    const staffConversation = await store.createStaffConversation({ type: "direct", title: "private", createdBy: "super@ochiga.local", participantEmails: ["super@ochiga.local", "staff@ochiga.local"] });
+    await store.createStaffMessage({ conversationId: staffConversation.id, senderEmail: "super@ochiga.local", body: "PRIVATE-STAFF-ONLY-TEXT", attachments: [] });
     const everything = JSON.stringify([await json("?limit=100", sup), await json(`/${waLead.id}`, sup), await json(`/${formLead.id}`, sup)]);
     assert.ok(!everything.includes("PRIVATE-STAFF-ONLY-TEXT"), "staff-only messages never appear in the relationship workspace");
     console.log("10. Staff Messages remain isolated — PASS");
 
     // attachments: authorization + no public URLs
-    await store.createOfficeDocument?.({ id: "doc-rel-1", title: "Company Profile", document_type: "profile", status: "draft", owner: "super@ochiga.local", related_type: "lead", related_id: formLead.id, file_url: "https://private.example/secret.pdf", html_url: "https://private.example/secret.html", share_token: "SECRET-SHARE-TOKEN" });
-    const docs = store.state.office_documents || (store.state.office_documents = []);
-    if (!docs.some((d) => d.id === "doc-rel-1")) docs.push({ id: "doc-rel-1", title: "Company Profile", document_type: "profile", status: "draft", owner: "super@ochiga.local", related_type: "lead", related_id: formLead.id, file_url: "https://private.example/secret.pdf", html_url: "https://private.example/secret.html", share_token: "SECRET-SHARE-TOKEN", created_at: new Date().toISOString() });
+    await store.createOfficeDocument({ id: "doc-rel-1", title: "Company Profile", document_type: "profile", status: "draft", owner: "super@ochiga.local", related_type: "lead", related_id: formLead.id, file_url: "https://private.example/secret.pdf", html_url: "https://private.example/secret.html", share_token: "SECRET-SHARE-TOKEN" });
     const withDoc = await json(`/${formLead.id}`, sup); const att = withDoc.thread.entries.find((e) => e.kind === "attachment");
     assert.ok(att && att.attachments[0].open_route === "documents/doc-rel-1"); const raw = JSON.stringify(withDoc);
     assert.ok(!raw.includes("private.example") && !raw.includes("SECRET-SHARE-TOKEN"), "no public file URL or share token is exposed");
