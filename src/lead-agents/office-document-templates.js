@@ -4,14 +4,17 @@
 // existing invoice/proposal-with-pricing shape (documentHtml in
 // server.js) remains the "basic" template unchanged, reused here rather
 // than duplicated, since it already covers that case correctly.
+const { formatDocumentDate } = require("./document-locale");
+
 function escapeHtmlText(value) {
   return String(value ?? "").replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[char]));
 }
 function nl2br(value) {
   return escapeHtmlText(value).replace(/\n/g, "<br />");
 }
-function today() {
-  return new Date().toLocaleDateString("en-NG", { day: "numeric", month: "long", year: "numeric" });
+// The generation date in the document's governed locale (Settings S6.2). Without a configured locale this is exactly the previous en-NG output.
+function today(config) {
+  return formatDocumentDate(new Date(), config && config.officeDocumentLocale, "long");
 }
 
 const SHARED_STYLE = `
@@ -43,7 +46,7 @@ function pageWrap(config, bodyHtml) {
 
 function renderLetterhead(config, input) {
   return pageWrap(config, `
-    <div class="meta-row">${today()}</div>
+    <div class="meta-row">${today(config)}</div>
     <h1>${escapeHtmlText(input.title || "Letterhead")}</h1>
     <p>${input.body ? nl2br(input.body) : `<span class="placeholder">Add the letter content.</span>`}</p>
     <div class="signature">${escapeHtmlText(input.signature_name || "")}<br />${escapeHtmlText(input.signature_role || "")}</div>
@@ -52,7 +55,7 @@ function renderLetterhead(config, input) {
 
 function renderCoverLetter(config, input) {
   return pageWrap(config, `
-    <div class="meta-row">${today()}</div>
+    <div class="meta-row">${today(config)}</div>
     <p>${escapeHtmlText(input.recipient_name || "Recipient Name")}<br />${input.recipient_address ? nl2br(input.recipient_address) : ""}</p>
     <p>Dear ${escapeHtmlText(input.recipient_name || "Sir/Madam")},</p>
     <p>${input.body ? nl2br(input.body) : `<span class="placeholder">Add the letter content.</span>`}</p>
@@ -67,7 +70,7 @@ function renderMemo(config, input) {
     <table style="width:100%;font-size:13px;color:#101828;margin:14px 0 22px;">
       <tr><td style="width:80px;color:#667085;">To</td><td>${escapeHtmlText(input.memo_to || "")}</td></tr>
       <tr><td style="color:#667085;">From</td><td>${escapeHtmlText(input.memo_from || "")}</td></tr>
-      <tr><td style="color:#667085;">Date</td><td>${today()}</td></tr>
+      <tr><td style="color:#667085;">Date</td><td>${today(config)}</td></tr>
       <tr><td style="color:#667085;">Re</td><td>${escapeHtmlText(input.title || "")}</td></tr>
     </table>
     <p>${input.body ? nl2br(input.body) : `<span class="placeholder">Add the memo content.</span>`}</p>
@@ -95,7 +98,7 @@ function renderProposal(config, input) {
     ([key, label]) => `<h2>${escapeHtmlText(label)}</h2><p>${sections[key] ? nl2br(sections[key]) : `<span class="placeholder">Add content for this section.</span>`}</p>`
   ).join("");
   return pageWrap(config, `
-    <div class="meta-row">Prepared for ${escapeHtmlText(input.recipient || "Client")} · ${today()}</div>
+    <div class="meta-row">Prepared for ${escapeHtmlText(input.recipient || "Client")} · ${today(config)}</div>
     <h1>${escapeHtmlText(input.title || "Oyi Deployment Proposal")}</h1>
     ${sectionsHtml}
   `);

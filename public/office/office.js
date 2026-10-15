@@ -10239,6 +10239,7 @@ const ST_CONFIG_ACTIONS = {
   whatsapp_autonomy_setting_changed: "WhatsApp autonomous replies changed",
   office_letterhead_config_updated: "Corporate letterhead updated",
   office_document_brand_name_changed: "Document brand name changed",
+  office_document_locale_changed: "Document locale changed",
   admin_user_created: "Team member added",
   "staff.created": "Team member added",
   "user.invited": "Team invitation created",
@@ -10253,7 +10254,9 @@ const ST_CONFIG_ACTIONS = {
 const ST_CONFIG_PREFIXES = [["communication.outbox.", "Delivery outbox"], ["whatsapp.inbound_visibility.", "Inbound visibility"]];
 function stActivityTitle(e) {
   const action = String(e.action || "");
-  if (ST_CONFIG_ACTIONS[action]) return ST_CONFIG_ACTIONS[action];
+  // A refused, conflicting or failed attempt is shown, but never worded as if the change happened.
+  const failed = (e.status || (e.metadata && e.metadata.status) || "success") !== "success";
+  if (ST_CONFIG_ACTIONS[action]) return failed ? `Not applied: ${ST_CONFIG_ACTIONS[action]}` : ST_CONFIG_ACTIONS[action];
   const pre = ST_CONFIG_PREFIXES.find(([p]) => action.startsWith(p));
   if (pre) { const verb = action.slice(pre[0].length).replace(/_/g, " "); return `${pre[1]} ${verb}`; }
   return null;
@@ -10268,6 +10271,7 @@ function stActivityDetail(e) {
     else parts.push(`${m.old_value ? "ON" : "OFF"} → ${to}`);
   }
   else if (e.action === "whatsapp_autonomy_setting_changed" && m.requested !== undefined) parts.push("Change was not saved");
+  if (e.action === "office_document_locale_changed" && m.new_value !== undefined) parts.push(`${m.old_value || "default (en-NG)"} → ${m.new_value}`);
   if (e.action === "office_document_brand_name_changed" && m.new_value !== undefined) parts.push(`${m.old_value ? `“${m.old_value}”` : "default"} → “${m.new_value}”`);
   if (m.email && /^(admin_|staff\.|user\.invited)/.test(e.action)) parts.push(String(m.email));
   if (m.role && /^(admin_user_(created|updated)|staff\.created)/.test(e.action)) parts.push(`role ${titleCase(m.role)}`);
@@ -10349,11 +10353,42 @@ async function stRenderCompanyProfileCard(retry) {
   return card;
 }
 
+// ---- S6.2: Document locale (governed enum). Controls only the date presentation on newly generated documents. ----
+function stLocalePreviewHtml(locale) {
+  const now = new Date();
+  let short; let long;
+  try { short = now.toLocaleDateString(locale); long = now.toLocaleDateString(locale, { day: "numeric", month: "long", year: "numeric" }); } catch { short = long = "—"; }
+  return `<dl class="st-facts"><div><dt>Default document</dt><dd class="st-locale-short">${escapeHtml(short)}</dd></div><div><dt>Template documents</dt><dd class="st-locale-long">${escapeHtml(long)}</dd></div></dl>`;
+}
+async function stRenderDocumentLocaleCard(retry) {
+  const card = stCard({ title: "Document locale", subtitle: "How the date is presented on newly generated documents. Existing documents keep the date they were created with. Timestamps, scheduling, meeting times and currency are not affected." });
+  const body = card.querySelector(".st-card-body");
+  const res = await stSafe(() => api("/api/lead-agents/admin/settings/office_document_locale"));
+  if (!res.ok) { body.appendChild(res.status === 403 ? el(`<div class="st-denied">Requires <code>office.read</code>.</div>`) : stErrorWithRetry(res.error, retry)); return card; }
+  const entry = res.data.setting;
+  const preview = el(`<div class="st-locale-preview" aria-live="polite"><div class="st-locale-sample"></div><p class="st-note">Example for today, as it will appear on a new document. Choose a locale to preview it before saving.</p></div>`);
+  const draw = (locale) => { preview.querySelector(".st-locale-sample").innerHTML = stLocalePreviewHtml(locale); };
+  draw(entry.value);
+  const layout = el(`<div class="st-split"><div class="st-split-form"></div><aside class="st-preview"></aside></div>`);
+  layout.querySelector(".st-preview").appendChild(preview);
+  const left = layout.querySelector(".st-split-form");
+  left.appendChild(el(`<dl class="st-facts"><div><dt>Current document locale</dt><dd id="stLocaleCurrent">${escapeHtml(entry.value)}</dd></div><div><dt>Version</dt><dd id="stLocaleVersion">${escapeHtml(String(entry.version))}${entry.updated_by ? ` · changed by ${escapeHtml(entry.updated_by)}` : " · default"}</dd></div></dl>`));
+  if (entry.editable) {
+    const editor = stRegistryEditor(entry, (saved) => { left.querySelector("#stLocaleCurrent").textContent = saved.value; left.querySelector("#stLocaleVersion").textContent = `${saved.version}${saved.updated_by ? ` · changed by ${saved.updated_by}` : ""}`; draw(saved.value); });
+    editor.addEventListener("change", () => draw(editor.elements.value.value));
+    editor.addEventListener("click", (e) => { if (e.target && e.target.dataset && e.target.dataset.act === "reload") setTimeout(() => draw(editor.elements.value.value), 0); });
+    left.appendChild(editor);
+  } else left.appendChild(el(`<p class="st-note">Read-only for your role. Changing it requires <code>settings.manage</code>.</p>`));
+  body.appendChild(layout);
+  return card;
+}
+
 async function stRenderOrganization(retry) {
   const d = await stLoad(["letterhead"]);
   const wrap = el(`<div class="st-stack-col"></div>`);
   wrap.appendChild(el(`<div class="st-title"><h2>Organization</h2><p>Company identity used on generated documents</p></div>`));
   wrap.appendChild(await stRenderCompanyProfileCard(retry));
+  wrap.appendChild(await stRenderDocumentLocaleCard(retry));
   const card = stCard({ title: "Corporate Letterhead", subtitle: "Default header and footer for new documents. Changes affect documents created from now on; existing letters keep their original letterhead." });
   const body = card.querySelector(".st-card-body");
   if (!d.letterhead) body.appendChild(el(`<div class="st-denied">Requires <code>office.read</code>.</div>`));
@@ -10378,7 +10413,7 @@ async function stRenderOrganization(retry) {
     body.appendChild(layout);
   }
   wrap.appendChild(card);
-  wrap.appendChild(stUnavailable({ title: "Legal entity details, locale, timezone, currency", reason: "Office has no settings contract for these yet. They are not shown as editable controls." }));
+  wrap.appendChild(stUnavailable({ title: "Legal entity details, timezone, currency", reason: "Office has no settings contract for these yet. They are not shown as editable controls." }));
   return wrap;
 }
 

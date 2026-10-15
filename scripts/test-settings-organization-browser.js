@@ -81,9 +81,9 @@ async function main() {
 
     // 32. Organization: Company profile card above the Letterhead, default state
     await goAs("settings/organization", ORG_READY);
-    const order = await evalJs(`[...document.querySelectorAll('#stContent .st-card-head h3')].map(h => h.textContent)`); assert.deepEqual(order.slice(0, 2), ["Company profile", "Corporate Letterhead"], "Company profile sits above the Letterhead");
+    const order = await evalJs(`[...document.querySelectorAll('#stContent .st-card-head h3')].map(h => h.textContent)`); assert.deepEqual(order.slice(0, 3), ["Company profile", "Document locale", "Corporate Letterhead"], "Company profile, then Document locale, then the Letterhead");
     assert.equal(await evalJs(`document.querySelector('#stBrandCurrent').textContent`), "OCHIGA OFFICE", "current value = configured default"); assert.ok(/0 · default/.test(await evalJs(`document.querySelector('#stBrandVersion').textContent`)), "never saved: version 0, default");
-    assert.equal(await evalJs(`document.querySelector('.st-brand-name').textContent`), "OCHIGA OFFICE", "preview shows the current name"); assert.equal(await evalJs(`document.querySelectorAll('.st-reg-editor').length`), 1, "exactly one brand editor on the page");
+    assert.equal(await evalJs(`document.querySelector('.st-brand-name').textContent`), "OCHIGA OFFICE", "preview shows the current name"); assert.equal(await evalJs(`document.querySelectorAll('.st-reg-editor').length`), 2, "two governed editors on the page: the brand name (this card) and the document locale (S6.2, beneath it)");
     assert.ok(/not a legal entity name/.test(await evalJs(`document.querySelector('#stContent').innerText`)), "scope is explained: display name, not legal entity");
     assert.equal(await evalJs(`${editorSel}.querySelector('button[type=submit]').disabled`), true, "Save disabled until the value changes");
     // live preview + client-side validation (server stays authoritative)

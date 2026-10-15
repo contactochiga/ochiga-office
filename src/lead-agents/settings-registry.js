@@ -7,6 +7,7 @@
 const { WHATSAPP_AUTONOMY_SETTING_KEY, readWhatsAppAutonomySetting } = require("./whatsapp-autonomy");
 const { settings: outboxSettings } = require("./communication-outbox");
 const { BRAND_KEY, validateBrandName, environmentBrandName } = require("./document-brand");
+const { LOCALE_KEY, SUPPORTED_LOCALES, DEFAULT_LOCALE, validateLocale } = require("./document-locale");
 
 const MODES = Object.freeze(["generic", "delegated", "mirror", "system"]);
 const OWNERS = Object.freeze(["office", "backend", "facility", "consumer", "edge", "platform"]);
@@ -77,6 +78,11 @@ function productionDescriptors(config) {
       key: BRAND_KEY, label: "Document brand name", description: "The display name printed in the header of newly generated documents. Existing documents keep the header they were created with. It is not a legal entity name and does not change the letterhead.",
       type: "string", default: environmentBrandName(config), owner: "office", mode: "generic", storage: "runtime_settings", read_permission: "office.read", write_permission: "settings.manage",
       validator: validateBrandName, audit_action: "office_document_brand_name_changed", edit_section: "organization",
+    }),
+    defineSetting({
+      key: LOCALE_KEY, label: "Document locale", description: "How the date is presented on newly generated documents (en-NG, en-GB or en-US). Existing documents keep the date they were created with. Timestamps, scheduling, meeting times and currency are not affected.",
+      type: "enum", choices: [...SUPPORTED_LOCALES], default: DEFAULT_LOCALE, owner: "office", mode: "generic", storage: "runtime_settings", read_permission: "office.read", write_permission: "settings.manage",
+      validator: validateLocale, audit_action: "office_document_locale_changed", edit_section: "organization",
     }),
     defineSetting({
       key: "office_letterhead_config", label: "Corporate letterhead", description: "Default header and footer for new documents (logo, tagline, contact details).",

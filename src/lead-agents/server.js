@@ -118,6 +118,7 @@ const { DEFAULT_CAPABILITIES } = require("./communications-handoff");
 const { WhatsAppCloudAdapter } = require("./whatsapp");
 const { buildProviderStatusResponse } = require("./intelligence-providers");
 const { resolveDocumentBrandName } = require("./document-brand");
+const { resolveDocumentLocale, formatDocumentDate } = require("./document-locale");
 const { createSettingsRegistry } = require("./settings-registry");
 const { handleSettingsRequest } = require("./settings-api");
 const { handleSettingsOperations } = require("./settings-operations");
@@ -1035,7 +1036,7 @@ function documentHtml(config, input) {
     <section class="head">
       <div class="brand">${escapeHtmlText(config.officeDocumentBrandName)}</div>
       <h1>${safeTitle}</h1>
-      <div>${type} · ${new Date().toLocaleDateString("en-NG")}</div>
+      <div>${type} · ${formatDocumentDate(new Date(), config.officeDocumentLocale, "short")}</div>
     </section>
     <section class="meta">
       <div><strong>Recipient</strong><br />${safeRecipient}</div>
@@ -7061,7 +7062,8 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
         const id = `doc_${Date.now().toString(36)}_${crypto.randomBytes(5).toString("hex")}`;
         // Governed document brand name (Settings S6.1): read at generation time; any failure falls back to the environment value and is recorded on the document.
         const brand = await resolveDocumentBrandName(store, config, { log, requestId: ctx.requestId });
-        const documentConfig = { ...config, officeDocumentBrandName: brand.name };
+        const locale = await resolveDocumentLocale(store, { log, requestId: ctx.requestId });
+        const documentConfig = { ...config, officeDocumentBrandName: brand.name, officeDocumentLocale: locale.locale };
         const templateHtml = body.template_id && body.template_id !== "basic" ? renderDocumentFromTemplate(body.template_id, documentConfig, body) : null;
         const html = templateHtml || documentHtml(documentConfig, body);
         const storedHtmlRaw = await storageService.putText({
@@ -7113,6 +7115,9 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
             source_file_url: body.file_url || "",
             brand_name_source: brand.source,
             brand_setting_version: brand.version,
+            document_locale: locale.locale,
+            document_locale_source: locale.source,
+            document_locale_version: locale.version,
           },
         });
         // A staff session URL (storedHtml.url) 401s for anyone without an
