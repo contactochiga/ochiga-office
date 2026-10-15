@@ -2,6 +2,16 @@ const axios = require("axios");
 const crypto = require("crypto");
 const { normalizePhone } = require("./normalize-lead");
 
+// Writes every UTF-16 code unit above U+007F as a lower-case \uXXXX escape (surrogate pairs become two escapes), leaving ASCII untouched.
+function escapeNonAscii(text) {
+  let out = "";
+  for (let i = 0; i < text.length; i++) {
+    const code = text.charCodeAt(i);
+    out += code > 0x7f ? `\\u${code.toString(16).padStart(4, "0")}` : text[i];
+  }
+  return out;
+}
+
 class WhatsAppCloudAdapter {
   constructor(config) {
     this.config = config;
@@ -44,20 +54,24 @@ class WhatsAppCloudAdapter {
   // BEFORE JSON.parse -- Meta signs the exact bytes it sent, not a
   // reserialized object.
   verifySignature(rawBody, signatureHeader) {
+    // Fails CLOSED: without the app secret nothing can be authenticated.
     if (!this.config.metaAppSecret) return { ok: false, reason: "app_secret_not_configured" };
-    const header = String(signatureHeader || "");
+    const header = String(signatureHeader || "").trim();
+    if (!header) return { ok: false, reason: "missing_signature" };
     const match = header.match(/^sha256=([0-9a-f]{64})$/i);
-    if (!match) return { ok: false, reason: "missing_or_malformed_signature" };
-    const expected = crypto
-      .createHmac("sha256", this.config.metaAppSecret)
-      .update(rawBody, "utf8")
-      .digest("hex");
+    if (!match) return { ok: false, reason: "malformed_signature" };
+    const bytes = Buffer.isBuffer(rawBody) ? rawBody : Buffer.from(String(rawBody ?? ""), "utf8");
     const provided = Buffer.from(match[1].toLowerCase(), "hex");
-    const expectedBuf = Buffer.from(expected, "hex");
-    if (provided.length !== expectedBuf.length || !crypto.timingSafeEqual(provided, expectedBuf)) {
-      return { ok: false, reason: "signature_mismatch" };
+    // Candidate 1: the exact bytes received. Candidate 2 (only when the body contains non-ASCII): the same payload with every character above U+007F written as a
+    // lower-case \uXXXX escape -- the form Meta's platform documentation says its signature is computed over. Both are HMACs under the secret, so accepting either
+    // cannot let anyone forge a request without the secret; it only prevents rejecting genuine messages that contain emoji or accented letters.
+    const candidates = [["raw", bytes]];
+    if (bytes.some((byte) => byte > 0x7f)) candidates.push(["escaped_unicode", Buffer.from(escapeNonAscii(bytes.toString("utf8")), "utf8")]);
+    for (const [method, candidate] of candidates) {
+      const expected = crypto.createHmac("sha256", this.config.metaAppSecret).update(candidate).digest();
+      if (provided.length === expected.length && crypto.timingSafeEqual(provided, expected)) return { ok: true, reason: null, method };
     }
-    return { ok: true, reason: null };
+    return { ok: false, reason: "signature_mismatch" };
   }
 
   extractEvents(body) {
@@ -178,4 +192,5 @@ class WhatsAppCloudAdapter {
 
 module.exports = {
   WhatsAppCloudAdapter,
+  escapeNonAscii,
 };

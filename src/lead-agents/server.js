@@ -126,6 +126,7 @@ const { createOfficeSyncService } = require("./office-sync");
 const { appendAuditRecord } = require("./audit");
 const { PERMISSION_KEYS, ROLE_PERMISSIONS, hasPermission } = require("./permissions");
 const relationshipWorkspace = require("./relationship-workspace");
+const signatureStats = require("./webhook-signature-stats");
 const { performManualSend, reconcileManualSends, resolveManualSend } = require("./manual-whatsapp-send");
 const { recallCrmMemory } = require("./crm-memory-access");
 const { createRealtimeHub } = require("./realtime");
@@ -146,6 +147,7 @@ const {
   notFound,
   readJsonBody,
   readJsonBodyWithRaw,
+  readRawBodyBuffer,
   serveFile,
   serveBuffer,
   setCorsHeaders,
@@ -2316,6 +2318,8 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           stats: await store.stats(),
           environment: config.environment,
           store_driver: config.storeDriver,
+          // booleans / a mode name only: lets an operator confirm that webhook authentication is enforced without exposing any secret
+          whatsapp_webhook: { signature_mode: config.whatsappWebhookSignatureMode === "report" ? "report" : "enforce", app_secret_configured: Boolean(config.metaAppSecret) },
           tier1: {
             auth: {
               mode: config.authMode,
@@ -2367,31 +2371,39 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           return;
         }
         if (req.method === "POST") {
-          const { raw, json: body } = await readJsonBodyWithRaw(req);
-          const signatureCheck = whatsappAdapter.verifySignature(raw, req.headers["x-hub-signature-256"]);
-          // LIVE FINDING (Programme C verification, 2026-08-22): genuine
-          // Meta-originated status-callback traffic was observed failing
-          // this check with reason "signature_mismatch" immediately after
-          // deploy -- the HMAC implementation matches Meta's documented
-          // algorithm exactly (verified against the spec and unit-tested),
-          // so the configured META_APP_SECRET in production is most likely
-          // stale/incorrect (or there is an intermediary altering the raw
-          // body in transit). Rejecting on this check right now would
-          // silently break the entire live WhatsApp reply loop this same
-          // programme built, which is strictly worse than the pre-existing
-          // unverified state. Logged loudly (never silently) and NOT
-          // enforced until a human confirms/regenerates META_APP_SECRET
-          // against the real Meta App Dashboard value -- flip the `return`
-          // back on below once that's confirmed correct.
+          // 1. the EXACT request bytes (never decoded or re-serialised); 2. authenticate them; 3. only then parse, extract events, touch the CRM or Backend.
+          const rawBuffer = await readRawBodyBuffer(req);
+          const signatureCheck = whatsappAdapter.verifySignature(rawBuffer, req.headers["x-hub-signature-256"]);
+          const signatureMode = config.whatsappWebhookSignatureMode === "report" ? "report" : "enforce";
+          signatureStats.record(signatureCheck, { mode: signatureMode, store });
           if (!signatureCheck.ok) {
-            log("warn", "whatsapp_webhook.signature_check_failed_not_enforced", {
+            log(signatureMode === "enforce" ? "warn" : "error", signatureMode === "enforce" ? "whatsapp_webhook.signature_rejected" : "whatsapp_webhook.signature_failed_REPORT_MODE_PROCESSING_ANYWAY", {
               request_id: ctx.requestId,
               reason: signatureCheck.reason,
               has_signature_header: Boolean(req.headers["x-hub-signature-256"]),
+              body_bytes: rawBuffer.length,
+              mode: signatureMode,
             });
+            if (signatureMode === "enforce") {
+              const status = signatureCheck.reason === "app_secret_not_configured" ? 503 : signatureCheck.reason === "signature_mismatch" ? 403 : 401;
+              json(res, status, { error: status === 503 ? "webhook_not_configured" : "invalid_signature" }, { "x-request-id": ctx.requestId });
+              return;
+            }
+          }
+          let body = {};
+          if (rawBuffer.length) {
+            try {
+              body = JSON.parse(rawBuffer.toString("utf8"));
+            } catch (error) {
+              json(res, 400, { error: "invalid_json" }, { "x-request-id": ctx.requestId });
+              return;
+            }
           }
           const events = whatsappAdapter.extractEvents(body);
           log("info", "whatsapp_webhook.received", { request_id: ctx.requestId, event_count: events.length });
+          // Observability only (no behaviour change): events addressed to a phone-number id other than the configured official one are counted and logged.
+          const foreignPhone = config.whatsappPhoneNumberId ? events.filter((e) => e.metadata?.phone_number_id && String(e.metadata.phone_number_id) !== String(config.whatsappPhoneNumberId)).length : 0;
+          if (foreignPhone) { signatureStats.notePhoneMismatch(foreignPhone); log("warn", "whatsapp_webhook.phone_number_id_mismatch", { request_id: ctx.requestId, count: foreignPhone }); }
           const results = [];
           for (const event of events) {
             log("info", "whatsapp_webhook.event", {

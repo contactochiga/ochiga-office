@@ -68,7 +68,8 @@ function createRequestContext(req) {
   };
 }
 
-async function readRawBody(req, maxBytes = 1024 * 1024) {
+// Exact request bytes (never decoded or re-serialised) -- what signature verification must hash.
+async function readRawBodyBuffer(req, maxBytes = 1024 * 1024) {
   const chunks = [];
   let size = 0;
 
@@ -82,7 +83,11 @@ async function readRawBody(req, maxBytes = 1024 * 1024) {
     chunks.push(chunk);
   }
 
-  return Buffer.concat(chunks).toString("utf8");
+  return Buffer.concat(chunks);
+}
+
+async function readRawBody(req, maxBytes = 1024 * 1024) {
+  return (await readRawBodyBuffer(req, maxBytes)).toString("utf8");
 }
 
 async function readJsonBody(req, maxBytes = 1024 * 1024) {
@@ -185,6 +190,7 @@ module.exports = {
   notFound,
   readJsonBody,
   readJsonBodyWithRaw,
+  readRawBodyBuffer,
   serveFile,
   serveBuffer,
   setCorsHeaders,
