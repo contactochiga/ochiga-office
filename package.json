@@ -23,6 +23,7 @@
     "office:oyi-core-delegation:test": "node scripts/test-oyi-core-delegation.js",
     "office:communications-handoff:test": "node scripts/test-communications-handoff.js",
     "office:relationship-workspace:test": "node scripts/test-relationship-workspace.js && node scripts/test-whatsapp-manual-send-durability.js && node scripts/test-relationship-workspace-browser.js",
+    "office:settings:test": "node scripts/test-settings-domain-browser.js",
     "office:communication-outbox:test": "node scripts/test-communication-delivery-outbox.js && node scripts/test-communication-outbox-store.js",
     "office:whatsapp-inbound-visibility:test": "node scripts/test-whatsapp-inbound-crm-visibility.js && node scripts/test-whatsapp-inbound-visibility-store.js && node scripts/test-whatsapp-visibility-repair-dedup.js",
     "office:webhook-signature:test": "node scripts/test-whatsapp-webhook-signature.js",

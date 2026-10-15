@@ -98,6 +98,6 @@ const { evaluateAutonomousWhatsAppPolicy, readWhatsAppAutonomySetting, WHATSAPP_
   assert.match(ui, /status = result\.whatsapp_autonomy;[\s\S]*?draw\(\);/, "success renders the value the server returned");
   assert.match(ui, /Not saved —[\s\S]*The setting above is unchanged/, "a failed save never reports success and leaves the displayed state alone");
   assert.doesNotMatch(ui, /localStorage[^\n]*whatsapp_autonom/i, "the setting is never frontend-only state");
-  assert.ok(ui.indexOf("await renderWhatsAppAutonomyPanel(outlet, token)") > ui.indexOf("async function renderSettingsView") && ui.indexOf("await renderWhatsAppAutonomyPanel(outlet, token)") < ui.indexOf("const syncSection", ui.indexOf("async function renderSettingsView")), "rendered inside Settings -> Integrations");
+  { const start = ui.indexOf("async function stRenderCommunications"); const call = ui.indexOf("await renderWhatsAppAutonomyPanel(holder, token)", start); assert.ok(start > 0 && call > start && call < ui.indexOf("async function stRenderUnavailableSection"), "rendered inside Settings -> Communications (panel itself unchanged)"); assert.match(ui, /key: "communications"[^}]*perm: "integrations\.read"/, "Communications section is gated by integrations.read"); }
   console.log(JSON.stringify({ status: "PASS", suite: "whatsapp-autonomy-store-ui" }));
 })().catch((error) => { console.error(error); process.exit(1); });

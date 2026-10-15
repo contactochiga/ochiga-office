@@ -665,6 +665,13 @@ const NAV_ICONS = {
   briefing: '<circle cx="8" cy="8" r="6"/><path d="M8 5.2v3.3l2.2 1.3"/>',
   trend: '<path d="M2.5 11 6 7.5l2.5 2L13.5 4"/><path d="M10.5 4h3v3"/>',
   lightning: '<path d="M8.5 2 4 9h3.2L7 14l4.5-7H8.3z"/>',
+  "st-clock": '<circle cx="8" cy="8" r="5.5"/><path d="M8 4.8V8l2.2 1.4"/>',
+  "st-org": '<rect x="2.5" y="3" width="6" height="10.5" rx="0.5"/><path d="M8.5 7h5v6.5h-5M4.5 6h2M4.5 8.5h2M4.5 11h2"/>',
+  "st-link": '<path d="M6.8 9.2a2.5 2.5 0 0 0 3.5 0l2-2a2.5 2.5 0 0 0-3.5-3.5l-.8.8"/><path d="M9.2 6.8a2.5 2.5 0 0 0-3.5 0l-2 2a2.5 2.5 0 0 0 3.5 3.5l.8-.8"/>',
+  "st-bolt": '<path d="M8.5 2 4 9h3.2L7 14l4.5-7H8.3z"/>',
+  "st-stack": '<path d="M8 2.5 2.5 5.2 8 8l5.5-2.8z"/><path d="M2.5 8 8 10.8 13.5 8M2.5 10.8 8 13.5l5.5-2.7"/>',
+  "st-pulse": '<path d="M1.5 8.5h3l1.5-4.5 3 8 1.5-3.5h4"/>',
+  "st-search": '<circle cx="7" cy="7" r="4.2"/><path d="M10.2 10.2 13.5 13.5"/>',
   financial: '<rect x="2" y="4.5" width="12" height="8.5" rx="1"/><path d="M2 7h12"/><circle cx="11" cy="10" r="0.9" fill="currentColor" stroke="none"/>',
 };
 function iconSvg(key, className) {
@@ -1458,7 +1465,7 @@ async function renderRoute() {
   } else if (topKey === "settings") {
     outlet.innerHTML = "";
     outlet.appendChild(skeletonPanel(4));
-    await renderSettingsView(outlet, token);
+    await renderSettingsView(outlet, token, rest);
   } else if (topKey === "audit") {
     outlet.innerHTML = "";
     outlet.appendChild(skeletonPanel(4));
@@ -10016,126 +10023,532 @@ async function renderWhatsAppAutonomyPanel(outlet, token) {
   draw();
 }
 
-async function renderSettingsView(outlet, token) {
+// ---------------------------------------------------------------
+// SETTINGS DOMAIN (S1-S2) — governed administrative control center.
+// Rules this block follows (docs/settings-domain/):
+//  * Only verified operational data is shown. A state is "reachable" only when a real
+//    health probe answered; "configured" means credentials are present but NOT verified;
+//    nothing is ever labelled "operational" on the strength of configuration alone.
+//  * Sections without an implemented contract are read-only or clearly "Unavailable".
+//  * Existing WhatsApp autonomy, Corporate Letterhead, integration status and Sync keep
+//    their Backend contracts unchanged (same routes, same payloads).
+//  * No secret value is ever read, shown or written here.
+// ---------------------------------------------------------------
+const SETTINGS_SECTIONS = [
+  { key: "overview", label: "Overview", sub: "System status and quick actions", perm: "settings.manage", icon: "st-clock", mode: "live", words: "status dashboard summary" },
+  { key: "organization", label: "Organization", sub: "Company, letterhead, branding", perm: "settings.manage", icon: "st-org", mode: "partial", words: "company letterhead logo brand address" },
+  { key: "people", label: "People & Access", sub: "Users, roles, permissions", perm: "staff.manage", icon: "team", mode: "readonly", words: "team users roles permissions access" },
+  { key: "intelligence", label: "Intelligence", sub: "Oyi status, AI providers", perm: "audit.read", icon: "observatory", mode: "readonly", words: "oyi ai openai gemini claude anthropic provider model" },
+  { key: "integrations", label: "Integrations", sub: "APIs, services, sync", perm: "integrations.read", icon: "st-link", mode: "partial", words: "api sync facility consumer email maps meta linkedin" },
+  { key: "communications", label: "Communications", sub: "WhatsApp, delivery, channels", perm: "integrations.read", icon: "messages", mode: "partial", words: "whatsapp autonomy webhook signature outbox delivery email" },
+  { key: "automation", label: "Automation", sub: "Workflows, triggers, rules", perm: "tasks.read", icon: "st-bolt", mode: "unavailable", words: "workflows triggers rules automations" },
+  { key: "buildings", label: "Buildings & IoT", sub: "Facility, Consumer, Edge", perm: "estates.read", icon: "development-projects", mode: "readonly", words: "facility consumer edge iot devices twin estates" },
+  { key: "crm", label: "CRM", sub: "Stages, sources, assignment", perm: "crm.read", icon: "crm", mode: "unavailable", words: "stages lead sources assignment duplicate pipeline" },
+  { key: "finance", label: "Finance", sub: "Currency, tax, invoicing", perm: "financial.read", icon: "financial", mode: "unavailable", words: "billing currency tax invoice plans" },
+  { key: "security", label: "Security", sub: "Webhook, session, access", perm: "settings.manage", icon: "audit", mode: "readonly", words: "signature mfa password sessions secrets" },
+  { key: "infrastructure", label: "Infrastructure", sub: "Hosting, storage, data", perm: "settings.manage", icon: "st-stack", mode: "readonly", words: "render supabase storage database environment uptime" },
+  { key: "audit", label: "Audit", sub: "Activity and change history", perm: "audit.read", icon: "reports", mode: "readonly", words: "logs history changes activity" },
+  { key: "system-health", label: "System Health", sub: "Services, diagnostics", perm: "settings.manage", icon: "st-pulse", mode: "readonly", words: "health diagnostics services queue worker" },
+];
+const SETTINGS_MODE_LABEL = { partial: "", readonly: "Read-only", unavailable: "Unavailable", live: "" };
+// state -> [label, tone]. "operational" is deliberately absent: Office cannot verify it.
+const ST_STATES = {
+  reachable: ["Reachable", "green"],
+  unreachable: ["Not reachable", "red"],
+  configured: ["Configured, not verified", "amber"],
+  not_configured: ["Not configured", "grey"],
+  unavailable: ["Unavailable", "grey"],
+  not_qualified: ["Not qualified", "violet"],
+  online: ["Online", "green"],
+  info: ["Info", "blue"],
+};
+const SETTINGS_OWNER = { facility: "Facility", consumer: "Consumer", website: "Website", edge: "Backend", digital_twin: "Digital Twin", events: "Office", email: "Office", storage: "Office", maps: "Office", whatsapp: "Office · Meta", meta: "Office · Meta", linkedin: "Office", google_oauth: "Office", google_marketing: "Office", webhooks: "Office" };
+const SETTINGS_PROBE_KEYS = ["facility", "consumer", "website", "edge", "digital_twin"];
+
+function stSectionByKey(key) { return SETTINGS_SECTIONS.find((s) => s.key === key) || null; }
+function stVisibleSections() { return SETTINGS_SECTIONS.filter((s) => hasPermission(s.perm)); }
+
+// Pure derivation of an honest state from one /admin/integrations entry.
+function stDeriveIntegrationState(key, value) {
+  if (!value || typeof value !== "object") return "unavailable";
+  if (key === "events") return "info";
+  const probe = value.endpoint_health || value.backend_health || value.scene_endpoint;
+  if (probe && probe.checked) return probe.ok ? "reachable" : "unreachable";
+  if (value.same_origin) return "info";
+  if (value.configured === false || value.status === "not_configured" || value.status === "missing_credentials" || value.status === "pending_integration") return "not_configured";
+  if (value.configured === true || value.status) return "configured";
+  return "unavailable";
+}
+
+// ---- S2 components ----
+function stIcon(key, cls = "st-ico") { return iconSvg(key, cls); }
+function stDot(state) { const tone = (ST_STATES[state] || ST_STATES.unavailable)[1]; return `<span class="st-dot st-dot-${tone}" aria-hidden="true"></span>`; }
+function stStateLabel(state) { return (ST_STATES[state] || ST_STATES.unavailable)[0]; }
+function stStatusIndicator(state, label) { return `<span class="st-status">${stDot(state)}<span>${escapeHtml(label || stStateLabel(state))}</span></span>`; }
+function stCard({ title, subtitle = "", actions = "", body = "", cls = "" }) {
+  return el(`<section class="st-card ${cls}"><header class="st-card-head"><div><h3>${escapeHtml(title)}</h3>${subtitle ? `<p>${escapeHtml(subtitle)}</p>` : ""}</div>${actions ? `<div class="st-card-actions">${actions}</div>` : ""}</header><div class="st-card-body">${body}</div></section>`);
+}
+function stFacts(rows) {
+  return `<dl class="st-facts">${rows.filter(Boolean).map(([k, v]) => `<div><dt>${escapeHtml(k)}</dt><dd>${v}</dd></div>`).join("")}</dl>`;
+}
+function stProviderCard({ name, owner, state, stateLabel, facts = [], note = "" }) {
+  return el(`<article class="st-provider"><header><h4>${escapeHtml(name)}</h4>${owner ? `<span class="st-owner">${escapeHtml(owner)}</span>` : ""}</header>${stStatusIndicator(state, stateLabel)}${facts.length ? stFacts(facts) : ""}${note ? `<p class="st-note">${escapeHtml(note)}</p>` : ""}</article>`);
+}
+// Write-only secret indicator: shows presence only, never a value, never a reveal control.
+function stSecretIndicator(label, configured) {
+  return `<span class="st-secret"><span class="st-secret-dots" aria-hidden="true">●●●●●●</span> ${escapeHtml(label)} · ${configured ? "configured" : "not configured"}</span>`;
+}
+function stUnavailable({ title, reason, link }) {
+  const node = el(`<div class="st-unavailable" role="note"><div class="st-unavailable-head"><span class="badge badge-default">Unavailable</span><strong>${escapeHtml(title)}</strong></div><p>${escapeHtml(reason)}</p>${link ? `<a class="st-link" href="#/${escapeHtml(link.to)}">${escapeHtml(link.label)} ›</a>` : ""}</div>`);
+  return node;
+}
+function stPermissionGate(perm, render, fallbackText) {
+  if (hasPermission(perm)) return render();
+  return el(`<div class="st-denied" role="note">${escapeHtml(fallbackText || "You don't have access to this information.")} <code>${escapeHtml(perm)}</code></div>`);
+}
+function stErrorWithRetry(message, retry) {
+  const node = el(`<div class="st-error" role="alert"><strong>Could not load</strong><p>${escapeHtml(message)}</p><button class="btn btn-ghost btn-sm" type="button">Retry</button></div>`);
+  node.querySelector("button").addEventListener("click", retry);
+  return node;
+}
+// Accessible confirmation dialog; resolves true/false. Esc and backdrop cancel, focus is trapped.
+function stConfirmDialog({ title, body, confirmLabel = "Confirm", cancelLabel = "Cancel" }) {
+  return new Promise((resolve) => {
+    const previous = document.activeElement;
+    const backdrop = el(`<div class="st-modal-backdrop"><div class="st-modal" role="dialog" aria-modal="true" aria-labelledby="stModalTitle"><h3 id="stModalTitle">${escapeHtml(title)}</h3><p>${escapeHtml(body)}</p><div class="st-modal-actions"><button type="button" class="btn btn-ghost btn-sm" data-act="cancel">${escapeHtml(cancelLabel)}</button><button type="button" class="btn btn-sm st-btn-primary" data-act="ok">${escapeHtml(confirmLabel)}</button></div></div></div>`);
+    const done = (value) => { document.removeEventListener("keydown", onKey, true); backdrop.remove(); if (previous && previous.focus) previous.focus(); resolve(value); };
+    const buttons = () => [...backdrop.querySelectorAll("button")];
+    function onKey(e) {
+      if (e.key === "Escape") { e.preventDefault(); done(false); return; }
+      if (e.key === "Tab") { const b = buttons(); const i = b.indexOf(document.activeElement); e.preventDefault(); b[(i + (e.shiftKey ? b.length - 1 : 1)) % b.length].focus(); }
+    }
+    backdrop.addEventListener("click", (e) => { if (e.target === backdrop) done(false); });
+    backdrop.querySelector('[data-act="cancel"]').addEventListener("click", () => done(false));
+    backdrop.querySelector('[data-act="ok"]').addEventListener("click", () => done(true));
+    document.addEventListener("keydown", onKey, true);
+    document.body.appendChild(backdrop);
+    backdrop.querySelector('[data-act="cancel"]').focus();
+  });
+}
+// Reusable form: dirty tracking, inline validation, Save/Discard, server-confirmed result. The caller supplies
+// the real save function; the form never claims success the server did not confirm.
+function stForm({ fields, values, canEdit, validate, onSave, saveLabel = "Save" }) {
+  const form = el(`<form class="st-form" novalidate>${fields.map((f) => `<label class="st-field"><span>${escapeHtml(f.label)}</span><input name="${escapeHtml(f.name)}" value="${escapeHtml(values[f.name] || "")}" ${canEdit ? "" : "disabled"} autocomplete="off" /><small class="st-field-error" data-for="${escapeHtml(f.name)}" role="alert"></small></label>`).join("")}${canEdit ? `<div class="st-form-bar"><button type="submit" class="btn btn-sm st-btn-primary" disabled>${escapeHtml(saveLabel)}</button><button type="button" class="btn btn-ghost btn-sm" data-act="discard" disabled>Discard</button><span class="st-form-status" role="status" aria-live="polite"></span></div>` : `<p class="st-note">Read-only for your role.</p>`}</form>`);
+  if (!canEdit) return form;
+  const initial = { ...values };
+  const saveBtn = form.querySelector('button[type="submit"]');
+  const discardBtn = form.querySelector('[data-act="discard"]');
+  const status = form.querySelector(".st-form-status");
+  const current = () => Object.fromEntries(new FormData(form).entries());
+  const isDirty = () => fields.some((f) => String(current()[f.name] || "") !== String(initial[f.name] || ""));
+  const refresh = () => { const d = isDirty(); saveBtn.disabled = !d; discardBtn.disabled = !d; form.dataset.dirty = d ? "1" : "0"; };
+  form.addEventListener("input", () => { status.textContent = ""; refresh(); });
+  discardBtn.addEventListener("click", () => { fields.forEach((f) => { form.elements[f.name].value = initial[f.name] || ""; }); form.querySelectorAll(".st-field-error").forEach((n) => { n.textContent = ""; }); status.textContent = ""; refresh(); form.dispatchEvent(new Event("st-reset")); });
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const data = current();
+    const errors = (validate && validate(data)) || {};
+    form.querySelectorAll(".st-field-error").forEach((n) => { n.textContent = errors[n.dataset.for] || ""; });
+    if (Object.keys(errors).length) { status.textContent = "Fix the highlighted fields."; return; }
+    saveBtn.disabled = true; status.textContent = "Saving…";
+    try {
+      const saved = await onSave(data);
+      Object.assign(initial, saved || data);
+      status.textContent = "Saved.";
+      refresh();
+    } catch (err) {
+      status.textContent = `Not saved — ${err.message || "the setting could not be changed"}. Stored values are unchanged.`;
+      refresh();
+    }
+  });
+  return form;
+}
+
+// ---- verified data access (each call reports ok/error; nothing is invented) ----
+async function stSafe(fn) {
+  try { return { ok: true, data: await fn() }; } catch (err) { return { ok: false, error: err.message || "Request failed", status: err.status || 0 }; }
+}
+async function stFetchHealthz() {
+  const res = await fetch("/healthz", { credentials: "same-origin" });
+  if (!res.ok) throw new Error(`Health check returned ${res.status}`);
+  return res.json();
+}
+async function stLoad(needs) {
+  const jobs = {};
+  if (needs.includes("integrations") && hasPermission("integrations.read")) jobs.integrations = stSafe(() => apiListIntegrations().then((d) => d.integrations || {}));
+  if (needs.includes("health")) jobs.health = stSafe(stFetchHealthz);
+  if (needs.includes("audit") && hasPermission("audit.read")) jobs.audit = stSafe(() => apiListAudit().then((d) => d.audit || []));
+  if (needs.includes("autonomy") && hasPermission("integrations.read")) jobs.autonomy = stSafe(() => apiGetWhatsAppAutonomy().then((d) => d.whatsapp_autonomy));
+  if (needs.includes("outbox") && hasPermission("integrations.manage")) jobs.outbox = stSafe(() => api("/api/lead-agents/admin/communications/outbox").then((d) => d.outbox));
+  if (needs.includes("permissions") && hasPermission("staff.manage")) jobs.permissions = stSafe(() => api("/api/lead-agents/admin/permissions"));
+  if (needs.includes("letterhead") && hasPermission("office.read")) jobs.letterhead = stSafe(() => fetchLetterheadConfig());
+  const keys = Object.keys(jobs);
+  const results = await Promise.all(keys.map((k) => jobs[k]));
+  const out = { loadedAt: new Date() };
+  keys.forEach((k, i) => { out[k] = results[i]; });
+  return out;
+}
+
+// ---- overview tiles: derived only from what was actually fetched ----
+function stOverviewTiles(d) {
+  const tiles = [];
+  const h = d.health && d.health.ok ? d.health.data : null;
+  tiles.push({ section: "system-health", icon: "st-stack", name: "Office Core", state: h ? "online" : "unavailable", detail: h ? `Store: ${h.store_driver || "unknown"} · up ${stUptime(h.uptime_ms)}` : "Health check unavailable" });
+  const integ = d.integrations && d.integrations.ok ? d.integrations.data : null;
+  const back = integ && integ.edge;
+  tiles.push({ section: "intelligence", icon: "observatory", name: "Oyi Intelligence", state: back ? stDeriveIntegrationState("edge", back) : "unavailable", detail: back ? "Backend control-plane health probe" : (d.integrations ? "Integration status unavailable" : "Requires integrations access") });
+  if (integ) {
+    const states = Object.entries(integ).map(([k, v]) => [k, stDeriveIntegrationState(k, v)]);
+    const probes = states.filter(([k]) => SETTINGS_PROBE_KEYS.includes(k));
+    const reach = probes.filter(([, s]) => s === "reachable").length;
+    const failed = probes.filter(([, s]) => s === "unreachable").length;
+    const configured = states.filter(([k, s]) => !SETTINGS_PROBE_KEYS.includes(k) && s === "configured").length;
+    tiles.push({ section: "integrations", icon: "st-link", name: "Integrations", state: failed ? "unreachable" : reach ? "reachable" : "configured", label: `${reach} reachable${failed ? ` · ${failed} failing` : ""}`, detail: `${configured} other configured, not verified` });
+  } else tiles.push({ section: "integrations", icon: "st-link", name: "Integrations", state: "unavailable", detail: "Requires integrations access" });
+  const wa = integ && integ.whatsapp;
+  const aut = d.autonomy && d.autonomy.ok ? d.autonomy.data : null;
+  const ob = d.outbox && d.outbox.ok ? d.outbox.data : null;
+  const commDetail = [aut ? `Autonomy ${aut.enabled ? "ON" : "OFF"}` : null, ob ? `${ob.counts.pending} pending · ${ob.counts.dead} dead` : null].filter(Boolean).join(" · ") || "No further data for your role";
+  tiles.push({ section: "communications", icon: "messages", name: "Communications", state: ob && ob.counts.dead > 0 ? "unreachable" : wa ? stDeriveIntegrationState("whatsapp", wa) : "unavailable", label: ob && ob.counts.dead > 0 ? `${ob.counts.dead} dead-lettered` : wa ? "WhatsApp configured" : undefined, detail: commDetail });
+  const fac = integ && integ.facility, con = integ && integ.consumer;
+  const bs = [fac && stDeriveIntegrationState("facility", fac), con && stDeriveIntegrationState("consumer", con)].filter(Boolean);
+  const bsState = !bs.length ? "unavailable" : bs.includes("unreachable") ? "unreachable" : bs.includes("reachable") ? "reachable" : bs[0];
+  tiles.push({ section: "buildings", icon: "development-projects", name: "Buildings & IoT", state: bsState, label: bs.length ? [fac && `Facility ${stStateLabel(stDeriveIntegrationState("facility", fac)).toLowerCase()}`, con && `Consumer ${stStateLabel(stDeriveIntegrationState("consumer", con)).toLowerCase()}`].filter(Boolean).join(" · ") : undefined, detail: "Device control stays in Facility/Consumer/Edge" });
+  return tiles;
+}
+function stUptime(ms) {
+  const m = Math.floor(Number(ms || 0) / 60000);
+  if (m < 60) return `${m}m`;
+  const hrs = Math.floor(m / 60);
+  return hrs < 48 ? `${hrs}h ${m % 60}m` : `${Math.floor(hrs / 24)}d`;
+}
+function stTileEl(t) {
+  const label = t.label || stStateLabel(t.state);
+  return el(`<a class="st-tile" href="#/settings/${escapeHtml(t.section)}"><span class="st-tile-ico">${stIcon(t.icon)}</span><span class="st-tile-text"><span class="st-tile-name">${escapeHtml(t.name)}</span>${stStatusIndicator(t.state, label)}<span class="st-tile-detail">${escapeHtml(t.detail || "")}</span></span></a>`);
+}
+const ST_ACTIVITY_PATTERN = /setting|letterhead|integration|autonomy|user|role|permission|outbox|repair|invite|password|storage|sync|team|staff/i;
+function stRecentActivity(audit, limit = 5) {
+  return (audit || []).filter((e) => ST_ACTIVITY_PATTERN.test(String(e.action || ""))).slice(0, limit);
+}
+function stActivityList(audit, limit) {
+  const rows = stRecentActivity(audit, limit);
+  if (!rows.length) return `<p class="st-note">No configuration changes found in the ${(audit || []).length} most recent audit events.</p>`;
+  return `<ul class="st-activity">${rows.map((e) => `<li><span class="st-act-ico">${stIcon("audit")}</span><span class="st-act-text"><strong>${escapeHtml(titleCase(e.action))}</strong><small>${escapeHtml(e.actor_email || "system")} · ${escapeHtml(`${e.target_type || e.resource_type || ""} ${e.target_id || e.resource_id || ""}`.trim() || "—")}</small></span><time datetime="${escapeHtml(e.created_at || "")}">${escapeHtml(fmtDateTime(e.created_at))}</time></li>`).join("")}</ul>`;
+}
+
+// ---- section renderers: each returns a node; every one handles its own error/denied/unavailable states ----
+async function stRenderOverview(retry) {
+  const d = await stLoad(["integrations", "health", "audit", "autonomy", "outbox"]);
+  const wrap = el(`<div class="st-stack-col"></div>`);
+  wrap.appendChild(el(`<div class="st-title"><h2>Settings Overview</h2><p>Control and configure your workspace</p></div>`));
+  const tiles = stOverviewTiles(d);
+  const status = stCard({ title: "System Status", subtitle: `Verified at ${d.loadedAt.toLocaleTimeString()} from live probes. “Reachable” means a health probe answered; “configured” means credentials are present but not verified.`, actions: `<a class="st-link" href="#/settings/system-health">View details ›</a>` });
+  const grid = el(`<div class="st-tiles"></div>`);
+  tiles.forEach((t) => grid.appendChild(stTileEl(t)));
+  status.querySelector(".st-card-body").appendChild(grid);
+  const failed = ["health", "integrations"].filter((k) => d[k] && !d[k].ok);
+  if (failed.length) status.querySelector(".st-card-body").appendChild(stErrorWithRetry(`Could not read: ${failed.join(", ")}. Affected tiles show “Unavailable” rather than a guess.`, retry));
+  wrap.appendChild(status);
+  const qa = [
+    hasPermission("staff.manage") && { to: "team", label: "Manage Users", icon: "team" },
+    hasPermission("integrations.read") && { to: "settings/integrations", label: "Configure Integrations", icon: "st-link" },
+    hasPermission("integrations.read") && { to: "settings/communications", label: "Communication Settings", icon: "messages" },
+    hasPermission("audit.read") && { to: "audit", label: "View Audit Log", icon: "reports" },
+  ].filter(Boolean);
+  const qaWrap = el(`<section class="st-block"><h3>Quick Actions</h3><p class="st-sub">Common settings and configuration tasks</p><div class="st-actions-grid">${qa.map((a) => `<a class="st-action" href="#/${a.to}">${stIcon(a.icon)}<span>${escapeHtml(a.label)}</span><span class="st-chev" aria-hidden="true">›</span></a>`).join("") || `<p class="st-note">No quick actions available for your role.</p>`}</div></section>`);
+  wrap.appendChild(qaWrap);
+  const cols = el(`<div class="st-two"></div>`);
+  const recent = stCard({ title: "Recent Activity", subtitle: "Latest configuration changes from the audit trail", actions: hasPermission("audit.read") ? `<a class="st-link" href="#/audit">View all ›</a>` : "", cls: "st-grow" });
+  recent.querySelector(".st-card-body").innerHTML = !hasPermission("audit.read") ? `<p class="st-note">Audit access (<code>audit.read</code>) is required to show activity.</p>` : d.audit && d.audit.ok ? stActivityList(d.audit.data, 5) : "";
+  if (hasPermission("audit.read") && d.audit && !d.audit.ok) recent.querySelector(".st-card-body").appendChild(stErrorWithRetry(d.audit.error, retry));
+  const related = stCard({ title: "Related Areas", subtitle: "Where connected settings live" });
+  const rel = [
+    hasPermission("staff.manage") && ["team", "Team", "Users, roles and per-user permissions", "team"],
+    hasPermission("audit.read") && ["observatory", "Intelligence", "Oyi workers, goals, decisions and traces", "observatory"],
+    hasPermission("audit.read") && ["audit", "Audit", "Full audit trail", "reports"],
+    hasPermission("documents.generate") && ["documents", "Documents", "Letters use the Corporate Letterhead", "documents"],
+  ].filter(Boolean);
+  related.querySelector(".st-card-body").innerHTML = rel.length ? `<ul class="st-rel">${rel.map(([to, t, s, ic]) => `<li><a href="#/${to}">${stIcon(ic)}<span><strong>${escapeHtml(t)}</strong><small>${escapeHtml(s)}</small></span><span class="st-chev" aria-hidden="true">›</span></a></li>`).join("")}</ul>` : `<p class="st-note">Nothing to show for your role.</p>`;
+  cols.appendChild(recent);
+  cols.appendChild(related);
+  wrap.appendChild(cols);
+  return wrap;
+}
+
+async function stRenderOrganization(retry) {
+  const d = await stLoad(["letterhead"]);
+  const wrap = el(`<div class="st-stack-col"></div>`);
+  wrap.appendChild(el(`<div class="st-title"><h2>Organization</h2><p>Company identity used on generated documents</p></div>`));
+  const card = stCard({ title: "Corporate Letterhead", subtitle: "Default header and footer for new documents. Changes affect documents created from now on; existing letters keep their original letterhead." });
+  const body = card.querySelector(".st-card-body");
+  if (!d.letterhead) body.appendChild(el(`<div class="st-denied">Requires <code>office.read</code>.</div>`));
+  else if (!d.letterhead.ok) body.appendChild(stErrorWithRetry(d.letterhead.error, retry));
+  else {
+    const values = d.letterhead.data || {};
+    const fields = [["logo_url", "Logo URL"], ["tagline", "Tagline (optional)"], ["email", "Email"], ["website", "Website"], ["whatsapp", "WhatsApp / Phone"], ["address", "Office Address"], ["social_handle", "Social Handle"]].map(([name, label]) => ({ name, label }));
+    const initial = Object.fromEntries(fields.map((f) => [f.name, f.name === "logo_url" ? (values.logo_url || "/office/brand/ochiga-logo-light.png") : (values[f.name] || "")]));
+    const layout = el(`<div class="st-split"><div class="st-split-form"></div><aside class="st-preview" aria-label="Letterhead preview"></aside></div>`);
+    const preview = layout.querySelector(".st-preview");
+    const drawPreview = (v) => { preview.innerHTML = `<div class="st-preview-sheet"><div class="st-preview-logo">${v.logo_url ? `<img alt="Letterhead logo" src="${escapeHtml(v.logo_url)}" onerror="this.style.display='none'">` : ""}</div>${v.tagline ? `<div class="st-preview-tag">${escapeHtml(v.tagline)}</div>` : ""}<div class="st-preview-lines">${[v.email, v.website, v.whatsapp, v.address, v.social_handle].filter(Boolean).map((x) => `<span>${escapeHtml(x)}</span>`).join("") || "<span>No contact details set</span>"}</div></div><p class="st-note">Preview of unsaved values.</p>`; };
+    drawPreview(initial);
+    const form = stForm({
+      fields, values: initial, canEdit: hasPermission("settings.manage"),
+      validate: (data) => (data.email && !/^\S+@\S+\.\S+$/.test(String(data.email).trim()) ? { email: "Enter a valid email address." } : {}),
+      onSave: async (data) => { await apiPatchLetterheadConfig(data); invalidate("letterheadConfig"); return data; },
+      saveLabel: "Save Letterhead",
+    });
+    form.addEventListener("input", () => drawPreview(Object.fromEntries(new FormData(form).entries())));
+    form.addEventListener("st-reset", () => drawPreview(Object.fromEntries(new FormData(form).entries())));
+    layout.querySelector(".st-split-form").appendChild(form);
+    body.appendChild(layout);
+  }
+  wrap.appendChild(card);
+  wrap.appendChild(stUnavailable({ title: "Company profile, locale, timezone, currency", reason: "Office has no settings contract for these yet. They are not shown as editable controls." }));
+  return wrap;
+}
+
+async function stRenderPeople(retry) {
+  const d = await stLoad(["permissions"]);
+  const wrap = el(`<div class="st-stack-col"></div>`);
+  wrap.appendChild(el(`<div class="st-title"><h2>People &amp; Access</h2><p>Who can use Office, and what they can do</p></div>`));
+  const team = stCard({ title: "Team", subtitle: "Invite, edit, deactivate and assign per-user permissions", actions: `<a class="btn btn-ghost btn-sm" href="#/team">Open Team</a>` });
+  team.querySelector(".st-card-body").innerHTML = `<p class="st-note">Team management is unchanged and remains the only place users and per-user permission scopes are edited.</p>`;
+  wrap.appendChild(team);
+  const roles = stCard({ title: "Role catalogue", subtitle: "Read-only. Roles are defined in code, not editable here." });
+  const rb = roles.querySelector(".st-card-body");
+  if (!d.permissions) rb.appendChild(el(`<div class="st-denied">Requires <code>staff.manage</code>.</div>`));
+  else if (!d.permissions.ok) rb.appendChild(stErrorWithRetry(d.permissions.error, retry));
+  else {
+    const p = d.permissions.data; const list = p.canonical_roles || [];
+    rb.innerHTML = `<table class="st-table"><thead><tr><th>Role</th><th>Permissions</th></tr></thead><tbody>${list.map((r) => `<tr><td>${escapeHtml(titleCase(r))}</td><td>${(p.roles && p.roles[r] ? p.roles[r].length : 0)} of ${(p.scopes || []).length}</td></tr>`).join("")}</tbody></table>`;
+  }
+  wrap.appendChild(roles);
+  wrap.appendChild(stUnavailable({ title: "Session policy, MFA, password policy, session revocation", reason: "No Office contract exists for these. Session length is set by deployment configuration and is not editable here." }));
+  return wrap;
+}
+
+function stAiProviderCards() {
+  const src = "IQ-11F provider-neutral gateway decision, 2026-10-14";
+  const mk = (name, extra) => stProviderCard({ name, owner: "Backend / Core", state: "not_qualified", facts: [["Activation", "Unavailable"], ["Model", "Not selected"], ["Authorized spend", "USD 0"], ["Data-processing review", "Pending"]], note: extra || "Activation requires a separate qualification and approval." });
+  const grid = el(`<div class="st-providers"></div>`);
+  grid.appendChild(mk("OpenAI", "Existing assistant features use environment-configured OpenAI. That legacy path is not an IQ-11F qualification and is not managed here."));
+  grid.appendChild(mk("Google Gemini"));
+  grid.appendChild(mk("Anthropic Claude"));
+  return { grid, src };
+}
+async function stRenderIntelligence(retry) {
+  const d = await stLoad(["integrations"]);
+  const wrap = el(`<div class="st-stack-col"></div>`);
+  wrap.appendChild(el(`<div class="st-title"><h2>Intelligence</h2><p>Oyi status and AI provider qualification</p></div>`));
+  const oyi = stCard({ title: "Oyi Intelligence", subtitle: "Workers, goals, decisions, actions and traces are read-only in Intelligence", actions: `<a class="btn btn-ghost btn-sm" href="#/observatory">Open Intelligence</a>` });
+  const back = d.integrations && d.integrations.ok ? d.integrations.data.edge : null;
+  oyi.querySelector(".st-card-body").innerHTML = back ? stFacts([["Backend control plane", stStatusIndicator(stDeriveIntegrationState("edge", back))], ["Probe", back.backend_health && back.backend_health.checked ? `/health${back.backend_health.http_status ? ` · HTTP ${back.backend_health.http_status}` : ""}` : "Not checked"]]) : `<p class="st-note">${d.integrations && !d.integrations.ok ? escapeHtml(d.integrations.error) : "Backend status requires integrations access."}</p>`;
+  if (d.integrations && !d.integrations.ok) oyi.querySelector(".st-card-body").appendChild(stErrorWithRetry(d.integrations.error, retry));
+  wrap.appendChild(oyi);
+  const { grid, src } = stAiProviderCards();
+  const ai = stCard({ title: "AI providers", subtitle: `Status only. Office stores no provider keys and cannot activate inference. Source: ${src}.` });
+  ai.querySelector(".st-card-body").appendChild(grid);
+  wrap.appendChild(ai);
+  return wrap;
+}
+
+function stIntegrationCards(integ, keys) {
+  const grid = el(`<div class="st-providers"></div>`);
+  keys.filter((k) => integ[k]).forEach((k) => {
+    const v = integ[k]; const state = stDeriveIntegrationState(k, v);
+    const probe = v.endpoint_health || v.backend_health || v.scene_endpoint;
+    const facts = [];
+    if (probe && probe.checked) facts.push(["Health probe", probe.http_status ? `HTTP ${probe.http_status}` : escapeHtml(String(probe.status || "no response"))]);
+    else if (probe) facts.push(["Health probe", "Not run"]);
+    if (Array.isArray(v.missing) && v.missing.length) facts.push(["Missing configuration", escapeHtml(v.missing.join(", "))]);
+    grid.appendChild(stProviderCard({ name: v.name || titleCase(k), owner: SETTINGS_OWNER[k] || "Office", state, facts }));
+  });
+  return grid;
+}
+async function stRenderIntegrations(retry) {
+  const d = await stLoad(["integrations"]);
+  const wrap = el(`<div class="st-stack-col"></div>`);
+  wrap.appendChild(el(`<div class="st-title"><h2>Integrations</h2><p>Services Office integrates with, and their verified status</p></div>`));
+  if (!d.integrations) { wrap.appendChild(el(`<div class="st-denied">Requires <code>integrations.read</code>.</div>`)); return wrap; }
+  if (!d.integrations.ok) { wrap.appendChild(stErrorWithRetry(d.integrations.error, retry)); return wrap; }
+  const integ = d.integrations.data;
+  const legend = el(`<p class="st-sub">Configuration values (keys, tokens) are never shown or editable here; they are managed in deployment configuration. Verified at ${d.loadedAt.toLocaleTimeString()}.</p>`);
+  wrap.appendChild(legend);
+  const probed = stCard({ title: "Health-probed services", subtitle: "Reachable only when the probe answered" });
+  probed.querySelector(".st-card-body").appendChild(stIntegrationCards(integ, SETTINGS_PROBE_KEYS));
+  wrap.appendChild(probed);
+  const cfg = stCard({ title: "Configuration-only services", subtitle: "Office can confirm credentials are present, not that the service accepts them" });
+  cfg.querySelector(".st-card-body").appendChild(stIntegrationCards(integ, Object.keys(integ).filter((k) => !SETTINGS_PROBE_KEYS.includes(k))));
+  wrap.appendChild(cfg);
+  wrap.appendChild(stPermissionGate("office.manage", () => {
+    const sync = stCard({ title: "Synchronization", subtitle: "Pull the latest safe operational snapshot from Oyi Facility and Consumer" });
+    const row = el(`<div class="st-btn-row"></div>`); const status = el(`<span class="st-form-status" id="syncStatus" role="status" aria-live="polite"></span>`);
+    ["facility", "consumer", "all"].forEach((target) => {
+      const btn = el(`<button class="btn btn-ghost btn-sm" type="button">Sync ${escapeHtml(titleCase(target))}</button>`);
+      btn.addEventListener("click", async () => {
+        if (target === "all" && !(await stConfirmDialog({ title: "Sync Facility and Consumer?", body: "This pulls a fresh operational snapshot from both systems into Office. It does not change Facility or Consumer.", confirmLabel: "Sync all" }))) return;
+        btn.disabled = true; status.textContent = "Syncing…";
+        try { await apiTriggerOfficeSync(target); status.textContent = `${titleCase(target)} sync completed.`; } catch (err) { status.textContent = err.message || "Sync failed."; } finally { btn.disabled = false; }
+      });
+      row.appendChild(btn);
+    });
+    sync.querySelector(".st-card-body").append(row, status);
+    return sync;
+  }));
+  return wrap;
+}
+
+async function stRenderCommunications(retry, token) {
+  const d = await stLoad(["health", "outbox"]);
+  const wrap = el(`<div class="st-stack-col"></div>`);
+  wrap.appendChild(el(`<div class="st-title"><h2>Communications</h2><p>WhatsApp autonomy, webhook security and delivery</p></div>`));
+  const wa = stCard({ title: "WhatsApp autonomous replies", subtitle: "Server-authoritative switch. Default OFF; the server-stored value is always what is shown." });
+  wrap.appendChild(wa);
+  const holder = el(`<div class="st-legacy-panel"></div>`);
+  wa.querySelector(".st-card-body").appendChild(holder);
+  await renderWhatsAppAutonomyPanel(holder, token);
+  const h = d.health && d.health.ok ? d.health.data : null;
+  const sig = stCard({ title: "Webhook signature", subtitle: "Read-only. Changed only through deployment configuration." });
+  sig.querySelector(".st-card-body").innerHTML = h && h.whatsapp_webhook ? stFacts([["Signature mode", h.whatsapp_webhook.signature_mode === "enforce" ? `${badge("Enforce", "green")} unsigned or wrongly signed requests are rejected` : `${badge("Report", "amber")} signatures are checked but not enforced`], ["App secret", stSecretIndicator("Meta app secret", h.whatsapp_webhook.app_secret_configured)]]) : `<p class="st-note">Health data unavailable.</p>`;
+  wrap.appendChild(sig);
+  wrap.appendChild(stPermissionGate("integrations.manage", () => {
+    const card = stCard({ title: "Delivery outbox", subtitle: "Inbound WhatsApp evidence delivered to the Oyi Backend. Reconcile and recovery remain on the admin API." });
+    const b = card.querySelector(".st-card-body");
+    if (!d.outbox) b.innerHTML = `<p class="st-note">Unavailable.</p>`;
+    else if (!d.outbox.ok) b.appendChild(stErrorWithRetry(d.outbox.error, retry));
+    else {
+      const o = d.outbox.data;
+      b.innerHTML = stFacts([["Pending", String(o.counts.pending)], ["Delivered", String(o.counts.delivered)], ["Dead-lettered", o.counts.dead ? badge(String(o.counts.dead), "red") : "0"], ["Due now", String(o.due_now)], ["In flight", String(o.in_flight)], ["Worker", o.worker ? "Running" : "Not running"], ["Oldest pending", o.oldest_pending_at ? escapeHtml(fmtDateTime(o.oldest_pending_at)) : "None"]]);
+      if (o.undelivered && o.undelivered.length) b.insertAdjacentHTML("beforeend", `<table class="st-table"><thead><tr><th>Event</th><th>Status</th><th>Attempts</th><th>Last error</th></tr></thead><tbody>${o.undelivered.slice(0, 10).map((e) => `<tr><td>…${escapeHtml(e.provider_message_id_tail)} · ${escapeHtml(e.event_type)}</td><td>${escapeHtml(e.status)}</td><td>${escapeHtml(String(e.attempts))}</td><td>${escapeHtml(e.last_error || "—")}</td></tr>`).join("")}</tbody></table>`);
+    }
+    return card;
+  }, "Delivery outbox is visible to administrators."));
+  wrap.appendChild(stUnavailable({ title: "Templates, quiet hours, channel routing", reason: "No Office settings contract exists for these yet." }));
+  return wrap;
+}
+
+async function stRenderUnavailableSection(def) {
+  const wrap = el(`<div class="st-stack-col"></div>`);
+  wrap.appendChild(el(`<div class="st-title"><h2>${escapeHtml(def.title)}</h2><p>${escapeHtml(def.sub)}</p></div>`));
+  def.items.forEach((i) => wrap.appendChild(stUnavailable(i)));
+  return wrap;
+}
+
+async function stRenderBuildings(retry) {
+  const d = await stLoad(["integrations"]);
+  const wrap = el(`<div class="st-stack-col"></div>`);
+  wrap.appendChild(el(`<div class="st-title"><h2>Buildings &amp; IoT</h2><p>Read-only view of connected building systems</p></div>`));
+  if (!d.integrations) { wrap.appendChild(el(`<div class="st-denied">Requires <code>integrations.read</code>.</div>`)); }
+  else if (!d.integrations.ok) wrap.appendChild(stErrorWithRetry(d.integrations.error, retry));
+  else { const c = stCard({ title: "Building systems", subtitle: "Status from live health probes" }); c.querySelector(".st-card-body").appendChild(stIntegrationCards(d.integrations.data, ["facility", "consumer", "edge", "digital_twin"])); wrap.appendChild(c); }
+  wrap.appendChild(stUnavailable({ title: "Device control and physical verification", reason: "Owned by Facility, Consumer and Edge. Office has no device-control path and none is offered here." }));
+  return wrap;
+}
+async function stRenderSecurity(retry) {
+  const d = await stLoad(["health"]);
+  const wrap = el(`<div class="st-stack-col"></div>`);
+  wrap.appendChild(el(`<div class="st-title"><h2>Security</h2><p>Verified protections, read-only</p></div>`));
+  const h = d.health && d.health.ok ? d.health.data : null;
+  const c = stCard({ title: "Verified controls", subtitle: "Reported by the running server" });
+  if (!h) c.querySelector(".st-card-body").appendChild(stErrorWithRetry(d.health ? d.health.error : "Health unavailable", retry));
+  else c.querySelector(".st-card-body").innerHTML = stFacts([["Webhook signature mode", escapeHtml(h.whatsapp_webhook ? h.whatsapp_webhook.signature_mode : "unknown")], ["Meta app secret", stSecretIndicator("Meta app secret", Boolean(h.whatsapp_webhook && h.whatsapp_webhook.app_secret_configured))], ["Authentication mode", escapeHtml(h.tier1 && h.tier1.auth ? h.tier1.auth.mode : "unknown")], ["Roles / permission keys", h.tier1 && h.tier1.permissions ? `${h.tier1.permissions.roles.length} / ${h.tier1.permissions.permission_count}` : "unknown"]]);
+  wrap.appendChild(c);
+  wrap.appendChild(stUnavailable({ title: "MFA, password policy, session revocation, secrets rotation log", reason: "No Office contract exists. Secrets stay in deployment configuration and are never shown or entered here." }));
+  return wrap;
+}
+async function stRenderInfrastructure(retry) {
+  const d = await stLoad(["health"]);
+  const wrap = el(`<div class="st-stack-col"></div>`);
+  wrap.appendChild(el(`<div class="st-title"><h2>Infrastructure</h2><p>Runtime and storage as reported by the server</p></div>`));
+  const h = d.health && d.health.ok ? d.health.data : null;
+  const c = stCard({ title: "Runtime", subtitle: "From the server health endpoint" });
+  if (!h) c.querySelector(".st-card-body").appendChild(stErrorWithRetry(d.health ? d.health.error : "Health unavailable", retry));
+  else { const st = h.tier1 && h.tier1.storage; c.querySelector(".st-card-body").innerHTML = stFacts([["Environment", escapeHtml(h.environment || "unknown")], ["Data store", escapeHtml(h.store_driver || "unknown")], ["Uptime", escapeHtml(stUptime(h.uptime_ms))], ["File storage", st ? `${escapeHtml(st.driver)} · ${st.configured ? "configured" : "not configured"}` : "unknown"], ["Email provider", h.tier1 && h.tier1.email ? `${escapeHtml(h.tier1.email.provider)} · key ${h.tier1.email.resend_api_key_configured ? "present" : "absent"}` : "unknown"]]); }
+  wrap.appendChild(c);
+  wrap.appendChild(stUnavailable({ title: "Hosting plan, deploy history, backups", reason: "Not exposed to Office. Managed in the hosting and database dashboards." }));
+  return wrap;
+}
+async function stRenderAudit(retry) {
+  const d = await stLoad(["audit"]);
+  const wrap = el(`<div class="st-stack-col"></div>`);
+  wrap.appendChild(el(`<div class="st-title"><h2>Audit</h2><p>Configuration and access changes</p></div>`));
+  const c = stCard({ title: "Recent changes", subtitle: "From the audit trail", actions: `<a class="btn btn-ghost btn-sm" href="#/audit">Open full audit</a>` });
+  if (!d.audit) c.querySelector(".st-card-body").innerHTML = `<p class="st-note">Requires <code>audit.read</code>.</p>`;
+  else if (!d.audit.ok) c.querySelector(".st-card-body").appendChild(stErrorWithRetry(d.audit.error, retry));
+  else c.querySelector(".st-card-body").innerHTML = stActivityList(d.audit.data, 10);
+  wrap.appendChild(c);
+  return wrap;
+}
+async function stRenderSystemHealth(retry) {
+  const d = await stLoad(["health", "integrations", "outbox"]);
+  const wrap = el(`<div class="st-stack-col"></div>`);
+  wrap.appendChild(el(`<div class="st-title"><h2>System Health</h2><p>Live diagnostics, checked ${escapeHtml(d.loadedAt.toLocaleTimeString())}</p></div>`));
+  const tiles = stOverviewTiles(d);
+  const c = stCard({ title: "Services", subtitle: "Same verified signals as the overview", actions: `<button class="btn btn-ghost btn-sm" type="button" id="stRefresh">Refresh</button>` });
+  const grid = el(`<div class="st-tiles"></div>`); tiles.forEach((t) => grid.appendChild(stTileEl(t)));
+  c.querySelector(".st-card-body").appendChild(grid);
+  c.querySelector("#stRefresh").addEventListener("click", retry);
+  wrap.appendChild(c);
+  if (d.outbox && !d.outbox.ok) wrap.appendChild(stErrorWithRetry(`Outbox: ${d.outbox.error}`, retry));
+  wrap.appendChild(stUnavailable({ title: "Historical metrics and alerting", reason: "Office does not record health history, so no trends or uptime percentages are shown." }));
+  return wrap;
+}
+
+const ST_UNAVAILABLE = {
+  automation: { title: "Automation", sub: "Workflows, triggers and rules", items: [{ title: "Automation settings", reason: "Automations are created and run in Tasks → Automations. Office has no global automation settings contract (kill-switch, run limits).", link: { to: "tasks/automations", label: "Open Automations" } }] },
+  crm: { title: "CRM", sub: "Stages, sources and assignment", items: [{ title: "Stages, lead sources, assignment rules, duplicate policy", reason: "No Office settings contract exists. CRM behaviour is defined in code today.", link: { to: "crm", label: "Open CRM" } }] },
+  finance: { title: "Finance", sub: "Currency, tax and invoicing", items: [{ title: "Finance settings", reason: "Office has no finance settings. Financial summaries are read-only from the Backend where they are shown." }] },
+};
+const ST_RENDERERS = {
+  overview: stRenderOverview, organization: stRenderOrganization, people: stRenderPeople, intelligence: stRenderIntelligence,
+  integrations: stRenderIntegrations, communications: stRenderCommunications, buildings: stRenderBuildings,
+  security: stRenderSecurity, infrastructure: stRenderInfrastructure, audit: stRenderAudit, "system-health": stRenderSystemHealth,
+};
+
+let stSearchText = "";
+function stNavListHtml(active) {
+  const q = stSearchText.trim().toLowerCase();
+  const items = stVisibleSections().filter((s) => !q || `${s.label} ${s.sub} ${s.words}`.toLowerCase().includes(q));
+  const list = items.map((s) => `<li><a class="st-nav-item${s.key === active ? " active" : ""}" href="#/settings/${s.key}" ${s.key === active ? 'aria-current="page"' : ""}><span class="st-nav-ico">${stIcon(s.icon)}</span><span class="st-nav-text"><span class="st-nav-top"><span class="st-nav-label">${escapeHtml(s.label)}</span>${SETTINGS_MODE_LABEL[s.mode] ? `<span class="st-nav-tag">${SETTINGS_MODE_LABEL[s.mode]}</span>` : ""}</span><span class="st-nav-sub">${escapeHtml(s.sub)}</span></span></a></li>`).join("");
+  return list || `<li class="st-nav-empty">No settings match “${escapeHtml(stSearchText)}”.</li>`;
+}
+function stSidebarHtml(active) {
+  return `<label class="st-search"><span class="st-search-ico">${stIcon("st-search")}</span><input type="search" id="stSearch" placeholder="Search settings…" aria-label="Search settings" value="${escapeHtml(stSearchText)}" autocomplete="off" /></label><ul class="st-nav-list" role="list" id="stNavList">${stNavListHtml(active)}</ul>`;
+}
+
+async function renderSettingsView(outlet, token, rest = []) {
   setTopbar("Settings", "");
   setSelectedObject(null);
+  const requested = rest[0] || "";
+  const landing = !requested;
+  const key = requested || "overview";
+  const def = stSectionByKey(key);
+  const active = def ? key : "overview";
   outlet.innerHTML = "";
-  outlet.appendChild(skeletonPanel(4));
-
-  let integrations;
-  let letterheadConfig = {};
-  try {
-    const data = await apiListIntegrations();
-    integrations = data.integrations || {};
-    letterheadConfig = await fetchLetterheadConfig().catch(() => ({}));
-  } catch (err) {
-    if (token !== state.renderToken) return;
-    outlet.innerHTML = "";
-    outlet.appendChild(el(`<div class="view-heading"><h1>Settings</h1></div>`));
-    outlet.appendChild(errorPanel(err.message || "Could not load integration status."));
-    return;
-  }
-  if (token !== state.renderToken) return;
-
-  outlet.innerHTML = "";
-  outlet.appendChild(el(`
-    <div class="view-heading">
-      <h1>Settings</h1>
-      <p>Office integration and connectivity status. Read-only unless noted — Office does not fabricate save actions for settings it doesn't actually own.</p>
-    </div>
-  `));
-
-  const section = el(`<div class="overview-section"><h3>Integration status</h3></div>`);
-  const grid = el(`<div class="fact-grid"></div>`);
-  Object.entries(integrations).forEach(([key, value]) => {
-    const ok = value && (value.ok === true || value.status === "active" || value.status === "same_origin");
-    const configured = !(value && value.status === "not_configured");
-    const tone = ok ? "green" : configured ? "amber" : "default";
-    const label = configured ? (ok ? "Connected" : "Configured, not reachable") : "Not configured";
-    grid.appendChild(el(`
-      <div class="fact"><div class="fact-label">${escapeHtml(titleCase(key))}</div><div class="fact-value">${badge(label, tone)}</div></div>
-    `));
+  const page = el(`<div class="st-page" data-landing="${landing ? "1" : "0"}" data-section="${escapeHtml(active)}"><header class="st-head"><span class="st-head-ico">${stIcon("settings", "st-ico st-ico-lg")}</span><div><h1>Settings</h1><p>Manage your office, integrations and preferences</p></div></header><div class="st-shell"><nav class="st-side" aria-label="Settings sections">${stSidebarHtml(active)}</nav><main class="st-main" id="stMain" tabindex="-1"><a class="st-back" href="#/settings">‹ All settings</a><div id="stContent"></div></main></div></div>`);
+  outlet.appendChild(page);
+  const searchInput = page.querySelector("#stSearch");
+  searchInput.addEventListener("input", () => {
+    stSearchText = searchInput.value;
+    page.querySelector("#stNavList").innerHTML = stNavListHtml(active);
   });
-  section.appendChild(grid);
-  outlet.appendChild(section);
-
-  if (hasPermission("integrations.read")) {
-    await renderWhatsAppAutonomyPanel(outlet, token);
+  const content = page.querySelector("#stContent");
+  content.appendChild(skeletonPanel(4));
+  const drawSection = async () => {
+    let node;
+    try {
+      if (!def) node = el(`<div class="st-denied">Unknown settings section “${escapeHtml(requested)}”. <a class="st-link" href="#/settings">Back to overview</a></div>`);
+      else if (!hasPermission(def.perm)) node = el(`<div class="st-denied" role="alert">You don't have access to ${escapeHtml(def.label)}. Required permission: <code>${escapeHtml(def.perm)}</code></div>`);
+      else if (ST_UNAVAILABLE[active]) node = await stRenderUnavailableSection(ST_UNAVAILABLE[active]);
+      else node = await ST_RENDERERS[active](() => { content.innerHTML = ""; content.appendChild(skeletonPanel(4)); drawSection(); }, token);
+    } catch (err) {
+      node = stErrorWithRetry(err.message || "This section could not be rendered.", () => { content.innerHTML = ""; content.appendChild(skeletonPanel(4)); drawSection(); });
+    }
     if (token !== state.renderToken) return;
-  }
-
-  if (hasPermission("office.manage")) {
-    const syncSection = el(`<div class="overview-section" style="margin-top:24px;"><h3>Sync</h3></div>`);
-    const syncBody = el(`<p>Pull the latest safe operational snapshot from Oyi Facility and Consumer.</p>`);
-    const btnRow = el(`<div class="inline-form"></div>`);
-    const statusLabel = el(`<span class="hint" id="syncStatus"></span>`);
-    ["facility", "consumer", "all"].forEach((target) => {
-      const btn = el(`<button class="btn btn-ghost" type="button">Sync ${escapeHtml(titleCase(target))}</button>`);
-      btn.addEventListener("click", async () => {
-        btn.disabled = true;
-        statusLabel.textContent = "Syncing…";
-        try {
-          await apiTriggerOfficeSync(target);
-          statusLabel.textContent = `${titleCase(target)} sync completed.`;
-        } catch (err) {
-          statusLabel.textContent = err.message || "Sync failed.";
-        } finally {
-          btn.disabled = false;
-        }
-      });
-      btnRow.appendChild(btn);
-    });
-    syncSection.appendChild(syncBody);
-    syncSection.appendChild(btnRow);
-    syncSection.appendChild(statusLabel);
-    outlet.appendChild(syncSection);
-  }
-
-  // Corporate Letterhead master config -- keeping it very small on
-  // purpose (this is the entire "template management" surface, not a
-  // platform): logo/tagline/contact fields only, PATCHed as one row.
-  // Editing here only ever affects documents created AFTER the save —
-  // every existing Letterhead document already carries its own
-  // snapshot and is untouched by this form.
-  if (hasPermission("settings.manage")) {
-    const letterheadSection = el(`<div class="overview-section" style="margin-top:24px;"><h3>Corporate Letterhead</h3></div>`);
-    const letterheadNote = el(`<p class="hint">Used as the default header/footer for new "Documents → New Document" letters. Changing these values only affects documents created from now on — existing letters keep the letterhead that was in place when they were written.</p>`);
-    const form = el(`
-      <form class="inline-form" style="flex-direction:column;align-items:stretch;gap:12px;max-width:520px;">
-        <label>Logo URL<input name="logo_url" value="${escapeHtml(letterheadConfig.logo_url || "/office/brand/ochiga-logo-light.png")}" /></label>
-        <label>Tagline (optional)<input name="tagline" value="${escapeHtml(letterheadConfig.tagline || "")}" /></label>
-        <label>Email<input name="email" value="${escapeHtml(letterheadConfig.email || "")}" /></label>
-        <label>Website<input name="website" value="${escapeHtml(letterheadConfig.website || "")}" /></label>
-        <label>WhatsApp / Phone<input name="whatsapp" value="${escapeHtml(letterheadConfig.whatsapp || "")}" /></label>
-        <label>Office Address<input name="address" value="${escapeHtml(letterheadConfig.address || "")}" /></label>
-        <label>Social Handle<input name="social_handle" value="${escapeHtml(letterheadConfig.social_handle || "")}" /></label>
-        <div><button type="submit" class="btn btn-primary btn-sm">Save Letterhead</button> <span class="form-status"></span></div>
-      </form>
-    `);
-    form.addEventListener("submit", async (event) => {
-      event.preventDefault();
-      const statusEl = form.querySelector(".form-status");
-      const formData = Object.fromEntries(new FormData(form).entries());
-      try {
-        await apiPatchLetterheadConfig(formData);
-        invalidate("letterheadConfig");
-        statusEl.textContent = "Saved.";
-      } catch (err) {
-        statusEl.textContent = err.message || "Could not save.";
-      }
-    });
-    letterheadSection.appendChild(letterheadNote);
-    letterheadSection.appendChild(form);
-    outlet.appendChild(letterheadSection);
-  }
-
-  const notOwned = el(`
-    <div class="overview-section" style="margin-top:24px;">
-      <h3>Not yet owned by Office</h3>
-      <p class="hint">Company/business profile, notification preferences, CRM assignment defaults, and session/security policy do not have a real Office settings contract yet — shown here honestly rather than as fabricated toggles.</p>
-    </div>
-  `);
-  outlet.appendChild(notOwned);
+    content.innerHTML = "";
+    content.appendChild(node);
+  };
+  await drawSection();
 }
 
 // ---------------------------------------------------------------
