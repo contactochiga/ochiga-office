@@ -381,6 +381,7 @@ function buildInboxEntry({ lead, lastMessage, channelState, opportunities = [] }
     original_source: source.original_source,
     delivery_channel: source.delivery_channel,
     stage: stageOf(lead),
+    business_unit: lead.business_unit || null,
     qualification: qualificationOf(lead) || null,
     owner: lead.owner || null,
     human_owner: channelState?.human_owner || null,

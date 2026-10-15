@@ -2389,7 +2389,17 @@ const CRM_TABS = [
 
 async function renderCrmRoute(outlet, rest, token) {
   const [subKey = "overview", objectId, recordView] = rest;
-  setTopbar("CRM", objectId ? "" : titleCase(subKey));
+  // Canonical routes: #/crm/leads (workspace, most recent lead selected) and #/crm/leads/:id (deep link) open the Unified Relationship Workspace;
+  // #/crm/leads/table is the legacy table; #/crm/leads/:id/record is the classic record. Without crm.read the classic views remain the only ones.
+  const isLeadsTable = subKey === "leads" && objectId === "table";
+  const isLeadsWorkspace = subKey === "leads" && !isLeadsTable && recordView !== "record" && hasPermission("crm.read");
+  setTopbar("CRM", objectId && !isLeadsWorkspace && !isLeadsTable ? "" : titleCase(subKey));
+
+  // Already showing the leads workspace: selecting another lead (link, Back/Forward, the Leads tab) changes the selection in place, no table, no full re-render.
+  if (isLeadsWorkspace && relState.mode === "leads" && outlet.querySelector(".rel-page")) {
+    await relSelectFromRoute(objectId || "", token);
+    return;
+  }
 
   outlet.innerHTML = "";
   // Compact tab row only — the standalone "CRM / Manage relationships…"
@@ -2402,7 +2412,7 @@ async function renderCrmRoute(outlet, rest, token) {
     tabBtn.addEventListener("click", () => navigate(`crm/${tab.key}`));
     tabs.appendChild(tabBtn);
   });
-  if (!objectId && hasPermission("crm.manage")) {
+  if ((!objectId || isLeadsWorkspace || isLeadsTable) && hasPermission("crm.manage")) {
     tabs.appendChild(el(`<div class="crm-tabs-spacer"></div>`));
     const newLeadBtn = el(`<button type="button" class="btn btn-primary btn-sm crm-tabs-action">New Lead +</button>`);
     newLeadBtn.addEventListener("click", () => openCreateLeadDialog());
@@ -2415,7 +2425,11 @@ async function renderCrmRoute(outlet, rest, token) {
   outlet.appendChild(body);
 
   try {
-    if (objectId) {
+    if (isLeadsWorkspace) {
+      await renderRelationshipWorkspace(body, { mode: "leads", leadId: objectId || null, token });
+    } else if (isLeadsTable) {
+      await renderCrmList(body, "leads", token);
+    } else if (objectId) {
       await renderCrmDetail(body, subKey, objectId, token, recordView);
     } else if (subKey === "overview") {
       await renderCrmOverview(body, token);
@@ -17078,7 +17092,7 @@ async function boot() {
 // Customer-facing external communications only; staff Messages (staff_conversations) are a separate system and are never shown here.
 // Data comes from the authorized read model: GET /api/lead-agents/admin/crm/relationships[/:leadId]. Manual WhatsApp replies reuse the existing governed endpoint.
 // ---------------------------------------------------------------
-const relState = { items: [], total: 0, offset: 0, q: "", filter: "all", scope: null, leadId: null, opportunityId: "", data: null, entries: [], nextBefore: null, hasMore: false, token: 0 };
+const relState = { mode: null, lastLeadId: null, stage: "", businessUnit: "", facets: { stages: [], business_units: [] }, items: [], total: 0, offset: 0, q: "", filter: "all", scope: null, leadId: null, opportunityId: "", data: null, entries: [], nextBefore: null, hasMore: false, token: 0 };
 
 async function apiRelInbox(params) {
   const qs = new URLSearchParams();
@@ -17150,21 +17164,27 @@ function renderRelInboxRow(item) {
         <div class="rel-row-meta">
           ${relSourceIcon(item.original_source, "sm")}<span class="rel-row-source">${escapeHtml(item.original_source.label)}</span>
           ${item.stage ? badge(titleCase(item.stage), toneForStatus(item.stage)) : ""}
-          ${item.qualification ? badge(titleCase(item.qualification), "default") : ""}
+          ${item.qualification ? badge(titleCase(item.qualification), item.qualification === "qualified" ? "green" : item.qualification === "unqualified" ? "default" : "amber") : ""}
+          <span class="rel-row-owner" title="Owner">${escapeHtml(item.owner || "Unassigned")}</span>
           ${item.opportunity_count ? `<span class="rel-chip" title="Linked opportunities">${item.opportunity_count} opp.</span>` : ""}
           ${item.human_status && item.human_status !== "auto" ? `<span class="rel-chip rel-chip-human" title="Human takeover${item.human_owner ? ` · ${escapeHtml(item.human_owner)}` : ""}">Human</span>` : ""}
         </div>
       </div>
       ${item.unread ? `<span class="rel-dot" title="Awaiting a reply"></span>` : ""}
     </div>`);
-  row.addEventListener("click", () => { relState.leadId = item.lead_id; relState.opportunityId = ""; relLoadThread(true); relMarkActive(); });
+  row.addEventListener("click", () => {
+    // Leads workspace: the URL carries the selection (#/crm/leads/:id) so Back/Forward and refresh work; the route handler changes the selection in place.
+    if (relState.mode === "leads") { navigate(`crm/leads/${item.lead_id}`); return; }
+    relState.leadId = item.lead_id; relState.opportunityId = ""; relLoadThread(true); relMarkActive();
+  });
   row.addEventListener("keydown", (e) => { if (e.key === "Enter") row.click(); });
   return row;
 }
-function relMarkActive() {
+function relMarkActive(openThread = true) {
   document.querySelectorAll(".rel-row").forEach((r) => r.classList.toggle("active", r.dataset.lead === relState.leadId));
   const page = document.querySelector(".rel-page");
-  if (page) page.classList.add("rel-thread-open");
+  // On a phone the default Leads route shows the inbox first; choosing a lead (openThread) switches to its conversation.
+  if (page && openThread) page.classList.add("rel-thread-open");
 }
 
 async function relLoadInbox(reset) {
@@ -17172,9 +17192,10 @@ async function relLoadInbox(reset) {
   if (!list) return;
   if (reset) { relState.offset = 0; relState.items = []; list.innerHTML = ""; list.appendChild(skeletonPanel(4)); }
   try {
-    const params = { q: relState.q, filter: relState.filter, limit: 30, offset: relState.offset };
+    const params = { q: relState.q, filter: relState.filter, limit: 30, offset: relState.offset, stage: relState.stage, business_unit: relState.businessUnit };
     if (relState.scope) params[relState.scope.param] = relState.scope.id;
     const data = await apiRelInbox(params);
+    if (data.facets) { relState.facets = data.facets; relPopulateFacets(); }
     if (reset) list.innerHTML = "";
     list.querySelector(".rel-more")?.remove();
     relState.items = relState.items.concat(data.relationships);
@@ -17188,10 +17209,23 @@ async function relLoadInbox(reset) {
     }
     const count = document.getElementById("relInboxCount");
     if (count) count.textContent = `(${relState.total})`;
+    return data;
   } catch (err) {
     list.innerHTML = "";
     list.appendChild(errorPanel(err.message || "Could not load relationships."));
+    return null;
   }
+}
+
+function relPopulateFacets() {
+  const fill = (id, values, current, label) => {
+    const select = document.getElementById(id);
+    if (!select) return;
+    const options = [`<option value="">${escapeHtml(label)}</option>`].concat(values.map((v) => `<option value="${escapeHtml(v)}"${v === current ? " selected" : ""}>${escapeHtml(titleCase(String(v).replace(/_/g, " ")))}</option>`));
+    select.innerHTML = options.join("");
+  };
+  fill("relStageFilter", relState.facets.stages, relState.stage, "All stages");
+  fill("relUnitFilter", relState.facets.business_units, relState.businessUnit, "All business units");
 }
 
 function renderRelEntry(entry) {
@@ -17281,6 +17315,7 @@ async function relLoadThread(reset) {
     const data = await apiRelThread(relState.leadId, { limit: 50, opportunity_id: relState.opportunityId });
     if (myToken !== relState.token) return;
     relState.data = data;
+    relState.lastLeadId = data.lead.id;
     relState.entries = data.thread.entries;
     relState.nextBefore = data.thread.next_before;
     relState.hasMore = data.thread.has_more;
@@ -17474,10 +17509,11 @@ function relRenderDetailsPane(pane, data) {
   if (typeof setSelectedObject === "function") setSelectedObject({ type: "lead", id: lead.id, label: lead.name || lead.company || "Lead" });
 }
 
-// Entry point used by the CRM detail router. scope = { route, param, id } for contacts/organizations/opportunities; null for a lead.
-async function renderRelationshipWorkspace(body, { leadId, scope, opportunityId, token, fallback }) {
-  relState.scope = scope || null; relState.q = ""; relState.filter = "all"; relState.opportunityId = opportunityId || "";
+// Entry point used by the CRM router. mode "leads" = the canonical Leads workspace (#/crm/leads[/:id]); scope = { route, param, id } for contacts/organizations/opportunities.
+async function renderRelationshipWorkspace(body, { mode, leadId, scope, opportunityId, token, fallback }) {
+  relState.mode = mode || null; relState.scope = scope || null; relState.q = ""; relState.filter = "all"; relState.stage = ""; relState.businessUnit = ""; relState.opportunityId = opportunityId || "";
   let startLead = leadId || null;
+  const explicit = Boolean(leadId) || Boolean(scope);
   if (scope) {
     const probe = await apiRelInbox({ [scope.param]: scope.id, limit: 30 });
     if (token !== state.renderToken) return;
@@ -17488,15 +17524,19 @@ async function renderRelationshipWorkspace(body, { leadId, scope, opportunityId,
   relState.leadId = startLead;
   body.innerHTML = "";
   const page = el(`
-    <div class="rel-page messages-page rel-thread-open">
+    <div class="rel-page messages-page${explicit ? " rel-thread-open" : ""}">
       <div class="messages-list-pane rel-list-pane">
         <div class="rel-list-head">
-          <h2>${scope ? "Relationships" : "Leads"} <span id="relInboxCount" class="rel-faint"></span></h2>
-          <input type="search" id="relSearch" class="rel-search" placeholder="Search relationships…" aria-label="Search relationships" />
+          <h2>${scope ? "Relationships" : "Leads"} <span id="relInboxCount" class="rel-faint"></span>${mode === "leads" ? `<button type="button" class="rel-table-link" id="relTableLink" title="Open the classic leads table">Table view</button>` : ""}</h2>
+          <input type="search" id="relSearch" class="rel-search" placeholder="Search leads, contacts, companies…" aria-label="Search relationships" />
           <div class="rel-filters">
             <button type="button" class="rel-filter active" data-filter="all">All</button>
             <button type="button" class="rel-filter" data-filter="unread">Awaiting reply</button>
             <button type="button" class="rel-filter" data-filter="mine">Mine</button>
+          </div>
+          <div class="rel-facets">
+            <select id="relStageFilter" class="rel-select" aria-label="Filter by stage"><option value="">All stages</option></select>
+            <select id="relUnitFilter" class="rel-select" aria-label="Filter by business unit"><option value="">All business units</option></select>
           </div>
         </div>
         <div class="rel-list" id="relInboxList"></div>
@@ -17508,7 +17548,57 @@ async function renderRelationshipWorkspace(body, { leadId, scope, opportunityId,
   let timer = null;
   page.querySelector("#relSearch").addEventListener("input", (e) => { clearTimeout(timer); timer = setTimeout(() => { relState.q = e.target.value.trim(); relLoadInbox(true); }, 250); });
   page.querySelectorAll(".rel-filter").forEach((b) => b.addEventListener("click", () => { relState.filter = b.dataset.filter; page.querySelectorAll(".rel-filter").forEach((x) => x.classList.toggle("active", x === b)); relLoadInbox(true); }));
+  page.querySelector("#relStageFilter").addEventListener("change", (e) => { relState.stage = e.target.value; relLoadInbox(true); });
+  page.querySelector("#relUnitFilter").addEventListener("change", (e) => { relState.businessUnit = e.target.value; relLoadInbox(true); });
+  page.querySelector("#relTableLink")?.addEventListener("click", () => navigate("crm/leads/table"));
+
+  if (mode === "leads" && !startLead) {
+    // Canonical #/crm/leads: select the remembered lead if it is still valid, otherwise the most recently active one; no leads => empty state.
+    const inbox = await relLoadInbox(true);
+    if (token !== state.renderToken) return;
+    await relChooseDefaultLead(inbox, token);
+    return;
+  }
   relLoadInbox(true);
+  if (!startLead) return;
+  await relLoadThread(true);
+}
+
+async function relChooseDefaultLead(inbox, token) {
+  const threadPane = document.getElementById("relThreadPane");
+  const first = inbox && inbox.relationships && inbox.relationships[0];
+  let chosen = null;
+  if (relState.lastLeadId) {
+    try { await apiRelThread(relState.lastLeadId, { limit: 1 }); chosen = relState.lastLeadId; } catch { relState.lastLeadId = null; }
+  }
+  if (!chosen && first) chosen = first.lead_id;
+  if (token !== undefined && token !== state.renderToken) return;
+  if (!chosen) {
+    document.getElementById("relDetailsPane").innerHTML = "";
+    threadPane.innerHTML = "";
+    const empty = el(`<div class="messages-empty-state"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M4 5h16v11H9l-5 4V5z"/></svg><h3>No leads yet</h3><p>${relState.q || relState.stage || relState.businessUnit || relState.filter !== "all" ? "No leads match the current search or filters." : "Leads from the website, WhatsApp and manual entry will appear here."}</p></div>`);
+    if (hasPermission("crm.manage")) { const add = el(`<button type="button" class="btn btn-primary btn-sm">New Lead +</button>`); add.addEventListener("click", () => openCreateLeadDialog()); empty.appendChild(add); }
+    threadPane.appendChild(empty);
+    return;
+  }
+  relState.leadId = chosen; relState.opportunityId = "";
+  // The URL always names the selected lead (replace, not push: #/crm/leads stays one history entry).
+  try { history.replaceState(null, "", `#/crm/leads/${chosen}`); state.segments = currentSegmentsFromHash(); } catch { /* non-browser */ }
+  relMarkActive(false);
+  await relLoadThread(true);
+}
+
+// In-place selection for #/crm/leads and #/crm/leads/:id while the workspace is already mounted (row click, Leads tab, Back/Forward).
+async function relSelectFromRoute(leadId, token) {
+  if (!leadId) {
+    const list = document.getElementById("relInboxList");
+    const hasRows = list && list.querySelector(".rel-row");
+    await relChooseDefaultLead(hasRows ? { relationships: relState.items } : await relLoadInbox(true), token);
+    return;
+  }
+  if (leadId === relState.leadId && relState.data && relState.data.lead.id === leadId && !relState.opportunityId) { relMarkActive(true); return; }
+  relState.leadId = leadId; relState.opportunityId = "";
+  relMarkActive(true);
   await relLoadThread(true);
 }
 

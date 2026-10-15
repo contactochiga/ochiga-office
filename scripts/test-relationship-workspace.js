@@ -104,6 +104,16 @@ async function main() {
     assert.equal((await json("?limit=1&offset=1", sup)).relationships.length, 1);
     console.log("7. Inbox list: preview, source, unread, search, offset pagination — PASS");
 
+    // inbox facets and stage / business-unit filters (used by the Leads workspace)
+    const facetData = await json("?limit=100", sup);
+    assert.ok(facetData.facets.stages.length >= 1 && facetData.facets.business_units.includes("development"), "facets describe the scope");
+    const devOnly = await json("?limit=100&business_unit=development", sup); assert.ok(devOnly.relationships.length >= 1 && devOnly.relationships.every((r) => r.business_unit === "development"));
+    assert.equal((await json("?limit=100&business_unit=nonexistent", sup)).relationships.length, 0);
+    assert.equal((await json("?limit=100&business_unit=development", sup)).facets.business_units.includes("development"), true, "facets stay complete while filtered");
+    const stage = facetData.facets.stages[0]; assert.ok((await json(`?limit=100&stage=${encodeURIComponent(stage)}`, sup)).relationships.every((r) => String(r.stage).toLowerCase() === stage.toLowerCase()));
+    assert.equal((await json("?limit=100", sup)).relationships[0].last_activity_at >= (await json("?limit=100", sup)).relationships[1].last_activity_at, true, "inbox is ordered by most recent activity (the Leads default selection)");
+    console.log("19. Inbox facets, stage / business-unit filters, recency ordering — PASS");
+
     // contact / organization / opportunity scopes with explicit links only
     const byContact = await json(`?contact_id=${crm.contact.id}`, sup); assert.deepEqual(byContact.relationships.map((r) => r.lead_id), [formLead.id]);
     const otherContact = await createCorporateRecord(store, "contacts", { name: "Unrelated", email: "nobody@example.com" }, { actorEmail: "t" });

@@ -35,6 +35,7 @@ async function main() {
   const oppB = await createCorporateRecord(store, "opportunities", { contact_id: crm.contact.id, lead_id: formLead.id, business_unit: "technology", inquiry_type: "building_automation", pipeline: "technology", stage: "intake_received" }, { actorEmail: "fixture" });
   await createCorporateRecord(store, "activities", { lead_id: formLead.id, contact_id: crm.contact.id, opportunity_id: oppB.id, related_type: "opportunity", related_id: oppB.id, activity_type: "note", title: "Automation brief", body: "Customer also wants to automate a building.", actor: "super@ochiga.local" }, { actorEmail: "fixture" });
   await fetch(`${base}/webhooks/whatsapp`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ events: [{ kind: "message", from: "2348011112222", message_id: "wamid.b.1", message_type: "text", timestamp: String(Math.floor(Date.now() / 1000)), text: "Hi, I'm interested in a 5000 sqm land JV opportunity in Batam.", profile_name: "Rizal Ahmad" }] }) });
+  await fetch(`${base}/webhooks/whatsapp`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ events: [{ kind: "message", from: "2348033334444", message_id: "wamid.b.2", message_type: "text", timestamp: String(Math.floor(Date.now() / 1000)), text: "Please call me back about the Abuja plot.", profile_name: "Awaiting Reply" }] }) }); // an unanswered inbound => awaiting-reply indicator
   const waLead = (await store.listLeads()).find((l) => l.whatsapp_phone === "2348011112222");
   const login = await fetch(`${base}/api/lead-agents/admin/session/login`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ email: "super@ochiga.local", password: "super-pass-123" }) });
   const [cookieName, cookieValue] = login.headers.get("set-cookie").split(";")[0].split("=");
@@ -91,8 +92,8 @@ async function main() {
     await mk("b-pending", "PENDING-MSG", "pending");
     const unknownSend = await mk("b-unknown", "UNKNOWN-MSG", "outcome_unknown", { failure_reason: "ECONNABORTED" });
     await mk("b-rejected", "REJECTED-MSG", "provider_rejected", { provider_response_code: 400 });
-    await send("Page.reload");
-    await waitFor(`document.querySelector('#relThreadPane').textContent.includes('UNKNOWN-MSG')`, "unknown send shown");
+    await send("Page.reload"); await sleep(400);
+    await waitFor(`document.readyState === 'complete' && !!document.querySelector('#relThreadPane') && document.querySelector('#relThreadPane').textContent.includes('UNKNOWN-MSG')`, "unknown send shown");
     const txt = await evalJs(`document.querySelector('#relThreadPane').textContent`);
     assert.ok(txt.includes("Outcome unknown") && txt.includes("Do not resend"), "unknown outcome indicator");
     assert.ok(txt.includes("Sending — not yet confirmed"), "pending indicator");
@@ -127,10 +128,108 @@ async function main() {
     await waitFor(`!!document.querySelector('.rel-page')`, "opportunity workspace");
     await send("Page.navigate", { url: `${base}/office#/crm/leads/${formLead.id}/record` });
     await waitFor(`!!document.querySelector('.detail-section') && !document.querySelector('.rel-page')`, "classic full record view");
-    await send("Page.navigate", { url: `${base}/office#/crm/leads` });
-    await waitFor(`!!document.querySelector('.crm-tab.active') && !document.querySelector('.rel-page')`, "classic leads list still works");
+    await send("Page.navigate", { url: `${base}/office#/crm/leads/table` });
+    await waitFor(`!!document.querySelector('.crm-tab.active') && !!document.querySelector('.crm-table') && !document.querySelector('.rel-page')`, "classic leads table at #/crm/leads/table");
     console.log("4/16. Contact, organization, opportunity open the workspace; full record and the list view still work — PASS");
 
+    // ---- Leads default route: ONE click on CRM -> Leads opens the three-column workspace ----
+    await send("Emulation.setDeviceMetricsOverride", { width: 1440, height: 900, deviceScaleFactor: 1, mobile: false });
+    const api = (p) => fetch(`${base}/api/lead-agents/admin/crm/relationships${p}`, { headers: { cookie: `${cookieName}=${cookieValue}` } }).then((r) => r.json());
+    const inboxNow = (await api("?limit=30")).relationships; const mostRecent = inboxNow[0];
+    assert.ok(inboxNow.length >= 2, "fixture has several leads");
+    await send("Page.navigate", { url: `${base}/office?fresh=1#/crm/overview` }); // a full page load: no remembered selection
+    await waitFor(`[...document.querySelectorAll('.panel-link')].some((b) => /View Leads/.test(b.textContent))`, "CRM Overview rendered");
+    await evalJs(`[...document.querySelectorAll('.panel-link')].find((b) => /View Leads/.test(b.textContent)).click()`);
+    await waitFor(`!!document.querySelector('.rel-page .rel-bubble-head, .rel-page .rel-card')`, "overview 'View Leads' opens the workspace with a conversation");
+    assert.equal(await evalJs(`document.querySelectorAll('.rel-page > div').length`), 3);
+    assert.equal(await evalJs(`location.hash`), `#/crm/leads/${mostRecent.lead_id}`, "the most recently active lead is selected and named in the URL");
+    assert.ok(await evalJs(`document.querySelector('#relThreadPane').textContent.includes(${JSON.stringify(mostRecent.name)})`), "the centre panel shows the selected customer's conversation");
+    assert.ok(await evalJs(`document.querySelector('#relDetailsPane').textContent.includes('Identity')`), "the right panel shows the profile");
+    assert.ok(await evalJs(`!document.querySelector('.crm-table')`), "no legacy table on the way");
+    await shot("workspace-leads-default-desktop.png");
+    // the Leads tab itself (from another CRM section)
+    await send("Page.navigate", { url: `${base}/office#/crm/contacts` });
+    await waitFor(`!!document.querySelector('.crm-tab[data-crm-tab="leads"]')`, "contacts list tabs");
+    await evalJs(`document.querySelector('.crm-tab[data-crm-tab="leads"]').click()`);
+    await waitFor(`!!document.querySelector('.rel-page .rel-bubble-head, .rel-page .rel-card')`, "Leads tab opens the workspace in one click");
+    assert.equal(await evalJs(`document.querySelector('.crm-tab.active').dataset.crmTab`), "leads");
+    assert.equal(await evalJs(`location.hash`), `#/crm/leads/${mostRecent.lead_id}`, "a still-valid earlier selection is kept when returning to Leads");
+    // indicators preserved in the inbox rows
+    const rowInfo = await evalJs(`(() => { const r = document.querySelector('.rel-row'); return { owner: !!r.querySelector('.rel-row-owner'), badges: r.querySelectorAll('.badge').length, source: !!r.querySelector('.rel-src'), dot: document.querySelectorAll('.rel-dot').length >= 0 }; })()`);
+    assert.ok(rowInfo.owner && rowInfo.badges >= 1 && rowInfo.source, "owner, stage/qualification and source indicators are shown");
+    assert.ok(await evalJs(`!!document.querySelector('.rel-dot')`), "an unread/awaiting-reply indicator is present for a lead with an unanswered inbound message");
+    // clicking another lead changes selection in place (same page element, no table, no full re-render)
+    const other = inboxNow.find((r) => r.lead_id !== mostRecent.lead_id);
+    await evalJs(`window.__relMarker = document.querySelector('.rel-page'); window.__relMarker.dataset.marker = 'same-node'`);
+    await evalJs(`document.querySelector('.rel-row[data-lead="${other.lead_id}"]').click()`);
+    await waitFor(`location.hash === '#/crm/leads/${other.lead_id}' && document.querySelector('#relThreadPane').textContent.includes(${JSON.stringify(other.name)})`, "another lead selected");
+    assert.equal(await evalJs(`document.querySelector('.rel-page').dataset.marker`), "same-node", "the workspace was not re-rendered or replaced by the table");
+    assert.ok(await evalJs(`document.querySelector('.rel-row.active').dataset.lead === '${other.lead_id}'`));
+    // Back / Forward
+    await evalJs(`history.back()`);
+    await waitFor(`location.hash === '#/crm/leads/${mostRecent.lead_id}' && document.querySelector('#relThreadPane').textContent.includes(${JSON.stringify(mostRecent.name)})`, "Back restores the previous lead");
+    await evalJs(`history.forward()`);
+    await waitFor(`location.hash === '#/crm/leads/${other.lead_id}' && document.querySelector('#relThreadPane').textContent.includes(${JSON.stringify(other.name)})`, "Forward restores the next lead");
+    // direct route refresh keeps the deep link
+    await send("Page.reload"); await sleep(400); // let the old document go away before polling the new one
+    await waitFor(`document.readyState === 'complete' && !!document.querySelector('#relSearch') && location.hash === '#/crm/leads/${other.lead_id}' && !!document.querySelector('.rel-page .rel-bubble-head, .rel-page .rel-card') && document.querySelector('#relThreadPane').textContent.includes(${JSON.stringify(other.name)})`, "refresh keeps the selected lead");
+    // search and filters still work
+    await evalJs(`(() => { const i = document.querySelector('#relSearch'); i.value = ${JSON.stringify(other.name)}; i.dispatchEvent(new Event('input')); })()`);
+    await waitFor(`document.querySelectorAll('.rel-row').length === 1`, "search narrows the inbox");
+    await evalJs(`(() => { const i = document.querySelector('#relSearch'); i.value = ''; i.dispatchEvent(new Event('input')); })()`);
+    await waitFor(`document.querySelectorAll('.rel-row').length >= 2`, "search cleared");
+    assert.ok(await evalJs(`document.querySelectorAll('#relStageFilter option').length > 1 && document.querySelectorAll('#relUnitFilter option').length > 1`), "stage and business-unit filters are populated");
+    await evalJs(`(() => { const s = document.querySelector('#relUnitFilter'); s.value = 'development'; s.dispatchEvent(new Event('change')); })()`);
+    await waitFor(`[...document.querySelectorAll('.rel-row')].length >= 1 && ![...document.querySelectorAll('.rel-row-name')].some((n) => /^2348/.test(n.textContent))`, "business-unit filter applied");
+    await evalJs(`(() => { const s = document.querySelector('#relUnitFilter'); s.value = ''; s.dispatchEvent(new Event('change')); })()`);
+    // Table view link and the table fallback; table row opens the workspace
+    await evalJs(`document.querySelector('#relTableLink').click()`);
+    await waitFor(`location.hash === '#/crm/leads/table' && !!document.querySelector('.crm-table') && !document.querySelector('.rel-page')`, "Table view link opens the legacy table");
+    await evalJs(`document.querySelector('.crm-row.clickable').click()`);
+    await waitFor(`(location.hash.startsWith('#/crm/leads/') && location.hash.length === 48) && !!document.querySelector('.rel-page .rel-bubble-head, .rel-page .rel-card')`, "a table row opens its workspace");
+    // classic record
+    await send("Page.navigate", { url: `${base}/office#/crm/leads/${other.lead_id}/record` });
+    await waitFor(`!!document.querySelector('.detail-section') && !document.querySelector('.rel-page')`, "classic record still at /record");
+    // invalid deep link: honest not-found, list still usable, no silent switch
+    await send("Page.navigate", { url: `${base}/office#/crm/leads/00000000-0000-4000-8000-000000000000` });
+    await waitFor(`!!document.querySelector('.rel-page') && document.querySelector('#relThreadPane').textContent.length > 0 && !document.querySelector('#relThreadPane .rel-bubble-head')`, "invalid lead id");
+    assert.equal(await evalJs(`location.hash`), "#/crm/leads/00000000-0000-4000-8000-000000000000", "the URL is not silently rewritten");
+    assert.ok(await evalJs(`document.querySelectorAll('.rel-row').length >= 2`), "the lead list stays usable beside the not-found message");
+    // Contacts / Organizations / Opportunities unchanged
+    await send("Page.navigate", { url: `${base}/office#/crm/contacts/${crm.contact.id}` });
+    await waitFor(`!!document.querySelector('.rel-page') && !document.querySelector('#relTableLink')`, "contacts keep their own workspace behaviour");
+    await send("Page.navigate", { url: `${base}/office#/crm/contacts` });
+    await waitFor(`!!document.querySelector('.crm-table') && !document.querySelector('.rel-page')`, "contacts list unchanged");
+    // mobile: the default route shows the inbox first, a tap opens the conversation, Back returns
+    await send("Emulation.setDeviceMetricsOverride", { width: 390, height: 800, deviceScaleFactor: 2, mobile: true });
+    await send("Page.navigate", { url: `${base}/office#/crm/leads` });
+    await waitFor(`!!document.querySelector('.rel-row') && (location.hash.startsWith('#/crm/leads/') && location.hash.length === 48)`, "mobile default route");
+    assert.ok(await evalJs(`getComputedStyle(document.querySelector('.rel-list-pane')).display !== 'none' && getComputedStyle(document.querySelector('.rel-thread-pane')).display === 'none'`), "mobile default shows the lead list first");
+    await shot("workspace-leads-default-mobile.png");
+    await evalJs(`document.querySelector('.rel-row').click()`);
+    await waitFor(`getComputedStyle(document.querySelector('.rel-thread-pane')).display !== 'none' && getComputedStyle(document.querySelector('.rel-list-pane')).display === 'none'`, "mobile tap opens the conversation");
+    await evalJs(`document.querySelector('.rel-back').click()`);
+    assert.ok(await evalJs(`getComputedStyle(document.querySelector('.rel-list-pane')).display !== 'none'`));
+    assert.ok(await evalJs(`document.documentElement.scrollWidth <= window.innerWidth + 1`), "no horizontal overflow");
+    console.log("18. CRM -> Leads opens the workspace in one click (overview link, tab, deep link, refresh, Back/Forward, table fallback, record, invalid id, filters, mobile) — PASS");
+
+    // ---- empty state: a database with no leads ----
+    {
+      const emptyStore = (await createTempStore()).store;
+      await emptyStore.ensureAdminUser({ email: "super@ochiga.local", password_hash: hashPassword("super-pass-123"), role: "super_admin", display_name: "Super", status: "active" });
+      const emptyServer = buildServer({ config, store: emptyStore, rateLimiter: new MemoryRateLimiter({ windowMs: 60000, maxRequests: 5000 }), publicRateLimiter: new MemoryRateLimiter({ windowMs: 60000, maxRequests: 5000 }), officeRateLimiter: new MemoryRateLimiter({ windowMs: 60000, maxRequests: 5000 }), loginRateLimiter: new MemoryRateLimiter({ windowMs: 60000, maxRequests: 100 }), whatsappAdapter: adapter, openaiClient: {}, toolExecutor: new ToolExecutor({ store: emptyStore, config, log: () => {}, webhooks: new WebhookDispatcher({ config }) }) });
+      const emptyBase = `http://127.0.0.1:${await listen(emptyServer)}`;
+      try {
+        const emptyLogin = await fetch(`${emptyBase}/api/lead-agents/admin/session/login`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ email: "super@ochiga.local", password: "super-pass-123" }) });
+        const [en, ev] = emptyLogin.headers.get("set-cookie").split(";")[0].split("=");
+        await send("Network.setCookie", { name: en, value: ev, url: emptyBase });
+        await send("Page.navigate", { url: `${emptyBase}/office?empty=1#/crm/leads` });
+        await waitFor(`!!document.querySelector('.rel-page') && document.querySelector('#relThreadPane').textContent.includes('No leads yet')`, "empty state");
+        assert.equal(await evalJs(`location.hash`), "#/crm/leads", "no lead to name in the URL");
+        assert.ok(await evalJs(`document.querySelector('#relThreadPane button')?.textContent.includes('New Lead')`), "empty state offers New Lead to permitted staff");
+        console.log("18b. Empty database shows the workspace with an empty state — PASS");
+      } finally { emptyServer.closeAllConnections?.(); await new Promise((r) => emptyServer.close(r)); await send("Network.setCookie", { name: cookieName, value: cookieValue, url: base }); }
+    }
     // 5. mobile layout
     await send("Emulation.setDeviceMetricsOverride", { width: 390, height: 800, deviceScaleFactor: 2, mobile: true });
     await send("Page.navigate", { url: `${base}/office#/crm/leads/${waLead.id}` });
@@ -148,7 +247,7 @@ async function main() {
     console.log(JSON.stringify({ status: "PASS", suite: "relationship-workspace-browser" }));
   } finally {
     try { ws && ws.close(); } catch { /* closed */ }
-    chrome.kill(); await new Promise((r) => server.close(r)); try { fs.rmSync(userDir, { recursive: true, force: true, maxRetries: 5 }); } catch { /* chrome still flushing its profile */ }
+    chrome.kill(); server.closeAllConnections?.(); await new Promise((r) => server.close(r)); try { fs.rmSync(userDir, { recursive: true, force: true, maxRetries: 5 }); } catch { /* chrome still flushing its profile */ }
   }
 }
 main().catch((error) => { console.error(error); process.exit(1); });

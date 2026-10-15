@@ -6747,7 +6747,16 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
             const ids = relationshipWorkspace.leadIdsForScope({ leads: scoped, contacts, opportunities, activities, scope });
             scoped = scoped.filter((lead) => ids.has(lead.id));
           }
-          if (q) scoped = scoped.filter((lead) => `${lead.name || ""} ${lead.company || ""} ${lead.email || ""} ${lead.phone || ""} ${lead.summary || ""}`.toLowerCase().includes(q));
+          // facets describe the whole scope (before the stage / business-unit filters) so the filter menus stay complete
+          const facets = {
+            stages: [...new Set(scoped.map((lead) => relationshipWorkspace.stageOf(lead)).filter(Boolean))].sort(),
+            business_units: [...new Set(scoped.map((lead) => String(lead.business_unit || "").trim()).filter(Boolean))].sort(),
+          };
+          const stageFilter = String(params.get("stage") || "").trim().toLowerCase();
+          const unitFilter = String(params.get("business_unit") || "").trim().toLowerCase();
+          if (stageFilter) scoped = scoped.filter((lead) => String(relationshipWorkspace.stageOf(lead) || "").toLowerCase() === stageFilter);
+          if (unitFilter) scoped = scoped.filter((lead) => String(lead.business_unit || "").trim().toLowerCase() === unitFilter);
+          if (q) scoped = scoped.filter((lead) => `${lead.name || ""} ${lead.company || ""} ${lead.email || ""} ${lead.phone || ""} ${lead.whatsapp_phone || ""} ${lead.summary || ""}`.toLowerCase().includes(q));
           scoped.sort((a, b) => String(b.last_contact_at || b.updated_at || b.created_at).localeCompare(String(a.last_contact_at || a.updated_at || a.created_at)));
           const limit = Math.min(Math.max(Number(params.get("limit")) || 30, 1), 100);
           const offset = Math.max(Number(params.get("offset")) || 0, 0);
@@ -6762,7 +6771,7 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           const filter = String(params.get("filter") || "all");
           if (filter === "unread") items = items.filter((item) => item.unread);
           if (filter === "mine") items = items.filter((item) => authContext.email && [item.owner, item.human_owner].some((v) => String(v || "").toLowerCase() === String(authContext.email).toLowerCase()));
-          json(res, 200, { relationships: items, total: scoped.length, offset, limit, has_more: offset + limit < scoped.length }, { "x-request-id": ctx.requestId });
+          json(res, 200, { relationships: items, total: scoped.length, offset, limit, has_more: offset + limit < scoped.length, facets }, { "x-request-id": ctx.requestId });
           return;
         }
         const lead = await store.getLead(leadId).catch(() => null);
