@@ -117,6 +117,7 @@ const { DEFAULT_CAPABILITIES } = require("./communications-handoff");
 const { WhatsAppCloudAdapter } = require("./whatsapp");
 const { createSettingsRegistry } = require("./settings-registry");
 const { handleSettingsRequest } = require("./settings-api");
+const { handleSettingsOperations } = require("./settings-operations");
 const { evaluateAutonomousWhatsAppPolicy, readWhatsAppAutonomySetting, verifyStaffConfirmedSend, describeWhatsAppAutonomyStatus, WHATSAPP_AUTONOMY_SETTING_KEY } = require("./whatsapp-autonomy");
 const { resolveRecipient, resolveRecipientByEntity } = require("./recipient-resolution");
 const { buildCalendarLinks, parsePreferredSchedule } = require("./scheduling");
@@ -6679,6 +6680,9 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
 
       // Governed Settings registry (S3). The legacy path /admin/settings/whatsapp-autonomy above matches first and keeps its own contract.
       if (pathname.startsWith("/api/lead-agents/admin/settings")) {
+        // S4: allowlisted connection tests and dry-run-only diagnostics (never the apply paths)
+        const opsHandled = await handleSettingsOperations({ req, res, pathname, authContext, store, config, ctx, deps: { json, readJsonBody, appendAuditRecord, authorizePermission, probeEndpoint, authHeadersFromConfig, digitalTwinRuntime, communicationOutbox, inboundVisibility, log } });
+        if (opsHandled) return;
         const handled = await handleSettingsRequest({ req, res, pathname, authContext, store, registry: settingsRegistry, ctx, deps: { json, readJsonBody, appendAuditRecord, authorizePermission } });
         if (handled) return;
       }

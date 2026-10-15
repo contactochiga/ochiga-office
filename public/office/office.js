@@ -10397,6 +10397,27 @@ async function stRenderIntelligence(retry) {
   return wrap;
 }
 
+// Card key -> allowlisted server test key. Website and every config-only service deliberately have no test (S4 contract).
+const ST_TEST_KEY = { edge: "backend", facility: "facility", consumer: "consumer", digital_twin: "digital_twin" };
+function stRenderTestResult(t) {
+  const when = fmtDateTime(t.checked_at);
+  if (t.kind === "in_process") return `${stStatusIndicator("in_process", t.available ? "Available in-process" : "Not available")}<span class="st-note"> No network probe was made · ${escapeHtml(when)}</span>`;
+  if (t.kind === "not_configured") return `${stStatusIndicator("not_configured")}<span class="st-note"> No request was made · ${escapeHtml(when)}</span>`;
+  return `${stStatusIndicator(t.reachable ? "reachable" : "unreachable", t.reachable ? "Reachable" : "Not reachable")}<span class="st-note"> ${t.http_status ? `HTTP ${escapeHtml(String(t.http_status))} · ` : ""}${t.error ? `${escapeHtml(String(t.error).replace(/_/g, " "))} · ` : ""}${escapeHtml(String(t.latency_ms))} ms · ${escapeHtml(when)}</span>`;
+}
+function stTestButton(cardKey) {
+  const testKey = ST_TEST_KEY[cardKey];
+  if (!testKey || !hasPermission("integrations.manage")) return null;
+  const box = el(`<div class="st-test"><button type="button" class="btn btn-ghost btn-sm">Test connection</button><div class="st-test-result" role="status" aria-live="polite"></div></div>`);
+  const btn = box.querySelector("button"), out = box.querySelector(".st-test-result");
+  btn.addEventListener("click", async () => {
+    btn.disabled = true; out.textContent = "Testing…";
+    try { const r = await api(`/api/lead-agents/admin/settings/integrations/${encodeURIComponent(testKey)}/test`, { method: "POST", body: {} }); out.innerHTML = stRenderTestResult(r.test); }
+    catch (err) { out.textContent = err.status === 429 ? "Please wait a few seconds before testing again." : err.status === 403 ? "You don't have permission to test connections." : `The test could not run — ${err.message || "try again"}.`; }
+    finally { btn.disabled = false; }
+  });
+  return box;
+}
 function stIntegrationCards(integ, keys) {
   const grid = el(`<div class="st-providers"></div>`);
   keys.filter((k) => integ[k]).forEach((k) => {
@@ -10407,7 +10428,9 @@ function stIntegrationCards(integ, keys) {
     else if (probe && probe.checked) facts.push(["Health probe", probe.http_status ? `HTTP ${probe.http_status}` : escapeHtml(String(probe.status || "no response"))]);
     else if (probe) facts.push(["Health probe", "Not run"]);
     if (Array.isArray(v.missing) && v.missing.length) facts.push(["Missing configuration", escapeHtml(v.missing.join(", "))]);
-    grid.appendChild(stProviderCard({ name: v.name || titleCase(k), owner: SETTINGS_OWNER[k] || "Office", state, facts }));
+    const card = stProviderCard({ name: v.name || titleCase(k), owner: SETTINGS_OWNER[k] || "Office", state, facts });
+    const test = stTestButton(k); if (test) card.appendChild(test);
+    grid.appendChild(card);
   });
   return grid;
 }
@@ -10444,6 +10467,35 @@ async function stRenderIntegrations(retry) {
   return wrap;
 }
 
+// ---- S4: Operations (DRY RUN ONLY). The server enforces dry-run; this UI has no control for reconcile/recover/retry/repair apply paths. ----
+function stPreviewRows(items, cols) { return items && items.length ? `<table class="st-table"><thead><tr>${cols.map(([, h]) => `<th>${escapeHtml(h)}</th>`).join("")}</tr></thead><tbody>${items.map((i) => `<tr>${cols.map(([k]) => `<td>${escapeHtml(String(i[k] ?? "—"))}</td>`).join("")}</tr>`).join("")}</tbody></table>` : ""; }
+function stOperationPanel({ title, description, path, button, render }) {
+  const box = el(`<div class="st-op"><h4>${escapeHtml(title)}</h4><p class="st-note">${escapeHtml(description)}</p><div class="st-btn-row"><button type="button" class="btn btn-ghost btn-sm">${escapeHtml(button)}</button></div><div class="st-op-result" role="status" aria-live="polite"></div></div>`);
+  const btn = box.querySelector("button"), out = box.querySelector(".st-op-result");
+  btn.addEventListener("click", async () => {
+    btn.disabled = true; out.textContent = "Running dry run…";
+    try {
+      const r = await api(path, { method: "POST", body: { dry_run: true } });
+      out.innerHTML = `<p class="st-dry">${badge("Dry run", "blue")} Nothing was changed. ${r.enforced === "server" ? "Dry run is enforced by the server." : ""}</p>${render(r)}`;
+    } catch (err) { out.textContent = err.status === 403 ? "You don't have permission to run this preview." : `The preview could not be computed — ${err.data && err.data.detail ? err.data.detail : err.message || "try again"}. Nothing was changed.`; }
+    finally { btn.disabled = false; }
+  });
+  return box;
+}
+function stRenderOperationsCard() {
+  const card = stCard({ title: "Operations (dry run only)", subtitle: "Preview what the delivery outbox and the inbound-visibility repair would do. Settings can only preview: applying changes (reconcile, recover, retry, repair) is available through the administrator API, not from this page." });
+  const body = card.querySelector(".st-card-body");
+  body.appendChild(stOperationPanel({
+    title: "Delivery outbox: reconcile preview", description: "Finds stored WhatsApp events that were never queued for delivery to the Backend. A preview queues nothing and contacts nobody.", path: "/api/lead-agents/admin/settings/operations/outbox/reconcile-preview", button: "Run dry-run reconcile",
+    render: (r) => `${stFacts([["Window (minutes)", String(r.window_minutes)], ["Events scanned", String(r.scanned_events)], ["Already queued", String(r.already_queued)], ["Would be queued", r.missing_deliveries ? badge(String(r.missing_deliveries), "amber") : "0"]])}${stPreviewRows(r.would_enqueue_sample, [["delivery_key", "Delivery"], ["event_type", "Type"], ["occurred_at", "Occurred"]])}${r.sample_truncated ? `<p class="st-note">Showing the first ${r.would_enqueue_sample.length}.</p>` : ""}`,
+  }));
+  body.appendChild(stOperationPanel({
+    title: "Inbound visibility: repair preview", description: "Finds inbound WhatsApp messages that are stored but missing from CRM activity. A preview creates nothing.", path: "/api/lead-agents/admin/settings/operations/visibility/repair-preview", button: "Run dry-run repair",
+    render: (r) => `${stFacts([["Distinct provider messages", String(r.distinct_provider_ids)], ["Already represented", String(r.already_represented_messages)], ["Missing from CRM activity", r.unique_missing_messages ? badge(String(r.unique_missing_messages), "amber") : "0"], ["Duplicate event rows", String(r.duplicate_event_rows)], ["Conflicting leads", r.conflicting_lead_groups ? badge(String(r.conflicting_lead_groups), "red") : "0"], ["Invalid records", String(r.invalid_records)]])}${stPreviewRows(r.proposed_sample, [["provider_message_id", "Message"], ["lead", "Lead"], ["occurred_at", "Occurred"]])}${r.sample_truncated ? `<p class="st-note">Showing the first ${r.proposed_sample.length}.</p>` : ""}`,
+  }));
+  return card;
+}
+
 async function stRenderCommunications(retry, token) {
   const d = await stLoad(["health", "outbox"]);
   const wrap = el(`<div class="st-stack-col"></div>`);
@@ -10469,6 +10521,7 @@ async function stRenderCommunications(retry, token) {
     }
     return card;
   }, "Delivery outbox is visible to administrators."));
+  wrap.appendChild(stPermissionGate("integrations.manage", () => stRenderOperationsCard(), "Operations previews are visible to administrators."));
   wrap.appendChild(stUnavailable({ title: "Templates, quiet hours, channel routing", reason: "No Office settings contract exists for these yet." }));
   return wrap;
 }
