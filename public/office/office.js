@@ -17092,7 +17092,7 @@ async function boot() {
 // Customer-facing external communications only; staff Messages (staff_conversations) are a separate system and are never shown here.
 // Data comes from the authorized read model: GET /api/lead-agents/admin/crm/relationships[/:leadId]. Manual WhatsApp replies reuse the existing governed endpoint.
 // ---------------------------------------------------------------
-const relState = { mode: null, lastLeadId: null, stage: "", businessUnit: "", facets: { stages: [], business_units: [] }, items: [], total: 0, offset: 0, q: "", filter: "all", scope: null, leadId: null, opportunityId: "", data: null, entries: [], nextBefore: null, hasMore: false, token: 0 };
+const relState = { seenActivity: "", mode: null, lastLeadId: null, stage: "", businessUnit: "", facets: { stages: [], business_units: [] }, items: [], total: 0, offset: 0, q: "", filter: "all", scope: null, leadId: null, opportunityId: "", data: null, entries: [], nextBefore: null, hasMore: false, token: 0 };
 
 async function apiRelInbox(params) {
   const qs = new URLSearchParams();
@@ -17314,6 +17314,11 @@ async function relLoadThread(reset) {
   try {
     const data = await apiRelThread(relState.leadId, { limit: 50, opportunity_id: relState.opportunityId });
     if (myToken !== relState.token) return;
+    // a refresh must never eat what the staff member is typing or yank the scroll position
+    const draftBox = document.querySelector(".rel-send textarea");
+    const draft = draftBox ? { value: draftBox.value, focused: document.activeElement === draftBox } : null;
+    const oldScroll = document.getElementById("relScroll");
+    const keepScroll = !reset && oldScroll ? { top: oldScroll.scrollTop, nearBottom: oldScroll.scrollHeight - oldScroll.scrollTop - oldScroll.clientHeight < 80 } : null;
     relState.data = data;
     relState.lastLeadId = data.lead.id;
     relState.entries = data.thread.entries;
@@ -17321,6 +17326,11 @@ async function relLoadThread(reset) {
     relState.hasMore = data.thread.has_more;
     relRenderThreadPane(threadPane, data);
     relRenderDetailsPane(detailsPane, data);
+    const newBox = document.querySelector(".rel-send textarea");
+    if (draft && draft.value && newBox) { newBox.value = draft.value; if (draft.focused) newBox.focus(); }
+    const newScroll = document.getElementById("relScroll");
+    if (keepScroll && newScroll && !keepScroll.nearBottom) requestAnimationFrame(() => { newScroll.scrollTop = keepScroll.top; });
+    relRememberActivity();
   } catch (err) {
     if (myToken !== relState.token) return;
     threadPane.innerHTML = "";
@@ -17555,13 +17565,60 @@ async function renderRelationshipWorkspace(body, { mode, leadId, scope, opportun
   if (mode === "leads" && !startLead) {
     // Canonical #/crm/leads: select the remembered lead if it is still valid, otherwise the most recently active one; no leads => empty state.
     const inbox = await relLoadInbox(true);
+    relScheduleRefresh();
     if (token !== state.renderToken) return;
     await relChooseDefaultLead(inbox, token);
     return;
   }
   relLoadInbox(true);
+  relScheduleRefresh();
   if (!startLead) return;
   await relLoadThread(true);
+}
+
+// Live refresh. The workspace used to render once and then go stale until the next navigation (demonstrated: a new inbound message did not appear in an open
+// conversation). Every REFRESH_MS (15 s; tests shorten it through window.__RELATIONSHIP_REFRESH_MS) while the tab is visible, the first inbox page is re-read; when the
+// inbox changed it is re-rendered in place (scroll kept) and, if the selected lead has new activity, its thread is reloaded (draft and scroll kept). Stops by itself once
+// the workspace is no longer on screen. Read-only: no write, no send.
+let relRefreshTimer = null;
+function relActivityKey(item) { return item ? `${item.last_activity_at || ""}|${item.preview || ""}|${item.unread ? 1 : 0}` : ""; }
+function relRememberActivity() {
+  const item = relState.items.find((i) => i.lead_id === relState.leadId);
+  relState.seenActivity = relActivityKey(item);
+}
+function relScheduleRefresh() {
+  if (relRefreshTimer) clearTimeout(relRefreshTimer);
+  relRefreshTimer = setTimeout(relRefreshTick, Number(window.__RELATIONSHIP_REFRESH_MS) || 15000);
+}
+async function relRefreshTick() {
+  relRefreshTimer = null;
+  if (!document.querySelector("#viewOutlet .rel-page")) return; // workspace left the screen: stop
+  try {
+    if (document.visibilityState === "visible" && relState.mode) {
+      const params = { q: relState.q, filter: relState.filter, limit: 30, offset: 0, stage: relState.stage, business_unit: relState.businessUnit };
+      if (relState.scope) params[relState.scope.param] = relState.scope.id;
+      const data = await apiRelInbox(params);
+      const firstPageKey = (items) => items.slice(0, 30).map((i) => `${i.lead_id}:${relActivityKey(i)}`).join(";");
+      if (firstPageKey(data.relationships) !== firstPageKey(relState.items)) {
+        const list = document.getElementById("relInboxList");
+        const top = list ? list.scrollTop : 0;
+        const extra = relState.items.slice(30); // pages the user loaded beyond the first stay as they were
+        relState.items = data.relationships.concat(extra);
+        relState.total = data.total;
+        if (list) {
+          list.innerHTML = "";
+          relState.items.forEach((item) => list.appendChild(renderRelInboxRow(item)));
+          if (data.has_more && !extra.length) { const more = el(`<button type="button" class="btn btn-sm rel-more">Load more</button>`); more.addEventListener("click", () => { relState.offset += 30; relLoadInbox(false); }); list.appendChild(more); }
+          list.scrollTop = top;
+        }
+        const count = document.getElementById("relInboxCount"); if (count) count.textContent = `(${relState.total})`;
+        if (data.facets) { relState.facets = data.facets; relPopulateFacets(); }
+      }
+      const current = relState.items.find((i) => i.lead_id === relState.leadId);
+      if (current && relState.seenActivity && relActivityKey(current) !== relState.seenActivity && relState.data) await relLoadThread(false);
+    }
+  } catch { /* offline or a transient error: try again on the next tick */ }
+  relScheduleRefresh();
 }
 
 async function relChooseDefaultLead(inbox, token) {

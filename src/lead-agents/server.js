@@ -127,6 +127,7 @@ const { appendAuditRecord } = require("./audit");
 const { PERMISSION_KEYS, ROLE_PERMISSIONS, hasPermission } = require("./permissions");
 const relationshipWorkspace = require("./relationship-workspace");
 const signatureStats = require("./webhook-signature-stats");
+const inboundVisibility = require("./whatsapp-inbound-visibility");
 const { performManualSend, reconcileManualSends, resolveManualSend } = require("./manual-whatsapp-send");
 const { recallCrmMemory } = require("./crm-memory-access");
 const { createRealtimeHub } = require("./realtime");
@@ -1741,21 +1742,8 @@ async function suppressAutonomousWhatsAppReply({ store, lead, event, requestId, 
     body: reason === "autonomous_whatsapp_disabled" ? "Autonomous WhatsApp responses are switched off in Office settings." : reason === "setting_unreadable" ? "The autonomous-response setting could not be read, so no reply was sent." : ["claim_unavailable", "no_provider_message_id", "reply_already_sent"].includes(reason) ? "The message could not be safely de-duplicated, or a reply was already sent, so no automatic reply was sent." : "A human has taken over this conversation.",
     metadata: { request_id: requestId, reason, stage },
   }).catch(() => null);
-  await createCorporateRecord(
-    store,
-    "activities",
-    {
-      lead_id: lead.id,
-      related_type: "lead",
-      related_id: lead.id,
-      activity_type: "whatsapp_message",
-      title: "WhatsApp message",
-      body: String(event.text || "").slice(0, 2000),
-      source: "whatsapp",
-      metadata: { direction: "inbound", ai_replied: false, suppressed_reason: reason, request_id: requestId, provider_message_id: event.message_id || null },
-    },
-    { actorEmail: "whatsapp" }
-  ).catch(() => null);
+  // The customer's message already has its canonical CRM record (written on intake, independent of any reply decision); this only records WHY no reply was sent.
+  await inboundVisibility.annotateInboundActivity(store, { lead, event, requestId, patch: { ai_replied: false, suppressed_reason: reason }, log });
   return { kind: "message", lead_id: lead.id, suppressed: true, reason, ...(paused ? { paused: true } : {}) };
 }
 
@@ -1836,16 +1824,26 @@ async function processWhatsAppMessageEvent({ event, store, adapter, config, requ
   if (["claimed", "takeover"].includes(claim.status)) await store.updateInboundClaim(event.message_id, { lead_id: lead.id }).catch(() => null);
   // A takeover of a stale claim must not store the inbound message a second time.
   const alreadyStored = claim.status === "takeover" ? await store.hasInboundEvent({ channel: "whatsapp", eventType: "message", externalEventId: event.message_id }).catch(() => false) : false;
+  let inboundEventRow = null;
   if (!alreadyStored) {
-    await store.appendInboundEvent({
+    inboundEventRow = await store.appendInboundEvent({
       channel: "whatsapp",
       provider: "meta",
       event_type: "message",
       lead_id: lead.id,
       external_event_id: event.message_id,
-      payload: event.raw,
+      // the provider's own message object; a normalised fallback keeps the text recoverable if an adapter ever hands over no raw object
+      payload: event.raw && typeof event.raw === "object" && Object.keys(event.raw).length ? event.raw : { id: event.message_id, from: event.from, type: event.message_type || "text", timestamp: event.timestamp, text: { body: event.text || "" } },
     });
   }
+  // CANONICAL CRM RECORD, written before anything decides whether Oyi replies: OFF, AI paused, human takeover, a Backend goal owning the thread or a failed generation can
+  // never hide the customer's message. Idempotent on the provider message id. A failure is logged, flagged on the result and recoverable (the inbound event is stored, the
+  // relationship thread reads it directly, and the visibility repair can back-fill the record) -- it never blocks intake and never triggers a send.
+  const crmRecord = await inboundVisibility.recordInboundActivity(store, { lead, event, inboundEvent: inboundEventRow, requestId, log });
+  if (!crmRecord.ok) {
+    await store.appendTimelineEvent({ lead_id: lead.id, event_type: "whatsapp_crm_record_failed", actor: "office", title: "WhatsApp message stored but its CRM record could not be written", body: "The message is safe in the inbound event log and is shown in the conversation; the CRM record can be repaired.", metadata: { request_id: requestId, provider_message_id: event.message_id || null } }).catch(() => null);
+  }
+  const withCrmStatus = (result) => (crmRecord.ok ? result : { ...result, crm_record_failed: true });
   // Forward the inbound message itself into the Communication Runtime's
   // canonical thread (Phase 5) -- correlated by phone number so it lands
   // in the SAME thread as any prior outbound send to this person.
@@ -1874,11 +1872,12 @@ async function processWhatsAppMessageEvent({ event, store, adapter, config, requ
   });
 
   if (channelState.ai_paused || ["human_active", "human_review"].includes(channelState.human_status)) {
-    return {
+    await inboundVisibility.annotateInboundActivity(store, { lead, event, inboundEvent: inboundEventRow, requestId, patch: { ai_replied: false, suppressed_reason: ["human_active", "human_review"].includes(channelState.human_status) ? "human_takeover_active" : "ai_paused" }, log });
+    return withCrmStatus({
       kind: "message",
       lead_id: lead.id,
       paused: true,
-    };
+    });
   }
 
   // Oyi Communications Convergence, Slice 1 -- single-responder rule: an
@@ -1897,21 +1896,22 @@ async function processWhatsAppMessageEvent({ event, store, adapter, config, requ
       body: "An autonomous follow-up goal is already watching this conversation on Backend; Office did not send a duplicate reply.",
       metadata: { request_id: requestId },
     });
-    return {
+    await inboundVisibility.annotateInboundActivity(store, { lead, event, inboundEvent: inboundEventRow, requestId, patch: { ai_replied: false, suppressed_reason: "deferred_to_goal" }, log });
+    return withCrmStatus({
       kind: "message",
       lead_id: lead.id,
       deferred_to_goal: true,
-    };
+    });
   }
 
   // An autonomous reply needs an exclusive, healthy claim on this provider message: no claim / no id / a reply already sent by an earlier attempt => no reply.
   const claimBlock = claim.status === "unavailable" ? "claim_unavailable" : claim.status === "no_message_id" ? "no_provider_message_id" : claim.reply_sent ? "reply_already_sent" : null;
-  if (claimBlock) return suppressAutonomousWhatsAppReply({ store, lead, event, requestId, reason: claimBlock, stage: "before_generation" });
+  if (claimBlock) return withCrmStatus(await suppressAutonomousWhatsAppReply({ store, lead, event, requestId, reason: claimBlock, stage: "before_generation" }));
 
   // Global autonomy switch: OFF (or unreadable) means no autonomous reply is generated or sent. The inbound message stays stored and visible in the CRM.
   const earlyPolicy = await evaluateAutonomousWhatsAppPolicy(store);
   if (!earlyPolicy.allowed) {
-    return suppressAutonomousWhatsAppReply({ store, lead, event, requestId, reason: earlyPolicy.reason, stage: "before_generation" });
+    return withCrmStatus(await suppressAutonomousWhatsAppReply({ store, lead, event, requestId, reason: earlyPolicy.reason, stage: "before_generation" }));
   }
 
   const session = buildPublicIntelligenceSession({
@@ -1940,7 +1940,7 @@ async function processWhatsAppMessageEvent({ event, store, adapter, config, requ
   const freshState = await store.getLeadChannelState(lead.id, "whatsapp").catch(() => null);
   const takeoverNow = !freshState || freshState.ai_paused || ["human_active", "human_review"].includes(freshState.human_status);
   if (!sendPolicy.allowed || takeoverNow) {
-    return suppressAutonomousWhatsAppReply({ store, lead, event, requestId, reason: !sendPolicy.allowed ? sendPolicy.reason : "human_takeover_active", stage: "before_send", paused: takeoverNow && sendPolicy.allowed });
+    return withCrmStatus(await suppressAutonomousWhatsAppReply({ store, lead, event, requestId, reason: !sendPolicy.allowed ? sendPolicy.reason : "human_takeover_active", stage: "before_send", paused: takeoverNow && sendPolicy.allowed }));
   }
 
   const sendResult = await adapter.sendTextMessage({
@@ -1963,28 +1963,8 @@ async function processWhatsAppMessageEvent({ event, store, adapter, config, requ
     },
   });
 
-  // Also log to the canonical polymorphic crm_activities timeline (Phase
-  // 6, v2 audit) — timeline_events above stays as the source-specific
-  // technical log this webhook path already depended on; this is the
-  // one staff actually see in the CRM activity feed alongside notes,
-  // status changes, and other channels. createCorporateRecord directly,
-  // not the staff-authorization-gated createRelatedActivity wrapper —
-  // this webhook has no logged-in staff actor to authorize against.
-  await createCorporateRecord(
-    store,
-    "activities",
-    {
-      lead_id: lead.id,
-      related_type: "lead",
-      related_id: lead.id,
-      activity_type: "whatsapp_message",
-      title: "WhatsApp message",
-      body: String(event.text || "").slice(0, 2000),
-      source: "whatsapp",
-      metadata: { direction: "inbound", ai_replied: Boolean(sendResult && sendResult.delivered), request_id: requestId, provider_message_id: event.message_id || null },
-    },
-    { actorEmail: "whatsapp" }
-  ).catch(() => null);
+  // The customer's message already has its canonical CRM record (written on intake); record that Oyi replied.
+  await inboundVisibility.annotateInboundActivity(store, { lead, event, inboundEvent: inboundEventRow, requestId, patch: { ai_replied: Boolean(sendResult && sendResult.delivered) }, log });
 
   if (sendResult && sendResult.delivered) await store.updateInboundClaim(event.message_id, { reply_sent_at: new Date().toISOString() }).catch(() => null);
   await store.upsertLeadChannelState(lead.id, "whatsapp", {
@@ -1992,11 +1972,11 @@ async function processWhatsAppMessageEvent({ event, store, adapter, config, requ
     last_external_message_id: sendResult.external_message_id || event.message_id,
   });
 
-  return {
+  return withCrmStatus({
     kind: "message",
     lead_id: lead.id,
     outbound: sendResult,
-  };
+  });
 }
 
 async function bootstrapAdminUser(store, config) {
@@ -6793,7 +6773,7 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
         }
         // Local repair only (never calls WhatsApp): stale pending sends become "outcome unknown"; accepted sends missing their conversation record get it written.
         await reconcileManualSends(store, leadId, { log }).catch(() => null);
-        const [conversations, timeline, activities, documents, channelState, setting, manualSends] = await Promise.all([
+        const [conversations, timeline, activities, documents, channelState, setting, manualSends, inboundMessageEvents] = await Promise.all([
           store.listConversationsForLead(leadId, 500),
           store.listTimelineForLead(leadId, 500),
           listCorporateRecords(store, "activities"),
@@ -6801,6 +6781,7 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           store.getLeadChannelState(leadId, "whatsapp").catch(() => null),
           readWhatsAppAutonomySetting(store),
           store.listManualSendsForLead(leadId, 200).catch(() => []),
+          store.listInboundMessageEvents({ leadId, limit: 500 }).catch(() => []),
         ]);
         const leadActivities = activities.filter((a) => a.lead_id === leadId);
         const leadOpportunities = opportunities.filter((o) => o.lead_id === leadId);
@@ -6808,7 +6789,7 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
         const leadDocuments = documents.filter((d) => (d.related_type === "lead" && d.related_id === leadId) || (d.related_type === "opportunity" && opportunityIds.has(d.related_id)));
         const statusEvents = await store.listInboundStatusEventsByExternalIds([...conversations.map((c) => c.external_message_id), ...manualSends.map((m) => m.provider_message_id)].filter(Boolean)).catch(() => []);
         const thread = relationshipWorkspace.buildThread({
-          lead, conversations, timeline, activities: leadActivities, statusEvents, documents: leadDocuments, manualSends,
+          lead, conversations, timeline, activities: leadActivities, statusEvents, documents: leadDocuments, manualSends, inboundEvents: inboundMessageEvents,
           opportunityId: params.get("opportunity_id") || "", before: params.get("before") || "", limit: params.get("limit") || 50, search: q,
         });
         const takeoverActive = Boolean(channelState && ["human_active", "human_review"].includes(channelState.human_status));
@@ -6838,6 +6819,23 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
             facebook: { messaging: "not_connected" }, instagram: { messaging: "not_connected" },
           },
         }, { "x-request-id": ctx.requestId });
+        return;
+      }
+
+      // Idempotent historical visibility repair for inbound WhatsApp messages (see whatsapp-inbound-visibility.js). dry_run defaults to TRUE: report first, write only when
+      // asked. Creates only the missing CRM records (original provider id / timestamp / lead); never modifies or deletes inbound events and never sends a message.
+      if (pathname === "/api/lead-agents/admin/whatsapp/inbound-visibility/repair") {
+        if (req.method !== "POST") {
+          methodNotAllowed(res, "POST");
+          return;
+        }
+        authorizePermission(authContext, "manage_integrations");
+        const body = await readJsonBody(req);
+        requireObject(body, "body");
+        const dryRun = body.dry_run !== false;
+        const summary = await inboundVisibility.repairInboundVisibility(store, { dryRun, limit: Math.min(Math.max(Number(body.limit) || 1000, 1), 2000), log });
+        await appendAuditRecord({ store, authContext, action: dryRun ? "whatsapp.inbound_visibility.dry_run" : "whatsapp.inbound_visibility.repair", resourceType: "whatsapp_inbound", resourceId: "inbound_events", metadata: { missing: summary.missing, created: summary.created || 0, failed: summary.failed || 0, operator: authContext.email || "" }, req, status: "success" }).catch(() => null);
+        json(res, 200, { ok: true, ...summary }, { "x-request-id": ctx.requestId });
         return;
       }
 

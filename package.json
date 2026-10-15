@@ -23,6 +23,7 @@
     "office:oyi-core-delegation:test": "node scripts/test-oyi-core-delegation.js",
     "office:communications-handoff:test": "node scripts/test-communications-handoff.js",
     "office:relationship-workspace:test": "node scripts/test-relationship-workspace.js && node scripts/test-whatsapp-manual-send-durability.js && node scripts/test-relationship-workspace-browser.js",
+    "office:whatsapp-inbound-visibility:test": "node scripts/test-whatsapp-inbound-crm-visibility.js && node scripts/test-whatsapp-inbound-visibility-store.js",
     "office:webhook-signature:test": "node scripts/test-whatsapp-webhook-signature.js",
     "office:whatsapp-autonomy:test": "node scripts/test-whatsapp-autonomy-control.js && node scripts/test-whatsapp-autonomy-store-ui.js",
     "office:whatsapp-inbound-claims-postgres:test": "node scripts/test-whatsapp-inbound-claims-postgres.js",

@@ -7,6 +7,7 @@
 // never read here.
 
 const crypto = require("node:crypto");
+const visibility = require("./whatsapp-inbound-visibility");
 
 const SOURCE_KINDS = Object.freeze({
   whatsapp: { kind: "whatsapp", label: "WhatsApp" },
@@ -77,6 +78,8 @@ const TIMELINE_REASON_TEXT = {
   hard_off_rollback_build: "Autonomous WhatsApp responses are disabled by the emergency build, so no automatic reply was sent.",
   setting_unreadable: "The autonomy setting could not be read, so no automatic reply was sent.",
   human_takeover_active: "A human has taken over this conversation, so no automatic reply was sent.",
+  ai_paused: "Oyi is paused for this conversation, so no automatic reply was sent.",
+  deferred_to_goal: "An active follow-up goal owns this conversation, so Office sent no separate reply.",
 };
 
 function entryId(kind, table, id) {
@@ -102,7 +105,7 @@ function decodeCursor(cursor) {
   }
 }
 
-function buildThread({ lead, conversations = [], timeline = [], activities = [], statusEvents = [], documents = [], manualSends = [], opportunityId = "", before = "", limit = 50, search = "" }) {
+function buildThread({ lead, conversations = [], timeline = [], activities = [], statusEvents = [], documents = [], manualSends = [], inboundEvents = [], opportunityId = "", before = "", limit = 50, search = "" }) {
   const entries = [];
   const conversationKeys = [];
   const statusByMessage = new Map();
@@ -196,7 +199,49 @@ function buildThread({ lead, conversations = [], timeline = [], activities = [],
     entries.push(entry);
   }
 
+  // Inbound message EVENTS are the authoritative record of what Meta delivered. They are read directly so a customer message is visible whatever happened to its CRM
+  // activity (reply suppressed, paused, taken over, goal-owned, generation failed, or the activity write failed). A record that shares the provider message id is the same
+  // message (merged, provenance kept); a legacy activity without an id is tied to its event only by the strict one-to-one match in whatsapp-inbound-visibility.js.
+  const skippedActivityIds = new Set();
+  const legacyMatches = visibility.matchLegacyActivities(inboundEvents, activities);
+  for (const ev of inboundEvents) {
+    const providerId = clean(ev.external_event_id);
+    const existing = providerId ? byKey.get(`provider:${providerId}`) : null;
+    if (existing && existing.kind === "message" && existing.direction === "inbound") {
+      existing.merged_from.push({ table: "inbound_events", id: ev.id });
+      continue;
+    }
+    const legacy = legacyMatches.get(ev.id);
+    const entry = {
+      id: entryId("message", "inbound_events", ev.id),
+      kind: "message",
+      direction: "inbound",
+      channel: "whatsapp",
+      sender: "customer",
+      sender_type: "customer",
+      origin: "customer",
+      text: visibility.inboundMessageText(ev.payload),
+      occurred_at: visibility.inboundOccurredAt(ev),
+      delivery: { state: "not_applicable", verified: false },
+      provider_message_id: providerId || null,
+      opportunity_id: legacy?.opportunity_id || null,
+      attachments: [],
+      provenance: { table: "inbound_events", id: ev.id },
+      merged_from: [],
+    };
+    if (legacy) {
+      entry.merged_from.push({ table: "crm_activities", id: legacy.id });
+      skippedActivityIds.add(legacy.id);
+      const reason = legacy.metadata?.suppressed_reason;
+      if (reason) entry.reply_suppressed = { reason, text: TIMELINE_REASON_TEXT[reason] || "No automatic reply was sent." };
+    }
+    if (providerId) indexKeys(entry, [`provider:${providerId}`]);
+    entries.push(entry);
+    if (!legacy) conversationKeys.push({ entry, text: normalizeText(entry.text), at: ts(entry.occurred_at), inbound: true, channel: "whatsapp" });
+  }
+
   for (const activity of activities) {
+    if (skippedActivityIds.has(activity.id)) continue;
     const meta = activity.metadata && typeof activity.metadata === "object" ? activity.metadata : {};
     const at = activity.occurred_at || activity.created_at;
     const base = {
@@ -370,7 +415,10 @@ function latestMessageFor({ conversation, activities = [] }) {
 function buildInboxEntry({ lead, lastMessage, channelState, opportunities = [] }) {
   const source = leadSourceInfo(lead);
   const preview = lastMessage ? lastMessage.text.slice(0, 140) : clean(lead.summary).slice(0, 140);
-  const last = lastMessage ? lastMessage.at : lead.last_contact_at || lead.updated_at || lead.created_at;
+  // the inbox is ordered by the lead's own activity clock (updated_at / last_contact_at, bumped on every inbound message), so the time shown is the later of that clock and the
+  // last message -- the list is then always in the order of the times it displays
+  const leadClock = lead.last_contact_at || lead.updated_at || lead.created_at;
+  const last = lastMessage && ts(lastMessage.at) > ts(leadClock) ? lastMessage.at : leadClock;
   return {
     lead_id: lead.id,
     name: lead.name || lead.company || lead.email || lead.phone || lead.whatsapp_phone || "Unnamed lead",

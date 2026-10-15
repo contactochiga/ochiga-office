@@ -536,6 +536,32 @@ class SupabaseLeadAgentsStore {
     return response.data;
   }
 
+  // ---- WhatsApp inbound CRM visibility helpers ----
+  async findCrmActivityByProviderMessageId(providerMessageId) {
+    const id = String(providerMessageId || "");
+    if (!id) return null;
+    const response = await this.client.get(`/crm_activities?activity_type=eq.whatsapp_message&metadata->>provider_message_id=eq.${encodeURIComponent(id)}&limit=1`);
+    return Array.isArray(response.data) ? response.data[0] || null : null;
+  }
+
+  async mergeCrmActivityMetadata(activityId, patch) {
+    const current = await this.client.get(`/crm_activities?id=eq.${encodeURIComponent(activityId)}&select=metadata&limit=1`);
+    const metadata = { ...((Array.isArray(current.data) && current.data[0] && current.data[0].metadata) || {}), ...patch };
+    const response = await this.client.patch(`/crm_activities?id=eq.${encodeURIComponent(activityId)}`, { metadata, updated_at: new Date().toISOString() }, { headers: this.selectHeaders() });
+    return Array.isArray(response.data) ? response.data[0] || null : null;
+  }
+
+  async listInboundMessageEvents({ leadId = "", limit = 500 } = {}) {
+    const lead = leadId ? `&lead_id=eq.${encodeURIComponent(leadId)}` : "";
+    const response = await this.client.get(`/inbound_events?channel=eq.whatsapp&event_type=eq.message${lead}&order=created_at.desc&limit=${Math.min(Math.max(Number(limit) || 500, 1), 2000)}`);
+    return (response.data || []).reverse();
+  }
+
+  async listCrmActivitiesForWhatsApp() {
+    const response = await this.client.get("/crm_activities?activity_type=eq.whatsapp_message&order=occurred_at.desc&limit=5000");
+    return response.data || [];
+  }
+
   // Relationship workspace read helpers (read-only).
   async listLatestConversationsForLeads(leadIds) {
     const ids = [...new Set((leadIds || []).filter(Boolean))];

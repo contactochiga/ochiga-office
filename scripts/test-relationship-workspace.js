@@ -75,7 +75,8 @@ async function main() {
     assert.equal(msgs.filter((e) => e.text === "Hello, I own land in Lekki").length, 1, "retry of the same provider message produced ONE entry");
     assert.equal(msgs.length, 2, `two distinct inbound messages, activity twins merged (got ${msgs.length})`);
     assert.ok(msgs.every((e) => e.direction === "inbound" && e.channel === "whatsapp"));
-    assert.ok(msgs.every((e) => e.provenance.table === "crm_activities" && e.correlation === "single_source"), "with autonomy OFF the CRM activity is the only record of the inbound text and is shown as such");
+    assert.ok(msgs.every((e) => e.provenance.table === "inbound_events" && e.merged_from.some((m) => m.table === "crm_activities") && e.provider_message_id), "each message is the stored inbound event with its CRM activity merged on the provider message id (one entry, both sources kept as provenance)");
+    assert.ok(msgs.every((e) => e.reply_suppressed), "the suppressed-reply fact travels with the merged message");
     assert.equal(waThread.thread.entries.filter((e) => e.event_type === "whatsapp_autonomous_reply_suppressed").length, 0, "the suppression fact is shown once, inline");
     // Evidence-safe correlation (unit level, synthetic rows): records merge ONLY on an authoritative shared identifier.
     const withId = rw.buildThread({ lead: { id: "L" }, conversations: [{ id: "c1", message_role: "user", channel: "whatsapp", external_message_id: "wamid.x", content: "Same text", created_at: "2026-01-01T10:00:00Z" }], activities: [{ id: "a1", activity_type: "whatsapp_message", body: "Same   text", metadata: { direction: "inbound", provider_message_id: "wamid.x" }, occurred_at: "2026-01-01T10:00:02Z" }] });

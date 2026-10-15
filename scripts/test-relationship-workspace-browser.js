@@ -132,6 +132,26 @@ async function main() {
     await waitFor(`!!document.querySelector('.crm-tab.active') && !!document.querySelector('.crm-table') && !document.querySelector('.rel-page')`, "classic leads table at #/crm/leads/table");
     console.log("4/16. Contact, organization, opportunity open the workspace; full record and the list view still work — PASS");
 
+    // ---- live refresh: a NEW inbound message must appear in an already-open conversation and inbox without a manual reload ----
+    {
+      const livePhone = "2348066600001";
+      const post = (id, text) => fetch(`${base}/webhooks/whatsapp`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ events: [{ kind: "message", from: livePhone, message_id: id, message_type: "text", timestamp: String(Math.floor(Date.now() / 1000)), text, raw: { id, from: livePhone, timestamp: String(Math.floor(Date.now() / 1000)), type: "text", text: { body: text } } }] }) });
+      await post("wamid.live.refresh.0", "Opening message"); const liveLead = (await store.listLeads()).find((l) => l.whatsapp_phone === livePhone);
+      await store.upsertLeadChannelState(liveLead.id, "whatsapp", { human_status: "human_active", human_owner: "super@ochiga.local", ai_paused: true });
+      const injected = await send("Page.addScriptToEvaluateOnNewDocument", { source: "window.__RELATIONSHIP_REFRESH_MS = 2000;" }); // tests shorten the interval; the production default is 15 s
+      await send("Page.navigate", { url: `${base}/office?live=1#/crm/leads/${liveLead.id}` });
+      await waitFor(`!!document.querySelector('#relThreadPane') && document.querySelector('#relThreadPane').textContent.includes('Opening message')`, "live-refresh lead open");
+      // a draft being typed must survive a refresh
+      await waitFor(`!!document.querySelector('.rel-send textarea')`, "composer available (takeover active)");
+      await evalJs(`(() => { const t = document.querySelector('.rel-send textarea'); t.value = 'half-typed reply'; t.focus(); })()`);
+      await post("wamid.live.refresh.1", "A brand new inbound message");
+      await waitFor(`document.querySelector('#relThreadPane').textContent.includes('A brand new inbound message')`, "the open conversation shows the new inbound message without a reload", 12000);
+      await waitFor(`document.querySelector('.rel-row.active .rel-row-preview')?.textContent.includes('A brand new inbound message')`, "the inbox preview refreshed too", 8000);
+      assert.equal(await evalJs(`document.querySelector('.rel-send textarea').value`), "half-typed reply", "a refresh keeps the draft the staff member is typing");
+      await send("Page.removeScriptToEvaluateOnNewDocument", { identifier: injected.result.identifier }); await evalJs(`window.__RELATIONSHIP_REFRESH_MS = 0`);
+      console.log("12. Live refresh: a new inbound message appears in the open conversation and inbox without reload — PASS");
+    }
+
     // ---- Leads default route: ONE click on CRM -> Leads opens the three-column workspace ----
     await send("Emulation.setDeviceMetricsOverride", { width: 1440, height: 900, deviceScaleFactor: 1, mobile: false });
     const api = (p) => fetch(`${base}/api/lead-agents/admin/crm/relationships${p}`, { headers: { cookie: `${cookieName}=${cookieValue}` } }).then((r) => r.json());

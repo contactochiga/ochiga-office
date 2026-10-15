@@ -701,6 +701,31 @@ class FileLeadAgentsStore {
     return this.state.whatsapp_manual_sends.filter((r) => r.lead_id === leadId).sort((a, b) => String(a.created_at).localeCompare(String(b.created_at))).slice(-limit).map((r) => ({ ...r }));
   }
 
+  // ---- WhatsApp inbound CRM visibility helpers ----
+  async findCrmActivityByProviderMessageId(providerMessageId) {
+    const id = String(providerMessageId || "");
+    if (!id) return null;
+    const found = this.state.crm_activities.find((a) => a.activity_type === "whatsapp_message" && a.metadata && (a.metadata.provider_message_id === id || a.metadata.external_message_id === id));
+    return found ? { ...found } : null;
+  }
+
+  async mergeCrmActivityMetadata(activityId, patch) {
+    const activity = this.state.crm_activities.find((a) => a.id === activityId);
+    if (!activity) return null;
+    activity.metadata = { ...(activity.metadata || {}), ...patch };
+    activity.updated_at = this.nowIso();
+    await this.persist();
+    return { ...activity };
+  }
+
+  async listInboundMessageEvents({ leadId = "", limit = 500 } = {}) {
+    return this.state.inbound_events.filter((e) => e.channel === "whatsapp" && e.event_type === "message" && (!leadId || e.lead_id === leadId)).sort((a, b) => String(a.created_at).localeCompare(String(b.created_at))).slice(-limit).map((e) => ({ ...e }));
+  }
+
+  async listCrmActivitiesForWhatsApp() {
+    return this.state.crm_activities.filter((a) => a.activity_type === "whatsapp_message").map((a) => ({ ...a }));
+  }
+
   // Relationship workspace read helpers (read-only).
   async listLatestConversationsForLeads(leadIds) {
     const wanted = new Set(leadIds || []);
