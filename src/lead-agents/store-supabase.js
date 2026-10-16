@@ -1646,6 +1646,33 @@ class SupabaseLeadAgentsStore {
     if (!Number.isInteger(row.session_generation)) throw mfaShared.mfaError("mfa_store_error", { operation: "consumeMfaRecoveryCodeRevokingSessions" });
     return { session_generation: row.session_generation, sessions_revoked_at: row.sessions_revoked_at };
   }
+  // ---- S7.5.5 (db/20261025_admin_mfa_webauthn.sql) ----
+  async supportsMfaWebauthn() {
+    if (this.mfaWebauthn === true) return true;
+    if (this.mfaWebauthn === false && Date.now() - (this.mfaWebauthnCheckedAt || 0) < 60_000) return false;
+    try {
+      const response = await this.client.post("/rpc/office_mfa_webauthn_version", {});
+      if (response.data !== 1) throw mfaShared.mfaError("mfa_store_error");
+      this.mfaWebauthn = true;
+    } catch (error) {
+      if (error?.response?.status === 404 || error?.response?.data?.code === "PGRST202") { this.mfaWebauthn = false; this.mfaWebauthnCheckedAt = Date.now(); } else throw mfaShared.sanitizeStoreError(error, "supportsMfaWebauthn");
+    }
+    return this.mfaWebauthn === true;
+  }
+  _bytea(value) { const text = String(value || ""); return text.startsWith("\\x") ? Buffer.from(text.slice(2), "hex").toString("base64") : text; }
+  async listWebauthnCredentialsForAuth(userId) {
+    await this._mfaRequireSchema();
+    const rows = await this._mfaCall("listWebauthnCredentialsForAuth", async () => (await this.client.get(`/admin_mfa_credentials?admin_user_id=eq.${encodeURIComponent(userId)}&type=eq.webauthn&status=eq.active&select=id,webauthn_credential_id,webauthn_public_key,webauthn_sign_count,webauthn_transports,webauthn_backup_eligible&order=created_at.asc`)).data);
+    return rows.map((r) => ({ id: r.id, credential_id: this._bytea(r.webauthn_credential_id), public_key: this._bytea(r.webauthn_public_key), sign_count: Number(r.webauthn_sign_count) || 0, transports: r.webauthn_transports || [], backup_eligible: r.webauthn_backup_eligible ?? null }));
+  }
+  async recordWebauthnUse(userId, credentialRowId, newCount) {
+    if (!Number.isSafeInteger(newCount) || newCount < 0) throw mfaShared.mfaError("mfa_invalid_input", { field: "counter" });
+    await this._mfaRequireSchema();
+    if (!(await this.supportsMfaWebauthn())) throw mfaShared.mfaError("mfa_unavailable");
+    const result = await this._mfaRpc("recordWebauthnUse", "office_mfa_webauthn_record_use", { p_user_id: userId, p_credential_id: credentialRowId, p_new_count: newCount });
+    if (typeof result !== "boolean") throw mfaShared.mfaError("mfa_store_error", { operation: "recordWebauthnUse" });
+    return result;
+  }
   async rotateMfaCredentialSecret(userId, credentialId, input) {
     const v = mfaShared.validateRotationInput(input);
     await this._mfaRequireSchema();

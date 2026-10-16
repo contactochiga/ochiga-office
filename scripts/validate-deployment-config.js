@@ -23,6 +23,8 @@ assert(!/LEAD_AGENTS_ADMIN_RECOVERY/.test(render), "render.yaml must not enable 
 assert(!/key:\s+LEAD_AGENTS_MFA\s*\n\s+value:\s+["']?on/i.test(render), "render.yaml must not switch MFA on (S7.5.1 only validates key configuration; enabling is a later, deliberate step)");
 assert(!/key:\s+LEAD_AGENTS_MFA_(KEY|KEYS_PREVIOUS)\s*\n\s+value:/.test(render), "render.yaml must never carry a value for the MFA encryption key (set it in the Render dashboard only)");
 assert(!/^\s*LEAD_AGENTS_MFA_(KEY|KEYS_PREVIOUS)=\S/m.test(envExample), ".env.example must not contain an MFA key value");
+assert(!/LEAD_AGENTS_WEBAUTHN/.test(render), "render.yaml must not carry a WebAuthn RP ID, origin or approval (the permanent domain is set by the owner in the dashboard only, after approval)");
+assert(!/^\s*LEAD_AGENTS_WEBAUTHN_(RP_ID|ORIGINS|RP_APPROVED)=\S/m.test(envExample), ".env.example must not contain a WebAuthn RP ID, origin or approval value");
 assert(/LEAD_AGENTS_AUTH_MODE[\s\S]*value:\s+required_api_key/.test(render), "Office production auth must fail closed with required_api_key");
 assert(/LEAD_AGENTS_API_KEYS[\s\S]*sync:\s+false/.test(render), "Office API keys must be configured as unsynced secrets");
 assert(/SUPABASE_SERVICE_ROLE_KEY[\s\S]*sync:\s+false/.test(render), "Supabase service role must be an unsynced secret");

@@ -87,6 +87,7 @@ function passwordResetEmail({ displayName, resetUrl }) {
 // Settings S7.5.4: security notices about second-factor changes. Plain, generic wording: they name WHAT happened and WHEN, never a secret, code, token or hash.
 const MFA_EVENT_TEXT = {
   enrolled: { subject: "Two-step verification was turned on", line: "Two-step verification was turned on for your Ochiga Office account." },
+  factor_added: { subject: "A two-step verification method was added", line: "A new two-step verification method was added to your Ochiga Office account." },
   factor_replaced: { subject: "Your two-step verification device was replaced", line: "The authenticator device on your Ochiga Office account was replaced." },
   factor_removed: { subject: "A two-step verification method was removed", line: "A two-step verification method was removed from your Ochiga Office account." },
   recovery_codes_regenerated: { subject: "Your recovery codes were regenerated", line: "Your Ochiga Office recovery codes were regenerated. Any earlier codes no longer work." },

@@ -131,7 +131,7 @@ async function main() {
   const u6d = await mkUser("deleted"); const e6d = await enrol(u6d); const dT = await challengeFor(u6d); await store.deleteAdminUser(u6d.id); eq((await app.verify({ challenge_token: dT, method: "totp", code: code(e6d.secret) })).status, 401, "a deleted account cannot complete a challenge");
   const u6e = await mkUser("badreq"); const e6e = await enrol(u6e); const brT = await challengeFor(u6e);
   for (const [label, body] of [["no method", { code: "123456" }], ["unknown method", { method: "sms", code: "123456" }], ["no code", { method: "totp" }], ["numeric code", { method: "totp", code: 123456 }], ["oversized code", { method: "totp", code: "1".repeat(200) }]]) { const r = await app.verify({ challenge_token: brT, ...body }); ok(r.status === 401 && !r.cookie, `refused: ${label}`); }
-  const wa = await app.verify({ challenge_token: brT, method: "webauthn", code: "x" }); ok(wa.status === 400 && wa.json.error === "unsupported_method", "WebAuthn is not part of this slice");
+  const wa = await app.verify({ challenge_token: brT, method: "webauthn", code: "x" }); ok(wa.status === 401 && wa.json.error === "mfa_failed" && !wa.cookie, "a WebAuthn attempt without an assertion payload is a generic refusal (the ceremony itself is covered by S7.5.5)");
   const u7 = await mkUser("other"); const e7 = await enrol(u7); const crossT = await challengeFor(u6e); const cross = await app.verify({ challenge_token: crossT, method: "totp", code: code(e7.secret) }); ok(cross.status === 401 && !cross.cookie, "another account's valid code does not complete this account's challenge"); await store.clearMfaFailures(u6e.id);
 
   // ===== 7. password-only bypass attempts

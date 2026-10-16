@@ -1,6 +1,7 @@
 const path = require("path");
 const { resolveSessionSecret } = require("./auth-config");
 const { mfaMode } = require("./mfa-config");
+const { parseOrigins } = require("./webauthn-config");
 
 function numberFromEnv(value, fallback) {
   const parsed = Number(value);
@@ -111,6 +112,11 @@ function createConfig() {
     // MFA (S7.5.1): OFF by default. `on` only enables key validation and readiness reporting in this slice. Key material comes from the deployment environment only.
     mfaMode: mfaMode(process.env),
     // Roles for which MFA is "required" in the S7.5.4 sense: ONLY the refusal to remove their last active factor reads this. Nothing at sign-in does (enforcement is a later slice). Default: nobody.
+    // WebAuthn relying party (S7.5.5): NO defaults. Production additionally needs LEAD_AGENTS_WEBAUTHN_RP_APPROVED to equal the RP ID (owner's explicit approval of the permanent domain).
+    webauthnRpId: String(process.env.LEAD_AGENTS_WEBAUTHN_RP_ID || "").trim().toLowerCase(),
+    webauthnOrigins: parseOrigins(process.env.LEAD_AGENTS_WEBAUTHN_ORIGINS),
+    webauthnRpName: process.env.LEAD_AGENTS_WEBAUTHN_RP_NAME || "Ochiga Office",
+    webauthnRpApproved: String(process.env.LEAD_AGENTS_WEBAUTHN_RP_APPROVED || "").trim().toLowerCase(),
     mfaRequiredRoles: stringListFromEnv(process.env.LEAD_AGENTS_MFA_REQUIRED_ROLES),
     mfaKey: process.env.LEAD_AGENTS_MFA_KEY || "",
     mfaKeyId: process.env.LEAD_AGENTS_MFA_KEY_ID || "",

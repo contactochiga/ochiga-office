@@ -10,6 +10,8 @@ const { log } = require("./logger");
 const { validateAuthConfig } = require("./auth-config");
 const { validateMfaConfig } = require("./mfa-config");
 const { createMfaCrypto, challengeSubject } = require("./mfa-crypto");
+const { createWebauthn, MAX_CREDENTIALS: MAX_WEBAUTHN_CREDENTIALS } = require("./mfa-webauthn");
+const { validateWebauthnConfig } = require("./webauthn-config");
 const { validatePassword, passwordPolicyError } = require("./password-policy");
 const { resolveSessionTtl } = require("./session-policy");
 const { effectiveGeneration, revocationEnabled, checkSessionGeneration } = require("./session-generation");
@@ -1989,6 +1991,24 @@ const MFA_PENDING_TTL_MS = 15 * 60_000; // a pending enrollment expires; beginni
 const MFA_FRESH_MS = 5 * 60_000; // a second factor proven this recently counts as fresh for mfa_management
 
 // S7.5.4: the seam read ONLY by "may this account remove its last active factor". It does not affect sign-in. Default: nobody.
+// S7.5.5: one assertion check for login and step-up. The challenge is consumed (single use) BEFORE verification; the credential must be one of THIS account's ACTIVE WebAuthn credentials;
+// the library verifies origin, RP ID, user presence + verification, signature and counter; then the counter is advanced by an atomic compare-and-set. Returns { ok } or { ok:false, reason };
+// throws on faults (store, configuration, library) so callers answer 503 and never fall back.
+async function checkWebauthnAssertion({ store, config, user, challengeId, response }) {
+  const service = createWebauthn(config);
+  if (typeof challengeId !== "string" || !response || typeof response !== "object" || typeof response.id !== "string") return { ok: false, reason: "invalid_request" };
+  const consumed = await store.consumeMfaChallenge(user.id, challengeId, "webauthn_authenticate");
+  if (!consumed) return { ok: false, reason: "challenge" };
+  const wanted = Buffer.from(response.id, "base64url").toString("base64");
+  const credential = (await store.listWebauthnCredentialsForAuth(user.id)).find((c) => c.credential_id === wanted);
+  if (!credential) return { ok: false, reason: "unknown_credential" };
+  let verified;
+  try { verified = await service.verifyAuthentication({ response, expectedChallenge: Buffer.from(consumed, "base64").toString("base64url"), credential }); }
+  catch (error) { if (error && error.code === "webauthn_verification_failed") return { ok: false, reason: error.category || "verification" }; throw error; }
+  if (!(await store.recordWebauthnUse(user.id, credential.id, verified.newCounter))) return { ok: false, reason: "counter_rollback" };
+  return { ok: true };
+}
+
 const mfaRequiredForRole = (user, config) => Array.isArray(config.mfaRequiredRoles) && config.mfaRequiredRoles.includes(user.role);
 
 // S7.5.4: governed security notification through the existing e-mail infrastructure. Never blocks or fails the operation; the TRUTHFUL outcome is audited (`sent`, `not_configured`,
@@ -2391,6 +2411,7 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
       const isPublicAdminSessionPath =
         pathname === "/api/lead-agents/admin/session/login" ||
         pathname === "/api/lead-agents/admin/session/mfa/verify" ||
+        pathname === "/api/lead-agents/admin/session/mfa/webauthn/auth/options" ||
         pathname === "/api/lead-agents/admin/session/mfa/enroll/email-code" ||
         pathname === "/api/lead-agents/admin/session/mfa/enroll/email-verify" ||
         pathname === "/api/lead-agents/admin/session/mfa/enroll/forced/begin" ||
@@ -2478,7 +2499,7 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
         json(res, ready ? 200 : 503, {
           ok: ready,
           ready,
-          mfa: { mode: mfaStatus.mode, key: mfaStatus.key, schema: mfaSchema, enrolled_accounts: mfaEnrolled, ...(mfaStatus.problems.length ? { problems: mfaStatus.problems } : {}) },
+          mfa: { mode: mfaStatus.mode, key: mfaStatus.key, schema: mfaSchema, enrolled_accounts: mfaEnrolled, webauthn: (() => { const w = validateWebauthnConfig(config); return { status: w.status, ...(w.problems.length ? { problems: w.problems } : {}) }; })(), ...(mfaStatus.problems.length ? { problems: mfaStatus.problems } : {}) },
           // codes and mode names only; never a secret or anything derived from one
           auth_config: {
             session_secret: authConfigStatus.session_secret,
@@ -3075,7 +3096,12 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
               return;
             }
             await appendAudit(store, { userId: adminUser.id, email: adminUser.email, role: adminUser.role }, "mfa_challenge_issued", "admin_user", adminUser.id, { request_id: ctx.requestId, purpose: "login", at: new Date().toISOString() }, req);
-            json(res, 200, { ok: false, mfa_required: true, challenge_token: challenge.token, expires_at: challenge.expires_at, methods: MFA_CHALLENGE_METHODS }, { "x-request-id": ctx.requestId, "cache-control": "no-store" });
+            let methods = MFA_CHALLENGE_METHODS;
+            try {
+              const active = (await store.listMfaCredentials(adminUser.id)).filter((c) => c.status === "active");
+              methods = [...(active.some((c) => c.type === "totp") ? ["totp"] : []), ...(active.some((c) => c.type === "webauthn") && validateWebauthnConfig(config).available ? ["webauthn"] : []), "recovery_code"];
+            } catch { methods = MFA_CHALLENGE_METHODS; }
+            json(res, 200, { ok: false, mfa_required: true, challenge_token: challenge.token, expires_at: challenge.expires_at, methods }, { "x-request-id": ctx.requestId, "cache-control": "no-store" });
             return;
           }
         }
@@ -3200,13 +3226,14 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
         const checked = await gate.lib.checkTotp({ store, userId: user.id, credentialId: pending.id, code: body.code });
         if (!checked.ok) return fail(401, "mfa_failed", "invalid_code");
         const active = await store.getActiveTotpCredential(user.id);
-        if (forced && active) return fail(409, "mfa_conflict", "already_enrolled");
-        const needCodes = !active || (await store.countMfaRecoveryCodes(user.id)) === 0;
+        if (forced && (await store.hasActiveMfa(user.id))) return fail(409, "mfa_conflict", "already_enrolled");
+        // recovery codes belong to the ACCOUNT's first factor of any type: adding a TOTP next to a security key (or replacing one) never silently regenerates them
+        const needCodes = !gate.hasFactor || (await store.countMfaRecoveryCodes(user.id)) === 0;
         const batch = needCodes ? gate.lib.newRecoveryBatch(user.id) : null;
         const result = await store.activateMfaCredentialAtomic(user.id, pending.id, { actor: user.email, replaceCredentialId: active ? active.id : null, totpStep: checked.step, recoveryHmacs: batch ? batch.hmacs : null, keyId: batch ? batch.key_id : null });
         if (!result) return fail(409, "mfa_enrollment_not_pending", "raced");
-        const event = result.replaced ? "factor_replaced" : "enrolled";
-        await appendAudit(store, gate.actor, result.replaced ? "mfa_factor_replaced" : "mfa_enrolled", "admin_user", user.id, { request_id: ctx.requestId, credential_id: pending.id, recovery_codes_issued: result.recovery_codes, generation_after: result.session_generation, forced, at: new Date().toISOString() }, req);
+        const event = result.replaced ? "factor_replaced" : gate.hasFactor ? "factor_added" : "enrolled";
+        await appendAudit(store, gate.actor, result.replaced ? "mfa_factor_replaced" : gate.hasFactor ? "mfa_factor_added" : "mfa_enrolled", "admin_user", user.id, { request_id: ctx.requestId, credential_id: pending.id, recovery_codes_issued: result.recovery_codes, generation_after: result.session_generation, forced, at: new Date().toISOString() }, req);
         const delivery = await notifyMfaEvent({ store, config, user, event, requestId: ctx.requestId, req });
         let cookieHeader = {}; let sessionReissued = false;
         if (!forced) { try { const fresh = await store.getAdminUserById(user.id); const { token, ttl } = await issueSession(store, config, fresh, { mfaAt: Date.now() }); cookieHeader = { "set-cookie": createSessionCookie(token, config, ttl.ttlMs) }; sessionReissued = true; } catch { /* the factor IS active; the person signs in again (the recovery codes below are still shown: this is their only chance) */ } }
@@ -3222,7 +3249,7 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           const management = typeof store.supportsMfaManagement === "function" && (await store.supportsMfaManagement());
           const credentials = (await store.listMfaCredentials(user.id)).filter((c) => c.status !== "revoked");
           const enrolled = credentials.some((c) => c.status === "active");
-          json(res, 200, { mode: "on", management_available: Boolean(management), enrolled, required: mfaRequiredForRole(user, config), credentials, recovery_codes_remaining: enrolled ? await store.countMfaRecoveryCodes(user.id) : 0, step_up: { purpose: "mfa_management", requires_second_factor: enrolled }, session: { mfa_verified: authContext.sessionMfa === true } }, mfaHeaders);
+          const waStatus = validateWebauthnConfig(config); json(res, 200, { mode: "on", management_available: Boolean(management), webauthn: { status: waStatus.status, available: waStatus.available, limit: MAX_WEBAUTHN_CREDENTIALS, registered: credentials.filter((c) => c.type === "webauthn" && c.status === "active").length }, enrolled, required: mfaRequiredForRole(user, config), credentials, recovery_codes_remaining: enrolled ? await store.countMfaRecoveryCodes(user.id) : 0, step_up: { purpose: "mfa_management", requires_second_factor: enrolled }, session: { mfa_verified: authContext.sessionMfa === true } }, mfaHeaders);
         } catch { json(res, 503, { error: "mfa_verification_unavailable" }, mfaHeaders); }
         return;
       }
@@ -3339,6 +3366,104 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
         return;
       }
 
+      // ---- Settings S7.5.5: WebAuthn registration and authentication (contract: docs/settings-domain/32_S7_5_5_WEBAUTHN_PASSKEY_CONTRACT.md) ----
+      const webauthnService = async () => {
+        try { const service = createWebauthn(config); if (typeof store.supportsMfaWebauthn !== "function" || !(await store.supportsMfaWebauthn())) throw new Error("schema"); return service; } catch { return null; }
+      };
+      const newWebauthnChallenge = async (userId, purpose) => {
+        const challenge = crypto.randomBytes(32);
+        const created = await store.createMfaChallenge(userId, purpose, challenge.toString("base64"), 300);
+        return { challenge, id: created.id, expiresAt: created.expires_at };
+      };
+
+      if (pathname === "/api/lead-agents/admin/session/mfa/webauthn/register/options") {
+        if (req.method !== "POST") { methodNotAllowed(res, "POST"); return; }
+        const gate = await mfaManagementGate("webauthn_register_options"); if (!gate) return;
+        const wa = await webauthnService(); if (!wa) { await mfaDeny(503, "webauthn_unavailable", "webauthn_unavailable", gate.actor); return; }
+        if (!enrollLimiter("mfa-enroll", gate.user)) return;
+        try {
+          const existing = await store.listWebauthnCredentialsForAuth(gate.user.id);
+          if (existing.length >= MAX_WEBAUTHN_CREDENTIALS) { await mfaDeny(409, "credential_limit", "credential_limit", gate.actor); return; }
+          const ch = await newWebauthnChallenge(gate.user.id, "webauthn_register");
+          const options = await wa.registrationOptions({ user: gate.user, existing, challenge: ch.challenge });
+          await appendAudit(store, gate.actor, "mfa_webauthn_registration_started", "admin_user", gate.user.id, { request_id: ctx.requestId, at: new Date().toISOString() }, req);
+          json(res, 200, { ok: true, options, challenge_id: ch.id, expires_at: ch.expiresAt }, mfaHeaders);
+        } catch (error) { await mfaStoreFault(error, gate.actor, "webauthn_register_options"); }
+        return;
+      }
+
+      if (pathname === "/api/lead-agents/admin/session/mfa/webauthn/register/verify") {
+        if (req.method !== "POST") { methodNotAllowed(res, "POST"); return; }
+        const gate = await mfaManagementGate("webauthn_register_verify"); if (!gate) return;
+        const wa = await webauthnService(); if (!wa) { await mfaDeny(503, "webauthn_unavailable", "webauthn_unavailable", gate.actor); return; }
+        const body = await readJsonBody(req); requireObject(body, "body");
+        if (typeof body.challenge_id !== "string" || !body.response || typeof body.response !== "object") { json(res, 400, { error: "invalid_request" }, mfaHeaders); return; }
+        if (!enrollLimiter("mfa-enroll", gate.user)) return;
+        const fail = async (status, error, reason, category) => { await appendAudit(store, gate.actor, "mfa_enrollment_failed", "admin_user", gate.user.id, { request_id: ctx.requestId, method: "webauthn", failure_reason: reason, ...(category ? { category } : {}), at: new Date().toISOString() }, req, "failure").catch(() => {}); json(res, status, { error }, mfaHeaders); };
+        let createdId = null;
+        try {
+          const consumed = await store.consumeMfaChallenge(gate.user.id, body.challenge_id, "webauthn_register"); // single use: spent whether or not the response verifies
+          if (!consumed) return fail(401, "mfa_failed", "challenge");
+          let info;
+          try { info = await wa.verifyRegistration({ response: body.response, expectedChallenge: Buffer.from(consumed, "base64").toString("base64url") }); }
+          catch (error) { if (error && error.code === "webauthn_verification_failed") return fail(401, "mfa_failed", "verification", error.category); throw error; }
+          const label = typeof body.label === "string" && body.label.trim() ? body.label.trim().slice(0, 80) : "Security key";
+          const created = await store.createMfaCredential(gate.user.id, { type: "webauthn", label, webauthn_credential_id: info.credential_id, webauthn_public_key: info.public_key, webauthn_sign_count: info.sign_count, webauthn_transports: info.transports, webauthn_aaguid: info.aaguid, webauthn_backup_eligible: info.backup_eligible });
+          createdId = created.id;
+          const needCodes = !gate.hasFactor || (await store.countMfaRecoveryCodes(gate.user.id)) === 0;
+          const batch = needCodes ? gate.lib.newRecoveryBatch(gate.user.id) : null;
+          const result = await store.activateMfaCredentialAtomic(gate.user.id, created.id, { actor: gate.user.email, recoveryHmacs: batch ? batch.hmacs : null, keyId: batch ? batch.key_id : null });
+          if (!result) { await store.revokeMfaCredential(gate.user.id, created.id, { actor: gate.user.email, reason: "activation_failed" }).catch(() => {}); return fail(409, "mfa_conflict", "raced"); }
+          createdId = null;
+          await appendAudit(store, gate.actor, gate.hasFactor ? "mfa_factor_added" : "mfa_enrolled", "admin_user", gate.user.id, { request_id: ctx.requestId, credential_id: created.id, method: "webauthn", recovery_codes_issued: result.recovery_codes, generation_after: result.session_generation, at: new Date().toISOString() }, req);
+          const delivery = await notifyMfaEvent({ store, config, user: gate.user, event: gate.hasFactor ? "factor_added" : "enrolled", requestId: ctx.requestId, req });
+          let cookieHeader = {}; let sessionReissued = false;
+          try { const fresh = await store.getAdminUserById(gate.user.id); const { token, ttl } = await issueSession(store, config, fresh, { mfaAt: Date.now() }); cookieHeader = { "set-cookie": createSessionCookie(token, config, ttl.ttlMs) }; sessionReissued = true; } catch { /* the credential IS active; sign in again (the recovery codes below are still shown) */ }
+          json(res, 200, { ok: true, credential: { id: created.id, type: "webauthn", status: "active", label }, ...(batch ? { recovery_codes: batch.codes } : {}), recovery_codes_issued: result.recovery_codes, session_reissued: sessionReissued, sign_in_again: !sessionReissued, notification: delivery }, { ...mfaHeaders, ...cookieHeader });
+        } catch (error) {
+          if (createdId) await store.revokeMfaCredential(gate.user.id, createdId, { actor: gate.user.email, reason: "activation_failed" }).catch(() => {});
+          if (error && error.code === "mfa_credential_limit") { await mfaDeny(409, "credential_limit", "credential_limit", gate.actor); return; }
+          await mfaStoreFault(error, gate.actor, "webauthn_register_verify");
+        }
+        return;
+      }
+
+      // options for a SESSION-bound fresh proof (step-up): the account's active credentials only
+      if (pathname === "/api/lead-agents/admin/session/mfa/webauthn/step-up-options") {
+        if (req.method !== "POST") { methodNotAllowed(res, "POST"); return; }
+        const gate = await mfaManagementGate("webauthn_stepup_options", { stepUp: false }); if (!gate) return;
+        const wa = await webauthnService(); if (!wa) { await mfaDeny(503, "webauthn_unavailable", "webauthn_unavailable", gate.actor); return; }
+        if (!enrollLimiter("mfa-webauthn-options", gate.user)) return;
+        try {
+          const creds = await store.listWebauthnCredentialsForAuth(gate.user.id);
+          if (!creds.length) { json(res, 409, { error: "no_webauthn_credential" }, mfaHeaders); return; }
+          const ch = await newWebauthnChallenge(gate.user.id, "webauthn_authenticate");
+          json(res, 200, { ok: true, options: await wa.authenticationOptions({ allow: creds, challenge: ch.challenge }), challenge_id: ch.id, expires_at: ch.expiresAt }, mfaHeaders);
+        } catch (error) { await mfaStoreFault(error, gate.actor, "webauthn_stepup_options"); }
+        return;
+      }
+
+      // options for the LOGIN second step: the person proves the password via the login challenge (public path: no session exists yet)
+      if (pathname === "/api/lead-agents/admin/session/mfa/webauthn/auth/options") {
+        if (req.method !== "POST") { methodNotAllowed(res, "POST"); return; }
+        const body = await readJsonBody(req); requireObject(body, "body");
+        const failedGeneric = () => json(res, 401, { error: "mfa_failed", message: "That verification could not be completed." }, mfaHeaders);
+        if (!validateAuthConfig(config).valid) { json(res, 503, { error: "auth_configuration_invalid" }, mfaHeaders); return; }
+        let lib; try { if (config.mfaMode !== "on" || !validateMfaConfig(config).valid) throw new Error("off"); lib = createMfaCrypto(config); } catch { json(res, 503, { error: "mfa_unavailable" }, mfaHeaders); return; }
+        const wa = await webauthnService(); if (!wa) { json(res, 503, { error: "webauthn_unavailable" }, mfaHeaders); return; }
+        const subject = challengeSubject(body.challenge_token); if (!subject) { failedGeneric(); return; }
+        let user; try { user = await store.getAdminUserById(subject); } catch { json(res, 503, { error: "mfa_verification_unavailable" }, mfaHeaders); return; }
+        if (!user || user.status !== "active" || !lib.verifyChallengeToken({ token: body.challenge_token, user, purpose: "login" }).ok) { failedGeneric(); return; }
+        if (!enrollLimiter("mfa-webauthn-options", user)) return;
+        try {
+          const creds = await store.listWebauthnCredentialsForAuth(user.id);
+          if (!creds.length) { failedGeneric(); return; }
+          const ch = await newWebauthnChallenge(user.id, "webauthn_authenticate");
+          json(res, 200, { ok: true, options: await wa.authenticationOptions({ allow: creds, challenge: ch.challenge }), challenge_id: ch.id, expires_at: ch.expiresAt }, mfaHeaders);
+        } catch { json(res, 503, { error: "mfa_verification_unavailable" }, mfaHeaders); }
+        return;
+      }
+
       // ---- Settings S7.5.3: second-factor verification (contract: docs/settings-domain/30_S7_5_3_MFA_LOGIN_CHALLENGE_CONTRACT.md). Public path: no session exists yet. ----
       if (pathname === "/api/lead-agents/admin/session/mfa/verify") {
         if (req.method !== "POST") {
@@ -3378,19 +3503,22 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           if (["expired", "password_changed", "revoked"].includes(verdict.reason)) json(res, 401, { error: "mfa_challenge_expired", message: "This sign-in expired. Sign in again." }, headersOut); else failedGeneric();
           return;
         }
-        if (body.method === "webauthn") { json(res, 400, { error: "unsupported_method" }, headersOut); return; }
-        if (!MFA_CHALLENGE_METHODS.includes(body.method) || typeof body.code !== "string" || body.code.length > 64) { await auditFailure(actor, mfaUser.id, "invalid_request"); failedGeneric(); return; }
+        const isWebauthn = body.method === "webauthn";
+        if (isWebauthn ? (!body.webauthn || typeof body.webauthn !== "object" || typeof body.webauthn.challenge_id !== "string" || !body.webauthn.response || typeof body.webauthn.response !== "object")
+          : (!MFA_CHALLENGE_METHODS.includes(body.method) || typeof body.code !== "string" || body.code.length > 64)) { await auditFailure(actor, mfaUser.id, "invalid_request"); failedGeneric(); return; }
         let outcome;
         try {
           if (body.method === "totp") {
             const credential = await store.getActiveTotpCredential(mfaUser.id);
             outcome = credential ? await mfaLib.verifyAndConsumeTotp({ store, userId: mfaUser.id, credentialId: credential.id, code: body.code }) : { ok: false, reason: "no_totp_factor" };
+          } else if (isWebauthn) {
+            outcome = await checkWebauthnAssertion({ store, config, user: mfaUser, challengeId: body.webauthn.challenge_id, response: body.webauthn.response });
           } else {
             // S7.5.4: consumption and the generation bump are ONE database step (closes the S7.5.3 two-step gap); older databases fall back to the two-step path
             outcome = await mfaLib.verifyAndConsumeRecoveryCodeRevoking({ store, userId: mfaUser.id, code: body.code, actor: mfaUser.email });
           }
         } catch (error) {
-          const keyProblem = ["mfa_decrypt_failed", "mfa_key_unavailable", "mfa_unavailable"].includes(error && error.code);
+          const keyProblem = ["mfa_decrypt_failed", "mfa_key_unavailable", "mfa_unavailable", "webauthn_unavailable"].includes(error && error.code);
           await appendAudit(store, actor, "mfa_verification_error", "admin_user", mfaUser.id, { request_id: ctx.requestId, method: body.method, failure_reason: keyProblem ? "key_or_decrypt" : "store_error", at: new Date().toISOString() }, req, "failure").catch(() => {});
           json(res, 503, { error: keyProblem ? "mfa_unavailable" : "mfa_verification_unavailable", message: "Sign-in is temporarily unavailable." }, headersOut); // server-side fault: never password-only, never counted against the person
           return;
@@ -3399,6 +3527,7 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           let failure;
           try { failure = await store.recordMfaFailure(mfaUser.id); } catch { json(res, 503, { error: "mfa_verification_unavailable", message: "Sign-in is temporarily unavailable." }, headersOut); return; }
           await auditFailure(actor, mfaUser.id, outcome.reason, { method: body.method, failed_attempts: failure ? failure.failed_attempts : undefined });
+          if (outcome.reason === "counter_rollback" || outcome.reason === "counter") await appendAudit(store, actor, "mfa_webauthn_counter_rollback", "admin_user", mfaUser.id, { request_id: ctx.requestId, at: new Date().toISOString() }, req, "failure").catch(() => {});
           const lockedNow = failure && failure.locked_until ? Date.parse(failure.locked_until) - Date.now() : 0;
           if (lockedNow > 0) {
             await appendAudit(store, actor, "mfa_locked", "admin_user", mfaUser.id, { request_id: ctx.requestId, failed_attempts: failure.failed_attempts, locked_until: failure.locked_until, at: new Date().toISOString() }, req, "failure").catch(() => {});
@@ -3572,12 +3701,15 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           try { hasFactor = Boolean(await store.hasActiveMfa(authContext.user.id)); } catch { json(res, 503, { error: "mfa_verification_unavailable" }, { "x-request-id": ctx.requestId }); return; }
           if (hasFactor) {
             const fresh = authContext.sessionMfa === true && Date.now() - (authContext.sessionMfaAt || 0) <= MFA_FRESH_MS;
-            if (body.mfa && typeof body.mfa === "object" && body.mfa.method === "totp" && typeof body.mfa.code === "string" && body.mfa.code.length <= 32) {
+            const mfaIn = body.mfa && typeof body.mfa === "object" ? body.mfa : null;
+            const viaTotp = mfaIn && mfaIn.method === "totp" && typeof mfaIn.code === "string" && mfaIn.code.length <= 32;
+            const viaWebauthn = mfaIn && mfaIn.method === "webauthn" && typeof mfaIn.challenge_id === "string" && mfaIn.response && typeof mfaIn.response === "object";
+            if (viaTotp || viaWebauthn) {
               let proved;
               try {
                 if (!validateMfaConfig(config).valid) throw new Error("mfa_unavailable");
-                const lib = createMfaCrypto(config); const credential = await store.getActiveTotpCredential(authContext.user.id);
-                proved = credential ? await lib.verifyAndConsumeTotp({ store, userId: authContext.user.id, credentialId: credential.id, code: body.mfa.code }) : { ok: false };
+                if (viaWebauthn) { proved = await checkWebauthnAssertion({ store, config, user: authContext.user, challengeId: mfaIn.challenge_id, response: mfaIn.response }); if (!proved.ok && (proved.reason === "counter_rollback" || proved.reason === "counter")) await appendAudit(store, authContext, "mfa_webauthn_counter_rollback", "admin_user", authContext.user.id, { request_id: ctx.requestId, at: new Date().toISOString() }, req, "failure").catch(() => {}); }
+                else { const lib = createMfaCrypto(config); const credential = await store.getActiveTotpCredential(authContext.user.id); proved = credential ? await lib.verifyAndConsumeTotp({ store, userId: authContext.user.id, credentialId: credential.id, code: mfaIn.code }) : { ok: false }; }
                 if (!proved.ok) await store.recordMfaFailure(authContext.user.id);
               } catch { json(res, 503, { error: "mfa_unavailable" }, { "x-request-id": ctx.requestId }); return; }
               if (!proved.ok) { await stepUpAudit("failed", "invalid_second_factor"); json(res, 401, { error: "step_up_failed", message: "That verification could not be completed." }, { "x-request-id": ctx.requestId }); return; }

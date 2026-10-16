@@ -1,5 +1,7 @@
 -- Rollback of S7.5.4 MFA management. NON-DESTRUCTIVE: functions are dropped; every credential, recovery code and account is kept.
 -- The single "one pending-or-active TOTP" index of S7.5.1 can only be restored if no account has both, so any pending TOTP of an account that also has an active one is REVOKED first.
+drop function if exists office_mfa_webauthn_record_use(uuid, uuid, bigint);   -- S7.5.5, if present
+drop function if exists office_mfa_webauthn_version();
 drop function if exists office_mfa_consume_recovery_code_revoking(uuid, text, text);
 drop function if exists office_mfa_revoke_credential(uuid, uuid, text, text, boolean);
 drop function if exists office_mfa_activate_credential(uuid, uuid, text, uuid, bigint, text[], text);

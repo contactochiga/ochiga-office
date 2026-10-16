@@ -1761,6 +1761,7 @@ class FileLeadAgentsStore {
         const b = { status: old.status, revoked_at: old.revoked_at, revoked_by: old.revoked_by, revoked_reason: old.revoked_reason }; Object.assign(old, { status: "revoked", revoked_at: stamp, revoked_by: String(actor || "").slice(0, 200), revoked_reason: "replaced" }); undos.push(() => Object.assign(old, b)); replaced = true;
       }
       if (pending.type === "totp" && this.state.admin_mfa_credentials.some((c) => c !== pending && c.admin_user_id === userId && c.type === "totp" && c.status === "active")) { undos.reverse().forEach((u) => u()); throw mfaShared.mfaError("mfa_conflict"); }
+      if (pending.type === "webauthn" && this.state.admin_mfa_credentials.filter((c) => c !== pending && c.admin_user_id === userId && c.type === "webauthn" && c.status === "active").length >= 10) { undos.reverse().forEach((u) => u()); throw mfaShared.mfaError("mfa_credential_limit"); }
       const pb = { status: pending.status, activated_at: pending.activated_at, totp_last_step: pending.totp_last_step }; Object.assign(pending, { status: "active", activated_at: stamp, totp_last_step: Math.max(pending.totp_last_step || 0, Number(totpStep) || 0) }); undos.push(() => Object.assign(pending, pb));
       let codes = 0;
       if (recoveryHmacs) { const all = this.state.admin_mfa_recovery_codes; const kept = all.filter((c) => !(c.admin_user_id === userId && !c.used_at)); if (recoveryHmacs.some((h) => kept.some((c) => c.code_hmac === h))) { undos.reverse().forEach((u) => u()); throw mfaShared.mfaError("mfa_conflict"); } const batchId = crypto.randomUUID(); this.state.admin_mfa_recovery_codes = [...kept, ...recoveryHmacs.map((h) => ({ id: crypto.randomUUID(), admin_user_id: userId, batch_id: batchId, code_hmac: h, key_id: recordedKeyId, created_at: stamp, used_at: null }))]; codes = recoveryHmacs.length; undos.push(() => { this.state.admin_mfa_recovery_codes = all; }); }
@@ -1790,6 +1791,23 @@ class FileLeadAgentsStore {
       if (index === -1 || !row) return { result: null, undo: () => {} };
       const stamp = this.nowIso(); row.used_at = stamp; const bump = this._mfaBump(index, actor, stamp);
       return { result: { session_generation: bump.generation, sessions_revoked_at: stamp }, undo: () => { row.used_at = null; bump.undo(); } };
+    });
+  }
+  // ---- S7.5.5: WebAuthn credential access for authentication, and the counter compare-and-set ----
+  async supportsMfaWebauthn() { return true; }
+  async listWebauthnCredentialsForAuth(userId) {
+    return this.state.admin_mfa_credentials.filter((c) => c.admin_user_id === userId && c.type === "webauthn" && c.status === "active").map((c) => ({ id: c.id, credential_id: c.webauthn_credential_id, public_key: c.webauthn_public_key, sign_count: Number(c.webauthn_sign_count) || 0, transports: c.webauthn_transports || [], backup_eligible: c.webauthn_backup_eligible ?? null }));
+  }
+  // accepted only if the counter rose, or both are 0 (synced passkeys); a lower/equal non-zero counter is a clone or replay
+  async recordWebauthnUse(userId, credentialRowId, newCount) {
+    if (!Number.isSafeInteger(newCount) || newCount < 0) throw mfaShared.mfaError("mfa_invalid_input", { field: "counter" });
+    return this._mfaTxn(() => {
+      const row = this.state.admin_mfa_credentials.find((c) => c.id === credentialRowId && c.admin_user_id === userId && c.type === "webauthn" && c.status === "active");
+      const stored = row ? Number(row.webauthn_sign_count) || 0 : 0;
+      if (!row || !((stored === 0 && newCount === 0) || newCount > stored)) return { result: false, undo: () => {} };
+      const before = { webauthn_sign_count: row.webauthn_sign_count, last_used_at: row.last_used_at };
+      row.webauthn_sign_count = newCount; row.last_used_at = this.nowIso();
+      return { result: true, undo: () => Object.assign(row, before) };
     });
   }
   async rotateMfaCredentialSecret(userId, credentialId, input) {
