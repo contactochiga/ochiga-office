@@ -1,5 +1,10 @@
 -- Rollback of S7.5.1 MFA data foundation. NON-DESTRUCTIVE BY DEFAULT: only the functions are removed. Tables, columns and every row are KEPT on purpose:
 -- dropping credentials or recovery codes would silently downgrade protected accounts. The feature itself is switched off with LEAD_AGENTS_MFA=off (the default).
+-- functions of later slices that depend on these tables (S7.5.4), if present
+drop function if exists office_mfa_consume_recovery_code_revoking(uuid, text, text);
+drop function if exists office_mfa_revoke_credential(uuid, uuid, text, text, boolean);
+drop function if exists office_mfa_activate_credential(uuid, uuid, text, uuid, bigint, text[], text);
+drop function if exists office_mfa_management_version();
 drop function if exists office_mfa_prune_challenges(interval);
 drop function if exists office_mfa_reset(uuid, text);
 drop function if exists office_mfa_clear_failures(uuid);

@@ -31,6 +31,7 @@ function sanitizeStoreError(error, operation) {
   if (error && typeof error.code === "string" && error.code.startsWith("mfa_")) code = error.code;
   else if (status === 404 && (pg === "PGRST202" || pg === "PGRST205" || pg === "42P01")) code = "mfa_unavailable";
   else if (status === 409 || pg === "23505" || pg === "23503") code = "mfa_conflict";
+  else if (pg === "P0001") code = String(error?.response?.data?.message || "").includes("last_active_factor") ? "mfa_last_factor" : "mfa_conflict"; // raised by the atomic functions
   else if (pg === "42703") code = "mfa_schema_outdated"; // a column from a newer additive migration is missing
   else if (status === 400 && (pg === "22P02" || pg === "23514" || pg === "22023")) code = "mfa_invalid_input";
   else if (!status) code = "mfa_store_unreachable";

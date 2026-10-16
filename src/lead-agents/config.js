@@ -110,6 +110,8 @@ function createConfig() {
     sessionRevocationEnabled: String(process.env.LEAD_AGENTS_SESSION_REVOCATION || "on").toLowerCase() !== "off",
     // MFA (S7.5.1): OFF by default. `on` only enables key validation and readiness reporting in this slice. Key material comes from the deployment environment only.
     mfaMode: mfaMode(process.env),
+    // Roles for which MFA is "required" in the S7.5.4 sense: ONLY the refusal to remove their last active factor reads this. Nothing at sign-in does (enforcement is a later slice). Default: nobody.
+    mfaRequiredRoles: stringListFromEnv(process.env.LEAD_AGENTS_MFA_REQUIRED_ROLES),
     mfaKey: process.env.LEAD_AGENTS_MFA_KEY || "",
     mfaKeyId: process.env.LEAD_AGENTS_MFA_KEY_ID || "",
     mfaKeysPrevious: process.env.LEAD_AGENTS_MFA_KEYS_PREVIOUS || "",

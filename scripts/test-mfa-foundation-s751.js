@@ -63,11 +63,13 @@ async function main() {
   const defaults = createConfig(); eq(defaults.mfaMode, "off", "MFA is off by default"); eq(defaults.mfaKey, "", "no key by default");
   process.env.LEAD_AGENTS_MFA = "On"; eq(createConfig().mfaMode, "on", "mode parses case-insensitively"); process.env.LEAD_AGENTS_MFA = "true"; eq(createConfig().mfaMode, "off", "only the word `on` enables it"); delete process.env.LEAD_AGENTS_MFA;
   const src = fs.readFileSync(path.join(__dirname, "..", "src", "lead-agents", "server.js"), "utf8");
-  // S7.5.1 proved the foundation was unreachable. S7.5.3 adds exactly the LOGIN-time methods; everything that enrolls, issues, resets or manages credentials stays unreachable from server.js.
-  const forbidden = ["createMfaCredential", "activateMfaCredential", "revokeMfaCredential", "listMfaCredentials", "getMfaCredentialSecret", "replaceMfaRecoveryCodes", "createMfaChallenge", "consumeMfaChallenge", "resetMfa", "pruneMfaChallenges", "rotateMfaCredentialSecret", "consumeTotpStep", "consumeMfaRecoveryCode"];
-  for (const m of forbidden) ok(!src.includes(m), `server.js never calls ${m} directly (enrollment, issuance, reset and management are not in this slice; verification goes through the crypto library)`);
-  const mfaPaths = [...new Set([...src.matchAll(/pathname === "(\/api\/lead-agents[^"]*mfa[^"]*)"/g)].map((x) => x[1]))]; assert.deepEqual(mfaPaths, ["/api/lead-agents/admin/session/mfa/verify"]); passed += 1;
-  ok(src.split("\n").filter((l) => l.includes("supportsMfa")).length === 1, "the readiness schema probe is still a single line in /healthz");
+  // S7.5.1 proved the foundation was unreachable; S7.5.3 opened the login-time methods; S7.5.4 opens enrollment and management. What must STILL be unreachable from server.js:
+  // administrator/owner reset, challenge-table (WebAuthn) operations, secret rotation, direct secret reads and direct step/recovery consumption (verification goes through the crypto library).
+  const forbidden = ["resetMfa(", "pruneMfaChallenges", "createMfaChallenge", "consumeMfaChallenge", "rotateMfaCredentialSecret", "getMfaCredentialSecret", "consumeTotpStep", "consumeMfaRecoveryCode("];
+  for (const m of forbidden) ok(!src.includes(m), `server.js never calls ${m} directly`);
+  const mfaPaths = [...new Set([...src.matchAll(/pathname === "(\/api\/lead-agents[^"]*mfa[^"]*)"/g)].map((x) => x[1]))].sort();
+  assert.deepEqual(mfaPaths, ["/api/lead-agents/admin/session/mfa", "/api/lead-agents/admin/session/mfa/enroll/email-code", "/api/lead-agents/admin/session/mfa/enroll/email-verify", "/api/lead-agents/admin/session/mfa/enroll/forced/begin", "/api/lead-agents/admin/session/mfa/enroll/forced/confirm", "/api/lead-agents/admin/session/mfa/enroll/totp/begin", "/api/lead-agents/admin/session/mfa/enroll/totp/confirm", "/api/lead-agents/admin/session/mfa/recovery-codes/regenerate", "/api/lead-agents/admin/session/mfa/verify"]); passed += 1;
+  ok(/mfa\\\/credentials\\\/\(\[0-9a-fA-F-\]\{36\}\)\\\/remove/.test(src), "the single parameterised route (factor removal) is the only other MFA path");
 
   // ===== 3. /healthz: readiness reporting
   const { store, filePath } = await createTempStore();

@@ -58,7 +58,9 @@ alter table admin_mfa_recovery_codes enable row level security;
 alter table admin_mfa_challenges enable row level security;
 revoke all on admin_mfa_credentials, admin_mfa_recovery_codes, admin_mfa_challenges from public;
 
-create or replace function office_mfa_schema_version() returns integer language sql immutable as $f$ select 1 $f$;
+-- PL/pgSQL, never a constant SQL function: a trivial `language sql` body is INLINED (or folded when immutable) at plan time, and a plan cached by PostgREST's per-connection prepared
+-- statements then runs for ANY role with no EXECUTE check (observed: an anon/authenticated probe answered 200). A PL/pgSQL function is a real call and is privilege-checked on every execution.
+create or replace function office_mfa_schema_version() returns integer language plpgsql stable as $f$ begin return 1; end $f$;
 
 -- Replay protection: succeeds only for an ACTIVE TOTP credential whose stored step is strictly lower. One statement; concurrent callers serialise on the row lock and re-check.
 create or replace function office_mfa_consume_totp_step(p_credential_id uuid, p_step bigint) returns boolean language sql as $f$

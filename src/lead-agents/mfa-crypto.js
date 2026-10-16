@@ -18,7 +18,7 @@ function cryptoError(code) {
 
 // ---------------------------------------------------------------- HKDF (purpose separated)
 const HKDF_SALT = Buffer.from("ochiga-office/mfa/v1");
-const PURPOSES = Object.freeze(["totp-secret-encryption", "recovery-code-hmac", "mfa-challenge-signing", "mfa-challenge-binding"]);
+const PURPOSES = Object.freeze(["totp-secret-encryption", "recovery-code-hmac", "mfa-challenge-signing", "mfa-challenge-binding", "mfa-email-code"]);
 
 /** HKDF-SHA256 -> 32 bytes. A subkey for one purpose never works for another; unknown purposes throw. */
 function hkdfSubkey(ikm, purpose) {
@@ -266,8 +266,58 @@ function createMfaCrypto(config) {
   /** How many unused recovery codes are NOT hashed under the current key (older keys and legacy rows). A previous key may be retired only when this is 0. */
   async function recoveryCodesBlockingRetirement({ store }) { return store.countUnusedRecoveryCodesNotUsingKey(ring.currentKeyId); }
 
+  /** S7.5.4: the key ids whose hashes the account's unused codes use (null = every key: legacy rows, or the column is not there yet). */
+  async function recoveryKeyIdsFor(store, userId) {
+    const s = keyStore.get(ring); const allIds = [s.current.id, ...s.previous.map((p) => p.id)];
+    let keyIds = null;
+    if (typeof store.listMfaRecoveryKeyIds === "function") { try { keyIds = await store.listMfaRecoveryKeyIds(userId); } catch (error) { if (error && error.code !== "mfa_schema_outdated") throw error; } }
+    if (Array.isArray(keyIds) && keyIds.length === 0) return [];
+    return keyIds === null ? allIds : [...new Set(keyIds.flatMap((id) => (id === null ? allIds : ring.hasKey(id) ? [id] : [])))];
+  }
+  /**
+   * S7.5.4: consume a recovery code AND end the account's other sessions in ONE database step (closes the S7.5.3 two-step gap). Returns
+   * { ok: true, atomic: true, generation } | { ok: true, atomic: false } (the database predates 20261024: the caller must revoke itself) | { ok: false, reason }.
+   */
+  async function verifyAndConsumeRecoveryCodeRevoking({ store, userId, code, actor = "" }) {
+    const normalized = normalizeRecoveryCode(code);
+    if (!normalized || !ID_TEXT.test(String(userId || ""))) return { ok: false, reason: "invalid_format" };
+    const ids = await recoveryKeyIdsFor(store, userId);
+    if (!ids.length) return { ok: false, reason: "invalid" };
+    for (const id of ids) {
+      const hash = recoveryHash(id, userId, normalized);
+      let revoked;
+      try { revoked = await store.consumeMfaRecoveryCodeRevokingSessions(userId, hash, { actor }); }
+      catch (error) {
+        if (error && error.code === "mfa_unavailable") { for (const fallbackId of ids) if (await store.consumeMfaRecoveryCode(userId, recoveryHash(fallbackId, userId, normalized))) return { ok: true, atomic: false }; return { ok: false, reason: "invalid" }; }
+        throw error;
+      }
+      if (revoked) return { ok: true, atomic: true, generation: revoked.session_generation };
+    }
+    return { ok: false, reason: "invalid" };
+  }
+
+  // ---- TOTP enrollment material (S7.5.4): a fresh secret, encrypted with the credential id as authenticated metadata. The plaintext secret leaves only as Base32 for the one-time display.
+  function prepareTotpEnrollment({ userId, credentialId, account }) {
+    const secret = generateTotpSecret();
+    try {
+      const secretBase32 = base32Encode(secret);
+      return { credentialId, secretBase32, otpauthUri: buildOtpauthUri({ account, secretBase32 }), record: encryptTotpSecret(secret, { userId, credentialId }) };
+    } finally { secret.fill(0); }
+  }
+
+  // ---- mailbox gate for forced enrollment: an 8-digit code derived from the enrollment challenge (valid exactly as long as it), delivered to the account's mailbox only
+  const mailboxKey = () => challengeKey("mfa-email-code");
+  function mailboxCodeFor(claims) {
+    const mac = crypto.createHmac("sha256", mailboxKey()).update(`ochiga-office/mfa/mailbox/v1|${claims.jti}|${claims.uid}`).digest();
+    return String(mac.readUInt32BE(0) % 100000000).padStart(8, "0");
+  }
+  function verifyMailboxCode(claims, code) {
+    if (typeof code !== "string" || !/^[0-9]{8}$/.test(code.replace(/[ -]/g, ""))) return false;
+    return equalText(mailboxCodeFor(claims), code.replace(/[ -]/g, ""));
+  }
+
   // ---- challenge tokens
-  const CHALLENGE_PURPOSES = ["login", "enroll"], CHALLENGE_DEFAULT_TTL_MS = 5 * 60_000, CHALLENGE_MAX_TTL_MS = 10 * 60_000;
+  const CHALLENGE_PURPOSES = ["login", "enroll", "enroll_verified"], CHALLENGE_DEFAULT_TTL_MS = 5 * 60_000, CHALLENGE_MAX_TTL_MS = 10 * 60_000;
   const bindingFor = (user) => crypto.createHmac("sha256", challengeKey("mfa-challenge-binding")).update(String(user.password_hash || "")).digest("hex").slice(0, 32);
   const signChallenge = (payload) => crypto.createHmac("sha256", challengeKey("mfa-challenge-signing")).update(payload).digest("hex");
 
@@ -311,7 +361,7 @@ function createMfaCrypto(config) {
 
   return Object.freeze({
     keyring: ring, encryptTotpSecret, decryptTotpSecret, needsRotation, rotateSecretRecord, rotateCredentialSecrets,
-    checkTotp, verifyAndConsumeTotp, recoveryHashCandidates, newRecoveryBatch, verifyAndConsumeRecoveryCode, recoveryCodesBlockingRetirement, issueChallengeToken, verifyChallengeToken,
+    checkTotp, verifyAndConsumeTotp, recoveryHashCandidates, newRecoveryBatch, verifyAndConsumeRecoveryCode, verifyAndConsumeRecoveryCodeRevoking, recoveryCodesBlockingRetirement, prepareTotpEnrollment, mailboxCodeFor, verifyMailboxCode, issueChallengeToken, verifyChallengeToken,
   });
 }
 

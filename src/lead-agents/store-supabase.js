@@ -1604,6 +1604,48 @@ class SupabaseLeadAgentsStore {
     return rows[0] || null;
   }
   // S7.5.2 rotation: one PATCH guarded by the key id and nonce that were decrypted (the nonce identifies the exact ciphertext without putting it in a URL). Zero rows = lost the race.
+  // ---- S7.5.4 (db/20261024_admin_mfa_management.sql): every management operation is ONE database function, so each succeeds or fails as a whole ----
+  async supportsMfaManagement() {
+    if (this.mfaManagement === true) return true;
+    if (this.mfaManagement === false && Date.now() - (this.mfaManagementCheckedAt || 0) < 60_000) return false;
+    try {
+      const response = await this.client.post("/rpc/office_mfa_management_version", {});
+      if (response.data !== 1) throw mfaShared.mfaError("mfa_store_error");
+      this.mfaManagement = true;
+    } catch (error) {
+      if (error?.response?.status === 404 || error?.response?.data?.code === "PGRST202") { this.mfaManagement = false; this.mfaManagementCheckedAt = Date.now(); } else throw mfaShared.sanitizeStoreError(error, "supportsMfaManagement");
+    }
+    return this.mfaManagement === true;
+  }
+  async _mfaRequireManagement() { await this._mfaRequireSchema(); if (!(await this.supportsMfaManagement())) throw mfaShared.mfaError("mfa_unavailable"); }
+  async revokePendingTotp(userId, { actor = "" } = {}) {
+    await this._mfaRequireSchema();
+    const rows = await this._mfaCall("revokePendingTotp", async () => (await this.client.patch(`/admin_mfa_credentials?admin_user_id=eq.${encodeURIComponent(userId)}&type=eq.totp&status=eq.pending`, { status: "revoked", revoked_at: new Date().toISOString(), revoked_by: String(actor || "").slice(0, 200), revoked_reason: "superseded" }, { headers: this.selectHeaders() })).data);
+    return rows.length;
+  }
+  async activateMfaCredentialAtomic(userId, credentialId, { actor = "", replaceCredentialId = null, totpStep = null, recoveryHmacs = null, keyId = null } = {}) {
+    if (recoveryHmacs) mfaShared.validateRecoveryHmacs(recoveryHmacs); const recordedKeyId = mfaShared.validateKeyId(keyId);
+    await this._mfaRequireManagement();
+    const rows = await this._mfaRpc("activateMfaCredentialAtomic", "office_mfa_activate_credential", { p_user_id: userId, p_credential_id: credentialId, p_actor: String(actor || "").slice(0, 200), p_replace_credential_id: replaceCredentialId, p_totp_step: totpStep, p_recovery_hmacs: recoveryHmacs, p_key_id: recordedKeyId });
+    const row = Array.isArray(rows) ? rows[0] : rows; if (!row) return null;
+    if (!Number.isInteger(row.session_generation)) throw mfaShared.mfaError("mfa_store_error", { operation: "activateMfaCredentialAtomic" });
+    return { session_generation: row.session_generation, replaced: Boolean(row.replaced), recovery_codes: row.recovery_codes || 0 };
+  }
+  async revokeMfaCredentialAtomic(userId, credentialId, { actor = "", reason = "", keepLast = false } = {}) {
+    await this._mfaRequireManagement();
+    const rows = await this._mfaRpc("revokeMfaCredentialAtomic", "office_mfa_revoke_credential", { p_user_id: userId, p_credential_id: credentialId, p_actor: String(actor || "").slice(0, 200), p_reason: String(reason || "").slice(0, 200), p_keep_last: Boolean(keepLast) });
+    const row = Array.isArray(rows) ? rows[0] : rows; if (!row) return null;
+    if (!Number.isInteger(row.session_generation)) throw mfaShared.mfaError("mfa_store_error", { operation: "revokeMfaCredentialAtomic" });
+    return { session_generation: row.session_generation, remaining_active: row.remaining_active, codes_deleted: row.codes_deleted, was_active: Boolean(row.was_active) };
+  }
+  async consumeMfaRecoveryCodeRevokingSessions(userId, hmac, { actor = "" } = {}) {
+    if (typeof hmac !== "string" || hmac.length < 16 || hmac.length > 128) return null;
+    await this._mfaRequireManagement();
+    const rows = await this._mfaRpc("consumeMfaRecoveryCodeRevokingSessions", "office_mfa_consume_recovery_code_revoking", { p_user_id: userId, p_code_hmac: hmac, p_actor: String(actor || "").slice(0, 200) });
+    const row = Array.isArray(rows) ? rows[0] : rows; if (!row) return null;
+    if (!Number.isInteger(row.session_generation)) throw mfaShared.mfaError("mfa_store_error", { operation: "consumeMfaRecoveryCodeRevokingSessions" });
+    return { session_generation: row.session_generation, sessions_revoked_at: row.sessions_revoked_at };
+  }
   async rotateMfaCredentialSecret(userId, credentialId, input) {
     const v = mfaShared.validateRotationInput(input);
     await this._mfaRequireSchema();
