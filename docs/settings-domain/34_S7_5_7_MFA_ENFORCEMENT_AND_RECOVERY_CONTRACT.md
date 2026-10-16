@@ -1,0 +1,54 @@
+# S7.5.7 — MFA enforcement and administrator recovery: frozen contract
+
+Branch `feature/settings-s1-s2`, starting HEAD `d0cd0baad10299afa1dd44df50f3b83f82b83efc` (local = remote, clean verified). Implements §10–§13 of `25_S7_5_MFA_ARCHITECTURE_AND_RECOVERY_DESIGN.md` on top of S3 (registry), S7.2/S7.5.6 (step-up), S7.3 (duration), S7.4 (generations), S7.5.0 (password fingerprint), S7.5.3 (MFA claims), S7.5.4 (forced-enrollment mailbox gate, `mfa_reset`) and S7.5.5. No second authentication system. **No production action:** production MFA stays off (`LEAD_AGENTS_MFA` unset) and nothing here enables it.
+
+## 1. Enforcement modes — registry setting `office_mfa_enforcement`
+Generic S3 setting, enum `off | optional | privileged | all`, default `off`, owner office, read `staff.manage`, write `team.manage`, `requires_step_up: security_policy_write`, `requires_confirmation: true`, optimistic `expected_version`, audit action `mfa_enforcement_changed`. The setting is **effective only when the machinery is on** (`LEAD_AGENTS_MFA=on` with a valid key); otherwise it reads as stored but `status: inactive` and enforces nothing.
+| Mode | Behaviour |
+|---|---|
+| `off` | nobody is required to enrol. Enrolled accounts are still challenged at sign-in (a factor is never ignored). |
+| `optional` | as `off`, plus enrolment is encouraged (`/session/mfa` reports `enforcement`). Nobody is blocked. |
+| `privileged` | accounts holding `team.manage`, `settings.manage` or `staff.manage` must have MFA. |
+| `all` | every active human account must have MFA. |
+An unreadable or invalid stored value fails closed (`503` on sign-in and on session verification while MFA is on); it never silently becomes `off`.
+**Write requirements (all checked on the server, in this order):** signed-in human session (never API key/edge token) → role `super_admin` → `team.manage` → a valid `security_policy_write` grant **carrying a verified second factor whenever the actor is enrolled** (the S7.5.6 use-time gate, now also applied to registry writes — this closes a gap: S7.5.6 gated `/step-up/check` and revocation but not `requires_step_up` registry writes) → body `value`, `expected_version`, `confirm: true` → **preflight** (§4) → atomic compare-and-set. A write that does not change the stored level is refused (`enforcement_unchanged`) so it cannot restart a grace period. Lowering the level is never blocked by preflight.
+
+## 2. Privileged accounts
+An active account is *privileged* when its **effective permissions** (role defaults plus `permission_scopes`, evaluated by the same `hasPermission` the API uses) include any of `team.manage`, `settings.manage`, `staff.manage`. Role labels are never used alone: an account with a scope grant is privileged; a super_admin with all permissions removed would not be.
+
+## 3. Per-account requirement, grace and sign-in
+An account is **required** when (a) the mode covers it, or (b) its `mfa_required_after` column is set (admin reset / break-glass, §5–§6), or (c) `LEAD_AGENTS_MFA_REQUIRED_ROLES` lists its role (legacy S7.5.x switch, additive).
+**Grace:** 14 days. For case (a) the deadline is `max(time the current level took effect, account created_at) + 14 days`, where the level's effect time is the setting row's `updated_at` (re-saving the same level is refused, so grace cannot be extended by re-saving; changing level restarts grace for newly covered accounts — documented). For case (b) the deadline is the column value (reset and break-glass set it to *now*: immediate). The earliest applicable deadline wins.
+| Account state | Sign-in | Existing session |
+|---|---|---|
+| enrolled, MFA on | always the S7.5.3 challenge (any mode; never downgraded) | a session without MFA proof ends (`mfa_required`) |
+| not enrolled, not required | normal session | unchanged |
+| not enrolled, required, **before** deadline | normal session; response/`session/me` carry `mfa_enrollment: {required: true, grace_ends_at, days_left}` | accepted, same hint |
+| not enrolled, required, **at/after** deadline | **no cookie**: a challenge of purpose `enroll` (S7.5.4 mailbox-code gate, then enrol, then sign in with the new factor) | ended (`401 mfa_enrollment_required`) |
+Boundary: the deadline instant itself is expired (`now >= deadline`). Enrolment clears `mfa_required_after`. Removing the last factor of a required account is refused (S7.5.4 guard now uses this same rule).
+Enforcement changes **never touch session generations**: raising retires only sessions the rules above reject; lowering never revives a revoked session (revocation lives in `session_generation`/`pf`, which this slice does not modify).
+A short cache (10 s) avoids a settings read per request; local writes invalidate it; other instances converge within the cache time.
+
+## 4. Preflight (raising the level)
+Computed server-side from live state; `GET /api/lead-agents/admin/session/mfa/enforcement/preflight?level=…` (read `staff.manage`) returns every check, the affected counts and `ok`; the settings write runs the same function and refuses with `412 preflight_failed` + the failed check ids. Checks (✔ = required for): `mfa_machinery` (mode on, key valid; optional+), `schema_ready` (S7.5.4 functions present; optional+), `actor_enrolled`, `actor_recovery_codes` (≥1 unused code), `recovery_path` (another active enrolled super_admin **or** `LEAD_AGENTS_MFA_RECOVERY_APPROVED=true`), `mailbox_delivery` (the forced-enrolment mail can be sent), `fleet_attested` (`LEAD_AGENTS_MFA_FLEET_ATTESTED=s7.5.7`, set by the owner only after every serving instance runs this release), `api_key_fallback_off` (`LEAD_AGENTS_ALLOW_API_KEY_LOGIN` not true) — the last six for `privileged` and `all`. Counts (informational): active accounts, covered, enrolled, unenrolled, covered super_admins unenrolled, accounts that would be past grace immediately (always 0 on a raise). No counts reveal factor details.
+
+## 5. Administrator MFA reset — `POST /api/lead-agents/admin/users/:id/mfa/reset`
+Session of a `super_admin` holding `team.manage`; valid `mfa_management` grant **with a verified second factor** (actor must therefore be enrolled); body `{reason (3–500 chars), confirm: true, confirm_email: <target e-mail>}`. Refused: API key/edge token, self (`use_self_service`), unknown/inactive target, missing/invalid grant or factor, wrong purpose, protected last recoverable super administrator (if the target is a super_admin, at least one *other* active super_admin must hold an active factor), missing confirmation or reason. Effect, in order: set `mfa_required_after = now` → `resetMfa` (revoke credentials, delete unused recovery codes, clear failures, bump the target's session generation = all target sessions and grants die) → audit `mfa_reset_by_admin` (actor, target, reason, request id) → notify the target by e-mail (truthful delivery status). The target's password is untouched; the target must re-enrol through the mailbox gate at next sign-in. The actor's own sessions are unaffected.
+
+## 6. Break-glass (deployment owner, procedure R3)
+Disabled by default. Never an HTTP route: the only entry is process start. Enabled only when **all** of `LEAD_AGENTS_MFA_RECOVERY=true`, `LEAD_AGENTS_MFA_RECOVERY_EMAIL=<one address>` and `LEAD_AGENTS_MFA_RECOVERY_ID=<owner-chosen unique id>` are set (otherwise `misconfigured`, nothing happens). It applies **once per id**: the id is recorded in the system setting `office_mfa_recovery_state` (compare-and-set), so leaving the flags in place across restarts never wipes a re-enrolled account again. If the marker cannot be stored, it does not apply (`marker_unavailable`). Effect on the one named active account: `mfa_required_after = now`, factors and recovery codes cleared, failures cleared, generation bumped, audit `mfa_recovery_applied` (e-mail, id, never secrets), warning log. Password is **not** changed. `/healthz` `mfa.recovery` shows `status` (`disabled | misconfigured | ready | applied | already_applied | no_account | error`) and `lingering: true` while the flag stays set after it applied, so it cannot go unnoticed; `session/mfa` for staff shows the same status. Requires MFA on (otherwise `inactive`).
+
+## 7. Session security and authorization
+Unchanged: S7.3 duration at issue, S7.4 generations, S7.5.0 `pf`, S7.5.3 `mf/mft`, S7.5.6 purpose binding and use-time MFA gate. Authorization is additive-only: enforcement never grants a permission and never lets an API key act.
+
+## 8. Audit
+`mfa_enforcement_changed` (setting audit, old/new level, actor, version), `mfa_enforcement_preflight_failed`, `mfa_reset_by_admin`, `mfa_reset_denied` (category), `mfa_recovery_applied`, `mfa_recovery_skipped` (category), `mfa_enrollment_required` (sign-in routed to enrolment), `mfa_grace_notice`-level counters only in `/healthz`. Never recorded: codes, secrets, keys, tokens, passwords, factor material.
+
+## 9. Rollback
+Lowering the level is immediate (≤10 s across instances) and needs no preflight; `LEAD_AGENTS_MFA=off` is the declared global downgrade (visible in `/healthz`). No schema migration is added by this slice (it uses the S7.5.1 columns and functions). Code rollback after enrolment re-opens password-only access on the old code (documented, §13 of doc 25).
+
+## 10. Compatibility and mixed versions
+Default off: byte-for-byte earlier behaviour (no settings read on any request while MFA is off). Instances older than this slice neither enforce the level nor honour `mfa_required_after`; hence the `fleet_attested` precondition and the documented rule that the level is never raised while an older instance may serve traffic.
+
+## 11. Required tests
+All four modes; privileged detection (role, scope, removed permission); grace boundaries (before, at, after; new accounts; per-account override); legacy and no-proof sessions; unenrolled and enrolled administrators; missing recovery codes; single-super-admin lockout; admin reset (success, self, last recoverable, wrong purpose, expired grant, API key, no factor, no confirmation); preflight refusal for each check; unchanged-value write; registry write MFA gate; database outage; missing MFA key; mixed-version attestation; break-glass (disabled default, misconfigured, once-per-id, password untouched, healthz status, no HTTP route); revoked sessions not revived; audit and secret redaction; real Postgres/PostgREST end to end.
