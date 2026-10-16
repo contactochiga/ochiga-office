@@ -48,7 +48,7 @@ function runOne({ file, kind }) {
     const child = spawn(process.execPath, [file], { stdio: ["ignore", "pipe", "pipe"], cwd: path.join(SCRIPTS, ".."), detached: true });
     let output = ""; const keep = (c) => { output += c; if (output.length > 200000) output = output.slice(-100000); }; child.stdout.on("data", keep); child.stderr.on("data", keep);
     let timedOut = false; const timer = setTimeout(() => { timedOut = true; try { process.kill(-child.pid, "SIGKILL"); } catch { /* gone */ } }, limit * 1000);
-    child.on("close", (code) => { clearTimeout(timer); const leftovers = sweepBrowsers(); resolve({ name, kind, code, timedOut, limit, seconds: Math.round((Date.now() - started) / 1000), leftovers, tail: output.split("\n").filter((l) => l && !/injected env/.test(l)).slice(-6).join("\n") }); });
+    child.on("close", (code) => { clearTimeout(timer); const leftovers = sweepBrowsers(); const nav = (output.match(/\[browser-harness\][^\n]*navigations=(\d+) reloads=(\d+) recoveries=(\d+) max=(\d+)ms/) || []).slice(1).map(Number); resolve({ name, kind, code, timedOut, limit, seconds: Math.round((Date.now() - started) / 1000), leftovers, nav, tail: output.split("\n").filter((l) => l && !/injected env/.test(l)).slice(-6).join("\n") }); });
   });
 }
 
@@ -58,11 +58,11 @@ function runOne({ file, kind }) {
   for (let r = 1; r <= repeat; r += 1) for (const s of suites) {
     const res = await runOne(s); res.round = r; results.push(res);
     const status = res.timedOut ? `TIMEOUT after ${res.limit}s` : res.code === 0 ? "pass" : `FAIL (exit ${res.code})`;
-    console.log(`${status.padEnd(22)} ${String(res.seconds).padStart(4)}s / ${String(res.limit).padStart(4)}s  ${res.name}${repeat > 1 ? `  [round ${r}]` : ""}${res.leftovers ? `  (swept ${res.leftovers} leftover browser process${res.leftovers === 1 ? "" : "es"})` : ""}`);
+    console.log(`${status.padEnd(22)} ${String(res.seconds).padStart(4)}s / ${String(res.limit).padStart(4)}s  ${res.name}${repeat > 1 ? `  [round ${r}]` : ""}${res.nav && res.nav.length ? `  nav=${res.nav[0]}+${res.nav[1]} recoveries=${res.nav[2]} max=${res.nav[3]}ms` : ""}${res.leftovers ? `  (swept ${res.leftovers} leftover browser process${res.leftovers === 1 ? "" : "es"})` : ""}`);
     if (res.timedOut || res.code !== 0) console.log(res.tail.split("\n").map((l) => `    ${l.slice(0, 200)}`).join("\n"));
   }
   const bad = results.filter((x) => x.timedOut || x.code !== 0);
   console.log(`\n${results.length - bad.length}/${results.length} passed in ${Math.round((Date.now() - t0) / 1000)}s${bad.length ? `; FAILED: ${bad.map((b) => `${b.name}${b.timedOut ? " (timeout)" : ""}`).join(", ")}` : ""}`);
-  console.log(JSON.stringify({ suite: "run-all-tests", total: results.length, failed: bad.length, leftovers_swept: results.reduce((a, x) => a + x.leftovers, 0) }));
+  console.log(JSON.stringify({ suite: "run-all-tests", total: results.length, failed: bad.length, leftovers_swept: results.reduce((a, x) => a + x.leftovers, 0), recoveries: results.reduce((a, x) => a + ((x.nav && x.nav[2]) || 0), 0) }));
   process.exit(bad.length ? 1 : 0);
 })();

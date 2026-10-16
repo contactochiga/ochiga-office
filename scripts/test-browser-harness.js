@@ -3,6 +3,7 @@
 // reloads settle, and a navigation that can never complete fails in bounded time with exactly one recovery attempt (no infinite wait, no silent retry loop).
 "use strict";
 process.env.BROWSER_HARNESS_NAV_MS = "1500";
+process.env.BROWSER_HARNESS_STRICT = "0"; // this suite deliberately provokes one recovery; strict mode (used by the stability runs) must not be inherited
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const http = require("node:http");
