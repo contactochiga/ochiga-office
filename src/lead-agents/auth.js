@@ -76,10 +76,12 @@ function readAdminSession(req, config) {
     return null;
   }
 
-  const [payload, signature] = String(rawToken).split(".");
-  if (!payload || !signature) {
+  // R1 (F-4): exactly two non-empty segments. A token with trailing segments is malformed, not "close enough".
+  const segments = String(rawToken).split(".");
+  if (segments.length !== 2 || !segments[0] || !segments[1]) {
     return null;
   }
+  const [payload, signature] = segments;
 
   const expected = sessionSignature(payload, config.sessionSecret);
   if (!secureEqual(expected, signature)) {
@@ -150,6 +152,15 @@ function verifyPassword(password, storedHash) {
   return secureEqual(actualHash, expectedHash);
 }
 
+
+// R1 (F-3): a fixed, well-formed hash with the same cost parameters as real ones. Verifying against it when no account exists makes "unknown account" do the same expensive work as "wrong password",
+// so the hash is no longer the difference an observer can time. (Other, much smaller differences remain; this is not a constant-time guarantee.)
+const DUMMY_PASSWORD_HASH = hashPassword(crypto.randomBytes(24).toString("hex"));
+function verifyPasswordOrDummy(password, storedHash) {
+  if (typeof storedHash === "string" && storedHash.includes(":")) return verifyPassword(password, storedHash);
+  verifyPassword(password, DUMMY_PASSWORD_HASH);
+  return false;
+}
 
 function permissionsForRole(role, extraScopes) {
   return unifiedPermissionsForRole(role, extraScopes);
@@ -264,4 +275,5 @@ module.exports = {
   permissionsForRole,
   readAdminSession,
   verifyPassword,
+  verifyPasswordOrDummy,
 };

@@ -52,6 +52,29 @@ class MemoryRateLimiter {
   resetKey(key) {
     this.buckets.delete(String(key || "unknown"));
   }
+
+  // R1: failure-only counters. `hit` records one event without ever throwing; `isLimited` reads without recording. Both use the same window as `checkKey`.
+  hit(key) {
+    const safeKey = String(key || "unknown");
+    const now = Date.now();
+    const current = this.buckets.get(safeKey);
+    if (!current || current.resetAt <= now) {
+      this.buckets.set(safeKey, { count: 1, resetAt: now + this.windowMs });
+      return 1;
+    }
+    current.count += 1;
+    return current.count;
+  }
+
+  isLimited(key) {
+    const current = this.buckets.get(String(key || "unknown"));
+    return Boolean(current && current.resetAt > Date.now() && current.count >= this.maxRequests);
+  }
+
+  resetAtOf(key) {
+    const current = this.buckets.get(String(key || "unknown"));
+    return current ? current.resetAt : Date.now() + this.windowMs;
+  }
 }
 
 module.exports = {

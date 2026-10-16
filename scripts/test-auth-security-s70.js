@@ -134,7 +134,8 @@ async function main() {
     const t = await boot({}, seedAdmin("lim@x.test", "lim-pass-1234567"), 10);
     let last; for (let i = 0; i < 12; i += 1) last = await t.login("lim@x.test", "bad-" + i);
     eq(last.status, 429, "login limiter still throttles");
-    eq((await t.login("lim@x.test", "lim-pass-1234567")).status, 200, "correct password still succeeds under throttle (existing behaviour)");
+    // R1 (certification finding F-1): this line used to assert that the CORRECT password still succeeds while throttled. That was the defect (a guesser could tell success from failure and was never slowed); it is now refused too.
+    const rightWhileLimited = await t.login("lim@x.test", "lim-pass-1234567"); eq(rightWhileLimited.status, 429, "the correct password is refused while throttled (R1: the limiter cannot be bypassed)"); ok(!rightWhileLimited.headers.get("set-cookie"), "…and no session is created");
     await t.close();
   }
 
@@ -172,7 +173,8 @@ async function main() {
     ok(JSON.stringify(body).includes("viewer"), "role change visible on the next request");
     await t.store.updateAdminUser(u.id, { status: "inactive" });
     eq((await me()).status, 401, "deactivated user's session revoked");
-    eq((await t.login("sup@x.test", "sup-pass-1234567")).status, 403, "deactivated user cannot sign in");
+    // R1 (certification finding F-2): was 403 account_inactive, which let anyone learn that an address is a deactivated account. It is now the same generic 401 as an unknown address or a wrong password; no session is issued.
+    { const denied = await t.login("sup@x.test", "sup-pass-1234567"); eq(denied.status, 401, "deactivated user cannot sign in (generic failure, not a distinct answer)"); ok(!denied.headers.get("set-cookie"), "…and no session is created"); }
     await t.close();
   }
   console.log(`S7.0 auth security: ${passed} assertions PASS`);

@@ -33,6 +33,7 @@ const {
   permissionsForRole,
   authenticateSessionCookie,
   verifyPassword,
+  verifyPasswordOrDummy,
 } = require("./auth");
 const { MemoryRateLimiter } = require("./rate-limit");
 const { issuePublicSession, publicRequestIdentity } = require("./public-session-authority");
@@ -2226,6 +2227,11 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
       windowMs: config.loginRateLimitWindowMs || 15 * 60 * 1000,
       maxRequests: config.loginRateLimitMaxAttempts || 10,
     });
+  // R1 (F-1): failure-only counter per account (normalised e-mail alone), five times the per-address budget over the same window.
+  const adminAccountFailureLimiter = new MemoryRateLimiter({
+    windowMs: adminLoginRateLimiter.windowMs || 15 * 60 * 1000,
+    maxRequests: Math.max(1, (adminLoginRateLimiter.maxRequests || 10) * 5),
+  });
   const eventBus = createRealtimeHub();
   // Scheduled-content publisher (Phase 8) — off by default, same
   // precedent as Ochiga Backend's own proactive scheduler (also
@@ -3045,6 +3051,28 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
         }
         const body = await readJsonBody(req);
         const attemptKey = loginAttemptKey(req, body.email);
+        const accountKey = `account:${normalizeEmail(body.email) || "unknown"}`;
+        // R1 (F-1): the limiter comes FIRST, before any account lookup or password hashing, and it refuses EVERY attempt once tripped: a correct password does not bypass it, and the
+        // answer is identical whatever was sent. Two counters: per address (every attempt, cleared by a success, as before) and per account (failures only, so rotating the
+        // client-supplied forwarding header cannot start a fresh budget).
+        const limitedAnswer = (resetAt) => json(
+          res,
+          429,
+          { error: "login_rate_limit_exceeded", message: "Too many sign-in attempts. Please wait a few minutes and try again." },
+          { "x-request-id": ctx.requestId, "x-login-ratelimit-reset": resetAt ? new Date(resetAt).toISOString() : "" }
+        );
+        try {
+          const loginLimit = adminLoginRateLimiter.checkKey(attemptKey);
+          res.setHeader("x-login-ratelimit-remaining", String(loginLimit.remaining));
+          res.setHeader("x-login-ratelimit-reset", new Date(loginLimit.resetAt).toISOString());
+        } catch (error) {
+          limitedAnswer(error.rateLimit?.resetAt);
+          return;
+        }
+        if (adminAccountFailureLimiter.isLimited(accountKey)) {
+          limitedAnswer(adminAccountFailureLimiter.resetAtOf(accountKey));
+          return;
+        }
         let adminUser;
         try {
           adminUser = await store.getAdminUserByEmail(body.email);
@@ -3060,40 +3088,14 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           !adminUser &&
           normalizeEmail(body.email) &&
           config.apiKeys.includes(String(body.password || ""));
-        const credentialsValid =
-          fallbackAllowed ||
-          Boolean(adminUser && verifyPassword(body.password, adminUser.password_hash));
-        try {
-          const loginLimit = adminLoginRateLimiter.checkKey(attemptKey);
-          res.setHeader("x-login-ratelimit-remaining", String(loginLimit.remaining));
-          res.setHeader("x-login-ratelimit-reset", new Date(loginLimit.resetAt).toISOString());
-        } catch (error) {
-          if (credentialsValid) {
-            adminLoginRateLimiter.resetKey(attemptKey);
-          } else {
-            json(
-              res,
-              429,
-              {
-                error: "login_rate_limit_exceeded",
-                message: "Too many sign-in attempts. Please wait a few minutes and try again.",
-              },
-              {
-                "x-request-id": ctx.requestId,
-                "x-login-ratelimit-reset": error.rateLimit?.resetAt
-                  ? new Date(error.rateLimit.resetAt).toISOString()
-                  : "",
-              }
-            );
-            return;
+        // R1 (F-3): the password is verified for every request (a fixed dummy hash stands in when no account exists), so an unknown address costs the same hashing work.
+        const credentialsValid = fallbackAllowed || (verifyPasswordOrDummy(body.password, adminUser && adminUser.password_hash) && Boolean(adminUser));
+        // R1 (F-2): one failure answer for wrong password, unknown account AND inactive account (whatever its password). Deactivation is still absolute: no session is issued.
+        if (!credentialsValid || (adminUser && adminUser.status !== "active")) {
+          adminAccountFailureLimiter.hit(accountKey);
+          if (credentialsValid && adminUser) {
+            await appendAudit(store, { userId: adminUser.id, email: adminUser.email, role: adminUser.role }, "session_login_denied_inactive", "admin_user", adminUser.id, { request_id: ctx.requestId, at: new Date().toISOString() }, req, "failure").catch(() => {});
           }
-        }
-
-        if (adminUser && adminUser.status !== "active") {
-          json(res, 403, { error: "account_inactive", message: "This Office account is inactive." });
-          return;
-        }
-        if (!credentialsValid) {
           json(res, 401, { error: "unauthorized", message: "Email or password is incorrect." });
           return;
         }
