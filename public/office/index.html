@@ -2049,6 +2049,56 @@
   .st-modal p { margin: 0 0 16px; font-size: 13px; color: var(--text-secondary); line-height: 1.55; }
   .st-modal-actions { display: flex; justify-content: flex-end; gap: 8px; }
   .st-table-wrap { overflow-x: auto; }
+  /* ---- S7.5.8: two-step verification interface (design-system tokens only) ---- */
+  .mfa-challenge { display: flex; flex-direction: column; gap: 12px; }
+  .mfa-methods { display: flex; flex-wrap: wrap; gap: 6px; }
+  .mfa-method[aria-pressed="true"] { color: var(--white); border-color: var(--red-muted); background: rgba(179,36,27,0.08); }
+  .mfa-method { min-height: 36px; }
+  .mfa-lead { margin: 0 0 12px; font-size: 13px; color: var(--text-secondary); line-height: 1.55; }
+  .mfa-challenge form, .mfa-challenge [data-panel] { display: flex; flex-direction: column; gap: 10px; }
+  .mfa-challenge [data-panel][hidden] { display: none; }
+  .mfa-challenge .btn { width: 100%; }
+  .mfa-modal-wide { max-width: 560px; }
+  .mfa-dialog-body { display: flex; flex-direction: column; gap: 12px; max-height: calc(100vh - 140px); overflow-y: auto; }
+  .mfa-qr-box { display: flex; justify-content: center; }
+  .mfa-qr { width: 200px; height: 200px; background: #fff; padding: 0; border-radius: var(--radius-sm); }
+  .mfa-keyrow { display: flex; align-items: flex-end; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+  .mfa-key-label { display: block; font-size: 11.5px; color: var(--text-tertiary); margin-bottom: 4px; }
+  .mfa-key { font-family: var(--font-mono); font-size: 14px; letter-spacing: 0.06em; color: var(--text-primary); word-break: break-all; }
+  .mfa-codes { list-style: none; margin: 0; padding: 12px; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px 16px; background: var(--black); border: 1px solid var(--line-strong); border-radius: var(--radius-sm); }
+  .mfa-codes code { font-family: var(--font-mono); font-size: 15px; color: var(--white); letter-spacing: 0.04em; }
+  .mfa-tools, .mfa-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+  .mfa-ack { display: flex; align-items: flex-start; gap: 10px; font-size: 13px; color: var(--text-secondary); line-height: 1.45; cursor: pointer; }
+  .mfa-ack input { margin-top: 3px; width: 18px; height: 18px; flex-shrink: 0; }
+  .mfa-stepup { border: 1px solid var(--line-strong); border-radius: var(--radius-sm); padding: 10px 12px 12px; margin: 0 0 12px; display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+  .mfa-stepup legend { font-size: 11.5px; color: var(--text-tertiary); padding: 0 6px; }
+  .mfa-facts { margin-bottom: 4px; }
+  .mfa-table td, .mfa-table th { white-space: nowrap; }
+  .mfa-levels { border: 1px solid var(--line-strong); border-radius: var(--radius-sm); padding: 12px; margin: 12px 0; display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+  .mfa-levels legend { font-size: 12px; color: var(--text-secondary); padding: 0 6px; }
+  .mfa-level { display: flex; gap: 10px; align-items: flex-start; cursor: pointer; min-height: 44px; }
+  .mfa-level input { margin-top: 3px; width: 18px; height: 18px; flex-shrink: 0; }
+  .mfa-level strong { display: block; font-size: 13px; color: var(--white); }
+  .mfa-level small { display: block; font-size: 12px; color: var(--text-tertiary); line-height: 1.45; }
+  .mfa-checks { list-style: none; margin: 8px 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+  .mfa-checks li { display: flex; gap: 8px; font-size: 12.5px; color: var(--text-secondary); line-height: 1.45; }
+  .mfa-checks li[data-state="fail"] { color: var(--red-bright); }
+  .mfa-mark { width: 16px; flex-shrink: 0; font-weight: 700; }
+  .mfa-sub { margin: 12px 0 4px; font-size: 12px; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.05em; }
+  .mfa-apply, .mfa-reset { display: flex; flex-direction: column; gap: 12px; margin-top: 12px; }
+  .mfa-banner { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 10px 16px; background: rgba(201,134,43,0.1); border-bottom: 1px solid rgba(201,134,43,0.4); color: var(--text-primary); font-size: 13px; }
+  .mfa-banner-text { flex: 1 1 260px; }
+  .mfa-challenge .form-error.mfa-error { margin: 0; }
+  @media (max-width: 768px) {
+    .mfa-method, .mfa-challenge .btn, .mfa-tools .btn, .mfa-actions .btn, .mfa-banner .btn, .mfa-level, .mfa-ack, .mfa-keyrow .btn { min-height: 44px; }
+    .mfa-codes { grid-template-columns: 1fr; }
+    .mfa-qr { width: min(240px, 100%); height: auto; aspect-ratio: 1; }
+    .mfa-modal-wide { max-width: none; }
+    .mfa-ack input, .mfa-level input { width: 22px; height: 22px; }
+    .mfa-challenge .login-link { min-height: 44px; display: inline-flex; align-items: center; align-self: flex-start; }
+    .mfa-modal input:not([type=checkbox]):not([type=radio]), .mfa-modal select, .st-modal input:not([type=checkbox]):not([type=radio]), .mfa-challenge input, .mfa-reset input:not([type=checkbox]), .mfa-reset select, .mfa-stepup input { min-height: 44px; box-sizing: border-box; }
+  }
+
   .st-reg-table td, .st-reg-table th { vertical-align: top; }
   .st-reg-table .btn { white-space: nowrap; }
   .st-reg-table code { overflow-wrap: anywhere; }
@@ -2142,7 +2192,7 @@
 <body class="auth-logged-out">
   <div id="root">
     <section class="login-screen" id="loginScreen">
-      <form class="login-card" id="loginForm" autocomplete="on">
+      <form class="login-card" id="loginForm" autocomplete="on" method="post" action="javascript:void(0)" onsubmit="return false;">
         <div class="login-brand"><span class="mark"></span><span>Ochiga Office</span></div>
         <h1 id="authCardTitle">Sign in</h1>
         <p class="sub" id="authCardSubtitle">The internal operating environment for Ochiga staff.</p>
@@ -2211,6 +2261,7 @@
             <div class="name" id="navUserName">–</div>
             <div class="role" id="navUserRole">–</div>
             <button type="button" class="nav-edit-profile" id="navEditProfile">Edit profile</button>
+            <button type="button" class="nav-edit-profile" id="navSecurity" hidden>Two-step verification</button>
           </div>
           <button id="navLogout" title="Sign out" aria-label="Sign out">Sign out</button>
         </div>

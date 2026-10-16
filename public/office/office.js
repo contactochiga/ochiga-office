@@ -77,9 +77,25 @@ async function api(path, options = {}) {
     const err = new Error((data && (data.message || data.error)) || `Request failed (${res.status})`);
     err.status = res.status;
     err.data = data;
+    // S7.5.8: the server ended this session (revoked, two-step verification needed, enrolment now required): go back to sign-in with the reason instead of failing quietly.
+    if (res.status === 401 && data && SESSION_ENDED_MESSAGES[data.error] && !/\/session\/(login|mfa\/)/.test(String(path))) handleSessionEnded(data.error);
     throw err;
   }
   return data;
+}
+const SESSION_ENDED_MESSAGES = {
+  session_revoked: "You were signed out. Sign in again.",
+  mfa_required: "Two-step verification is needed. Sign in again.",
+  mfa_enrollment_required: "Your organisation now requires two-step verification. Sign in to set it up.",
+};
+function handleSessionEnded(reason) {
+  if (!state.admin) return;
+  state.admin = null; state.mfaEnabled = false; state.mfaEnrollment = null;
+  stStepUpClear(); document.getElementById("mfaGraceBanner")?.remove();
+  Object.keys(cache).forEach((key) => delete cache[key]);
+  showLogin();
+  const box = document.getElementById("loginError");
+  if (box) { box.textContent = SESSION_ENDED_MESSAGES[reason]; box.classList.add("visible"); }
 }
 
 async function cached(key, fetcher, force = false) {
@@ -571,6 +587,8 @@ async function fetchSession() {
   try {
     const data = await api("/api/lead-agents/admin/session/me");
     state.admin = data.admin;
+    state.mfaEnabled = Boolean(data.mfa && data.mfa.enabled);
+    state.mfaEnrollment = (data.mfa && data.mfa.enrollment) || null;
     return true;
   } catch {
     state.admin = null;
@@ -578,10 +596,27 @@ async function fetchSession() {
   }
 }
 
+// S7.5.8: with two-step verification on, the server answers a correct password with a CHALLENGE (HTTP 200, no cookie, no admin). Only an answer that carries `admin` is a sign-in.
 async function login(email, password) {
   const data = await api("/api/lead-agents/admin/session/login", { method: "POST", body: { email, password } });
+  if (data && (data.mfa_required || data.mfa_enrollment_required)) return { challenge: data };
+  if (!data || !data.admin) throw new Error("Sign-in could not be completed.");
   state.admin = data.admin;
+  return { admin: data.admin };
 }
+
+// ---- S7.5.8: the two-step verification interface lives in a lazily loaded module (nothing is fetched while two-step verification is off, except when a screen needs it) ----
+let mfaUiPromise = null;
+function loadMfaUi() {
+  if (!mfaUiPromise) {
+    mfaUiPromise = import("/office/mfa-ui.mjs").then((m) => m.createMfaUi({
+      api, el, escapeHtml, hasPermission, state, fmtDateTime, titleCase, toast, confirm: stConfirmDialog, errorWithRetry: stErrorWithRetry, listUsers: apiListAdminUsers,
+      stepUp: { token: stStepUpToken, dialog: stStepUpDialog, clear: stStepUpClear },
+    })).catch((error) => { mfaUiPromise = null; throw error; });
+  }
+  return mfaUiPromise;
+}
+async function signOutToLogin() { try { await logout(); } finally { stStepUpClear(); document.getElementById("mfaGraceBanner")?.remove(); showLogin(); } }
 
 async function logout() {
   try {
@@ -10145,10 +10180,13 @@ function stStepUpClear(purpose) { if (purpose) delete stStepUpState.grants[purpo
 function stStepUpDialog({ purpose, title = "Confirm your password", body = "For your security, enter your current password to continue." }) {
   return new Promise((resolve) => {
     const previous = document.activeElement;
-    const backdrop = el(`<div class="st-modal-backdrop"><form class="st-modal" role="dialog" aria-modal="true" aria-labelledby="stStepUpTitle" autocomplete="off" novalidate><h3 id="stStepUpTitle">${escapeHtml(title)}</h3><p>${escapeHtml(body)}</p><label class="st-field"><span>Current password</span><input type="password" name="current_password" autocomplete="current-password" maxlength="128" /></label><div class="st-field-error" role="alert" data-for="current_password"></div><div class="st-modal-actions"><button type="button" class="btn btn-ghost btn-sm" data-act="cancel">Cancel</button><button type="submit" class="btn btn-sm st-btn-primary" data-act="ok">Confirm</button></div></form></div>`);
+    const backdrop = el(`<div class="st-modal-backdrop"><form class="st-modal" role="dialog" aria-modal="true" aria-labelledby="stStepUpTitle" autocomplete="off" novalidate><h3 id="stStepUpTitle">${escapeHtml(title)}</h3><p>${escapeHtml(body)}</p><label class="st-field"><span>Current password</span><input type="password" name="current_password" autocomplete="current-password" maxlength="128" /></label><div class="mfa-stepup-slot"></div><div class="st-field-error" role="alert" data-for="current_password"></div><div class="st-modal-actions"><button type="button" class="btn btn-ghost btn-sm" data-act="cancel">Cancel</button><button type="submit" class="btn btn-sm st-btn-primary" data-act="ok">Confirm</button></div></form></div>`);
     const form = backdrop.querySelector("form"); const input = form.elements.current_password; const errorBox = form.querySelector(".st-field-error"); const submit = form.querySelector('[data-act="ok"]');
     const finish = (value) => { input.value = ""; document.removeEventListener("keydown", onKey, true); backdrop.remove(); if (previous && previous.focus) previous.focus(); resolve(value); };
-    const buttons = () => [input, ...backdrop.querySelectorAll("button")].filter((n) => !n.disabled);
+    const buttons = () => [...backdrop.querySelectorAll("input, button")].filter((n) => !n.disabled && !n.hidden && n.offsetParent !== null);
+    // S7.5.8: an account with two-step verification also needs a fresh second factor (the server decides; recovery codes are not accepted here)
+    let factor = null; const slot = form.querySelector(".mfa-stepup-slot");
+    if (state.mfaEnabled) loadMfaUi().then(async (ui) => { const status = await ui.fetchStatus(); if (!backdrop.isConnected) return; factor = ui.mountStepUpFactor(slot, status && status.mode === "on" ? status : status === null ? null : { mode: "off" }); }).catch(() => {});
     function onKey(e) {
       if (e.key === "Escape") { e.preventDefault(); finish(null); return; }
       if (e.key === "Tab") { const b = buttons(); const i = b.indexOf(document.activeElement); e.preventDefault(); b[(i + (e.shiftKey ? b.length - 1 : 1)) % b.length].focus(); }
@@ -10161,13 +10199,18 @@ function stStepUpDialog({ purpose, title = "Confirm your password", body = "For 
       if (!input.value) { errorBox.textContent = "Enter your current password."; input.focus(); return; }
       submit.disabled = true; submit.textContent = "Verifying…";
       try {
-        const result = await api("/api/lead-agents/admin/session/step-up", { method: "POST", body: { password: input.value, purpose } });
+        let mfa = null;
+        if (factor) {
+          try { mfa = await factor.collect(); }
+          catch (e) { errorBox.textContent = e && e.local ? "Enter the code from your authenticator app, or choose your security key." : (e && e.status ? "The security key request failed. Try again." : "The security key request was cancelled or timed out."); submit.disabled = false; submit.textContent = "Confirm"; return; }
+        }
+        const result = await api("/api/lead-agents/admin/session/step-up", { method: "POST", body: { password: input.value, purpose, ...(mfa ? { mfa } : {}) } });
         const grant = { token: result.step_up.token, expiresAt: Date.parse(result.step_up.expires_at) };
         stStepUpState.grants[purpose] = grant;
         finish({ token: grant.token, expiresAt: grant.expiresAt });
       } catch (err) {
-        input.value = "";
-        errorBox.textContent = err.status === 401 ? "That password is incorrect." : err.status === 429 ? "Too many attempts. Please wait a few minutes and try again." : err.status === 403 ? "Your account is not permitted to confirm this action." : "Could not verify right now. Try again.";
+        input.value = ""; if (factor) factor.clear();
+        errorBox.textContent = err.status === 401 ? (factor ? "That could not be verified. Check your password and your code (a code you just used to sign in can only be used once — wait for the next one)." : "That password is incorrect.") : err.status === 429 && err.data && err.data.error === "mfa_locked" ? "Too many incorrect codes. Try again later." : err.status === 429 ? "Too many attempts. Please wait a few minutes and try again." : err.status === 403 ? "Your account is not permitted to confirm this action." : "Could not verify right now. Try again.";
         submit.disabled = false; submit.textContent = "Confirm"; input.focus();
       }
     });
@@ -10558,6 +10601,27 @@ async function stRenderSessionRevocationCards(retry) {
   }
   return frag;
 }
+// ---- S7.5.8: two-step verification (your own methods, the organisation's requirement, administrator reset). Every control reflects a server answer and every action is re-authorized by the server. ----
+async function stRenderMfaCards(retry) {
+  const frag = document.createElement("div"); frag.className = "st-stack-col";
+  let ui;
+  try { ui = await loadMfaUi(); } catch { frag.appendChild(stErrorWithRetry("The two-step verification screens could not be loaded.", retry)); return frag; }
+  const own = stCard({ title: "Two-step verification", subtitle: "A second step when you sign in, so a stolen password alone is not enough." });
+  frag.appendChild(own);
+  await ui.renderSecurityCard({ card: own, retry, afterSignOut: signOutToLogin });
+  if (!state.mfaEnabled) return frag;
+  if (hasPermission("staff.manage")) {
+    const policy = stCard({ title: "Two-step verification requirement", subtitle: "Who must use it. Raising it is checked first and goes through the governed settings registry." });
+    frag.appendChild(policy);
+    await ui.renderEnforcementCard({ card: policy, retry });
+  }
+  if (hasPermission("team.manage") && state.admin && state.admin.role === "super_admin") {
+    const reset = stCard({ title: "Reset someone\u2019s two-step verification", subtitle: "For a lost device. They are signed out everywhere and must set it up again. Needs your password and a fresh code from your own authenticator." });
+    frag.appendChild(reset);
+    await ui.renderResetCard({ card: reset, retry });
+  }
+  return frag;
+}
 async function stRenderPeople(retry) {
   const d = await stLoad(["permissions"]);
   const wrap = el(`<div class="st-stack-col"></div>`);
@@ -10566,6 +10630,7 @@ async function stRenderPeople(retry) {
   team.querySelector(".st-card-body").innerHTML = `<p class="st-note">Team management is unchanged and remains the only place users and per-user permission scopes are edited.</p>`;
   wrap.appendChild(team);
   wrap.appendChild(await stRenderAccessPolicyCard(retry));
+  wrap.appendChild(await stRenderMfaCards(retry));
   wrap.appendChild(await stRenderSessionRevocationCards(retry));
   const roles = stCard({ title: "Role catalogue", subtitle: "Read-only. Roles are defined in code, not editable here." });
   const rb = roles.querySelector(".st-card-body");
@@ -10576,7 +10641,7 @@ async function stRenderPeople(retry) {
     rb.innerHTML = `<table class="st-table"><thead><tr><th>Role</th><th>Permissions</th></tr></thead><tbody>${list.map((r) => `<tr><td>${escapeHtml(titleCase(r))}</td><td>${(p.roles && p.roles[r] ? p.roles[r].filter((k) => (p.scopes || []).includes(k)).length : 0)} of ${(p.scopes || []).length}</td></tr>`).join("")}</tbody></table>`;
   }
   wrap.appendChild(roles);
-  wrap.appendChild(stUnavailable({ title: "MFA, per-device session list", reason: "No Office contract exists for these yet. Passwords follow a fixed policy enforced by the server; sign-out is per account, not per device." }));
+  wrap.appendChild(stUnavailable({ title: "Per-device session list", reason: "No Office contract exists for this yet. Passwords follow a fixed policy enforced by the server; sign-out is per account, not per device." }));
   return wrap;
 }
 
@@ -17833,8 +17898,22 @@ function showShell() {
   if (hasPermission("messages.read")) refreshMessagesBadge();
   if (hasPermission("notifications.read")) refreshNotifications();
   if (hasPermission("notifications.read") || hasPermission("messages.read")) connectRealtimeStream();
+  wireMfaShell();
   state.segments = currentSegmentsFromHash();
   renderRouteSafely();
+}
+// S7.5.8: the footer entry and the set-up banner exist only while two-step verification is on for this server.
+function wireMfaShell() {
+  const button = document.getElementById("navSecurity");
+  if (button) {
+    button.hidden = !state.mfaEnabled;
+    if (!button.dataset.wired) {
+      button.dataset.wired = "1";
+      button.addEventListener("click", async () => { try { const ui = await loadMfaUi(); await ui.openSecurityPanel({ afterSignOut: signOutToLogin }); } catch { toast("Two-step verification settings could not be opened.", "warning"); } });
+    }
+  }
+  document.getElementById("mfaGraceBanner")?.remove();
+  if (state.mfaEnabled && state.mfaEnrollment) loadMfaUi().then((ui) => ui.showGraceBanner(state.mfaEnrollment, () => ui.openSecurityPanel({ afterSignOut: signOutToLogin }))).catch(() => {});
 }
 function showLogin() {
   document.body.classList.add("auth-logged-out");
@@ -17869,13 +17948,30 @@ function wireLogin() {
       subtitle.textContent = "Enter your Office email and we will send a secure reset link.";
     }
   };
+  form.dataset.wired = "1";
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
     errorBox.classList.remove("visible");
     submit.disabled = true;
     submit.textContent = "Signing in…";
     try {
-      await login(document.getElementById("loginEmail").value, document.getElementById("loginPassword").value);
+      const result = await login(document.getElementById("loginEmail").value, document.getElementById("loginPassword").value);
+      if (result.challenge) {
+        document.getElementById("loginPassword").value = "";
+        const ui = await loadMfaUi();
+        loginFields.style.display = "none"; errorBox.classList.remove("visible");
+        const setTitle = (t, sub) => { title.textContent = t; subtitle.textContent = sub; };
+        const back = (opts) => { showAuthView("login"); if (opts && opts.message) { errorBox.textContent = opts.message; errorBox.classList.add("visible"); } document.getElementById("loginEmail").focus(); };
+        if (result.challenge.mfa_enrollment_required) ui.runForcedEnrollment({ form, challenge: result.challenge, setTitle, onBack: back });
+        else ui.runLoginChallenge({ form, challenge: result.challenge, setTitle, onBack: back, onSignedIn: async (data) => {
+          state.admin = data.admin;
+          await fetchSession();
+          showAuthView("login"); showShell();
+          if (data.mfa && Number.isInteger(data.mfa.recovery_codes_remaining)) toast(`You signed in with a recovery code. ${data.mfa.recovery_codes_remaining} left — regenerate them in Settings → People & Access.`, "warning");
+        } });
+        return;
+      }
+      await fetchSession();
       showShell();
     } catch (err) {
       errorBox.textContent = err.message || "Sign-in failed. Check your email and password.";

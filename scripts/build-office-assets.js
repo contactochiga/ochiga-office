@@ -15,6 +15,8 @@ const requiredFiles = [
   "public/plan-studio/app.js",
   "public/office/index.html",
   "public/office/office.js",
+  "public/office/mfa-ui.mjs",
+  "public/office/vendor/qrcode-generator.mjs",
   "lead-agents-server.js",
   "render.yaml",
   "docs/office-os-2-architecture.md",

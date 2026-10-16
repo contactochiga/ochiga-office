@@ -2418,6 +2418,8 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
         pathname === "/office/brand/icon-192.png" ||
         pathname === "/office/brand/icon-512.png" ||
         pathname === "/office/brand/icon-maskable-512.png" ||
+        pathname === "/office/mfa-ui.mjs" ||
+        pathname === "/office/vendor/qrcode-generator.mjs" ||
         pathname === "/office/shared/oyi-core/docking.mjs" ||
         pathname === "/office/shared/oyi-core/presence.mjs" ||
         pathname === "/office/shared/oyi-core/responseNormalizer.mjs" ||
@@ -3643,7 +3645,7 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           200,
           {
             ok: true,
-            mfa: { verified: meContext.sessionMfa === true, ...(meEnrollment ? { enrollment: meEnrollment } : {}) },
+            mfa: { enabled: config.mfaMode === "on", verified: meContext.sessionMfa === true, ...(meEnrollment ? { enrollment: meEnrollment } : {}) },
             admin: {
               id: currentUser.id,
               email: currentUser.email,
@@ -3801,11 +3803,13 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
         if (req.method !== "GET") { methodNotAllowed(res, "GET"); return; }
         if (authContext?.type !== "session") { json(res, 403, { error: "actor_identity_required" }, { "x-request-id": ctx.requestId }); return; }
         try { authorizePermission(authContext, "staff.manage"); } catch { json(res, 403, { error: "forbidden" }, { "x-request-id": ctx.requestId }); return; }
-        const level = new URL(req.url, "http://office.local").searchParams.get("level") || "";
+        let enforcementNow;
+        try { enforcementNow = await resolveEnforcement(store, config); } catch { json(res, 503, { error: "preflight_unavailable" }, { "x-request-id": ctx.requestId }); return; }
+        const level = new URL(req.url, "http://office.local").searchParams.get("level") || enforcementNow.level;
         if (!ENFORCEMENT_LEVELS.includes(level)) { json(res, 400, { error: "invalid_level", allowed: ENFORCEMENT_LEVELS }, { "x-request-id": ctx.requestId }); return; }
         let result;
-        try { result = await runPreflight({ store, config, actor: authContext.user, level }); } catch { json(res, 503, { error: "preflight_unavailable" }, { "x-request-id": ctx.requestId }); return; }
-        json(res, 200, { ...result, recovery: recoverySummary(config) }, { "x-request-id": ctx.requestId, "cache-control": "no-store" });
+        try { result = await runPreflight({ store, config, actor: authContext.user, level, policy: enforcementNow }); } catch { json(res, 503, { error: "preflight_unavailable" }, { "x-request-id": ctx.requestId }); return; }
+        json(res, 200, { ...result, current: { level: enforcementNow.level, status: enforcementNow.status, active: enforcementNow.active, version: enforcementNow.version, effective_since: enforcementNow.effectiveSince }, recovery: recoverySummary(config) }, { "x-request-id": ctx.requestId, "cache-control": "no-store" });
         return;
       }
 
@@ -4219,6 +4223,16 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           return;
         }
         await serveFile(res, officeIconMaskable512Path);
+        return;
+      }
+
+      // Settings S7.5.8: the MFA interface module and its vendored, pinned QR generator (read-only, public like the rest of the Office shell: the login challenge needs them before a session exists)
+      if (pathname === "/office/mfa-ui.mjs" || pathname === "/office/vendor/qrcode-generator.mjs") {
+        if (req.method !== "GET") {
+          methodNotAllowed(res, "GET");
+          return;
+        }
+        await serveFile(res, path.join(process.cwd(), "public", "office", pathname === "/office/mfa-ui.mjs" ? "mfa-ui.mjs" : path.join("vendor", "qrcode-generator.mjs")));
         return;
       }
 

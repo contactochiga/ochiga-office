@@ -87,7 +87,7 @@ const mailboxDeliveryReady = (config) => String(config.officeEmailProvider || ""
  * Can the level be raised to `level` now? Computed from live state. Lowering is never preflighted.
  * { ok, level, checks: [{ id, ok, required }], counts }
  */
-async function runPreflight({ store, config, actor, level, now = Date.now() }) {
+async function runPreflight({ store, config, actor, level, now = Date.now(), policy = null }) {
   const strict = LEVEL_RANK[level] >= LEVEL_RANK.privileged;
   const checks = [];
   const add = (id, ok, required) => checks.push({ id, ok: Boolean(ok), required: Boolean(required) });
@@ -106,6 +106,7 @@ async function runPreflight({ store, config, actor, level, now = Date.now() }) {
   add("mailbox_delivery", mailboxDeliveryReady(config), strict);
   add("fleet_attested", String(config.mfaFleetAttested || "") === ENFORCEMENT_RELEASE, strict);
   add("api_key_fallback_off", config.allowApiKeyPasswordLogin !== true, strict);
+  const accounts = [];
   const counts = { active_accounts: null, covered: null, enrolled: null, unenrolled: null, covered_super_admins_unenrolled: null };
   if (users && enrolledIds) {
     const hypothetical = { level, active: true, effectiveSince: new Date(now).toISOString() };
@@ -114,9 +115,17 @@ async function runPreflight({ store, config, actor, level, now = Date.now() }) {
     counts.active_accounts = active.length; counts.covered = covered.length;
     counts.enrolled = covered.filter((u) => enrolledIds.has(u.id)).length; counts.unenrolled = covered.length - counts.enrolled;
     counts.covered_super_admins_unenrolled = covered.filter((u) => u.role === "super_admin" && !enrolledIds.has(u.id)).length;
+    // S7.5.8: who still has to enrol, and by when. For the level in force this is the real deadline (including a per-account requirement); for a level that would be raised to, it is what the
+    // deadline would be if the change were applied now.
+    const inForce = policy && policy.active && policy.level === level;
+    for (const u of active.filter((x) => !enrolledIds.has(x.id))) {
+      const r = accountRequirement({ policy: inForce ? policy : hypothetical, user: inForce ? u : { ...u, mfa_required_after: null }, now });
+      if (r.required) accounts.push({ id: u.id, email: u.email, display_name: u.display_name || u.email, role: u.role, deadline: new Date(r.deadline).toISOString(), expired: r.expired, source: r.source });
+    }
+    accounts.sort((a, b) => Date.parse(a.deadline) - Date.parse(b.deadline));
   }
   const failed = checks.filter((c) => c.required && !c.ok).map((c) => c.id);
-  return { ok: failed.length === 0 && users !== null && enrolledIds !== null, level, checks, failed, counts };
+  return { ok: failed.length === 0 && users !== null && enrolledIds !== null, level, checks, failed, counts, grace: { days: GRACE_MS / 86_400_000 }, accounts: accounts.slice(0, 200), accounts_total: accounts.length };
 }
 
 // ---- the registry setting's guard (called by settings-api after the generic validation and before the compare-and-set) ----
