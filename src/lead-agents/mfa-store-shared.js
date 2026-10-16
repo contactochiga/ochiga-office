@@ -51,17 +51,21 @@ function requireText(value, name, { min = 1, max = 500 } = {}) {
   return value;
 }
 
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 function validateCredentialInput(input) {
   const type = input && input.type;
+  // S7.5.2: the application may choose the credential id up front, so it can be bound into the encryption's authenticated metadata before the row exists
+  const chosenId = input && input.id !== undefined ? (UUID_PATTERN.test(String(input.id)) ? String(input.id).toLowerCase() : (() => { throw mfaError("mfa_invalid_input", { field: "id" }); })()) : undefined;
   if (!CREDENTIAL_TYPES.includes(type)) throw mfaError("mfa_invalid_input", { field: "type" });
   const label = typeof input.label === "string" ? input.label.slice(0, 80) : "";
   if (type === "totp") {
     requireText(input.secret_ciphertext, "secret_ciphertext", { max: 2000 }); requireText(input.secret_nonce, "secret_nonce", { max: 100 }); requireText(input.secret_key_id, "secret_key_id", { max: 64 });
-    return { type, label, secret_ciphertext: input.secret_ciphertext, secret_nonce: input.secret_nonce, secret_key_id: input.secret_key_id };
+    return { ...(chosenId ? { id: chosenId } : {}), type, label, secret_ciphertext: input.secret_ciphertext, secret_nonce: input.secret_nonce, secret_key_id: input.secret_key_id };
   }
   requireText(input.webauthn_credential_id, "webauthn_credential_id", { max: 1400 }); requireText(input.webauthn_public_key, "webauthn_public_key", { max: 4000 });
   return {
-    type, label, webauthn_credential_id: input.webauthn_credential_id, webauthn_public_key: input.webauthn_public_key,
+    ...(chosenId ? { id: chosenId } : {}), type, label, webauthn_credential_id: input.webauthn_credential_id, webauthn_public_key: input.webauthn_public_key,
     webauthn_sign_count: Number.isInteger(input.webauthn_sign_count) && input.webauthn_sign_count >= 0 ? input.webauthn_sign_count : 0,
     webauthn_transports: Array.isArray(input.webauthn_transports) ? input.webauthn_transports.map(String).slice(0, 8) : [],
     webauthn_aaguid: typeof input.webauthn_aaguid === "string" ? input.webauthn_aaguid : null,
@@ -83,4 +87,11 @@ function validateChallengeInput(purpose, challengeB64, ttlSeconds) {
   return { purpose, challengeB64, ttl };
 }
 
-module.exports = { CHALLENGE_PURPOSES, CREDENTIAL_TYPES, MAX_CHALLENGE_TTL_SECONDS, MAX_RECOVERY_CODES, lockDurationMs, mfaError, sanitizeStoreError, sanitizeCredential, validateCredentialInput, validateRecoveryHmacs, validateChallengeInput };
+function validateRotationInput(input) {
+  const e = input && input.expected, n = input && input.next;
+  requireText(e && e.key_id, "expected.key_id", { max: 64 }); requireText(e && e.nonce, "expected.nonce", { max: 100 });
+  requireText(n && n.secret_ciphertext, "next.secret_ciphertext", { max: 2000 }); requireText(n && n.secret_nonce, "next.secret_nonce", { max: 100 }); requireText(n && n.secret_key_id, "next.secret_key_id", { max: 64 });
+  return { expected: { key_id: e.key_id, nonce: e.nonce }, next: { secret_ciphertext: n.secret_ciphertext, secret_nonce: n.secret_nonce, secret_key_id: n.secret_key_id } };
+}
+
+module.exports = { validateRotationInput, UUID_PATTERN, CHALLENGE_PURPOSES, CREDENTIAL_TYPES, MAX_CHALLENGE_TTL_SECONDS, MAX_RECOVERY_CODES, lockDurationMs, mfaError, sanitizeStoreError, sanitizeCredential, validateCredentialInput, validateRecoveryHmacs, validateChallengeInput };

@@ -1603,6 +1603,18 @@ class SupabaseLeadAgentsStore {
     const rows = await this._mfaCall("getMfaCredentialSecret", async () => (await this.client.get(`/admin_mfa_credentials?id=eq.${encodeURIComponent(credentialId)}&admin_user_id=eq.${encodeURIComponent(userId)}&type=eq.totp&status=neq.revoked&select=id,status,secret_ciphertext,secret_nonce,secret_key_id,totp_last_step&limit=1`)).data);
     return rows[0] || null;
   }
+  // S7.5.2 rotation: one PATCH guarded by the key id and nonce that were decrypted (the nonce identifies the exact ciphertext without putting it in a URL). Zero rows = lost the race.
+  async rotateMfaCredentialSecret(userId, credentialId, input) {
+    const v = mfaShared.validateRotationInput(input);
+    await this._mfaRequireSchema();
+    const rows = await this._mfaCall("rotateMfaCredentialSecret", async () => (await this.client.patch(`/admin_mfa_credentials?id=eq.${encodeURIComponent(credentialId)}&admin_user_id=eq.${encodeURIComponent(userId)}&type=eq.totp&status=neq.revoked&secret_key_id=eq.${encodeURIComponent(v.expected.key_id)}&secret_nonce=eq.${encodeURIComponent(v.expected.nonce)}`, v.next, { headers: this.selectHeaders() })).data);
+    return rows.length === 1;
+  }
+  async listMfaCredentialsNotUsingKey(keyId, limit = 100) {
+    await this._mfaRequireSchema();
+    const max = Math.max(1, Math.min(500, Math.floor(Number(limit) || 100)));
+    return this._mfaCall("listMfaCredentialsNotUsingKey", async () => (await this.client.get(`/admin_mfa_credentials?type=eq.totp&status=neq.revoked&secret_key_id=neq.${encodeURIComponent(keyId)}&select=id,admin_user_id&order=created_at.asc&limit=${max}`)).data);
+  }
   async consumeTotpStep(userId, credentialId, step) {
     if (!Number.isSafeInteger(step) || step < 1) throw mfaShared.mfaError("mfa_invalid_input", { field: "step" });
     await this._mfaRequireSchema();

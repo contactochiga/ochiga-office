@@ -1698,6 +1698,7 @@ class FileLeadAgentsStore {
       const live = this.state.admin_mfa_credentials.filter((c) => c.admin_user_id === userId && c.status !== "revoked");
       if (data.type === "totp" && live.some((c) => c.type === "totp")) throw mfaShared.mfaError("mfa_conflict");
       if (data.type === "webauthn" && this.state.admin_mfa_credentials.some((c) => c.type === "webauthn" && c.webauthn_credential_id === data.webauthn_credential_id)) throw mfaShared.mfaError("mfa_conflict");
+      if (data.id && this.state.admin_mfa_credentials.some((c) => c.id === data.id)) throw mfaShared.mfaError("mfa_conflict");
       const row = { id: crypto.randomUUID(), admin_user_id: userId, status: "pending", totp_last_step: 0, created_at: this.nowIso(), activated_at: null, last_used_at: null, revoked_at: null, revoked_by: null, revoked_reason: null, ...data };
       this.state.admin_mfa_credentials.push(row);
       return { result: mfaShared.sanitizeCredential(row), undo: () => { this.state.admin_mfa_credentials = this.state.admin_mfa_credentials.filter((c) => c !== row); } };
@@ -1727,6 +1728,21 @@ class FileLeadAgentsStore {
   async getMfaCredentialSecret(userId, credentialId) {
     const row = this.state.admin_mfa_credentials.find((c) => c.id === credentialId && c.admin_user_id === userId && c.type === "totp" && c.status !== "revoked");
     return row ? { id: row.id, status: row.status, secret_ciphertext: row.secret_ciphertext, secret_nonce: row.secret_nonce, secret_key_id: row.secret_key_id, totp_last_step: row.totp_last_step } : null;
+  }
+  // S7.5.2 rotation: re-encrypted secret replaces the old one ONLY if the stored key id and nonce are still the ones that were decrypted (a concurrent change, revocation or second rotator makes this a no-op).
+  async rotateMfaCredentialSecret(userId, credentialId, input) {
+    const v = mfaShared.validateRotationInput(input);
+    return this._mfaTxn(() => {
+      const row = this.state.admin_mfa_credentials.find((c) => c.id === credentialId && c.admin_user_id === userId && c.type === "totp" && c.status !== "revoked" && c.secret_key_id === v.expected.key_id && c.secret_nonce === v.expected.nonce);
+      if (!row) return { result: false, undo: () => {} };
+      const before = { secret_ciphertext: row.secret_ciphertext, secret_nonce: row.secret_nonce, secret_key_id: row.secret_key_id };
+      Object.assign(row, v.next);
+      return { result: true, undo: () => Object.assign(row, before) };
+    });
+  }
+  async listMfaCredentialsNotUsingKey(keyId, limit = 100) {
+    const max = Math.max(1, Math.min(500, Math.floor(Number(limit) || 100)));
+    return this.state.admin_mfa_credentials.filter((c) => c.type === "totp" && c.status !== "revoked" && c.secret_key_id !== keyId).slice(0, max).map((c) => ({ id: c.id, admin_user_id: c.admin_user_id }));
   }
   async consumeTotpStep(userId, credentialId, step) {
     if (!Number.isSafeInteger(step) || step < 1) throw mfaShared.mfaError("mfa_invalid_input", { field: "step" });
