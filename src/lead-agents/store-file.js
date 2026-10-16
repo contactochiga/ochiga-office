@@ -1,5 +1,6 @@
 const fs = require("fs/promises");
 const path = require("path");
+const mfaShared = require("./mfa-store-shared");
 const crypto = require("crypto");
 const { normalizeEmail, normalizeLeadInput, normalizeLeadPatch, normalizeText } = require("./normalize-lead");
 const { buildDeploymentFromLead, normalizePartner } = require("./commercial-ops");
@@ -21,6 +22,9 @@ class FileLeadAgentsStore {
       admin_users: [],
       admin_invites: [],
       password_reset_tokens: [],
+      admin_mfa_credentials: [],
+      admin_mfa_recovery_codes: [],
+      admin_mfa_challenges: [],
       audit_events: [],
       timeline_events: [],
       crm_contacts: [],
@@ -100,6 +104,9 @@ class FileLeadAgentsStore {
         password_reset_tokens: Array.isArray(parsed.password_reset_tokens)
           ? parsed.password_reset_tokens
           : [],
+        admin_mfa_credentials: Array.isArray(parsed.admin_mfa_credentials) ? parsed.admin_mfa_credentials : [],
+        admin_mfa_recovery_codes: Array.isArray(parsed.admin_mfa_recovery_codes) ? parsed.admin_mfa_recovery_codes : [],
+        admin_mfa_challenges: Array.isArray(parsed.admin_mfa_challenges) ? parsed.admin_mfa_challenges : [],
         audit_events: Array.isArray(parsed.audit_events) ? parsed.audit_events : [],
         timeline_events: Array.isArray(parsed.timeline_events) ? parsed.timeline_events : [],
         crm_contacts: Array.isArray(parsed.crm_contacts) ? parsed.crm_contacts : [],
@@ -1667,6 +1674,163 @@ class FileLeadAgentsStore {
     this.state.admin_invites[index] = { ...this.state.admin_invites[index], status: "pending", accepted_at: null, updated_at: this.nowIso() };
     await this.persist();
     return this.state.admin_invites[index];
+  }
+
+  // ---- Settings S7.5.1: MFA data foundation (contract: docs/settings-domain/28_S7_5_1_MFA_DATA_FOUNDATION_CONTRACT.md) ----
+  // Same state machine as the SQL functions. MFA mutations are serialised (one at a time), applied in memory, persisted, and UNDONE if the disk write fails, so a success is never
+  // reported for a change that was not stored. Errors carry a code only. Nothing here is reachable from a route in S7.5.1.
+  async supportsMfa() { return true; }
+  async _mfaTxn(mutate) {
+    const run = async () => {
+      const { result, undo } = mutate();
+      try { await this.persist(); } catch (error) { undo(); throw mfaShared.mfaError("mfa_store_error", { operation: "persist" }); }
+      return result;
+    };
+    this._mfaChain = (this._mfaChain || Promise.resolve()).then(run, run);
+    return this._mfaChain;
+  }
+  _mfaUserIndex(userId) { return this.state.admin_users.findIndex((item) => item.id === userId); }
+
+  async createMfaCredential(userId, input) {
+    const data = mfaShared.validateCredentialInput(input);
+    return this._mfaTxn(() => {
+      if (this._mfaUserIndex(userId) === -1) throw mfaShared.mfaError("mfa_conflict");
+      const live = this.state.admin_mfa_credentials.filter((c) => c.admin_user_id === userId && c.status !== "revoked");
+      if (data.type === "totp" && live.some((c) => c.type === "totp")) throw mfaShared.mfaError("mfa_conflict");
+      if (data.type === "webauthn" && this.state.admin_mfa_credentials.some((c) => c.type === "webauthn" && c.webauthn_credential_id === data.webauthn_credential_id)) throw mfaShared.mfaError("mfa_conflict");
+      const row = { id: crypto.randomUUID(), admin_user_id: userId, status: "pending", totp_last_step: 0, created_at: this.nowIso(), activated_at: null, last_used_at: null, revoked_at: null, revoked_by: null, revoked_reason: null, ...data };
+      this.state.admin_mfa_credentials.push(row);
+      return { result: mfaShared.sanitizeCredential(row), undo: () => { this.state.admin_mfa_credentials = this.state.admin_mfa_credentials.filter((c) => c !== row); } };
+    });
+  }
+  async activateMfaCredential(userId, credentialId) {
+    return this._mfaTxn(() => {
+      const row = this.state.admin_mfa_credentials.find((c) => c.id === credentialId && c.admin_user_id === userId && c.status === "pending");
+      if (!row) return { result: null, undo: () => {} };
+      const before = { status: row.status, activated_at: row.activated_at };
+      row.status = "active"; row.activated_at = this.nowIso();
+      return { result: mfaShared.sanitizeCredential(row), undo: () => Object.assign(row, before) };
+    });
+  }
+  async revokeMfaCredential(userId, credentialId, { actor = "", reason = "" } = {}) {
+    return this._mfaTxn(() => {
+      const row = this.state.admin_mfa_credentials.find((c) => c.id === credentialId && c.admin_user_id === userId && c.status !== "revoked");
+      if (!row) return { result: null, undo: () => {} };
+      const before = { status: row.status, revoked_at: row.revoked_at, revoked_by: row.revoked_by, revoked_reason: row.revoked_reason };
+      Object.assign(row, { status: "revoked", revoked_at: this.nowIso(), revoked_by: String(actor || "").slice(0, 200), revoked_reason: String(reason || "").slice(0, 200) });
+      return { result: mfaShared.sanitizeCredential(row), undo: () => Object.assign(row, before) };
+    });
+  }
+  async listMfaCredentials(userId) {
+    return this.state.admin_mfa_credentials.filter((c) => c.admin_user_id === userId).map(mfaShared.sanitizeCredential);
+  }
+  async getMfaCredentialSecret(userId, credentialId) {
+    const row = this.state.admin_mfa_credentials.find((c) => c.id === credentialId && c.admin_user_id === userId && c.type === "totp" && c.status !== "revoked");
+    return row ? { id: row.id, status: row.status, secret_ciphertext: row.secret_ciphertext, secret_nonce: row.secret_nonce, secret_key_id: row.secret_key_id, totp_last_step: row.totp_last_step } : null;
+  }
+  async consumeTotpStep(userId, credentialId, step) {
+    if (!Number.isSafeInteger(step) || step < 1) throw mfaShared.mfaError("mfa_invalid_input", { field: "step" });
+    return this._mfaTxn(() => {
+      const row = this.state.admin_mfa_credentials.find((c) => c.id === credentialId && c.admin_user_id === userId && c.type === "totp" && c.status === "active" && c.totp_last_step < step);
+      if (!row) return { result: false, undo: () => {} };
+      const before = { totp_last_step: row.totp_last_step, last_used_at: row.last_used_at };
+      row.totp_last_step = step; row.last_used_at = this.nowIso();
+      return { result: true, undo: () => Object.assign(row, before) };
+    });
+  }
+  async replaceMfaRecoveryCodes(userId, batchId, hmacs) {
+    mfaShared.validateRecoveryHmacs(hmacs);
+    return this._mfaTxn(() => {
+      if (this._mfaUserIndex(userId) === -1) throw mfaShared.mfaError("mfa_conflict");
+      const all = this.state.admin_mfa_recovery_codes;
+      const kept = all.filter((c) => !(c.admin_user_id === userId && !c.used_at));
+      if (hmacs.some((h) => kept.some((c) => c.code_hmac === h))) throw mfaShared.mfaError("mfa_conflict");
+      const created = hmacs.map((h) => ({ id: crypto.randomUUID(), admin_user_id: userId, batch_id: batchId, code_hmac: h, created_at: this.nowIso(), used_at: null }));
+      this.state.admin_mfa_recovery_codes = [...kept, ...created];
+      return { result: created.length, undo: () => { this.state.admin_mfa_recovery_codes = all; } };
+    });
+  }
+  async consumeMfaRecoveryCode(userId, hmac) {
+    if (typeof hmac !== "string" || hmac.length < 16 || hmac.length > 128) return false;
+    return this._mfaTxn(() => {
+      const row = this.state.admin_mfa_recovery_codes.find((c) => c.admin_user_id === userId && c.code_hmac === hmac && !c.used_at);
+      if (!row) return { result: false, undo: () => {} };
+      row.used_at = this.nowIso();
+      return { result: true, undo: () => { row.used_at = null; } };
+    });
+  }
+  async countMfaRecoveryCodes(userId) { return this.state.admin_mfa_recovery_codes.filter((c) => c.admin_user_id === userId && !c.used_at).length; }
+  async createMfaChallenge(userId, purpose, challengeB64, ttlSeconds = 300) {
+    const v = mfaShared.validateChallengeInput(purpose, challengeB64, ttlSeconds);
+    return this._mfaTxn(() => {
+      if (this._mfaUserIndex(userId) === -1) throw mfaShared.mfaError("mfa_conflict");
+      const row = { id: crypto.randomUUID(), admin_user_id: userId, purpose: v.purpose, challenge: v.challengeB64, created_at: this.nowIso(), expires_at: new Date(Date.now() + v.ttl * 1000).toISOString(), consumed_at: null };
+      this.state.admin_mfa_challenges.push(row);
+      return { result: { id: row.id, expires_at: row.expires_at }, undo: () => { this.state.admin_mfa_challenges = this.state.admin_mfa_challenges.filter((c) => c !== row); } };
+    });
+  }
+  async consumeMfaChallenge(userId, challengeId, purpose) {
+    return this._mfaTxn(() => {
+      const row = this.state.admin_mfa_challenges.find((c) => c.id === challengeId && c.admin_user_id === userId && c.purpose === purpose && !c.consumed_at && Date.parse(c.expires_at) > Date.now());
+      if (!row) return { result: null, undo: () => {} };
+      row.consumed_at = this.nowIso();
+      return { result: row.challenge, undo: () => { row.consumed_at = null; } };
+    });
+  }
+  async recordMfaFailure(userId) {
+    return this._mfaTxn(() => {
+      const index = this._mfaUserIndex(userId);
+      if (index === -1) return { result: null, undo: () => {} };
+      const previous = this.state.admin_users[index];
+      const attempts = (Number.isInteger(previous.mfa_failed_attempts) ? previous.mfa_failed_attempts : 0) + 1;
+      const wanted = mfaShared.lockDurationMs(attempts);
+      const existing = previous.mfa_locked_until ? Date.parse(previous.mfa_locked_until) : 0;
+      const lockedUntil = wanted ? new Date(Math.max(existing || Date.now(), Date.now() + wanted)).toISOString() : previous.mfa_locked_until || null;
+      const next = { ...previous, mfa_failed_attempts: attempts, mfa_locked_until: lockedUntil };
+      this.state.admin_users[index] = next;
+      return { result: { failed_attempts: attempts, locked_until: lockedUntil }, undo: () => { const now = this._mfaUserIndex(userId); if (now !== -1 && this.state.admin_users[now] === next) this.state.admin_users[now] = previous; } };
+    });
+  }
+  async clearMfaFailures(userId) {
+    return this._mfaTxn(() => {
+      const index = this._mfaUserIndex(userId);
+      if (index === -1) return { result: false, undo: () => {} };
+      const previous = this.state.admin_users[index]; const next = { ...previous, mfa_failed_attempts: 0, mfa_locked_until: null };
+      this.state.admin_users[index] = next;
+      return { result: true, undo: () => { const now = this._mfaUserIndex(userId); if (now !== -1 && this.state.admin_users[now] === next) this.state.admin_users[now] = previous; } };
+    });
+  }
+  async getMfaLockState(userId) {
+    const user = this.state.admin_users.find((item) => item.id === userId);
+    return user ? { failed_attempts: Number.isInteger(user.mfa_failed_attempts) ? user.mfa_failed_attempts : 0, locked_until: user.mfa_locked_until || null } : null;
+  }
+  async resetMfa(userId, { actor = "" } = {}) {
+    return this._mfaTxn(() => {
+      const index = this._mfaUserIndex(userId);
+      if (index === -1) return { result: null, undo: () => {} };
+      const previous = this.state.admin_users[index]; const stamp = this.nowIso(); const who = String(actor || "").slice(0, 200);
+      const generation = (Number.isInteger(previous.session_generation) && previous.session_generation >= 0 ? previous.session_generation : 0) + 1;
+      const next = { ...previous, session_generation: generation, sessions_revoked_at: stamp, sessions_revoked_by: who, mfa_reset_at: stamp, mfa_reset_by: who, mfa_failed_attempts: 0, mfa_locked_until: null, updated_at: stamp };
+      this.state.admin_users[index] = next;
+      const creds = this.state.admin_mfa_credentials.filter((c) => c.admin_user_id === userId && (c.status === "pending" || c.status === "active"));
+      const credBefore = creds.map((c) => ({ c, status: c.status, revoked_at: c.revoked_at, revoked_by: c.revoked_by, revoked_reason: c.revoked_reason }));
+      for (const c of creds) Object.assign(c, { status: "revoked", revoked_at: stamp, revoked_by: who, revoked_reason: "reset" });
+      const codes = this.state.admin_mfa_recovery_codes; const unused = codes.filter((c) => c.admin_user_id === userId && !c.used_at);
+      this.state.admin_mfa_recovery_codes = codes.filter((c) => !unused.includes(c));
+      return { result: { session_generation: generation, credentials_revoked: creds.length, codes_deleted: unused.length }, undo: () => {
+        const now = this._mfaUserIndex(userId); if (now !== -1 && this.state.admin_users[now] === next) this.state.admin_users[now] = previous;
+        for (const b of credBefore) Object.assign(b.c, { status: b.status, revoked_at: b.revoked_at, revoked_by: b.revoked_by, revoked_reason: b.revoked_reason });
+        this.state.admin_mfa_recovery_codes = codes;
+      } };
+    });
+  }
+  async pruneMfaChallenges(olderThanSeconds = 3600) {
+    return this._mfaTxn(() => {
+      const cutoff = Date.now() - Math.max(0, Number(olderThanSeconds) || 0) * 1000; const all = this.state.admin_mfa_challenges;
+      const keep = all.filter((c) => !(Date.parse(c.expires_at) < cutoff || (c.consumed_at && Date.parse(c.consumed_at) < cutoff)));
+      this.state.admin_mfa_challenges = keep;
+      return { result: all.length - keep.length, undo: () => { this.state.admin_mfa_challenges = all; } };
+    });
   }
 
   async deleteAdminUser(userId) {

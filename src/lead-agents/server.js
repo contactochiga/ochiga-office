@@ -8,6 +8,7 @@ const axios = require("axios");
 const { createConfig } = require("./config");
 const { log } = require("./logger");
 const { validateAuthConfig } = require("./auth-config");
+const { validateMfaConfig } = require("./mfa-config");
 const { validatePassword, passwordPolicyError } = require("./password-policy");
 const { resolveSessionTtl } = require("./session-policy");
 const { effectiveGeneration, revocationEnabled, checkSessionGeneration } = require("./session-generation");
@@ -2409,11 +2410,17 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           return;
         }
         const authConfigStatus = validateAuthConfig(config);
+        // S7.5.1: MFA readiness. Off by default and then never a readiness concern; with MFA on, an invalid key makes /healthz 503 (codes only, never key material).
+        const mfaStatus = validateMfaConfig(config);
+        let mfaSchema = "not_checked";
+        if (mfaStatus.mode === "on") { try { mfaSchema = typeof store.supportsMfa === "function" ? ((await store.supportsMfa()) ? "available" : "unavailable") : "unavailable"; } catch { mfaSchema = "unknown"; } }
         let revocationCapability = "unknown";
         try { revocationCapability = typeof store.supportsSessionRevocation === "function" ? ((await store.supportsSessionRevocation()) ? "available" : "unavailable") : "unavailable"; } catch { revocationCapability = "unknown"; }
-        json(res, authConfigStatus.valid ? 200 : 503, {
-          ok: authConfigStatus.valid,
-          ready: authConfigStatus.valid,
+        const ready = authConfigStatus.valid && mfaStatus.valid;
+        json(res, ready ? 200 : 503, {
+          ok: ready,
+          ready,
+          mfa: { mode: mfaStatus.mode, key: mfaStatus.key, schema: mfaSchema, ...(mfaStatus.problems.length ? { problems: mfaStatus.problems } : {}) },
           // codes and mode names only; never a secret or anything derived from one
           auth_config: {
             session_secret: authConfigStatus.session_secret,
@@ -9444,6 +9451,7 @@ async function start() {
   if (!authStatus.valid) log("error", "auth_configuration_invalid", { problems: authStatus.problems });
   if (config.sessionSecretEphemeral) log("warn", "session_secret_ephemeral", { note: "LEAD_AGENTS_SESSION_SECRET is unset; sessions will not survive a restart" });
   if (config.allowApiKeyPasswordLogin) log("warn", "api_key_password_login_enabled_deprecated", {});
+  { const mfaStartup = validateMfaConfig(config); if (mfaStartup.mode === "on" && !mfaStartup.valid) log("error", "mfa_configuration_invalid", { problems: mfaStartup.problems }); else if (mfaStartup.mode === "off" && mfaStartup.problems.length) log("warn", "mfa_key_configured_but_mfa_off", { problems: mfaStartup.problems }); }
   if (config.sessionTtlStatus && config.sessionTtlStatus !== "ok") log("warn", "session_ttl_env_adjusted", { status: config.sessionTtlStatus, applied_hours: config.sessionTtlMs / 3_600_000 });
   if (config.adminRecovery) log("warn", "admin_recovery_enabled", { note: "remove LEAD_AGENTS_ADMIN_RECOVERY after signing in" });
 

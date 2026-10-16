@@ -54,4 +54,4 @@ function validateAuthConfig(config = {}) {
   return { valid: problems.length === 0, production, problems, session_secret: problems.length ? "invalid" : config.sessionSecretEphemeral ? "ephemeral" : "configured" };
 }
 
-module.exports = { MIN_SESSION_SECRET_LENGTH, resolveSessionSecret, validateAuthConfig };
+module.exports = { MIN_SESSION_SECRET_LENGTH, SHARED_SECRET_FIELDS, sharedSecrets, resolveSessionSecret, validateAuthConfig };

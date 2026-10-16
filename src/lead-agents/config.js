@@ -1,5 +1,6 @@
 const path = require("path");
 const { resolveSessionSecret } = require("./auth-config");
+const { mfaMode } = require("./mfa-config");
 
 function numberFromEnv(value, fallback) {
   const parsed = Number(value);
@@ -107,6 +108,11 @@ function createConfig() {
     sessionTtlStatus: sessionTtl.status,
     // Session revocation (S7.4): on by default; `off` disables generation checks and the revocation routes without touching the schema (rollback lever).
     sessionRevocationEnabled: String(process.env.LEAD_AGENTS_SESSION_REVOCATION || "on").toLowerCase() !== "off",
+    // MFA (S7.5.1): OFF by default. `on` only enables key validation and readiness reporting in this slice. Key material comes from the deployment environment only.
+    mfaMode: mfaMode(process.env),
+    mfaKey: process.env.LEAD_AGENTS_MFA_KEY || "",
+    mfaKeyId: process.env.LEAD_AGENTS_MFA_KEY_ID || "",
+    mfaKeysPrevious: process.env.LEAD_AGENTS_MFA_KEYS_PREVIOUS || "",
     // After a rollout, refuse tokens issued before generations existed (they carry no `sg`).
     rejectLegacySessions: process.env.LEAD_AGENTS_REJECT_LEGACY_SESSIONS === "true",
     rateLimitWindowMs: numberFromEnv(

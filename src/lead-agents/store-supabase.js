@@ -1,4 +1,5 @@
 const axios = require("axios");
+const mfaShared = require("./mfa-store-shared");
 const crypto = require("crypto");
 const { normalizeEmail, normalizeLeadInput, normalizeLeadPatch, normalizeText } = require("./normalize-lead");
 const { buildDeploymentFromLead, normalizePartner } = require("./commercial-ops");
@@ -1506,7 +1507,7 @@ class SupabaseLeadAgentsStore {
     return { session_generation: row.session_generation, sessions_revoked_at: row.sessions_revoked_at };
   }
 
-  // Settings S7.5.0: one SQL statement applies the patch and revokes sessions (db/20261021_admin_atomic_credential_updates.sql). Capability re-probed at most once a minute.
+  // Settings S7.5.0: one SQL statement applies the patch and revokes sessions (db/20261021_admin_atomic_account_updates.sql). Capability re-probed at most once a minute.
   async supportsAtomicCredentialUpdate() {
     if (this.atomicCredentialUpdate === true) return true;
     if (this.atomicCredentialUpdate === false && Date.now() - (this.atomicCredentialUpdateCheckedAt || 0) < 60_000) return false;
@@ -1547,6 +1548,138 @@ class SupabaseLeadAgentsStore {
   async releaseAdminInvite(inviteId) {
     const response = await this.client.patch(`/admin_invites?id=eq.${inviteId}&status=eq.accepted`, { status: "pending", accepted_at: null }, { headers: this.selectHeaders() });
     return response.data[0] || null;
+  }
+
+  // ---- Settings S7.5.1: MFA data foundation (db/20261022_admin_mfa_foundation.sql; contract: docs/settings-domain/28_S7_5_1_MFA_DATA_FOUNDATION_CONTRACT.md) ----
+  // Every mutation is a single SQL statement/function, so concurrent callers are serialised by the database. Fail closed: any transport or database failure throws a CODE-ONLY
+  // error (the original axios error, which carries the request body, is dropped) and never reports success. Nothing here is reachable from a route in S7.5.1.
+  async _mfaCall(operation, fn) {
+    try { return await fn(); } catch (error) { throw mfaShared.sanitizeStoreError(error, operation); }
+  }
+  _mfaRpc(operation, name, args) {
+    return this._mfaCall(operation, async () => (await this.client.post(`/rpc/${name}`, args)).data);
+  }
+  async supportsMfa() {
+    if (this.mfaSchema === true) return true;
+    if (this.mfaSchema === false && Date.now() - (this.mfaSchemaCheckedAt || 0) < 60_000) return false;
+    try {
+      const response = await this.client.post("/rpc/office_mfa_schema_version", {});
+      if (response.data !== 1) throw mfaShared.mfaError("mfa_store_error");
+      this.mfaSchema = true;
+    } catch (error) {
+      if (error?.response?.status === 404 || error?.response?.data?.code === "PGRST202") { this.mfaSchema = false; this.mfaSchemaCheckedAt = Date.now(); } else throw mfaShared.sanitizeStoreError(error, "supportsMfa");
+    }
+    return this.mfaSchema === true;
+  }
+  async _mfaRequireSchema() { if (!(await this.supportsMfa())) throw mfaShared.mfaError("mfa_unavailable"); }
+  _hex(b64) { return `\\x${Buffer.from(String(b64), "base64").toString("hex")}`; }
+
+  async createMfaCredential(userId, input) {
+    const data = mfaShared.validateCredentialInput(input);
+    await this._mfaRequireSchema();
+    const body = { admin_user_id: userId, ...data };
+    if (data.type === "webauthn") { body.webauthn_credential_id = this._hex(data.webauthn_credential_id); body.webauthn_public_key = this._hex(data.webauthn_public_key); }
+    const rows = await this._mfaCall("createMfaCredential", async () => (await this.client.post("/admin_mfa_credentials", body, { headers: this.selectHeaders() })).data);
+    return mfaShared.sanitizeCredential(rows[0]);
+  }
+  async activateMfaCredential(userId, credentialId) {
+    await this._mfaRequireSchema();
+    const rows = await this._mfaCall("activateMfaCredential", async () => (await this.client.patch(`/admin_mfa_credentials?id=eq.${encodeURIComponent(credentialId)}&admin_user_id=eq.${encodeURIComponent(userId)}&status=eq.pending`, { status: "active", activated_at: new Date().toISOString() }, { headers: this.selectHeaders() })).data);
+    return mfaShared.sanitizeCredential(rows[0] || null);
+  }
+  async revokeMfaCredential(userId, credentialId, { actor = "", reason = "" } = {}) {
+    await this._mfaRequireSchema();
+    const rows = await this._mfaCall("revokeMfaCredential", async () => (await this.client.patch(`/admin_mfa_credentials?id=eq.${encodeURIComponent(credentialId)}&admin_user_id=eq.${encodeURIComponent(userId)}&status=neq.revoked`, { status: "revoked", revoked_at: new Date().toISOString(), revoked_by: String(actor || "").slice(0, 200), revoked_reason: String(reason || "").slice(0, 200) }, { headers: this.selectHeaders() })).data);
+    return mfaShared.sanitizeCredential(rows[0] || null);
+  }
+  async listMfaCredentials(userId) {
+    await this._mfaRequireSchema();
+    // explicit column list: secret columns are never selected by this reader
+    const rows = await this._mfaCall("listMfaCredentials", async () => (await this.client.get(`/admin_mfa_credentials?admin_user_id=eq.${encodeURIComponent(userId)}&select=id,admin_user_id,type,label,status,created_at,activated_at,last_used_at,revoked_at,webauthn_transports,webauthn_backup_eligible&order=created_at.asc`)).data);
+    return rows.map(mfaShared.sanitizeCredential);
+  }
+  async getMfaCredentialSecret(userId, credentialId) {
+    await this._mfaRequireSchema();
+    const rows = await this._mfaCall("getMfaCredentialSecret", async () => (await this.client.get(`/admin_mfa_credentials?id=eq.${encodeURIComponent(credentialId)}&admin_user_id=eq.${encodeURIComponent(userId)}&type=eq.totp&status=neq.revoked&select=id,status,secret_ciphertext,secret_nonce,secret_key_id,totp_last_step&limit=1`)).data);
+    return rows[0] || null;
+  }
+  async consumeTotpStep(userId, credentialId, step) {
+    if (!Number.isSafeInteger(step) || step < 1) throw mfaShared.mfaError("mfa_invalid_input", { field: "step" });
+    await this._mfaRequireSchema();
+    // ownership first (a credential never changes owner), then the single-statement compare-and-set
+    const owned = await this._mfaCall("consumeTotpStep", async () => (await this.client.get(`/admin_mfa_credentials?id=eq.${encodeURIComponent(credentialId)}&admin_user_id=eq.${encodeURIComponent(userId)}&select=id&limit=1`)).data);
+    if (!owned[0]) return false;
+    const result = await this._mfaRpc("consumeTotpStep", "office_mfa_consume_totp_step", { p_credential_id: credentialId, p_step: step });
+    if (typeof result !== "boolean") throw mfaShared.mfaError("mfa_store_error", { operation: "consumeTotpStep" });
+    return result;
+  }
+  async replaceMfaRecoveryCodes(userId, batchId, hmacs) {
+    mfaShared.validateRecoveryHmacs(hmacs);
+    await this._mfaRequireSchema();
+    const count = await this._mfaRpc("replaceMfaRecoveryCodes", "office_mfa_replace_recovery_codes", { p_user_id: userId, p_batch_id: batchId, p_hmacs: hmacs });
+    if (!Number.isInteger(count)) throw mfaShared.mfaError("mfa_store_error", { operation: "replaceMfaRecoveryCodes" });
+    return count;
+  }
+  async consumeMfaRecoveryCode(userId, hmac) {
+    if (typeof hmac !== "string" || hmac.length < 16 || hmac.length > 128) return false;
+    await this._mfaRequireSchema();
+    const result = await this._mfaRpc("consumeMfaRecoveryCode", "office_mfa_consume_recovery_code", { p_user_id: userId, p_code_hmac: hmac });
+    if (typeof result !== "boolean") throw mfaShared.mfaError("mfa_store_error", { operation: "consumeMfaRecoveryCode" });
+    return result;
+  }
+  async countMfaRecoveryCodes(userId) {
+    await this._mfaRequireSchema();
+    const response = await this._mfaCall("countMfaRecoveryCodes", async () => this.client.get(`/admin_mfa_recovery_codes?admin_user_id=eq.${encodeURIComponent(userId)}&used_at=is.null&select=id`, { headers: { prefer: "count=exact", range: "0-0" } }));
+    const range = String(response.headers?.["content-range"] || ""); const total = Number(range.split("/")[1]);
+    if (!Number.isInteger(total)) throw mfaShared.mfaError("mfa_store_error", { operation: "countMfaRecoveryCodes" });
+    return total;
+  }
+  async createMfaChallenge(userId, purpose, challengeB64, ttlSeconds = 300) {
+    const v = mfaShared.validateChallengeInput(purpose, challengeB64, ttlSeconds);
+    await this._mfaRequireSchema();
+    const rows = await this._mfaRpc("createMfaChallenge", "office_mfa_create_challenge", { p_user_id: userId, p_purpose: v.purpose, p_challenge_b64: v.challengeB64, p_ttl_seconds: v.ttl });
+    const row = Array.isArray(rows) ? rows[0] : rows;
+    if (!row || !row.id) throw mfaShared.mfaError("mfa_store_error", { operation: "createMfaChallenge" });
+    return { id: row.id, expires_at: row.expires_at };
+  }
+  async consumeMfaChallenge(userId, challengeId, purpose) {
+    if (!mfaShared.CHALLENGE_PURPOSES.includes(purpose)) throw mfaShared.mfaError("mfa_invalid_input", { field: "purpose" });
+    await this._mfaRequireSchema();
+    const result = await this._mfaRpc("consumeMfaChallenge", "office_mfa_consume_challenge", { p_challenge_id: challengeId, p_user_id: userId, p_purpose: purpose });
+    if (result !== null && typeof result !== "string") throw mfaShared.mfaError("mfa_store_error", { operation: "consumeMfaChallenge" });
+    return result;
+  }
+  async recordMfaFailure(userId) {
+    await this._mfaRequireSchema();
+    const rows = await this._mfaRpc("recordMfaFailure", "office_mfa_record_failure", { p_user_id: userId });
+    const row = Array.isArray(rows) ? rows[0] : rows;
+    if (!row) return null;
+    if (!Number.isInteger(row.failed_attempts)) throw mfaShared.mfaError("mfa_store_error", { operation: "recordMfaFailure" });
+    return { failed_attempts: row.failed_attempts, locked_until: row.locked_until || null };
+  }
+  async clearMfaFailures(userId) {
+    await this._mfaRequireSchema();
+    await this._mfaRpc("clearMfaFailures", "office_mfa_clear_failures", { p_user_id: userId });
+    return true;
+  }
+  async getMfaLockState(userId) {
+    await this._mfaRequireSchema();
+    const rows = await this._mfaCall("getMfaLockState", async () => (await this.client.get(`/admin_users?id=eq.${encodeURIComponent(userId)}&select=mfa_failed_attempts,mfa_locked_until&limit=1`)).data);
+    return rows[0] ? { failed_attempts: rows[0].mfa_failed_attempts || 0, locked_until: rows[0].mfa_locked_until || null } : null;
+  }
+  async resetMfa(userId, { actor = "" } = {}) {
+    await this._mfaRequireSchema();
+    const rows = await this._mfaRpc("resetMfa", "office_mfa_reset", { p_user_id: userId, p_actor: String(actor || "").slice(0, 200) });
+    const row = Array.isArray(rows) ? rows[0] : rows;
+    if (!row) return null;
+    if (!Number.isInteger(row.session_generation)) throw mfaShared.mfaError("mfa_store_error", { operation: "resetMfa" });
+    return { session_generation: row.session_generation, credentials_revoked: row.credentials_revoked, codes_deleted: row.codes_deleted };
+  }
+  async pruneMfaChallenges(olderThanSeconds = 3600) {
+    await this._mfaRequireSchema();
+    const count = await this._mfaRpc("pruneMfaChallenges", "office_mfa_prune_challenges", { p_older_than: `${Math.max(0, Math.floor(Number(olderThanSeconds) || 0))} seconds` });
+    if (!Number.isInteger(count)) throw mfaShared.mfaError("mfa_store_error", { operation: "pruneMfaChallenges" });
+    return count;
   }
 
   async deleteAdminUser(userId) {

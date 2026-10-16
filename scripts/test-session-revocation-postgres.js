@@ -15,7 +15,7 @@ const { SupabaseLeadAgentsStore } = require("../src/lead-agents/store-supabase")
 const ROOT = path.join(__dirname, "..");
 const sql = (f) => fs.readFileSync(path.join(ROOT, "db", f), "utf8");
 const MIG = "20261020_admin_session_generation.sql", DOWN = "rollback/20261020_admin_session_generation.down.sql";
-const MIG2 = "20261021_admin_atomic_credential_updates.sql", DOWN2 = "rollback/20261021_admin_atomic_credential_updates.down.sql";
+const MIG2 = "20261021_admin_atomic_account_updates.sql", DOWN2 = "rollback/20261021_admin_atomic_account_updates.down.sql";
 const docker = (...a) => execFileSync("docker", a, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const PLAIN_PORT = 54371, SB_PORT = 54372, REST_PORT = 54373, PROXY_PORT = 54374, SUF = process.pid;
