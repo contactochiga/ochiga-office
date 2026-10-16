@@ -18,3 +18,10 @@ Starting HEAD `3178840108ed4554c14370c2364ca42b5e11b3d1` (local = remote, clean)
 
 ## 3. Plan
 Upgrade exactly `axios` to `1.20.0` (`^1.20.0` in `package.json`), regenerate only its lockfile entry, re-run `npm audit` (full and `--omit=dev`), then the complete regression. If the lockfile or the suites show any other package change, stop and report.
+
+## 4. Result (after)
+- `axios` 1.19.0 → **1.20.0** (`package.json` `^1.13.4` → `^1.20.0`). The lockfile diff is exactly the `axios` entry (version, resolved URL, integrity) and the root declaration; no other package changed; `npm ci` on a fresh checkout installs it cleanly (`npm ls axios`: one copy, 1.20.0).
+- `npm audit`: **found 0 vulnerabilities** (full tree, 174 listed packages) and `npm audit --omit=dev`: 0. All 12 advisories of §1 are resolved. This statement is bounded by what `npm audit` knows (advisories published to the npm registry advisory database at the time of the run); it is not a claim that no undiscovered issue exists.
+- Remaining vulnerabilities in the dependency tree: **none reported**.
+- Verification on a fresh clean checkout of `9ebbd313e0d4ec936e5242f080d0c3e5d64c0509` after `npm ci` (complete run, 900 s per suite): gates 5/5; frozen S7.5.9 certification suites unchanged, 681/681 (auth-session 153, MFA lifecycle 213, database 239, browser 76); Office regression **80/80** (S7.0–S7.5.8, R1, Team permissions, WhatsApp autonomy, Settings S1–S6, Supabase store and every outbound-client suite); Postgres/PostgREST **10/10**.
+- Other open items are unchanged by R2: F-5 logout denylist, F-6 mixed-version rollout, F-7 browser-harness flake (did not recur), the per-process limiter and `X-Forwarded-For` observations from R1, and the production-owner actions in the S7.5.9 report.
