@@ -1487,6 +1487,33 @@ class SupabaseLeadAgentsStore {
   // keeps historical attribution intact.
   // Settings S7.4: session revocation through the atomic SQL function (db/20261020_admin_session_generation.sql). Until that migration is applied the capability is reported
   // unavailable (re-probed at most once a minute); nothing is written and callers answer 503 session_revocation_unavailable.
+  // R4: revocation of ONE session (db/20261026_admin_revoked_sessions.sql). Capability is probed through a read-only PL/pgSQL function; until the migration is applied tokens carry no `sid`.
+  async supportsSessionIdRevocation() {
+    if (this.sessionIdRevocation === true) return true;
+    if (this.sessionIdRevocation === false && Date.now() - (this.sessionIdRevocationCheckedAt || 0) < 60_000) return false;
+    try {
+      const response = await this.client.post("/rpc/office_session_revocation_version", {});
+      if (response.data !== 1) throw new Error("session_revocation_probe_malformed");
+      this.sessionIdRevocation = true;
+    } catch (error) {
+      if (error?.response?.status === 404 || error?.response?.data?.code === "PGRST202") { this.sessionIdRevocation = false; this.sessionIdRevocationCheckedAt = Date.now(); } else throw new Error("session_revocation_store_error");
+    }
+    return this.sessionIdRevocation === true;
+  }
+  async revokeSessionDigest(digest, userId, expiresAtMs) {
+    try {
+      const response = await this.client.post("/rpc/office_revoke_session", { p_digest: digest, p_user_id: userId, p_expires_at: new Date(Number(expiresAtMs) || Date.now()).toISOString() });
+      if (response.data !== true) throw new Error("malformed");
+      return true;
+    } catch { throw new Error("session_revocation_store_error"); } // never the driver message: it names internal hosts and ports
+  }
+  async isSessionDigestRevoked(digest) {
+    try {
+      const response = await this.client.post("/rpc/office_is_session_revoked", { p_digest: digest });
+      if (typeof response.data !== "boolean") throw new Error("malformed");
+      return response.data;
+    } catch { throw new Error("session_revocation_store_error"); }
+  }
   async supportsSessionRevocation() {
     if (this.sessionRevocation === true) return true;
     if (this.sessionRevocation === false && Date.now() - (this.sessionRevocationCheckedAt || 0) < 60_000) return false;

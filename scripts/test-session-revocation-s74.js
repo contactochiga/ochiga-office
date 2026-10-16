@@ -69,8 +69,10 @@ async function main() {
   eq((await (await app.call("GET", `${A}/session/me`, { cookie: copied })).json()).error, "session_revoked", "reason code");
   const fresh = await app.session("u1@x.test", PW.u1); eq(claims(fresh).sg, 1, "sign-in after revocation gets the new generation"); eq(await app.me(fresh), 200);
 
-  // ---- 2. logout is not revocation (documented limitation)
-  await app.call("POST", `${A}/session/logout`, { cookie: fresh }); eq(await app.me(fresh), 200, "logout alone only clears the browser cookie; revoke-all is the revocation");
+  // ---- 2. logout revokes THAT session only (R4; it used to be a documented limitation: logout only cleared the browser cookie)
+  const stay = await app.session("u1@x.test", PW.u1); eq(await app.me(stay), 200, "(setup) a second session of the same account");
+  const lo = await app.call("POST", `${A}/session/logout`, { cookie: fresh }); eq(lo.status, 200); eq((await lo.json()).revoked, true, "logout reports a confirmed revocation");
+  eq(await app.me(fresh), 401, "R4: a copy of the logged-out cookie is refused"); eq(await app.me(stay), 200, "R4: the other session of the same account stays valid");
 
   // ---- 3. keep_current + monotonic increments
   const kA = await app.session("u2@x.test", PW.u2), kB = await app.session("u2@x.test", PW.u2);

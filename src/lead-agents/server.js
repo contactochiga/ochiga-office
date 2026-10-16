@@ -34,6 +34,8 @@ const {
   authenticateSessionCookie,
   verifyPassword,
   verifyPasswordOrDummy,
+  newSessionId,
+  sessionIdDigest,
 } = require("./auth");
 const { MemoryRateLimiter } = require("./rate-limit");
 const { issuePublicSession, publicRequestIdentity } = require("./public-session-authority");
@@ -1972,7 +1974,15 @@ async function issueSession(store, config, sessionUser, { mfaAt } = {}) {
     account = { ...sessionUser, session_generation: fresh.session_generation };
   }
   const ttl = await resolveSessionTtl(store, config, { log });
-  return { token: createAdminSessionToken(account, config, ttl.ttlMs, { mfaAt }), ttl };
+  // R4: a per-session identifier is added only when its revocation storage exists (otherwise the token is exactly what it was before). A probe that cannot answer is an error, never "no":
+  // silently issuing a session that can never be logged out would be a quiet downgrade.
+  let sessionId;
+  if (typeof store.supportsSessionIdRevocation === "function") {
+    let supported;
+    try { supported = await store.supportsSessionIdRevocation(); } catch { const e = new Error("session_verification_unavailable"); e.statusCode = 503; throw e; }
+    if (supported) sessionId = newSessionId();
+  }
+  return { token: createAdminSessionToken(account, config, ttl.ttlMs, { mfaAt, sessionId }), ttl };
 }
 
 // Settings S7.5.3: with MFA on, is this account bound to a second factor (an ACTIVE credential)? Any failure to find out is a 503 (fail closed), never "no".
@@ -2175,6 +2185,23 @@ async function enrichAuthContext(authContext, store, config = {}) {
     error.statusCode = 401;
     error.reason = generation.reason;
     throw error;
+  }
+  // R4: a session that was logged out is refused here, whatever else is true of its token. Only tokens that carry a session id are looked up; if the lookup cannot be answered the
+  // request FAILS (503): "unknown" is never treated as "not revoked".
+  if (authContext.sessionId) {
+    let revoked;
+    try { revoked = await store.isSessionDigestRevoked(sessionIdDigest(config, authContext.sessionId)); } catch {
+      const error = new Error("session_verification_unavailable");
+      error.statusCode = 503;
+      throw error;
+    }
+    if (revoked) {
+      revokedSessionRejections.logged_out = (revokedSessionRejections.logged_out || 0) + 1;
+      const error = new Error("session_revoked");
+      error.statusCode = 401;
+      error.reason = "logged_out";
+      throw error;
+    }
   }
   // S7.5.3: one place, so /session/me and every protected route behave alike. An account bound to a second factor needs a session that PROVED it (mf = 1); password-only and
   // legacy cookies of such an account are refused until the person signs in again through the challenge.
@@ -3611,16 +3638,26 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           methodNotAllowed(res, "POST");
           return;
         }
-        json(
-          res,
-          200,
-          { ok: true },
-          {
-            "set-cookie": clearSessionCookie(config),
-            "x-request-id": ctx.requestId,
+        // R4: revoke THIS session on the server, then clear the browser cookie. The session is identified only by the signature-verified, unexpired cookie (a person can always log out,
+        // even if the account has since changed); nothing in the body or query is read. The browser cookie is cleared in every outcome. Only an honest result is reported.
+        const logoutHeaders = { "set-cookie": clearSessionCookie(config), "x-request-id": ctx.requestId, "cache-control": "no-store" };
+        const cookieSession = authenticateSessionCookie(req, config);
+        let outcome = { revoked: false, reason: cookieSession ? "not_individually_revocable" : "no_session" };
+        if (cookieSession && cookieSession.sessionId) {
+          try {
+            await store.revokeSessionDigest(sessionIdDigest(config, cookieSession.sessionId), cookieSession.userId, cookieSession.sessionExpiresAtMs);
+            outcome = { revoked: true };
+          } catch {
+            outcome = { failed: true };
           }
-        );
-        await appendAudit(store, authContext, "session_logout", "session", authContext?.userId || "", {});
+        }
+        const auditActor = cookieSession ? { userId: cookieSession.userId, email: cookieSession.email, role: cookieSession.role } : { type: authContext?.type || "unknown" };
+        await appendAudit(store, auditActor, outcome.failed ? "session_logout_unconfirmed" : "session_logout", "session", cookieSession?.userId || "", { revoked: Boolean(outcome.revoked), ...(outcome.reason ? { reason: outcome.reason } : {}) }, req, outcome.failed ? "failure" : undefined).catch(() => {});
+        if (outcome.failed) {
+          json(res, 503, { ok: false, revoked: false, error: "logout_not_confirmed", message: "You were signed out in this browser, but the server could not confirm that this session was revoked. If you think the session was copied, use Sign out everywhere." }, logoutHeaders);
+          return;
+        }
+        json(res, 200, { ok: true, revoked: outcome.revoked, ...(outcome.reason ? { reason: outcome.reason } : {}) }, logoutHeaders);
         return;
       }
 

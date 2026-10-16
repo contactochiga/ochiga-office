@@ -621,8 +621,9 @@ async function signOutToLogin() { try { await logout(); } finally { stStepUpClea
 async function logout() {
   try {
     await api("/api/lead-agents/admin/session/logout", { method: "POST" });
-  } catch {
-    // Ignore — local state clears regardless.
+  } catch (err) {
+    // The browser is signed out regardless (the server clears the cookie in every case). R4: when the server could not CONFIRM the revocation, say so instead of implying it did.
+    if (err && err.data && err.data.error === "logout_not_confirmed") toast("Signed out in this browser, but the server could not confirm that this session was revoked. If you think it was copied, use Sign out everywhere.", "warning");
   }
   state.admin = null;
   Object.keys(cache).forEach((key) => delete cache[key]);

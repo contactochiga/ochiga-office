@@ -59,6 +59,8 @@ function createAdminSessionToken(adminUser, config, ttlMs, extra = {}) {
       // S7.5.0: fingerprint of the password hash this session was authenticated with. Any later change of the hash, in any order relative to the generation bump, ends the session.
       // S7.5.3: set ONLY after a second factor was verified (mf = 1, mft = when). Absent means "password only".
       ...(extra && Number.isFinite(extra.mfaAt) ? { mf: 1, mft: Math.floor(extra.mfaAt) } : {}),
+      // R4: identifies THIS session so a logout can revoke it alone. Random, signed, never returned by any API, logged or stored in the clear (the database holds only a keyed digest).
+      ...(extra && typeof extra.sessionId === "string" && /^[A-Za-z0-9_-]{16,64}$/.test(extra.sessionId) ? { sid: extra.sessionId } : {}),
       ...(adminUser.password_hash ? { pf: passwordFingerprint(config, adminUser.password_hash) } : {}),
     })
   ).toString("base64url");
@@ -112,6 +114,8 @@ function readAdminSession(req, config) {
     // Settings S7.5.3: second factor verified at sign-in (absent/0 for password-only and legacy tokens).
     mfa: decoded.mf === 1 && Number.isFinite(decoded.mft),
     mfaAt: decoded.mf === 1 && Number.isFinite(decoded.mft) ? decoded.mft : null,
+    // R4: absent for tokens issued before per-session revocation (or while its storage was unavailable): those can only be ended account-wide.
+    sessionId: typeof decoded.sid === "string" && /^[A-Za-z0-9_-]{16,64}$/.test(decoded.sid) ? decoded.sid : null,
     // Settings S7.2: identifies THIS session token (never the token itself) so step-up authorisations can be bound to it.
     binding: crypto.createHash("sha256").update(String(rawToken)).digest("hex"),
   };
@@ -122,6 +126,13 @@ function createSessionCookie(token, config, ttlMs) {
   const maxAgeSeconds = Math.max(60, Math.floor(effectiveMs / 1000));
   const secureFlag = config.environment === "production" ? "; Secure" : "";
   return `${config.sessionCookieName}=${encodeURIComponent(token)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${maxAgeSeconds}${secureFlag}`;
+}
+
+// R4: random session identifier and its keyed digest (the only form that is ever stored). The key is derived for this purpose from the session secret.
+function newSessionId() { return crypto.randomBytes(16).toString("base64url"); }
+function sessionIdDigest(config, sessionId) {
+  const key = crypto.createHmac("sha256", String(config.sessionSecret || "")).update("ochiga-office/session-id/v1").digest();
+  return crypto.createHmac("sha256", key).update(String(sessionId || "")).digest("hex").slice(0, 32);
 }
 
 function clearSessionCookie(config) {
@@ -213,6 +224,8 @@ function authenticateSessionCookie(req, config) {
     permissionScopes: session.permissionScopes,
     permissions: permissionsForRole(session.role, session.permissionScopes),
     sessionBinding: session.binding,
+    sessionId: session.sessionId,
+    sessionExpiresAtMs: session.expiresAt,
     sessionGeneration: session.generation,
     sessionPasswordFingerprint: session.passwordFingerprint,
     sessionMfa: session.mfa,
@@ -276,4 +289,6 @@ module.exports = {
   readAdminSession,
   verifyPassword,
   verifyPasswordOrDummy,
+  newSessionId,
+  sessionIdDigest,
 };

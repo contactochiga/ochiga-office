@@ -25,6 +25,7 @@ class FileLeadAgentsStore {
       admin_mfa_credentials: [],
       admin_mfa_recovery_codes: [],
       admin_mfa_challenges: [],
+      revoked_sessions: {},
       audit_events: [],
       timeline_events: [],
       crm_contacts: [],
@@ -107,6 +108,7 @@ class FileLeadAgentsStore {
         admin_mfa_credentials: Array.isArray(parsed.admin_mfa_credentials) ? parsed.admin_mfa_credentials : [],
         admin_mfa_recovery_codes: Array.isArray(parsed.admin_mfa_recovery_codes) ? parsed.admin_mfa_recovery_codes : [],
         admin_mfa_challenges: Array.isArray(parsed.admin_mfa_challenges) ? parsed.admin_mfa_challenges : [],
+        revoked_sessions: parsed.revoked_sessions && typeof parsed.revoked_sessions === "object" && !Array.isArray(parsed.revoked_sessions) ? parsed.revoked_sessions : {},
         audit_events: Array.isArray(parsed.audit_events) ? parsed.audit_events : [],
         timeline_events: Array.isArray(parsed.timeline_events) ? parsed.timeline_events : [],
         crm_contacts: Array.isArray(parsed.crm_contacts) ? parsed.crm_contacts : [],
@@ -1610,6 +1612,16 @@ class FileLeadAgentsStore {
   // Settings S7.4: session revocation. One synchronous increment (the single writer serialises it); persisted, and rolled back in memory if the write to disk fails so a
   // revocation can never be reported (or lost on restart) inconsistently. Returns null when the account does not exist.
   async supportsSessionRevocation() { return true; }
+  // R4: revocation of ONE session. Keyed digests only (never the session identifier); entries expire with the token and are pruned when a new one is added. Persisted with the rest of the state.
+  async supportsSessionIdRevocation() { return true; }
+  async revokeSessionDigest(digest, userId, expiresAtMs) {
+    const map = this.state.revoked_sessions || (this.state.revoked_sessions = {});
+    const cutoff = Date.now() - 86_400_000; for (const [key, row] of Object.entries(map)) if (Date.parse(row.expires_at) < cutoff) delete map[key];
+    const had = map[digest]; if (!had) map[digest] = { user_id: userId, revoked_at: this.nowIso(), expires_at: new Date(Number(expiresAtMs) || Date.now()).toISOString() };
+    try { await this.persist(); } catch (error) { if (!had && map[digest] && map[digest].user_id === userId) delete map[digest]; throw error; }
+    return true;
+  }
+  async isSessionDigestRevoked(digest) { return Boolean(this.state.revoked_sessions && this.state.revoked_sessions[digest]); }
   async revokeAdminSessions(userId, { actor = "" } = {}) {
     const index = this.state.admin_users.findIndex((item) => item.id === userId);
     if (index === -1) return null;
