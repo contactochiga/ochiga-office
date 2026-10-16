@@ -1,0 +1,27 @@
+# S7 remediation R4 — current-session logout revocation: results
+
+Contract: `43_S7_R4_CURRENT_SESSION_LOGOUT_REVOCATION_CONTRACT.md` (`79315c6`, frozen before any runtime change). Implementation commit verified: `23a425fa37fc1145e40c8569dcfe47d72d3f324f` (fresh clean checkout, `npm ci`, complete run with the corrected R3 runner, true exit codes). Closes certification finding F-5 / concern C1.
+
+## 1. What changed
+- **Token:** new signed claim `sid` (16 random bytes, base64url), issued only when the store reports the capability; `sg`, `pf`, `exp`, `mf/mft`, cookie attributes unchanged. Issuance stays in the single `issueSession`; an unanswerable capability probe fails the sign-in (503) rather than quietly issuing an unrevocable session.
+- **Storage (additive migration `db/20261026_admin_revoked_sessions.sql`, rollback `db/rollback/20261026_admin_revoked_sessions.down.sql`):** `admin_revoked_sessions(session_digest pk, admin_user_id → admin_users on delete cascade, revoked_at, expires_at)`; RLS on, no policies, no privileges for `anon`/`authenticated`/PUBLIC, service role only; PL/pgSQL `office_revoke_session` (idempotent, prunes rows more than a day past expiry), `office_is_session_revoked`, `office_session_revocation_version`. Order guard: refuses without `20261020`. Rollback drops the functions and **keeps the table and every record**. File store: persisted `revoked_sessions` map. Only a keyed digest (HMAC of the id with a key derived from the session secret) is ever stored.
+- **Verification:** `enrichAuthContext` checks the digest for tokens that carry `sid` after the account, generation and fingerprint checks; revoked → `401 session_revoked`; **lookup failure → `503` (fail closed)**. Tokens without `sid` skip the lookup.
+- **Logout:** identifies the session from the signature-verified unexpired cookie only (no body/query identifier is read), revokes it, always clears the cookie. Answers: `200 revoked:true`; `200 revoked:false reason:not_individually_revocable` (legacy token / no capability); `200 revoked:false reason:no_session`; `503 logout_not_confirmed` (storage failed; no detail). Audit `session_logout` / `session_logout_unconfirmed`, never the id. The sign-out button shows a toast when revocation was not confirmed.
+- **Account-wide revocation untouched:** generation, password fingerprint, administrator revocation, deactivation and account replacement still end every session whatever its id.
+
+## 2. Tests
+| | Result |
+|---|---|
+| New API suite `test-logout-revocation-r4.js` | 78/78: token shape, ordinary logout, copied cookie, two sessions, account-wide, administrator revocation, password change (re-issued session gets its own id), MFA sessions and step-up grants, forged ids, expiry, legacy tokens, API key and edge token callers (nothing in the body or query is honoured), concurrent logout and authentication (never an error; all refused after it returns), 10 simultaneous logouts, restart persistence, storage failure (honest 503 + cleared cookie + no detail, audited, retry works), authentication fails closed on a lookup outage, capability absent/probe failure, redaction (no id in any response, log line, audit record or stored record) |
+| New Postgres suite `test-session-logout-postgres-r4.js` (disposable Postgres 16 and Supabase Postgres 17 + PostgREST, two server instances) | 105/105: order guard, idempotence, RLS/privileges (catalog and `SET ROLE`, three rounds), 40-way races, pruning, cascade, non-destructive rollback and re-apply; tokens before the migration carry no id, logout seen by the other instance, restart, account-wide still works, Data API roles refused, outage fails closed and retry then confirms, only digests in the database |
+| Updated assertion (implementation test, not frozen) | `test-session-revocation-s74.js`: it asserted the documented limitation "logout alone only clears the cookie"; it now asserts that logout revokes that session and leaves the other one valid |
+| Frozen S7.5.9 certification suites (corpus byte-identical; manifest digests match) | 4/4. `cert-auth-session` is now 154/154: its logout observation (formerly note `F-LOGOUT`, Medium) no longer occurs and its "logout also invalidates copies" check passes |
+| R1, R2, R3 tests and S7.0–S7.5.8 suites, Team permissions, WhatsApp autonomy, Settings S1–S6, browser suites | all pass: complete Office run **82/82** |
+| Postgres / PostgREST suites | **11/11** (true exit codes) |
+| Gates (`check`, `lint`, `build`, `security:secrets`, `deployment:validate`) | 5/5; `npm audit` 0 vulnerabilities |
+
+## 3. Migration requirements
+Apply `db/20261026_admin_revoked_sessions.sql` (after `20261020`). Until it is applied, sessions are issued without `sid` and logout reports `revoked:false` honestly. After it is applied, sessions issued **before** that moment have no `sid` and remain account-wide-only until they expire (default 7 days) or are revoked. Never apply it in production from this work; the owner decides when.
+
+## 4. Known limitations
+Instances older than R4 ignore `sid` and keep accepting a logged-out copy (mixed-version, same class as F-6; the fleet attestation is the control). Legacy tokens cannot be individually revoked. One extra indexed lookup per authenticated request for tokens with `sid`. A request already authenticated before the revocation committed can finish. The R1 observations (per-process limiter, first `X-Forwarded-For` value) and the production-owner actions are unchanged.
