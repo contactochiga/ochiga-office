@@ -17,6 +17,7 @@ const { resolveSessionTtl } = require("./session-policy");
 const { effectiveGeneration, revocationEnabled, checkSessionGeneration } = require("./session-generation");
 // counters only (never audited per request: a replayed stolen cookie would flood the audit store); exposed by category through /healthz
 const revokedSessionRejections = {};
+const { resolveEnforcement, accountRequirement, enrollmentNotice, requirementForUser, runPreflight, invalidateEnforcementCache, ENFORCEMENT_LEVELS, applyBreakGlass, recoverySummary } = require("./mfa-enforcement");
 const { STEP_UP_PURPOSES, STEP_UP_HEADER, stepUpEligibility, issueStepUpToken, verifyStepUpToken, grantSatisfiesMfa } = require("./step-up");
 const { createStore } = require("./store-factory");
 const { OpenAIResponsesClient } = require("./openai");
@@ -2186,6 +2187,20 @@ async function enrichAuthContext(authContext, store, config = {}) {
       error.reason = "mfa_required";
       throw error;
     }
+    // S7.5.7: an account WITHOUT a factor that the enforcement level (or an admin reset / break-glass) requires to have one: inside the grace window the session is accepted with a
+    // notice; at or after the deadline it ends (the person signs in again and is routed to enrolment). Unreadable policy fails closed.
+    if (!required) {
+      let requirement;
+      try { requirement = await requirementForUser(store, config, user); } catch { const unavailable = new Error("session_verification_unavailable"); unavailable.statusCode = 503; throw unavailable; }
+      if (requirement.required && requirement.expired) {
+        revokedSessionRejections.mfa_enrollment_required = (revokedSessionRejections.mfa_enrollment_required || 0) + 1;
+        const error = new Error("mfa_enrollment_required");
+        error.statusCode = 401;
+        error.reason = "mfa_enrollment_required";
+        throw error;
+      }
+      if (requirement.required) authContext = { ...authContext, mfaEnrollment: enrollmentNotice(requirement) };
+    }
   }
   return {
     ...authContext,
@@ -2499,7 +2514,7 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
         json(res, ready ? 200 : 503, {
           ok: ready,
           ready,
-          mfa: { mode: mfaStatus.mode, key: mfaStatus.key, schema: mfaSchema, enrolled_accounts: mfaEnrolled, webauthn: (() => { const w = validateWebauthnConfig(config); return { status: w.status, ...(w.problems.length ? { problems: w.problems } : {}) }; })(), ...(mfaStatus.problems.length ? { problems: mfaStatus.problems } : {}) },
+          mfa: { mode: mfaStatus.mode, key: mfaStatus.key, schema: mfaSchema, enrolled_accounts: mfaEnrolled, webauthn: (() => { const w = validateWebauthnConfig(config); return { status: w.status, ...(w.problems.length ? { problems: w.problems } : {}) }; })(), recovery: recoverySummary(config), ...(mfaStatus.problems.length ? { problems: mfaStatus.problems } : {}) },
           // codes and mode names only; never a secret or anything derived from one
           auth_config: {
             session_secret: authConfigStatus.session_secret,
@@ -3082,6 +3097,7 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
         }
 
         // S7.5.3: password proven. If this account is bound to a second factor, answer with a short-lived CHALLENGE: no cookie, no account data, no authority.
+        let loginEnrollmentNotice = null;
         if (adminUser && config.mfaMode === "on") {
           let mfaRequired;
           try { mfaRequired = await mfaRequiredFor(store, config, adminUser.id); } catch { json(res, 503, { error: "mfa_verification_unavailable", message: "Sign-in is temporarily unavailable." }, { "x-request-id": ctx.requestId }); return; }
@@ -3104,6 +3120,25 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
             json(res, 200, { ok: false, mfa_required: true, challenge_token: challenge.token, expires_at: challenge.expires_at, methods }, { "x-request-id": ctx.requestId, "cache-control": "no-store" });
             return;
           }
+          // S7.5.7: not enrolled. If enforcement (or a reset / break-glass) requires a factor: before the deadline sign in with a notice; at or after it NO session is issued, only an enrolment
+          // challenge (the S7.5.4 mailbox-code gate). An enrolled account never reaches here, so it can never be downgraded to password-only.
+          let requirement;
+          try { requirement = await requirementForUser(store, config, adminUser); } catch { json(res, 503, { error: "mfa_verification_unavailable", message: "Sign-in is temporarily unavailable." }, { "x-request-id": ctx.requestId }); return; }
+          if (requirement.required && requirement.expired) {
+            let challenge;
+            try {
+              if (!validateMfaConfig(config).valid) throw new Error("mfa_config_invalid");
+              challenge = createMfaCrypto(config).issueChallengeToken({ user: adminUser, purpose: "enroll" });
+            } catch {
+              await appendAudit(store, { userId: adminUser.id, email: adminUser.email, role: adminUser.role }, "mfa_verification_error", "admin_user", adminUser.id, { request_id: ctx.requestId, phase: "enrollment_challenge_issue", failure_reason: "mfa_unavailable", at: new Date().toISOString() }, req, "failure").catch(() => {});
+              json(res, 503, { error: "mfa_unavailable", message: "Sign-in is temporarily unavailable." }, { "x-request-id": ctx.requestId });
+              return;
+            }
+            await appendAudit(store, { userId: adminUser.id, email: adminUser.email, role: adminUser.role }, "mfa_enrollment_required", "admin_user", adminUser.id, { request_id: ctx.requestId, source: requirement.source, at: new Date().toISOString() }, req);
+            json(res, 200, { ok: false, mfa_enrollment_required: true, challenge_token: challenge.token, expires_at: challenge.expires_at, methods: ["totp"] }, { "x-request-id": ctx.requestId, "cache-control": "no-store" });
+            return;
+          }
+          if (requirement.required) loginEnrollmentNotice = enrollmentNotice(requirement);
         }
 
         const sessionUser =
@@ -3163,6 +3198,7 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
               qr_credential: sessionUser.qr_credential || "",
               permissions: permissionsForRole(sessionUser.role, sessionUser.permission_scopes),
             },
+            ...(loginEnrollmentNotice ? { mfa_enrollment: loginEnrollmentNotice } : {}),
           },
           {
             "set-cookie": createSessionCookie(token, config, sessionTtl.ttlMs),
@@ -3232,6 +3268,7 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
         const batch = needCodes ? gate.lib.newRecoveryBatch(user.id) : null;
         const result = await store.activateMfaCredentialAtomic(user.id, pending.id, { actor: user.email, replaceCredentialId: active ? active.id : null, totpStep: checked.step, recoveryHmacs: batch ? batch.hmacs : null, keyId: batch ? batch.key_id : null });
         if (!result) return fail(409, "mfa_enrollment_not_pending", "raced");
+        if (user.mfa_required_after) await store.updateAdminUser(user.id, { mfa_required_after: null }).catch(() => {}); // enrolled: the per-account requirement is met
         const event = result.replaced ? "factor_replaced" : gate.hasFactor ? "factor_added" : "enrolled";
         await appendAudit(store, gate.actor, result.replaced ? "mfa_factor_replaced" : gate.hasFactor ? "mfa_factor_added" : "mfa_enrolled", "admin_user", user.id, { request_id: ctx.requestId, credential_id: pending.id, recovery_codes_issued: result.recovery_codes, generation_after: result.session_generation, forced, at: new Date().toISOString() }, req);
         const delivery = await notifyMfaEvent({ store, config, user, event, requestId: ctx.requestId, req });
@@ -3249,7 +3286,8 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           const management = typeof store.supportsMfaManagement === "function" && (await store.supportsMfaManagement());
           const credentials = (await store.listMfaCredentials(user.id)).filter((c) => c.status !== "revoked");
           const enrolled = credentials.some((c) => c.status === "active");
-          const waStatus = validateWebauthnConfig(config); json(res, 200, { mode: "on", management_available: Boolean(management), webauthn: { status: waStatus.status, available: waStatus.available, limit: MAX_WEBAUTHN_CREDENTIALS, registered: credentials.filter((c) => c.type === "webauthn" && c.status === "active").length }, enrolled, required: mfaRequiredForRole(user, config), credentials, recovery_codes_remaining: enrolled ? await store.countMfaRecoveryCodes(user.id) : 0, step_up: { purpose: "mfa_management", requires_second_factor: enrolled }, session: { mfa_verified: authContext.sessionMfa === true } }, mfaHeaders);
+          const policy = await resolveEnforcement(store, config); const requirement = enrolled ? { required: false } : accountRequirement({ policy, user }); const canReadEnforcement = hasPermission(authContext, "staff.manage");
+          const waStatus = validateWebauthnConfig(config); json(res, 200, { mode: "on", management_available: Boolean(management), webauthn: { status: waStatus.status, available: waStatus.available, limit: MAX_WEBAUTHN_CREDENTIALS, registered: credentials.filter((c) => c.type === "webauthn" && c.status === "active").length }, enrolled, required: mfaRequiredForRole(user, config) || requirement.required, ...(requirement.required ? { enrollment: enrollmentNotice(requirement) } : {}), ...(canReadEnforcement ? { enforcement: { level: policy.level, active: policy.active, status: policy.status, recovery: recoverySummary(config) } } : {}), credentials, recovery_codes_remaining: enrolled ? await store.countMfaRecoveryCodes(user.id) : 0, step_up: { purpose: "mfa_management", requires_second_factor: enrolled }, session: { mfa_verified: authContext.sessionMfa === true } }, mfaHeaders);
         } catch { json(res, 503, { error: "mfa_verification_unavailable" }, mfaHeaders); }
         return;
       }
@@ -3277,7 +3315,7 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
         if (req.method !== "POST") { methodNotAllowed(res, "POST"); return; }
         const gate = await mfaManagementGate("remove"); if (!gate) return;
         try {
-          const result = await store.revokeMfaCredentialAtomic(gate.user.id, mfaRemoveMatch[1].toLowerCase(), { actor: gate.user.email, reason: "removed_by_user", keepLast: mfaRequiredForRole(gate.user, config) });
+          const result = await store.revokeMfaCredentialAtomic(gate.user.id, mfaRemoveMatch[1].toLowerCase(), { actor: gate.user.email, reason: "removed_by_user", keepLast: mfaRequiredForRole(gate.user, config) || (await requirementForUser(store, config, gate.user).catch(() => ({ required: true }))).required });
           if (!result) { json(res, 404, { error: "credential_not_found" }, mfaHeaders); return; }
           await appendAudit(store, gate.actor, "mfa_factor_removed", "admin_user", gate.user.id, { request_id: ctx.requestId, credential_id: mfaRemoveMatch[1].toLowerCase(), was_active: result.was_active, remaining_active: result.remaining_active, recovery_codes_deleted: result.codes_deleted, generation_after: result.session_generation, at: new Date().toISOString() }, req);
           const delivery = result.was_active ? await notifyMfaEvent({ store, config, user: gate.user, event: "factor_removed", requestId: ctx.requestId, req }) : "not_applicable";
@@ -3415,6 +3453,7 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           const result = await store.activateMfaCredentialAtomic(gate.user.id, created.id, { actor: gate.user.email, recoveryHmacs: batch ? batch.hmacs : null, keyId: batch ? batch.key_id : null });
           if (!result) { await store.revokeMfaCredential(gate.user.id, created.id, { actor: gate.user.email, reason: "activation_failed" }).catch(() => {}); return fail(409, "mfa_conflict", "raced"); }
           createdId = null;
+          if (gate.user.mfa_required_after) await store.updateAdminUser(gate.user.id, { mfa_required_after: null }).catch(() => {});
           await appendAudit(store, gate.actor, gate.hasFactor ? "mfa_factor_added" : "mfa_enrolled", "admin_user", gate.user.id, { request_id: ctx.requestId, credential_id: created.id, method: "webauthn", recovery_codes_issued: result.recovery_codes, generation_after: result.session_generation, at: new Date().toISOString() }, req);
           const delivery = await notifyMfaEvent({ store, config, user: gate.user, event: gate.hasFactor ? "factor_added" : "enrolled", requestId: ctx.requestId, req });
           let cookieHeader = {}; let sessionReissued = false;
@@ -3592,11 +3631,11 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           json(res, 401, { error: "unauthorized" }, { "x-request-id": ctx.requestId });
           return;
         }
-        let currentUser;
+        let currentUser; let meEnrollment = null;
         try {
-          currentUser = (await enrichAuthContext(meContext, store, config)).user;
+          const enrichedMe = await enrichAuthContext(meContext, store, config); currentUser = enrichedMe.user; meEnrollment = enrichedMe.mfaEnrollment || null;
         } catch (meError) {
-          json(res, meError.statusCode === 503 ? 503 : 401, { error: meError.statusCode === 503 ? "session_verification_unavailable" : (["session_revoked", "mfa_required"].includes(meError.message) ? meError.message : "unauthorized") }, { "x-request-id": ctx.requestId });
+          json(res, meError.statusCode === 503 ? 503 : 401, { error: meError.statusCode === 503 ? "session_verification_unavailable" : (["session_revoked", "mfa_required", "mfa_enrollment_required"].includes(meError.message) ? meError.message : "unauthorized") }, { "x-request-id": ctx.requestId });
           return;
         }
         json(
@@ -3604,7 +3643,7 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           200,
           {
             ok: true,
-            mfa: { verified: meContext.sessionMfa === true },
+            mfa: { verified: meContext.sessionMfa === true, ...(meEnrollment ? { enrollment: meEnrollment } : {}) },
             admin: {
               id: currentUser.id,
               email: currentUser.email,
@@ -3754,6 +3793,68 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
         const verified = await requireStepUp(String(body.purpose || ""));
         if (!verified) return;
         json(res, 200, { valid: true, purpose: verified.purpose, expires_at: new Date(verified.expiresAt).toISOString() }, { "x-request-id": ctx.requestId, "cache-control": "no-store" });
+        return;
+      }
+
+      // ---- Settings S7.5.7: enforcement preflight (read) and administrator MFA reset (contract: docs/settings-domain/34_S7_5_7_MFA_ENFORCEMENT_AND_RECOVERY_CONTRACT.md) ----
+      if (pathname === "/api/lead-agents/admin/session/mfa/enforcement/preflight") {
+        if (req.method !== "GET") { methodNotAllowed(res, "GET"); return; }
+        if (authContext?.type !== "session") { json(res, 403, { error: "actor_identity_required" }, { "x-request-id": ctx.requestId }); return; }
+        try { authorizePermission(authContext, "staff.manage"); } catch { json(res, 403, { error: "forbidden" }, { "x-request-id": ctx.requestId }); return; }
+        const level = new URL(req.url, "http://office.local").searchParams.get("level") || "";
+        if (!ENFORCEMENT_LEVELS.includes(level)) { json(res, 400, { error: "invalid_level", allowed: ENFORCEMENT_LEVELS }, { "x-request-id": ctx.requestId }); return; }
+        let result;
+        try { result = await runPreflight({ store, config, actor: authContext.user, level }); } catch { json(res, 503, { error: "preflight_unavailable" }, { "x-request-id": ctx.requestId }); return; }
+        json(res, 200, { ...result, recovery: recoverySummary(config) }, { "x-request-id": ctx.requestId, "cache-control": "no-store" });
+        return;
+      }
+
+      const mfaResetMatch = pathname.match(/^\/api\/lead-agents\/admin\/users\/([^/]+)\/mfa\/reset$/);
+      if (mfaResetMatch) {
+        if (req.method !== "POST") { methodNotAllowed(res, "POST"); return; }
+        const targetId = mfaResetMatch[1];
+        const denied = async (status, error, category, extra) => {
+          await appendAudit(store, authContext?.type === "session" ? authContext : { type: authContext?.type || "unknown" }, "mfa_reset_denied", "admin_user", targetId, { request_id: ctx.requestId, category, at: new Date().toISOString() }, req, "failure").catch(() => {});
+          json(res, status, { error, ...(extra || {}) }, { "x-request-id": ctx.requestId, "cache-control": "no-store" });
+        };
+        if (authContext?.type !== "session") return denied(403, "actor_identity_required", "api_key_not_allowed");
+        if (config.mfaMode !== "on" || !validateMfaConfig(config).valid) return denied(503, "mfa_unavailable", "mfa_unavailable");
+        if (authContext.role !== "super_admin") return denied(403, "forbidden", "not_super_admin");
+        try { authorizePermission(authContext, "team.manage"); } catch { return denied(403, "forbidden", "permission_missing"); }
+        const grant = verifyStepUpToken({ config, authContext, purpose: "mfa_management", token: req.headers[STEP_UP_HEADER] });
+        if (!grant.ok) return denied(403, "step_up_required", `step_up_${grant.reason}`, { reason: grant.reason, purpose: "mfa_management" });
+        // a reset of someone else's factors always needs the actor's own FRESH second factor (so the actor must be enrolled), never the password alone
+        if (grant.mf !== true) return denied(403, "step_up_required", "second_factor_required", { reason: "mfa_required", purpose: "mfa_management" });
+        const body = await readJsonBody(req).catch(() => null);
+        if (!body || typeof body !== "object") return denied(400, "invalid_body", "invalid_body");
+        const reason = typeof body.reason === "string" ? body.reason.replace(/[\u0000-\u001f\u007f]/g, " ").trim() : "";
+        if (reason.length < 3 || reason.length > 500) return denied(400, "reason_required", "reason_invalid");
+        if (body.confirm !== true) return denied(400, "confirmation_required", "confirmation_missing");
+        if (String(targetId) === String(authContext.user.id)) return denied(400, "use_self_service", "self_target");
+        let target;
+        try { target = await store.getAdminUserById(targetId); } catch { return denied(503, "mfa_verification_unavailable", "store_error"); }
+        if (!target) return denied(404, "user_not_found", "target_not_found");
+        if (normalizeEmail(body.confirm_email) !== normalizeEmail(target.email)) return denied(400, "confirmation_mismatch", "confirmation_mismatch");
+        if (target.status !== "active") return denied(409, "target_inactive", "target_inactive");
+        try {
+          if (target.role === "super_admin") {
+            const [users, enrolled] = await Promise.all([store.listAdminUsers(), store.listMfaEnrolledUserIds()]);
+            const enrolledSet = new Set(enrolled);
+            // protect the last recoverable super administrator: someone ELSE must still be able to sign in with a factor and reset others
+            if (!users.some((u) => u.status === "active" && u.role === "super_admin" && u.id !== target.id && enrolledSet.has(u.id))) return denied(409, "last_recoverable_super_admin", "last_recoverable");
+          }
+        } catch { return denied(503, "mfa_verification_unavailable", "store_error"); }
+        let result;
+        try {
+          await store.updateAdminUser(target.id, { mfa_required_after: new Date().toISOString() }); // first: if the next step fails the account is at worst required to enrol
+          result = await store.resetMfa(target.id, { actor: authContext.user.email });
+          if (!result) return denied(404, "user_not_found", "target_not_found");
+          await store.clearMfaFailures(target.id).catch(() => {});
+        } catch { return denied(503, "mfa_reset_unavailable", "store_error"); }
+        invalidateEnforcementCache(config);
+        await appendAudit(store, authContext, "mfa_reset_by_admin", "admin_user", target.id, { request_id: ctx.requestId, target_user_id: target.id, target_email: target.email, reason, credentials_revoked: result.credentials_revoked, recovery_codes_deleted: result.codes_deleted, generation_after: result.session_generation, at: new Date().toISOString() }, req);
+        const notification = await notifyMfaEvent({ store, config, user: target, event: "reset_by_admin", requestId: ctx.requestId, req });
+        json(res, 200, { ok: true, target_user_id: target.id, credentials_revoked: result.credentials_revoked, recovery_codes_deleted: result.codes_deleted, session_generation: result.session_generation, re_enrollment_required: true, notification }, { "x-request-id": ctx.requestId, "cache-control": "no-store" });
         return;
       }
 
@@ -7594,7 +7695,7 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
         // S4: allowlisted connection tests and dry-run-only diagnostics (never the apply paths)
         const opsHandled = await handleSettingsOperations({ req, res, pathname, authContext, store, config, ctx, deps: { json, readJsonBody, appendAuditRecord, authorizePermission, probeEndpoint, authHeadersFromConfig, digitalTwinRuntime, communicationOutbox, inboundVisibility, log } });
         if (opsHandled) return;
-        const handled = await handleSettingsRequest({ req, res, pathname, authContext, store, registry: settingsRegistry, ctx, deps: { json, readJsonBody, appendAuditRecord, authorizePermission, verifyStepUp: (purpose) => verifyStepUpToken({ config, authContext, purpose, token: req.headers[STEP_UP_HEADER] }) } });
+        const handled = await handleSettingsRequest({ req, res, pathname, authContext, store, registry: settingsRegistry, ctx, deps: { json, readJsonBody, appendAuditRecord, authorizePermission, verifyStepUp: async (purpose) => { const grant = verifyStepUpToken({ config, authContext, purpose, token: req.headers[STEP_UP_HEADER] }); if (!grant.ok) return grant; const gate = await stepUpMfaGate(grant, purpose); return gate.ok ? grant : gate.reason ? { ok: false, reason: gate.reason } : { ok: false, status: gate.status, error: gate.error }; } } });
         if (handled) return;
       }
 
@@ -10001,6 +10102,12 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
   return server;
 }
 
+// Settings S7.5.7: the audit adapter for the deployment-owner break-glass (a system actor; e-mail and recovery id only, never a secret).
+function runBreakGlass(store, config) {
+  const audit = (action, metadata, status) => appendAudit(store, { type: "system", email: "break-glass", role: "system" }, action, "admin_user", metadata.target_user_id || "", { ...metadata, at: new Date().toISOString() }, undefined, status);
+  return applyBreakGlass({ store, config, audit, log });
+}
+
 async function start() {
   const config = createConfig();
   validateConfig(config);
@@ -10016,6 +10123,7 @@ async function start() {
   const store = createStore(config);
   await store.init();
   await bootstrapAdminUser(store, config);
+  await runBreakGlass(store, config); // S7.5.7: deployment-owner MFA recovery; process start is its only entry (never an HTTP route)
 
   const openaiClient = new OpenAIResponsesClient(config);
   const webhooks = new WebhookDispatcher({ config });
@@ -10084,4 +10192,5 @@ module.exports = {
   buildServer,
   start,
   bootstrapAdminUser,
+  runBreakGlass,
 };

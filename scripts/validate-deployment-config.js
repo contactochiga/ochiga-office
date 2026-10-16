@@ -25,6 +25,8 @@ assert(!/key:\s+LEAD_AGENTS_MFA_(KEY|KEYS_PREVIOUS)\s*\n\s+value:/.test(render),
 assert(!/^\s*LEAD_AGENTS_MFA_(KEY|KEYS_PREVIOUS)=\S/m.test(envExample), ".env.example must not contain an MFA key value");
 assert(!/LEAD_AGENTS_WEBAUTHN/.test(render), "render.yaml must not carry a WebAuthn RP ID, origin or approval (the permanent domain is set by the owner in the dashboard only, after approval)");
 assert(!/^\s*LEAD_AGENTS_WEBAUTHN_(RP_ID|ORIGINS|RP_APPROVED)=\S/m.test(envExample), ".env.example must not contain a WebAuthn RP ID, origin or approval value");
+assert(!/LEAD_AGENTS_MFA_(RECOVERY|FLEET_ATTESTED)/.test(render), "render.yaml must not enable MFA break-glass recovery or attest the fleet (S7.5.7: the owner sets these transiently in the dashboard, never in the repository)");
+assert(!/^\s*LEAD_AGENTS_MFA_(RECOVERY(_EMAIL|_ID|_APPROVED)?|FLEET_ATTESTED)=\S/m.test(envExample), ".env.example must not contain a break-glass, attestation or approval value");
 assert(/LEAD_AGENTS_AUTH_MODE[\s\S]*value:\s+required_api_key/.test(render), "Office production auth must fail closed with required_api_key");
 assert(/LEAD_AGENTS_API_KEYS[\s\S]*sync:\s+false/.test(render), "Office API keys must be configured as unsynced secrets");
 assert(/SUPABASE_SERVICE_ROLE_KEY[\s\S]*sync:\s+false/.test(render), "Supabase service role must be an unsynced secret");

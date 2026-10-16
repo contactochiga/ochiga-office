@@ -91,6 +91,7 @@ const MFA_EVENT_TEXT = {
   factor_replaced: { subject: "Your two-step verification device was replaced", line: "The authenticator device on your Ochiga Office account was replaced." },
   factor_removed: { subject: "A two-step verification method was removed", line: "A two-step verification method was removed from your Ochiga Office account." },
   recovery_codes_regenerated: { subject: "Your recovery codes were regenerated", line: "Your Ochiga Office recovery codes were regenerated. Any earlier codes no longer work." },
+  reset_by_admin: { subject: "Your two-step verification was reset by an administrator", line: "An administrator reset two-step verification on your Ochiga Office account. You were signed out everywhere and must set it up again the next time you sign in. Your password did not change. If you did not expect this, contact your administrator." },
   recovery_code_used: { subject: "A recovery code was used to sign in", line: "A recovery code was used to sign in to your Ochiga Office account. All your other sessions were signed out." },
 };
 function mfaSecurityEmail({ displayName, event, at }) {

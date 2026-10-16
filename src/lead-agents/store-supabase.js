@@ -1738,6 +1738,11 @@ class SupabaseLeadAgentsStore {
     const rows = await this._mfaCall("countMfaEnrolledAccounts", async () => (await this.client.get("/admin_mfa_credentials?status=eq.active&select=admin_user_id&limit=5000")).data);
     return new Set(rows.map((r) => r.admin_user_id)).size;
   }
+  async listMfaEnrolledUserIds() {
+    await this._mfaRequireSchema();
+    const rows = await this._mfaCall("listMfaEnrolledUserIds", async () => (await this.client.get("/admin_mfa_credentials?status=eq.active&select=admin_user_id&limit=5000")).data);
+    return [...new Set(rows.map((r) => r.admin_user_id))];
+  }
   async countMfaRecoveryCodes(userId) {
     await this._mfaRequireSchema();
     const response = await this._mfaCall("countMfaRecoveryCodes", async () => this.client.get(`/admin_mfa_recovery_codes?admin_user_id=eq.${encodeURIComponent(userId)}&used_at=is.null&select=id`, { headers: { prefer: "count=exact", range: "0-0" } }));

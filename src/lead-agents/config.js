@@ -118,6 +118,12 @@ function createConfig() {
     webauthnRpName: process.env.LEAD_AGENTS_WEBAUTHN_RP_NAME || "Ochiga Office",
     webauthnRpApproved: String(process.env.LEAD_AGENTS_WEBAUTHN_RP_APPROVED || "").trim().toLowerCase(),
     mfaRequiredRoles: stringListFromEnv(process.env.LEAD_AGENTS_MFA_REQUIRED_ROLES),
+    // S7.5.7: owner-controlled recovery and rollout switches. All default off/empty; none is ever read from the database.
+    mfaRecovery: process.env.LEAD_AGENTS_MFA_RECOVERY === "true",
+    mfaRecoveryEmail: process.env.LEAD_AGENTS_MFA_RECOVERY_EMAIL || "",
+    mfaRecoveryId: process.env.LEAD_AGENTS_MFA_RECOVERY_ID || "",
+    mfaRecoveryApproved: process.env.LEAD_AGENTS_MFA_RECOVERY_APPROVED === "true",
+    mfaFleetAttested: process.env.LEAD_AGENTS_MFA_FLEET_ATTESTED || "",
     mfaKey: process.env.LEAD_AGENTS_MFA_KEY || "",
     mfaKeyId: process.env.LEAD_AGENTS_MFA_KEY_ID || "",
     mfaKeysPrevious: process.env.LEAD_AGENTS_MFA_KEYS_PREVIOUS || "",

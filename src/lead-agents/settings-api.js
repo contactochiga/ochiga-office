@@ -84,8 +84,9 @@ async function handleSettingsRequest({ req, res, pathname, authContext, store, r
   if (!can(descriptor.write_permission)) return fail(403, "forbidden", "denied", { required_permission: descriptor.write_permission });
   // 4b. step-up (S7.2/S7.3): security-policy settings need a fresh, session-bound, purpose-bound password confirmation, enforced here on the server. Only a reason category is recorded.
   if (descriptor.requires_step_up) {
-    const stepUp = deps.verifyStepUp ? deps.verifyStepUp(descriptor.requires_step_up) : { ok: false, reason: "invalid" };
-    if (!stepUp.ok) return fail(403, "step_up_required", "denied", { reason: stepUp.reason, purpose: descriptor.requires_step_up });
+    // S7.5.7: the verifier is async because it also applies the S7.5.6 use-time MFA gate (an enrolled account's grant must carry a verified second factor)
+    const stepUp = deps.verifyStepUp ? await deps.verifyStepUp(descriptor.requires_step_up) : { ok: false, reason: "invalid" };
+    if (!stepUp.ok) return fail(stepUp.status || 403, stepUp.error || "step_up_required", "denied", stepUp.error ? {} : { reason: stepUp.reason, purpose: descriptor.requires_step_up });
   }
   // 5. body
   let body;
@@ -97,6 +98,12 @@ async function handleSettingsRequest({ req, res, pathname, authContext, store, r
   if (!checked.ok) return fail(400, "invalid_value", "rejected", { detail: checked.error }, body.value);
   // 7. confirmation
   if (descriptor.requires_confirmation && body.confirm !== true) return fail(400, "confirmation_required", "rejected", { detail: "This change must be explicitly confirmed (confirm: true)." }, checked.value);
+  // 7b. setting-specific guard (S7.5.7: who may change MFA enforcement, and whether it is safe to). A refusal records only a category.
+  if (descriptor.guard) {
+    let verdict;
+    try { verdict = await descriptor.guard({ authContext, store, next: checked.value, audit, requestId: ctx.requestId }); } catch { return fail(503, "setting_guard_unavailable", "failed", {}, checked.value); }
+    if (!verdict || !verdict.ok) return fail((verdict && verdict.status) || 403, (verdict && verdict.error) || "forbidden", "rejected", (verdict && verdict.extra) || {}, checked.value);
+  }
   // 8. atomic compare-and-set + history
   let result;
   try {
@@ -115,6 +122,7 @@ async function handleSettingsRequest({ req, res, pathname, authContext, store, r
   }
   const changed = !result.previous || !sameValue(result.previous.value, result.current.value);
   await audit(descriptor.audit_action, descriptor.key, "success", { setting_key: descriptor.key, outcome: "success", version: result.current.version, previous_version: result.previous ? result.previous.version : 0, old_value: result.previous ? historyValue(descriptor, result.previous.value) : null, new_value: historyValue(descriptor, result.current.value), changed, reason: typeof body.reason === "string" ? body.reason.slice(0, 200) : undefined, actor });
+  if (descriptor.after_write) { try { descriptor.after_write(); } catch { /* a stale cache expires on its own */ } }
   // server-confirmed: report what is stored now, not what was requested
   send(200, { setting: await describeEntry(descriptor, store, can), changed });
   return true;

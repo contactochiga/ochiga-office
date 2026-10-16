@@ -887,7 +887,8 @@ class FileLeadAgentsStore {
   // -> { status: "ok"|"conflict", previous, current }
   async writeRuntimeSetting(key, value, actor, { expectedVersion = null, requestId = "", redact = false, history = true } = {}) {
     const prevRaw = this.state.runtime_settings[key];
-    const previous = prevRaw ? await this.getRuntimeSetting(key) : null;
+    // S7.5.7: read synchronously. An `await` between this read and the write below let two concurrent writers both see the same version and both succeed (a real compare-and-set race in the file store).
+    const previous = prevRaw ? { ...prevRaw, version: Number.isInteger(prevRaw.version) && prevRaw.version >= 1 ? prevRaw.version : 1 } : null;
     const currentVersion = previous ? previous.version : 0;
     const shown = (v) => (redact ? "[redacted]" : v);
     if (expectedVersion !== null && expectedVersion !== currentVersion) {
@@ -1862,6 +1863,7 @@ class FileLeadAgentsStore {
   async hasActiveMfa(userId) { return this.state.admin_mfa_credentials.some((c) => c.admin_user_id === userId && c.status === "active"); }
   async getActiveTotpCredential(userId) { return mfaShared.sanitizeCredential(this.state.admin_mfa_credentials.find((c) => c.admin_user_id === userId && c.type === "totp" && c.status === "active") || null); }
   async countMfaEnrolledAccounts() { return new Set(this.state.admin_mfa_credentials.filter((c) => c.status === "active").map((c) => c.admin_user_id)).size; }
+  async listMfaEnrolledUserIds() { return [...new Set(this.state.admin_mfa_credentials.filter((c) => c.status === "active").map((c) => c.admin_user_id))]; }
   async countMfaRecoveryCodes(userId) { return this.state.admin_mfa_recovery_codes.filter((c) => c.admin_user_id === userId && !c.used_at).length; }
   async createMfaChallenge(userId, purpose, challengeB64, ttlSeconds = 300) {
     const v = mfaShared.validateChallengeInput(purpose, challengeB64, ttlSeconds);

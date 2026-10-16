@@ -7,6 +7,7 @@
 const { WHATSAPP_AUTONOMY_SETTING_KEY, readWhatsAppAutonomySetting } = require("./whatsapp-autonomy");
 const { settings: outboxSettings } = require("./communication-outbox");
 const { BRAND_KEY, validateBrandName, environmentBrandName } = require("./document-brand");
+const { ENFORCEMENT_KEY, ENFORCEMENT_LEVELS, validateEnforcementLevel, enforcementGuard, afterEnforcementChange } = require("./mfa-enforcement");
 const { SESSION_TTL_KEY, SESSION_TTL_DEFAULT_HOURS, SESSION_TTL_MIN_HOURS, SESSION_TTL_MAX_HOURS, validateSessionTtlHours, resolveSessionTtl } = require("./session-policy");
 const { LOCALE_KEY, SUPPORTED_LOCALES, DEFAULT_LOCALE, validateLocale } = require("./document-locale");
 
@@ -57,7 +58,7 @@ function defineSetting(d) {
     if (d.mode === "delegated" && !d.delegated_route) problems.push("delegated settings need delegated_route");
   }
   if (problems.length) throw new Error(`settings registry: ${d.key || "?"}: ${problems.join(", ")}`);
-  const out = { scope: "global", sensitive: false, requires_confirmation: false, write_permission: null, description: "", requires_step_up: null, ...d };
+  const out = { scope: "global", sensitive: false, requires_confirmation: false, write_permission: null, description: "", requires_step_up: null, guard: null, after_write: null, ...d };
   if (out.mode === "generic" && !out.read) out.read = genericRead(out);
   return Object.freeze(out);
 }
@@ -96,6 +97,12 @@ function productionDescriptors(config) {
         const hours = effective.hours === null ? Math.round(effective.ttlMs / 3_600_000) : effective.hours;
         return { value: hours, version: row ? (row.version ?? null) : 0, updated_by: row ? row.updated_by || null : null, updated_at: row ? row.updated_at || null : null, source: effective.source === "stored" ? "stored" : effective.source === "default" ? "default" : effective.source, history_supported: true };
       },
+    }),
+    defineSetting({
+      key: ENFORCEMENT_KEY, label: "Two-step verification requirement", description: "Who must use two-step verification: off, optional, privileged (accounts that manage the team, settings or staff) or all. Takes effect only when two-step verification is switched on for the deployment. Raising it is checked first (preflight); accounts get 14 days to enrol.",
+      type: "enum", choices: [...ENFORCEMENT_LEVELS], default: "off", owner: "office", mode: "generic", storage: "runtime_settings", read_permission: "staff.manage", write_permission: "team.manage", requires_confirmation: true,
+      validator: validateEnforcementLevel, audit_action: "mfa_enforcement_changed", edit_section: "people", requires_step_up: "security_policy_write",
+      guard: (input) => enforcementGuard({ ...input, config }), after_write: () => afterEnforcementChange(config),
     }),
     defineSetting({
       key: "office_letterhead_config", label: "Corporate letterhead", description: "Default header and footer for new documents (logo, tagline, contact details).",
