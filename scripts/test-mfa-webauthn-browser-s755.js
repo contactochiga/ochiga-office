@@ -3,6 +3,7 @@
 const assert = require("node:assert/strict");
 const crypto = require("node:crypto");
 const fs = require("node:fs");
+const { launchChrome, wrapSend } = require("./lib/browser-harness");
 const os = require("node:os");
 const path = require("node:path");
 const { spawn } = require("node:child_process");
@@ -29,16 +30,17 @@ async function main() {
   const server = buildServer({ config, store, rateLimiter: limiter(5000), publicRateLimiter: limiter(5000), officeRateLimiter: limiter(5000), loginRateLimiter: limiter(500), whatsappAdapter: adapter, openaiClient: {}, toolExecutor: new ToolExecutor({ store, config, log: () => {}, webhooks: new WebhookDispatcher({ config }) }) });
   const port = await listen(server); const origin = `http://localhost:${port}`; config.webauthnOrigins = [origin]; // an isolated local origin: never a production domain
   const userDir = fs.mkdtempSync(path.join(os.tmpdir(), "wa-chrome-"));
-  const chrome = spawn(CHROME, ["--headless=new", "--remote-debugging-port=9361", `--user-data-dir=${userDir}`, "--no-first-run", "--disable-gpu", "--disable-features=BackForwardCache", "about:blank"], { stdio: "ignore" });
+  const chromeHandle = await launchChrome(CHROME, { userDir, flags: ["--disable-features=BackForwardCache"] }); const chrome = chromeHandle.proc;
   let ws, id = 0; const pending = new Map(); const errors = [];
   try {
     let targets;
-    for (let i = 0; i < 50 && !targets; i++) { try { targets = await (await fetch("http://127.0.0.1:9361/json")).json(); } catch { await sleep(200); } }
+    for (let i = 0; i < 50 && !targets; i++) { try { targets = await (await fetch(`http://127.0.0.1:${chromeHandle.port}/json`)).json(); } catch { await sleep(200); } }
     assert.ok(targets, "Chrome DevTools is reachable");
     ws = new WebSocket(targets.find((t) => t.type === "page").webSocketDebuggerUrl);
     await new Promise((r, j) => { ws.onopen = r; ws.onerror = j; });
     ws.onmessage = (m) => { const d = JSON.parse(m.data); if (d.id && pending.has(d.id)) { pending.get(d.id)(d); pending.delete(d.id); } if (d.method === "Runtime.exceptionThrown") errors.push(d.params.exceptionDetails.exception?.description || d.params.exceptionDetails.text); };
-    const send = (method, params = {}) => new Promise((resolve, reject) => { const n = ++id; const t = setTimeout(() => { pending.delete(n); reject(new Error(`CDP call timed out: ${method}`)); }, 30000); pending.set(n, (d) => { clearTimeout(t); resolve(d); }); ws.send(JSON.stringify({ id: n, method, params })); });
+    const send0 = (method, params = {}) => new Promise((resolve, reject) => { const n = ++id; const t = setTimeout(() => { pending.delete(n); reject(new Error(`CDP call timed out: ${method}`)); }, 30000); pending.set(n, (d) => { clearTimeout(t); resolve(d); }); ws.send(JSON.stringify({ id: n, method, params })); });
+    const send = wrapSend(send0, { label: 'test-mfa-webauthn-browser-s755.js' });
     const navigate = async (url) => { try { return await send("Page.navigate", { url }); } catch (e) { if (!/timed out/.test(e.message)) throw e; return send("Page.navigate", { url }); } };
     const evalJs = async (expr) => { const r = await send("Runtime.evaluate", { expression: expr, awaitPromise: true, returnByValue: true }); if (r.result.exceptionDetails) throw new Error(JSON.stringify(r.result.exceptionDetails).slice(0, 400)); return r.result.result.value; };
     await send("Page.enable"); await send("Runtime.enable");
@@ -97,7 +99,7 @@ async function main() {
     console.log(JSON.stringify({ status: "PASS", suite: "webauthn-browser-interop" }));
   } finally {
     try { ws && ws.close(); } catch { /* closed */ }
-    chrome.kill();
+    await chromeHandle.stop();
     server.closeAllConnections?.(); await new Promise((r) => server.close(r));
     try { fs.rmSync(userDir, { recursive: true, force: true, maxRetries: 5 }); } catch { /* chrome still flushing its profile */ }
   }

@@ -21,7 +21,7 @@ const SETTLE_MS = Number(process.env.BROWSER_HARNESS_NAV_MS) || 15000;
 
 async function launchChrome(chromePath, { userDir, flags = [] } = {}) {
   const dir = userDir || fs.mkdtempSync(path.join(os.tmpdir(), "office-chrome-"));
-  const args = ["--headless=new", "--remote-debugging-port=0", `--user-data-dir=${dir}`, "--no-first-run", "--disable-gpu", ...flags.filter((f) => !/^--(remote-debugging-port|user-data-dir|headless)/.test(f)), "about:blank"];
+  const args = ["--headless=new", "--remote-debugging-port=0", `--user-data-dir=${dir}`, "--no-first-run", "--disable-gpu", ...flags.filter((f) => !/^--(remote-debugging-port|user-data-dir|headless|no-first-run|disable-gpu)/.test(f)), "about:blank"];
   // its own process group, so stop() can end the browser AND its helper processes
   const proc = spawn(chromePath, args, { stdio: "ignore", detached: true });
   let exited = false; proc.once("exit", () => { exited = true; });
@@ -37,8 +37,12 @@ async function launchChrome(chromePath, { userDir, flags = [] } = {}) {
       for (let i = 0; i < 40 && !exited; i += 1) await sleep(100); // up to 4 s per signal
       if (exited) break;
     }
+    // the main process is gone; wait until its helper processes (same process group) are gone too, then force whatever is left
+    const groupAlive = () => { try { process.kill(-proc.pid, 0); return true; } catch { return false; } };
+    for (let i = 0; i < 30 && groupAlive(); i += 1) await sleep(100);
+    if (groupAlive()) { try { process.kill(-proc.pid, "SIGKILL"); } catch { /* gone */ } for (let i = 0; i < 20 && groupAlive(); i += 1) await sleep(100); }
     try { fs.rmSync(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 }); } catch { /* the OS will reclaim the temp dir */ }
-    return { exited, userDirRemoved: !fs.existsSync(dir) };
+    return { exited, groupGone: !groupAlive(), userDirRemoved: !fs.existsSync(dir) };
   };
   return { proc, port, userDir: dir, stop };
 }

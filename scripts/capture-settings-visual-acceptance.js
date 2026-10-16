@@ -2,6 +2,7 @@
 // records objective accessibility / permission / function checks to docs/settings-domain/visual-acceptance/results.json.
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
+const { launchChrome, wrapSend } = require("./lib/browser-harness");
 const http = require("node:http");
 const os = require("node:os");
 const path = require("node:path");
@@ -45,13 +46,14 @@ async function main() {
   await call("super", "/api/lead-agents/admin/letterhead-config", { method: "PATCH", body: JSON.stringify({ tagline: "Visual acceptance fixture", email: "office@ochiga.test" }) });
 
   const userDir = fs.mkdtempSync(path.join(os.tmpdir(), "stv-chrome-"));
-  const chrome = spawn(CHROME, ["--headless=new", "--remote-debugging-port=9353", `--user-data-dir=${userDir}`, "--no-first-run", "--disable-gpu", "--hide-scrollbars", "--disable-features=BackForwardCache", "about:blank"], { stdio: "ignore" });
+  const chromeHandle = await launchChrome(CHROME, { userDir, flags: ["--hide-scrollbars", "--disable-features=BackForwardCache"] }); const chrome = chromeHandle.proc;
   let ws, id = 0; const pending = new Map(); const results = { captured: [], permission_matrix: {}, accessibility: {}, function: {}, overflow: {}, console_errors: [] };
   try {
-    let targets; for (let i = 0; i < 50 && !targets; i++) { try { targets = await (await fetch("http://127.0.0.1:9353/json")).json(); } catch { await sleep(200); } }
+    let targets; for (let i = 0; i < 50 && !targets; i++) { try { targets = await (await fetch(`http://127.0.0.1:${chromeHandle.port}/json`)).json(); } catch { await sleep(200); } }
     ws = new WebSocket(targets.find((t) => t.type === "page").webSocketDebuggerUrl); await new Promise((r, j) => { ws.onopen = r; ws.onerror = j; });
     ws.onmessage = (m) => { const d = JSON.parse(m.data); if (d.id && pending.has(d.id)) { pending.get(d.id)(d); pending.delete(d.id); } };
-    const send = (method, params = {}) => new Promise((res) => { const n = ++id; pending.set(n, res); ws.send(JSON.stringify({ id: n, method, params })); });
+    const send0 = (method, params = {}) => new Promise((res) => { const n = ++id; pending.set(n, res); ws.send(JSON.stringify({ id: n, method, params })); });
+    const send = wrapSend(send0, { label: 'capture-settings-visual-acceptance.js' });
     const ev = async (expr) => { const r = await send("Runtime.evaluate", { expression: expr, awaitPromise: true, returnByValue: true }); if (r.result.exceptionDetails) throw new Error(JSON.stringify(r.result.exceptionDetails).slice(0, 300)); return r.result.result.value; };
     const waitFor = async (expr, label, ms = 9000) => { const end = Date.now() + ms; while (Date.now() < end) { try { if (await ev(expr)) return; } catch { /* navigating */ } await sleep(120); } throw new Error(`timeout: ${label}`); };
     await send("Page.enable"); await send("Runtime.enable"); await send("Network.enable");
@@ -188,7 +190,7 @@ async function main() {
     console.log(JSON.stringify({ captured: results.captured.length, permission_matrix: Object.fromEntries(Object.entries(results.permission_matrix).map(([k, v]) => [k, v.match])), function: results.function, console_errors: results.console_errors.length, overflow_failures: Object.entries(results.overflow).filter(([, v]) => !v).map(([k]) => k) }, null, 1));
   } finally {
     try { ws && ws.close(); } catch { /* closed */ }
-    chrome.kill(); for (const s of [server, backendStub]) { s.closeAllConnections?.(); await new Promise((r) => s.close(r)); }
+    await chromeHandle.stop(); for (const s of [server, backendStub]) { s.closeAllConnections?.(); await new Promise((r) => s.close(r)); }
     try { fs.rmSync(userDir, { recursive: true, force: true, maxRetries: 5 }); } catch { /* flushing */ }
   }
 }

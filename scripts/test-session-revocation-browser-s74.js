@@ -2,6 +2,7 @@
 // Skips (exit 0) when Chrome is not installed. Writes screenshots to OFFICE_ST_SHOTS if set.
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
+const { launchChrome, wrapSend } = require("./lib/browser-harness");
 const os = require("node:os");
 const path = require("node:path");
 const { spawn } = require("node:child_process");
@@ -35,16 +36,17 @@ async function main() {
   const gen = async (email) => (await store.getAdminUserByEmail(email)).session_generation || 0;
 
   const userDir = fs.mkdtempSync(path.join(os.tmpdir(), "rv-chrome-"));
-  const chrome = spawn(CHROME, ["--headless=new", "--remote-debugging-port=9360", `--user-data-dir=${userDir}`, "--no-first-run", "--disable-gpu", "--hide-scrollbars", "--disable-features=BackForwardCache", "about:blank"], { stdio: "ignore" });
+  const chromeHandle = await launchChrome(CHROME, { userDir, flags: ["--hide-scrollbars", "--disable-features=BackForwardCache"] }); const chrome = chromeHandle.proc;
   let ws, id = 0; const pending = new Map(); const errors = [];
   try {
     let targets;
-    for (let i = 0; i < 50 && !targets; i++) { try { targets = await (await fetch("http://127.0.0.1:9360/json")).json(); } catch { await sleep(200); } }
+    for (let i = 0; i < 50 && !targets; i++) { try { targets = await (await fetch(`http://127.0.0.1:${chromeHandle.port}/json`)).json(); } catch { await sleep(200); } }
     assert.ok(targets, "Chrome DevTools is reachable");
     ws = new WebSocket(targets.find((t) => t.type === "page").webSocketDebuggerUrl);
     await new Promise((r, j) => { ws.onopen = r; ws.onerror = j; });
     ws.onmessage = (m) => { const d = JSON.parse(m.data); if (d.id && pending.has(d.id)) { pending.get(d.id)(d); pending.delete(d.id); } if (d.method === "Runtime.exceptionThrown") errors.push(d.params.exceptionDetails.exception?.description || d.params.exceptionDetails.text); };
-    const send = (method, params = {}) => new Promise((resolve, reject) => { const n = ++id; const t = setTimeout(() => { pending.delete(n); reject(new Error(`CDP call timed out: ${method}`)); }, 30000); pending.set(n, (d) => { clearTimeout(t); resolve(d); }); ws.send(JSON.stringify({ id: n, method, params })); });
+    const send0 = (method, params = {}) => new Promise((resolve, reject) => { const n = ++id; const t = setTimeout(() => { pending.delete(n); reject(new Error(`CDP call timed out: ${method}`)); }, 30000); pending.set(n, (d) => { clearTimeout(t); resolve(d); }); ws.send(JSON.stringify({ id: n, method, params })); });
+    const send = wrapSend(send0, { label: 'test-session-revocation-browser-s74.js' });
     const navigate = async (url) => { try { return await send("Page.navigate", { url }); } catch (e) { if (!/timed out/.test(e.message)) throw e; return send("Page.navigate", { url }); } };
     const evalJs = async (expr) => { const r = await send("Runtime.evaluate", { expression: expr, awaitPromise: true, returnByValue: true }); if (r.result.exceptionDetails) throw new Error(JSON.stringify(r.result.exceptionDetails).slice(0, 300)); return r.result.result.value; };
     const waitFor = async (expr, label, ms = 10000) => { const end = Date.now() + ms; while (Date.now() < end) { try { if (await evalJs(expr)) return true; } catch { /* navigating */ } await sleep(100); } throw new Error(`Timed out waiting for: ${label}`); };
@@ -142,7 +144,7 @@ async function main() {
     console.log(JSON.stringify({ status: "PASS", suite: "session-revocation-browser" }));
   } finally {
     try { ws && ws.close(); } catch { /* closed */ }
-    chrome.kill();
+    await chromeHandle.stop();
     server.closeAllConnections?.(); await new Promise((r) => server.close(r));
     try { fs.rmSync(userDir, { recursive: true, force: true, maxRetries: 5 }); } catch { /* chrome still flushing its profile */ }
   }

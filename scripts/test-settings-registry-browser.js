@@ -2,6 +2,7 @@
 // Skips (exit 0) when Chrome is not installed. Writes screenshots to OFFICE_ST_SHOTS if set.
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
+const { launchChrome, wrapSend } = require("./lib/browser-harness");
 const http = require("node:http");
 const os = require("node:os");
 const path = require("node:path");
@@ -53,16 +54,17 @@ async function main() {
   assert.equal((await api(superCookie, "/api/lead-agents/admin/settings/whatsapp-autonomy", { method: "PUT", body: JSON.stringify({ enabled: false }) })).status, 200);
 
   const userDir = fs.mkdtempSync(path.join(os.tmpdir(), "st-chrome-"));
-  const chrome = spawn(CHROME, ["--headless=new", "--remote-debugging-port=9352", `--user-data-dir=${userDir}`, "--no-first-run", "--disable-gpu", "--hide-scrollbars", "--disable-features=BackForwardCache", "about:blank"], { stdio: "ignore" });
+  const chromeHandle = await launchChrome(CHROME, { userDir, flags: ["--hide-scrollbars", "--disable-features=BackForwardCache"] }); const chrome = chromeHandle.proc;
   let ws, id = 0; const pending = new Map(); let deadServer = null; const errors = [];
   try {
     let targets;
-    for (let i = 0; i < 50 && !targets; i++) { try { targets = await (await fetch("http://127.0.0.1:9352/json")).json(); } catch { await sleep(200); } }
+    for (let i = 0; i < 50 && !targets; i++) { try { targets = await (await fetch(`http://127.0.0.1:${chromeHandle.port}/json`)).json(); } catch { await sleep(200); } }
     assert.ok(targets, "Chrome DevTools is reachable");
     ws = new WebSocket(targets.find((t) => t.type === "page").webSocketDebuggerUrl);
     await new Promise((r, j) => { ws.onopen = r; ws.onerror = j; });
     ws.onmessage = (m) => { const d = JSON.parse(m.data); if (d.id && pending.has(d.id)) { pending.get(d.id)(d); pending.delete(d.id); } };
-    const send = (method, params = {}) => new Promise((resolve, reject) => { const n = ++id; const t = setTimeout(() => { pending.delete(n); reject(new Error(`CDP call timed out: ${method} ${JSON.stringify(params).slice(0, 160)}`)); }, 20000); pending.set(n, (d) => { clearTimeout(t); resolve(d); }); ws.send(JSON.stringify({ id: n, method, params })); });
+    const send0 = (method, params = {}) => new Promise((resolve, reject) => { const n = ++id; const t = setTimeout(() => { pending.delete(n); reject(new Error(`CDP call timed out: ${method} ${JSON.stringify(params).slice(0, 160)}`)); }, 20000); pending.set(n, (d) => { clearTimeout(t); resolve(d); }); ws.send(JSON.stringify({ id: n, method, params })); });
+    const send = wrapSend(send0, { label: 'test-settings-registry-browser.js' });
     const evalJs = async (expr) => { const r = await send("Runtime.evaluate", { expression: expr, awaitPromise: true, returnByValue: true }); if (r.result.exceptionDetails) throw new Error(JSON.stringify(r.result.exceptionDetails).slice(0, 400)); return r.result.result.value; };
     const waitFor = async (expr, label, ms = 8000) => { const end = Date.now() + ms; while (Date.now() < end) { try { if (await evalJs(expr)) return true; } catch { /* navigating */ } await sleep(120); } throw new Error(`timeout waiting for: ${label} | page errors: ${errors.slice(-2).join(' / ').slice(0, 400)} | hash: ${await evalJs(`location.hash + " segs=" + document.title`).catch(() => "?")} | body: ${(await evalJs(`document.querySelector('#viewOutlet')?.innerText?.slice(0, 300)`).catch(() => '?'))}`); };
     const shot = async (name) => { if (!process.env.OFFICE_ST_SHOTS) return; const r = await send("Page.captureScreenshot", { format: "png" }); fs.writeFileSync(path.join(process.env.OFFICE_ST_SHOTS, name), Buffer.from(r.result.data, "base64")); };
@@ -156,7 +158,7 @@ async function main() {
     console.log(JSON.stringify({ status: "PASS", suite: "settings-registry-browser" }));
   } finally {
     try { ws && ws.close(); } catch { /* closed */ }
-    chrome.kill();
+    await chromeHandle.stop();
     for (const s of [server, deadServer, backendStub]) if (s) { s.closeAllConnections?.(); await new Promise((r) => s.close(r)); }
     try { fs.rmSync(userDir, { recursive: true, force: true, maxRetries: 5 }); } catch { /* chrome still flushing its profile */ }
   }

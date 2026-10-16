@@ -2,6 +2,7 @@
 // (file store, fixture data only). Skips (exit 0) when Chrome is not installed. Writes screenshots to OFFICE_RW_SHOTS if set.
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
+const { launchChrome, wrapSend } = require("./lib/browser-harness");
 const os = require("node:os");
 const path = require("node:path");
 const { spawn } = require("node:child_process");
@@ -41,16 +42,17 @@ async function main() {
   const [cookieName, cookieValue] = login.headers.get("set-cookie").split(";")[0].split("=");
 
   const userDir = fs.mkdtempSync(path.join(os.tmpdir(), "rw-chrome-"));
-  const chrome = spawn(CHROME, ["--headless=new", "--remote-debugging-port=9347", `--user-data-dir=${userDir}`, "--no-first-run", "--disable-gpu", "--hide-scrollbars", "about:blank"], { stdio: "ignore" });
+  const chromeHandle = await launchChrome(CHROME, { userDir, flags: ["--hide-scrollbars"] }); const chrome = chromeHandle.proc;
   let ws, id = 0; const pending = new Map();
   try {
     let targets;
-    for (let i = 0; i < 50 && !targets; i++) { try { targets = await (await fetch("http://127.0.0.1:9347/json")).json(); } catch { await sleep(200); } }
+    for (let i = 0; i < 50 && !targets; i++) { try { targets = await (await fetch(`http://127.0.0.1:${chromeHandle.port}/json`)).json(); } catch { await sleep(200); } }
     assert.ok(targets, "Chrome DevTools is reachable");
     ws = new WebSocket(targets.find((t) => t.type === "page").webSocketDebuggerUrl);
     await new Promise((r, j) => { ws.onopen = r; ws.onerror = j; });
     ws.onmessage = (m) => { const d = JSON.parse(m.data); if (d.id && pending.has(d.id)) { pending.get(d.id)(d); pending.delete(d.id); } };
-    const send = (method, params = {}) => new Promise((resolve) => { const n = ++id; pending.set(n, resolve); ws.send(JSON.stringify({ id: n, method, params })); });
+    const send0 = (method, params = {}) => new Promise((resolve) => { const n = ++id; pending.set(n, resolve); ws.send(JSON.stringify({ id: n, method, params })); });
+    const send = wrapSend(send0, { label: 'test-relationship-workspace-browser.js' });
     const evalJs = async (expr) => { const r = await send("Runtime.evaluate", { expression: expr, awaitPromise: true, returnByValue: true }); if (r.result.exceptionDetails) throw new Error(JSON.stringify(r.result.exceptionDetails).slice(0, 400)); return r.result.result.value; };
     const waitFor = async (expr, label, ms = 8000) => { const end = Date.now() + ms; while (Date.now() < end) { try { if (await evalJs(expr)) return true; } catch { /* page navigating */ } await sleep(150); } throw new Error(`timeout waiting for: ${label}`); };
     const shot = async (name) => { if (!process.env.OFFICE_RW_SHOTS) return; const r = await send("Page.captureScreenshot", { format: "png" }); fs.writeFileSync(path.join(process.env.OFFICE_RW_SHOTS, name), Buffer.from(r.result.data, "base64")); };
@@ -267,7 +269,7 @@ async function main() {
     console.log(JSON.stringify({ status: "PASS", suite: "relationship-workspace-browser" }));
   } finally {
     try { ws && ws.close(); } catch { /* closed */ }
-    chrome.kill(); server.closeAllConnections?.(); await new Promise((r) => server.close(r)); try { fs.rmSync(userDir, { recursive: true, force: true, maxRetries: 5 }); } catch { /* chrome still flushing its profile */ }
+    await chromeHandle.stop(); server.closeAllConnections?.(); await new Promise((r) => server.close(r)); try { fs.rmSync(userDir, { recursive: true, force: true, maxRetries: 5 }); } catch { /* chrome still flushing its profile */ }
   }
 }
 main().catch((error) => { console.error(error); process.exit(1); });
