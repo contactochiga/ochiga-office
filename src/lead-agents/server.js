@@ -17,7 +17,7 @@ const { resolveSessionTtl } = require("./session-policy");
 const { effectiveGeneration, revocationEnabled, checkSessionGeneration } = require("./session-generation");
 // counters only (never audited per request: a replayed stolen cookie would flood the audit store); exposed by category through /healthz
 const revokedSessionRejections = {};
-const { STEP_UP_PURPOSES, STEP_UP_HEADER, stepUpEligibility, issueStepUpToken, verifyStepUpToken } = require("./step-up");
+const { STEP_UP_PURPOSES, STEP_UP_HEADER, stepUpEligibility, issueStepUpToken, verifyStepUpToken, grantSatisfiesMfa } = require("./step-up");
 const { createStore } = require("./store-factory");
 const { OpenAIResponsesClient } = require("./openai");
 const { ToolExecutor } = require("./tools");
@@ -3627,10 +3627,22 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
 
       // ---- Settings S7.2 step-up authentication (contract: docs/settings-domain/21_S7_2_STEP_UP_AUTH_CONTRACT.md) ----
       // Enforcement middleware for future security-policy writes. Sends the 403 and returns null when the step-up authorisation is missing or invalid.
-      const requireStepUp = (purpose) => {
+      // S7.5.6: with MFA on and a factor enrolled NOW, the grant must carry a verified second factor. Fails closed when the factor state cannot be read.
+      const stepUpMfaGate = async (grant, purpose) => {
+        if (config.mfaMode !== "on") return { ok: true };
+        let enrolled;
+        try { enrolled = Boolean(await store.hasActiveMfa(authContext.user.id)); } catch { return { ok: false, status: 503, error: "mfa_verification_unavailable" }; }
+        return grantSatisfiesMfa(grant, { mfaRequired: enrolled }) ? { ok: true } : { ok: false, status: 403, error: "step_up_required", reason: "mfa_required" };
+      };
+      const requireStepUp = async (purpose) => {
         const result = verifyStepUpToken({ config, authContext, purpose, token: req.headers[STEP_UP_HEADER] });
         if (!result.ok) {
           json(res, 403, { error: "step_up_required", reason: result.reason, purpose }, { "x-request-id": ctx.requestId });
+          return null;
+        }
+        const gate = await stepUpMfaGate(result, purpose);
+        if (!gate.ok) {
+          json(res, gate.status, { error: gate.error, ...(gate.reason ? { reason: gate.reason, purpose } : {}) }, { "x-request-id": ctx.requestId });
           return null;
         }
         return result;
@@ -3648,13 +3660,13 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
         const body = await readJsonBody(req);
         requireObject(body, "body");
         const purpose = String(body.purpose || "");
-        const stepUpAudit = (outcome, failureReason) => appendAudit(
+        const stepUpAudit = (outcome, failureReason, factor) => appendAudit(
           store,
           authContext && authContext.type === "session" ? authContext : { type: authContext?.type || "unknown" },
           outcome === "verified" ? "step_up_verified" : "step_up_failed",
           "admin_user",
           authContext?.user?.id || "",
-          { request_id: ctx.requestId, purpose: STEP_UP_PURPOSES.includes(purpose) ? purpose : "invalid", outcome, ...(failureReason ? { failure_reason: failureReason } : {}), at: new Date().toISOString() },
+          { request_id: ctx.requestId, purpose: STEP_UP_PURPOSES.includes(purpose) ? purpose : "invalid", outcome, ...(failureReason ? { failure_reason: failureReason } : {}), ...(factor ? { second_factor: factor } : {}), at: new Date().toISOString() },
           req
         );
         if (authContext?.type !== "session") {
@@ -3674,7 +3686,7 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
         }
         // S7.5.4: managing one's own factors. When the account has an active factor, the grant must carry a FRESH second factor: a TOTP code in this request, or a sign-in whose MFA
         // proof is itself fresh. A persisted lock applies (checked BEFORE the password so the answer reveals nothing about it).
-        const mfaStepUp = purpose === "mfa_management" && config.mfaMode === "on";
+        const mfaStepUp = config.mfaMode === "on";
         if (mfaStepUp) {
           try {
             const lockState = await store.getMfaLockState(authContext.user.id);
@@ -3695,10 +3707,11 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           json(res, 401, { error: "step_up_failed", message: "That password is incorrect." }, { "x-request-id": ctx.requestId });
           return;
         }
-        let grantHasFactor = false;
+        let grantHasFactor = false, secondFactor = "none", secondFactorAt;
         if (mfaStepUp) {
           let hasFactor;
           try { hasFactor = Boolean(await store.hasActiveMfa(authContext.user.id)); } catch { json(res, 503, { error: "mfa_verification_unavailable" }, { "x-request-id": ctx.requestId }); return; }
+          if (hasFactor && !validateMfaConfig(config).valid) { await stepUpAudit("failed", "mfa_unavailable"); json(res, 503, { error: "mfa_unavailable" }, { "x-request-id": ctx.requestId }); return; }
           if (hasFactor) {
             const fresh = authContext.sessionMfa === true && Date.now() - (authContext.sessionMfaAt || 0) <= MFA_FRESH_MS;
             const mfaIn = body.mfa && typeof body.mfa === "object" ? body.mfa : null;
@@ -3714,9 +3727,9 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
               } catch { json(res, 503, { error: "mfa_unavailable" }, { "x-request-id": ctx.requestId }); return; }
               if (!proved.ok) { await stepUpAudit("failed", "invalid_second_factor"); json(res, 401, { error: "step_up_failed", message: "That verification could not be completed." }, { "x-request-id": ctx.requestId }); return; }
               try { await store.clearMfaFailures(authContext.user.id); } catch { /* heals on the next success */ }
-              grantHasFactor = true;
+              grantHasFactor = true; secondFactor = viaWebauthn ? "webauthn" : "totp"; secondFactorAt = Date.now();
             } else if (fresh) {
-              grantHasFactor = true;
+              grantHasFactor = true; secondFactor = "session_proof"; secondFactorAt = authContext.sessionMfaAt;
             } else {
               await stepUpAudit("failed", "second_factor_required");
               json(res, 401, { error: "step_up_failed", message: "That verification could not be completed." }, { "x-request-id": ctx.requestId }); // same answer as a wrong password: no oracle
@@ -3725,9 +3738,9 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           }
         }
         adminLoginRateLimiter.resetKey(stepUpKeyId);
-        const grant = issueStepUpToken({ config, authContext, purpose, mfa: grantHasFactor });
-        await stepUpAudit("verified");
-        json(res, 200, { ok: true, step_up: grant }, { "x-request-id": ctx.requestId, "cache-control": "no-store" });
+        const grant = issueStepUpToken({ config, authContext, purpose, mfa: grantHasFactor, mfaAt: secondFactorAt });
+        await stepUpAudit("verified", undefined, secondFactor);
+        json(res, 200, { ok: true, step_up: { ...grant, mfa_verified: grantHasFactor, ...(grantHasFactor ? { second_factor: secondFactor } : {}) } }, { "x-request-id": ctx.requestId, "cache-control": "no-store" });
         return;
       }
 
@@ -3738,7 +3751,7 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
         }
         const body = await readJsonBody(req);
         requireObject(body, "body");
-        const verified = requireStepUp(String(body.purpose || ""));
+        const verified = await requireStepUp(String(body.purpose || ""));
         if (!verified) return;
         json(res, 200, { valid: true, purpose: verified.purpose, expires_at: new Date(verified.expiresAt).toISOString() }, { "x-request-id": ctx.requestId, "cache-control": "no-store" });
         return;
@@ -3778,6 +3791,8 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
         try { authorizePermission(authContext, "team.manage"); } catch { return denied(403, "forbidden", "forbidden"); }
         const stepUp = verifyStepUpToken({ config, authContext, purpose: "session_revocation", token: req.headers[STEP_UP_HEADER] });
         if (!stepUp.ok) return denied(403, "step_up_required", `step_up_${stepUp.reason}`, { reason: stepUp.reason, purpose: "session_revocation" });
+        const revokeGate = await stepUpMfaGate(stepUp, "session_revocation");
+        if (!revokeGate.ok) return denied(revokeGate.status, revokeGate.error, "step_up_mfa_required", revokeGate.reason ? { reason: revokeGate.reason, purpose: "session_revocation" } : undefined);
         const body = await readJsonBody(req).catch(() => ({}));
         const target = await store.getAdminUserById(revokeUserMatch[1]);
         if (!target) return denied(404, "user_not_found", "target_not_found");

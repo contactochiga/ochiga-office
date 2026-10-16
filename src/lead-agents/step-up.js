@@ -39,14 +39,14 @@ function stepUpEligibility(authContext, purpose) {
   return null;
 }
 
-function issueStepUpToken({ config, authContext, purpose, mfa = false, now = Date.now() }) {
+function issueStepUpToken({ config, authContext, purpose, mfa = false, mfaAt, now = Date.now() }) {
   if (!validateAuthConfig(config).valid) { const e = new Error("auth_configuration_invalid"); e.statusCode = 503; throw e; }
   const ttl = stepUpTtlMs(config);
   const sessionExpiry = Number(authContext.sessionExpiresAt) || now + ttl;
   const exp = Math.min(now + ttl, sessionExpiry);
   const payload = Buffer.from(JSON.stringify({
     v: 1, purpose, sub: authContext.user.id, email: authContext.user.email,
-    sg: effectiveGeneration(authContext.user), ...(mfa ? { mf: true } : {}), sid: keyed(config, "sid", authContext.sessionBinding), pwf: keyed(config, "pwf", authContext.user.password_hash),
+    sg: effectiveGeneration(authContext.user), ...(mfa ? { mf: true, mfat: Math.min(Number.isFinite(mfaAt) ? mfaAt : now, now) } : {}), sid: keyed(config, "sid", authContext.sessionBinding), pwf: keyed(config, "pwf", authContext.user.password_hash),
     iat: now, exp, jti: crypto.randomBytes(12).toString("hex"),
   })).toString("base64url");
   return { token: `${payload}.${sign(config, payload)}`, purpose, issued_at: new Date(now).toISOString(), expires_at: new Date(exp).toISOString(), ttl_seconds: Math.round((exp - now) / 1000) };
@@ -70,7 +70,12 @@ function verifyStepUpToken({ config, authContext, purpose, token, now = Date.now
   if (config.sessionRevocationEnabled !== false && (!Number.isInteger(p.sg) || p.sg !== effectiveGeneration(authContext.user))) return { ok: false, reason: "session_revoked" };
   if (!equal(p.sid || "", keyed(config, "sid", authContext.sessionBinding))) return { ok: false, reason: "wrong_session" };
   if (!equal(p.pwf || "", keyed(config, "pwf", authContext.user.password_hash))) return { ok: false, reason: "password_changed" };
-  return { ok: true, expiresAt: p.exp, purpose: p.purpose, mf: p.mf === true };
+  // S7.5.6: a second-factor claim counts only with a verification time that is not in the future relative to issue
+  const mf = p.mf === true && Number.isFinite(p.mfat) && p.mfat <= p.iat && p.mfat > 0;
+  return { ok: true, expiresAt: p.exp, purpose: p.purpose, mf, mfAt: mf ? p.mfat : null };
 }
 
-module.exports = { STEP_UP_PURPOSES, STEP_UP_MAX_TTL_MS, STEP_UP_HEADER, stepUpTtlMs, stepUpEligibility, issueStepUpToken, verifyStepUpToken };
+/** S7.5.6: when the account currently has an active factor (and MFA is on) the grant must carry a verified second factor. */
+function grantSatisfiesMfa(grant, { mfaRequired }) { return !mfaRequired || (grant && grant.ok === true && grant.mf === true); }
+
+module.exports = { grantSatisfiesMfa, STEP_UP_PURPOSES, STEP_UP_MAX_TTL_MS, STEP_UP_HEADER, stepUpTtlMs, stepUpEligibility, issueStepUpToken, verifyStepUpToken };
