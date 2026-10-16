@@ -2,7 +2,6 @@
 // Independently authored; boots the real server through the cert harness. Skips (exit 0) without Chrome.
 "use strict";
 const fs = require("node:fs");
-const { launchChrome, wrapSend } = require("../lib/browser-harness");
 const os = require("node:os");
 const path = require("node:path");
 const { spawn } = require("node:child_process");
@@ -16,14 +15,13 @@ const WIDTHS = [[1440, 900], [1100, 800], [900, 900], [768, 900], [390, 844]];
 async function main() {
   if (!CHROME) { console.log("SKIP: Chrome not installed"); return; }
   const sys = await boot({}); const { store } = sys; const u = await seed(sys, "acceptor", "super_admin"); await enrollTotp(sys, u); const plain = await seed(sys, "newcomer", "ochiga_staff");
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "cert-chrome-")); const chromeHandle = await launchChrome(CHROME, { userDir, flags: [`--user-data-dir=${dir}`, "--hide-scrollbars"] }); const chrome = chromeHandle.proc;
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "cert-chrome-")); const chrome = spawn(CHROME, ["--headless=new", "--remote-debugging-port=9363", `--user-data-dir=${dir}`, "--no-first-run", "--disable-gpu", "--hide-scrollbars", "about:blank"], { stdio: "ignore" });
   let ws, id = 0; const pending = new Map(); const errors = [];
   try {
-    let targets; for (let i = 0; i < 50 && !targets; i += 1) { try { targets = await (await fetch(`http://127.0.0.1:${chromeHandle.port}/json`)).json(); } catch { await sleep(200); } }
+    let targets; for (let i = 0; i < 50 && !targets; i += 1) { try { targets = await (await fetch("http://127.0.0.1:9363/json")).json(); } catch { await sleep(200); } }
     ws = new WebSocket(targets.find((t) => t.type === "page").webSocketDebuggerUrl); await new Promise((r, j) => { ws.onopen = r; ws.onerror = j; });
     ws.onmessage = (m) => { const d = JSON.parse(m.data); if (d.id && pending.has(d.id)) { pending.get(d.id)(d); pending.delete(d.id); } if (d.method === "Runtime.exceptionThrown") errors.push(d.params.exceptionDetails.exception?.description || d.params.exceptionDetails.text); };
-    const send0 = (method, params = {}) => new Promise((resolve, reject) => { const n = ++id; const t = setTimeout(() => { pending.delete(n); reject(new Error(`CDP timeout ${method}`)); }, 30000); pending.set(n, (d) => { clearTimeout(t); resolve(d); }); ws.send(JSON.stringify({ id: n, method, params })); });
-    const send = wrapSend(send0, { label: 'cert-browser.js' });
+    const send = (method, params = {}) => new Promise((resolve, reject) => { const n = ++id; const t = setTimeout(() => { pending.delete(n); reject(new Error(`CDP timeout ${method}`)); }, 30000); pending.set(n, (d) => { clearTimeout(t); resolve(d); }); ws.send(JSON.stringify({ id: n, method, params })); });
     const ev = async (expr) => { const r = await send("Runtime.evaluate", { expression: expr, awaitPromise: true, returnByValue: true }); if (r.result.exceptionDetails) throw new Error(JSON.stringify(r.result.exceptionDetails).slice(0, 300)); return r.result.result.value; };
     const waitFor = async (expr, label, ms = 12000) => { const end = Date.now() + ms; while (Date.now() < end) { try { if (await ev(expr)) return true; } catch { /* navigating */ } await sleep(100); } const hint = await ev(`document.body.innerText.slice(0, 200)`).catch(() => ""); throw new Error(`Timed out: ${label} [${hint}]`); };
     const nav = async (url) => { try { await send("Page.navigate", { url }); } catch (e) { if (!/timeout/.test(e.message)) throw e; await send("Page.navigate", { url }); } };
@@ -75,7 +73,7 @@ async function main() {
     const probs4 = await layout(".st-modal-backdrop:last-of-type .mfa-modal"); check(probs4.length === 0, `B1/B4 390px recovery-code dialog (${probs4.join("; ")})`);
     check(await tabUntil((a) => a && a.type === "checkbox", 20), "B2 the acknowledgement checkbox is reachable by keyboard"); await key(" ", "Space", 32); check(await ev(`document.querySelector('[data-act=done]').disabled === false`), "B2 Space acknowledges; Done becomes available"); check(await tabUntil((a) => a && /Done/.test(a.text), 10), "B2 Done is reachable"); await enter(); await waitFor(`!document.querySelector('.mfa-codes')`, "dismissed");
     check(errors.length === 0, `no uncaught page error during any journey (${errors.join(" | ").slice(0, 200)})`);
-  } finally { try { ws && ws.close(); } catch { /* closed */ } await chromeHandle.stop(); await sys.close(); try { fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5 }); } catch { /* flushing */ } }
+  } finally { try { ws && ws.close(); } catch { /* closed */ } chrome.kill(); await sys.close(); try { fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5 }); } catch { /* flushing */ } }
   const failed = R.done(); console.log(JSON.stringify({ suite: "cert-browser", checks: R.results.length, failed: failed.length })); process.exit(failed.length ? 1 : 0);
 }
 main().catch((e) => { console.error(e); process.exit(2); });
