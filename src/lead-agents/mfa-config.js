@@ -72,6 +72,8 @@ function validateMfaConfig(config = {}) {
     // equal to another secret in any common spelling, or the first 32 characters of one (a typical "derive a key from the secret" shortcut)
     if (others.some((o) => o === asText || o === asBytes.toString("base64") || o === asBytes.toString("hex") || o === asUtf8 || (!asUtf8.includes("\uFFFD") && o.startsWith(asUtf8)))) { problems.push("mfa_key_reused_secret"); break; }
   }
+  // the transitional API-key-as-password login mints accounts/sessions with no second factor, so it cannot coexist with MFA
+  if (mode === "on" && config.allowApiKeyPasswordLogin === true) problems.push("mfa_enabled_with_api_key_login");
   const unique = [...new Set(problems)];
   const key = !present ? (mode === "on" ? "missing" : "not_required") : unique.length ? "invalid" : "configured";
   const requiredProblems = mode === "on" ? unique : [];

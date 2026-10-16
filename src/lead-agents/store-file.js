@@ -1754,14 +1754,15 @@ class FileLeadAgentsStore {
       return { result: true, undo: () => Object.assign(row, before) };
     });
   }
-  async replaceMfaRecoveryCodes(userId, batchId, hmacs) {
+  async replaceMfaRecoveryCodes(userId, batchId, hmacs, { keyId } = {}) {
     mfaShared.validateRecoveryHmacs(hmacs);
+    const recordedKeyId = mfaShared.validateKeyId(keyId);
     return this._mfaTxn(() => {
       if (this._mfaUserIndex(userId) === -1) throw mfaShared.mfaError("mfa_conflict");
       const all = this.state.admin_mfa_recovery_codes;
       const kept = all.filter((c) => !(c.admin_user_id === userId && !c.used_at));
       if (hmacs.some((h) => kept.some((c) => c.code_hmac === h))) throw mfaShared.mfaError("mfa_conflict");
-      const created = hmacs.map((h) => ({ id: crypto.randomUUID(), admin_user_id: userId, batch_id: batchId, code_hmac: h, created_at: this.nowIso(), used_at: null }));
+      const created = hmacs.map((h) => ({ id: crypto.randomUUID(), admin_user_id: userId, batch_id: batchId, code_hmac: h, key_id: recordedKeyId, created_at: this.nowIso(), used_at: null }));
       this.state.admin_mfa_recovery_codes = [...kept, ...created];
       return { result: created.length, undo: () => { this.state.admin_mfa_recovery_codes = all; } };
     });
@@ -1775,6 +1776,12 @@ class FileLeadAgentsStore {
       return { result: true, undo: () => { row.used_at = null; } };
     });
   }
+  // S7.5.3: which keys the account's UNUSED recovery codes were hashed under (null = recorded before key ids existed), and how many unused codes still depend on an older key.
+  async listMfaRecoveryKeyIds(userId) { return [...new Set(this.state.admin_mfa_recovery_codes.filter((c) => c.admin_user_id === userId && !c.used_at).map((c) => c.key_id || null))]; }
+  async countUnusedRecoveryCodesNotUsingKey(keyId) { return this.state.admin_mfa_recovery_codes.filter((c) => !c.used_at && (c.key_id || null) !== keyId).length; }
+  async hasActiveMfa(userId) { return this.state.admin_mfa_credentials.some((c) => c.admin_user_id === userId && c.status === "active"); }
+  async getActiveTotpCredential(userId) { return mfaShared.sanitizeCredential(this.state.admin_mfa_credentials.find((c) => c.admin_user_id === userId && c.type === "totp" && c.status === "active") || null); }
+  async countMfaEnrolledAccounts() { return new Set(this.state.admin_mfa_credentials.filter((c) => c.status === "active").map((c) => c.admin_user_id)).size; }
   async countMfaRecoveryCodes(userId) { return this.state.admin_mfa_recovery_codes.filter((c) => c.admin_user_id === userId && !c.used_at).length; }
   async createMfaChallenge(userId, purpose, challengeB64, ttlSeconds = 300) {
     const v = mfaShared.validateChallengeInput(purpose, challengeB64, ttlSeconds);

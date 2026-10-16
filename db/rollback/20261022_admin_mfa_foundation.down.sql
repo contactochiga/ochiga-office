@@ -7,6 +7,7 @@ drop function if exists office_mfa_record_failure(uuid);
 drop function if exists office_mfa_consume_challenge(uuid, uuid, text);
 drop function if exists office_mfa_create_challenge(uuid, text, text, integer);
 drop function if exists office_mfa_replace_recovery_codes(uuid, uuid, text[]);
+drop function if exists office_mfa_replace_recovery_codes(uuid, uuid, text[], text);   -- the S7.5.3 form, if 20261023 was applied
 drop function if exists office_mfa_consume_recovery_code(uuid, text);
 drop function if exists office_mfa_consume_totp_step(uuid, bigint);
 drop function if exists office_mfa_schema_version();

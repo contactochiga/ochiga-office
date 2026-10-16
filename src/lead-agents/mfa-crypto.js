@@ -155,6 +155,15 @@ function derived(ring, id, purpose) {
   return s.derived.get(slot);
 }
 
+/** The UNVERIFIED subject (account id) named by a challenge token, used only to decide which live account to load before verifying it. Returns null for anything malformed. */
+function challengeSubject(token) {
+  if (typeof token !== "string") return null;
+  try {
+    const claims = JSON.parse(Buffer.from(token.split(".")[0], "base64url").toString("utf8"));
+    return claims && typeof claims.uid === "string" && /^[A-Za-z0-9._:-]{1,80}$/.test(claims.uid) ? claims.uid : null;
+  } catch { return null; }
+}
+
 // ---------------------------------------------------------------- the keyed API
 const GCM_TAG_BYTES = 16, GCM_NONCE_BYTES = 12;
 const ID_TEXT = /^[A-Za-z0-9._:-]{1,80}$/;
@@ -234,18 +243,28 @@ function createMfaCrypto(config) {
     const s = keyStore.get(ring);
     return [s.current.id, ...s.previous.map((p) => p.id)].map((id) => recoveryHash(id, userId, normalized));
   }
-  /** A fresh batch: the plain codes (to show once) and their keyed hashes (to store through replaceMfaRecoveryCodes). Nothing is persisted or logged here. */
+  /** A fresh batch: the plain codes (to show once), their keyed hashes and the key id (store all hashes with it through replaceMfaRecoveryCodes). Nothing is persisted or logged here. */
   function newRecoveryBatch(userId, count = 10) {
     if (!ID_TEXT.test(String(userId || ""))) throw cryptoError("mfa_crypto_invalid_parameters");
     const codes = generateRecoveryCodes(count);
-    return { codes, hmacs: codes.map((c) => recoveryHash(ring.currentKeyId, userId, normalizeRecoveryCode(c))) };
+    return { codes, hmacs: codes.map((c) => recoveryHash(ring.currentKeyId, userId, normalizeRecoveryCode(c))), key_id: ring.currentKeyId };
   }
+  /** Candidates only for the keys the account's unused codes were actually hashed under (unknown/legacy rows -> every key in the ring). Falls back to every key before the 20261023 migration. */
   async function verifyAndConsumeRecoveryCode({ store, userId, code }) {
-    const candidates = recoveryHashCandidates(userId, code);
-    if (!candidates.length) return { ok: false, reason: "invalid_format" };
-    for (const hash of candidates) if (await store.consumeMfaRecoveryCode(userId, hash)) return { ok: true };
+    const normalized = normalizeRecoveryCode(code);
+    if (!normalized || !ID_TEXT.test(String(userId || ""))) return { ok: false, reason: "invalid_format" };
+    const s = keyStore.get(ring); const allIds = [s.current.id, ...s.previous.map((p) => p.id)];
+    let keyIds = null;
+    if (typeof store.listMfaRecoveryKeyIds === "function") {
+      try { keyIds = await store.listMfaRecoveryKeyIds(userId); } catch (error) { if (error && error.code !== "mfa_schema_outdated") throw error; }
+    }
+    if (Array.isArray(keyIds) && keyIds.length === 0) return { ok: false, reason: "invalid" };
+    const wanted = keyIds === null ? allIds : [...new Set(keyIds.flatMap((id) => (id === null ? allIds : ring.hasKey(id) ? [id] : [])))];
+    for (const id of wanted) if (await store.consumeMfaRecoveryCode(userId, recoveryHash(id, userId, normalized))) return { ok: true };
     return { ok: false, reason: "invalid" };
   }
+  /** How many unused recovery codes are NOT hashed under the current key (older keys and legacy rows). A previous key may be retired only when this is 0. */
+  async function recoveryCodesBlockingRetirement({ store }) { return store.countUnusedRecoveryCodesNotUsingKey(ring.currentKeyId); }
 
   // ---- challenge tokens
   const CHALLENGE_PURPOSES = ["login", "enroll"], CHALLENGE_DEFAULT_TTL_MS = 5 * 60_000, CHALLENGE_MAX_TTL_MS = 10 * 60_000;
@@ -292,11 +311,11 @@ function createMfaCrypto(config) {
 
   return Object.freeze({
     keyring: ring, encryptTotpSecret, decryptTotpSecret, needsRotation, rotateSecretRecord, rotateCredentialSecrets,
-    checkTotp, verifyAndConsumeTotp, recoveryHashCandidates, newRecoveryBatch, verifyAndConsumeRecoveryCode, issueChallengeToken, verifyChallengeToken,
+    checkTotp, verifyAndConsumeTotp, recoveryHashCandidates, newRecoveryBatch, verifyAndConsumeRecoveryCode, recoveryCodesBlockingRetirement, issueChallengeToken, verifyChallengeToken,
   });
 }
 
 module.exports = {
   PURPOSES, TOTP_DEFAULTS, hkdfSubkey, hotp, totpCounter, totpAt, verifyTotpCode, base32Encode, base32Decode, generateTotpSecret, buildOtpauthUri,
-  generateRecoveryCodes, normalizeRecoveryCode, createMfaCrypto,
+  generateRecoveryCodes, normalizeRecoveryCode, challengeSubject, createMfaCrypto,
 };

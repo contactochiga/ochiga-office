@@ -9,6 +9,7 @@ const { createConfig } = require("./config");
 const { log } = require("./logger");
 const { validateAuthConfig } = require("./auth-config");
 const { validateMfaConfig } = require("./mfa-config");
+const { createMfaCrypto, challengeSubject } = require("./mfa-crypto");
 const { validatePassword, passwordPolicyError } = require("./password-policy");
 const { resolveSessionTtl } = require("./session-policy");
 const { effectiveGeneration, revocationEnabled, checkSessionGeneration } = require("./session-generation");
@@ -1956,7 +1957,7 @@ const ADMIN_RECOVERY_MIN_PASSWORD_LENGTH = 12;
 
 // Settings S7.4: signs a session for an account. The generation is re-read immediately before signing, so a revocation that lands in between yields a token that is refused on
 // first use (fail-closed) and a revocation that landed earlier yields a token at the new generation. Duration and cookie Max-Age come from the same resolved value (S7.3).
-async function issueSession(store, config, sessionUser) {
+async function issueSession(store, config, sessionUser, { mfaAt } = {}) {
   let account = sessionUser;
   if (revocationEnabled(config)) {
     let fresh;
@@ -1965,7 +1966,25 @@ async function issueSession(store, config, sessionUser) {
     account = { ...sessionUser, session_generation: fresh.session_generation };
   }
   const ttl = await resolveSessionTtl(store, config, { log });
-  return { token: createAdminSessionToken(account, config, ttl.ttlMs), ttl };
+  return { token: createAdminSessionToken(account, config, ttl.ttlMs, { mfaAt }), ttl };
+}
+
+// Settings S7.5.3: with MFA on, is this account bound to a second factor (an ACTIVE credential)? Any failure to find out is a 503 (fail closed), never "no".
+async function mfaRequiredFor(store, config, userId) {
+  if (config.mfaMode !== "on") return false;
+  try {
+    if (typeof store.hasActiveMfa !== "function") throw new Error("unsupported");
+    return Boolean(await store.hasActiveMfa(userId));
+  } catch {
+    const error = new Error("mfa_verification_unavailable");
+    error.statusCode = 503;
+    throw error;
+  }
+}
+
+const MFA_CHALLENGE_METHODS = ["totp", "recovery_code"];
+function adminSummary(user) {
+  return { id: user.id, email: user.email, role: user.role, display_name: user.display_name || user.email, status: user.status || "active", permission_scopes: Array.isArray(user.permission_scopes) ? user.permission_scopes : [], office_position: user.office_position || "", passport_photo_url: user.passport_photo_url || "", qr_credential: user.qr_credential || "", permissions: permissionsForRole(user.role, user.permission_scopes) };
 }
 
 // Settings S7.4: revoke every session of `target` with one atomic generation increment, and audit it (category/ids/generations only; never a token, grant, secret or password).
@@ -1993,12 +2012,12 @@ async function revokeSessionsFor({ store, config, target, auditActor, trigger, r
     const e = new Error("session_revocation_unavailable"); e.statusCode = 503; throw e;
   }
   if (!result) { const e = new Error("user_not_found"); e.statusCode = 404; throw e; }
-  const action = { self: "sessions_revoked_self", admin: "sessions_revoked_by_admin", password_reset: "sessions_revoked_password_reset", password_change: "sessions_revoked_password_change", admin_password_set: "sessions_revoked_admin_password_set", status_change: "sessions_revoked_status_change", admin_recovery: "sessions_revoked_admin_recovery" }[trigger] || "sessions_revoked";
+  const action = { self: "sessions_revoked_self", admin: "sessions_revoked_by_admin", password_reset: "sessions_revoked_password_reset", password_change: "sessions_revoked_password_change", admin_password_set: "sessions_revoked_admin_password_set", status_change: "sessions_revoked_status_change", admin_recovery: "sessions_revoked_admin_recovery", mfa_recovery_code: "sessions_revoked_mfa_recovery_code" }[trigger] || "sessions_revoked";
   await auditRevocation(action, "success", { outcome: "revoked", generation_after: result.session_generation, reason: typeof reason === "string" ? reason.slice(0, 200) : undefined, ...auditExtra });
   return { status: "revoked", generation_before: before, generation_after: result.session_generation, revoked_at: result.sessions_revoked_at };
 }
 
-const REVOCATION_AUDIT_ACTIONS = { self: "sessions_revoked_self", admin: "sessions_revoked_by_admin", password_reset: "sessions_revoked_password_reset", password_change: "sessions_revoked_password_change", admin_password_set: "sessions_revoked_admin_password_set", status_change: "sessions_revoked_status_change", admin_recovery: "sessions_revoked_admin_recovery" };
+const REVOCATION_AUDIT_ACTIONS = { self: "sessions_revoked_self", admin: "sessions_revoked_by_admin", password_reset: "sessions_revoked_password_reset", password_change: "sessions_revoked_password_change", admin_password_set: "sessions_revoked_admin_password_set", status_change: "sessions_revoked_status_change", admin_recovery: "sessions_revoked_admin_recovery", mfa_recovery_code: "sessions_revoked_mfa_recovery_code" };
 
 // Settings S7.5.0: apply a credential/status patch (password_hash, password_changed_at, status, removed_at, removed_by only) TOGETHER with the session revocation, as one atomic step
 // when the store supports it (single SQL statement / single mutation), otherwise by the S7.4 two-step path, which password binding (`pf`) keeps safe. Fails closed: when revocation
@@ -2115,6 +2134,19 @@ async function enrichAuthContext(authContext, store, config = {}) {
     error.statusCode = 401;
     error.reason = generation.reason;
     throw error;
+  }
+  // S7.5.3: one place, so /session/me and every protected route behave alike. An account bound to a second factor needs a session that PROVED it (mf = 1); password-only and
+  // legacy cookies of such an account are refused until the person signs in again through the challenge.
+  if (config.mfaMode === "on") {
+    let required;
+    try { required = await mfaRequiredFor(store, config, user.id); } catch { const unavailable = new Error("session_verification_unavailable"); unavailable.statusCode = 503; throw unavailable; }
+    if (required && authContext.sessionMfa !== true) {
+      revokedSessionRejections.mfa_required = (revokedSessionRejections.mfa_required || 0) + 1;
+      const error = new Error("mfa_required");
+      error.statusCode = 401;
+      error.reason = "mfa_required";
+      throw error;
+    }
   }
   return {
     ...authContext,
@@ -2339,6 +2371,7 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
         pathname === "/office/sw.js";
       const isPublicAdminSessionPath =
         pathname === "/api/lead-agents/admin/session/login" ||
+        pathname === "/api/lead-agents/admin/session/mfa/verify" ||
         pathname === "/api/lead-agents/admin/session/logout" ||
         pathname === "/api/lead-agents/admin/session/me" ||
         pathname === "/api/lead-agents/admin/session/reset/request" ||
@@ -2414,13 +2447,15 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
         const mfaStatus = validateMfaConfig(config);
         let mfaSchema = "not_checked";
         if (mfaStatus.mode === "on") { try { mfaSchema = typeof store.supportsMfa === "function" ? ((await store.supportsMfa()) ? "available" : "unavailable") : "unavailable"; } catch { mfaSchema = "unknown"; } }
+        let mfaEnrolled = null;
+        try { if (typeof store.countMfaEnrolledAccounts === "function") mfaEnrolled = await store.countMfaEnrolledAccounts(); } catch { mfaEnrolled = null; }
         let revocationCapability = "unknown";
         try { revocationCapability = typeof store.supportsSessionRevocation === "function" ? ((await store.supportsSessionRevocation()) ? "available" : "unavailable") : "unavailable"; } catch { revocationCapability = "unknown"; }
-        const ready = authConfigStatus.valid && mfaStatus.valid;
+        const ready = authConfigStatus.valid && mfaStatus.valid && (mfaStatus.mode !== "on" || mfaSchema === "available");
         json(res, ready ? 200 : 503, {
           ok: ready,
           ready,
-          mfa: { mode: mfaStatus.mode, key: mfaStatus.key, schema: mfaSchema, ...(mfaStatus.problems.length ? { problems: mfaStatus.problems } : {}) },
+          mfa: { mode: mfaStatus.mode, key: mfaStatus.key, schema: mfaSchema, enrolled_accounts: mfaEnrolled, ...(mfaStatus.problems.length ? { problems: mfaStatus.problems } : {}) },
           // codes and mode names only; never a secret or anything derived from one
           auth_config: {
             session_secret: authConfigStatus.session_secret,
@@ -2949,10 +2984,18 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
         }
         const body = await readJsonBody(req);
         const attemptKey = loginAttemptKey(req, body.email);
-        const adminUser = await store.getAdminUserByEmail(body.email);
+        let adminUser;
+        try {
+          adminUser = await store.getAdminUserByEmail(body.email);
+        } catch {
+          // S7.5.3: the account store being down is a generic 503 (the raw driver message names internal hosts and ports); never a password-only fallback.
+          json(res, 503, { error: "sign_in_unavailable", message: "Sign-in is temporarily unavailable." }, { "x-request-id": ctx.requestId });
+          return;
+        }
         // Legacy API-key-as-password sign-in: off unless LEAD_AGENTS_ALLOW_API_KEY_LOGIN=true (transitional, audited).
         const fallbackAllowed =
           config.allowApiKeyPasswordLogin === true &&
+          config.mfaMode !== "on" &&
           !adminUser &&
           normalizeEmail(body.email) &&
           config.apiKeys.includes(String(body.password || ""));
@@ -2992,6 +3035,26 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
         if (!credentialsValid) {
           json(res, 401, { error: "unauthorized", message: "Email or password is incorrect." });
           return;
+        }
+
+        // S7.5.3: password proven. If this account is bound to a second factor, answer with a short-lived CHALLENGE: no cookie, no account data, no authority.
+        if (adminUser && config.mfaMode === "on") {
+          let mfaRequired;
+          try { mfaRequired = await mfaRequiredFor(store, config, adminUser.id); } catch { json(res, 503, { error: "mfa_verification_unavailable", message: "Sign-in is temporarily unavailable." }, { "x-request-id": ctx.requestId }); return; }
+          if (mfaRequired) {
+            let challenge;
+            try {
+              if (!validateMfaConfig(config).valid) throw new Error("mfa_config_invalid");
+              challenge = createMfaCrypto(config).issueChallengeToken({ user: adminUser, purpose: "login" });
+            } catch {
+              await appendAudit(store, { userId: adminUser.id, email: adminUser.email, role: adminUser.role }, "mfa_verification_error", "admin_user", adminUser.id, { request_id: ctx.requestId, phase: "challenge_issue", failure_reason: "mfa_unavailable", at: new Date().toISOString() }, req, "failure").catch(() => {});
+              json(res, 503, { error: "mfa_unavailable", message: "Sign-in is temporarily unavailable." }, { "x-request-id": ctx.requestId });
+              return;
+            }
+            await appendAudit(store, { userId: adminUser.id, email: adminUser.email, role: adminUser.role }, "mfa_challenge_issued", "admin_user", adminUser.id, { request_id: ctx.requestId, purpose: "login", at: new Date().toISOString() }, req);
+            json(res, 200, { ok: false, mfa_required: true, challenge_token: challenge.token, expires_at: challenge.expires_at, methods: MFA_CHALLENGE_METHODS }, { "x-request-id": ctx.requestId, "cache-control": "no-store" });
+            return;
+          }
         }
 
         const sessionUser =
@@ -3060,6 +3123,94 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
         return;
       }
 
+      // ---- Settings S7.5.3: second-factor verification (contract: docs/settings-domain/30_S7_5_3_MFA_LOGIN_CHALLENGE_CONTRACT.md). Public path: no session exists yet. ----
+      if (pathname === "/api/lead-agents/admin/session/mfa/verify") {
+        if (req.method !== "POST") {
+          methodNotAllowed(res, "POST");
+          return;
+        }
+        const headersOut = { "x-request-id": ctx.requestId, "cache-control": "no-store" };
+        if (!validateAuthConfig(config).valid) { json(res, 503, { error: "auth_configuration_invalid", message: "Sign-in is temporarily unavailable." }, headersOut); return; }
+        let mfaLib;
+        try {
+          if (config.mfaMode !== "on" || !validateMfaConfig(config).valid) throw new Error("mfa_unavailable");
+          mfaLib = createMfaCrypto(config);
+        } catch { json(res, 503, { error: "mfa_unavailable", message: "Sign-in is temporarily unavailable." }, headersOut); return; }
+        const body = await readJsonBody(req);
+        requireObject(body, "body");
+        const failedGeneric = () => json(res, 401, { error: "mfa_failed", message: "That verification could not be completed." }, headersOut);
+        const subject = challengeSubject(body.challenge_token);
+        const unknownActor = { type: "unknown" };
+        const auditFailure = (actor, userId, reason, extra = {}) => appendAudit(store, actor, "mfa_failed", "admin_user", userId || "", { request_id: ctx.requestId, failure_reason: reason, at: new Date().toISOString(), ...extra }, req, "failure").catch(() => {});
+        if (!subject) { await auditFailure(unknownActor, "", "malformed_challenge"); failedGeneric(); return; }
+        let mfaUser;
+        try { mfaUser = await store.getAdminUserById(subject); } catch { json(res, 503, { error: "mfa_verification_unavailable", message: "Sign-in is temporarily unavailable." }, headersOut); return; }
+        if (!mfaUser || mfaUser.status !== "active") { await auditFailure(unknownActor, "", "unknown_account"); failedGeneric(); return; }
+        const actor = { userId: mfaUser.id, email: mfaUser.email, role: mfaUser.role };
+        const limiterKey = `mfa|${loginAttemptKey(req, mfaUser.email)}`;
+        try { adminLoginRateLimiter.checkKey(limiterKey); } catch (error) {
+          json(res, 429, { error: "login_rate_limit_exceeded", message: "Too many sign-in attempts. Please wait a few minutes and try again." }, { ...headersOut, "x-login-ratelimit-reset": error.rateLimit?.resetAt ? new Date(error.rateLimit.resetAt).toISOString() : "" });
+          return;
+        }
+        let lock;
+        try { lock = await store.getMfaLockState(mfaUser.id); } catch { json(res, 503, { error: "mfa_verification_unavailable", message: "Sign-in is temporarily unavailable." }, headersOut); return; }
+        const lockedFor = lock && lock.locked_until ? Date.parse(lock.locked_until) - Date.now() : 0;
+        if (lockedFor > 0) { json(res, 429, { error: "mfa_locked", message: "Too many incorrect codes. Try again later.", retry_after_seconds: Math.ceil(lockedFor / 1000) }, { ...headersOut, "retry-after": String(Math.ceil(lockedFor / 1000)) }); return; }
+        const verdict = mfaLib.verifyChallengeToken({ token: body.challenge_token, user: mfaUser, purpose: "login" });
+        if (!verdict.ok) {
+          await auditFailure(unknownActor, mfaUser.id, `challenge_${verdict.reason}`);
+          if (["expired", "password_changed", "revoked"].includes(verdict.reason)) json(res, 401, { error: "mfa_challenge_expired", message: "This sign-in expired. Sign in again." }, headersOut); else failedGeneric();
+          return;
+        }
+        if (body.method === "webauthn") { json(res, 400, { error: "unsupported_method" }, headersOut); return; }
+        if (!MFA_CHALLENGE_METHODS.includes(body.method) || typeof body.code !== "string" || body.code.length > 64) { await auditFailure(actor, mfaUser.id, "invalid_request"); failedGeneric(); return; }
+        let outcome;
+        try {
+          if (body.method === "totp") {
+            const credential = await store.getActiveTotpCredential(mfaUser.id);
+            outcome = credential ? await mfaLib.verifyAndConsumeTotp({ store, userId: mfaUser.id, credentialId: credential.id, code: body.code }) : { ok: false, reason: "no_totp_factor" };
+          } else {
+            outcome = await mfaLib.verifyAndConsumeRecoveryCode({ store, userId: mfaUser.id, code: body.code });
+          }
+        } catch (error) {
+          const keyProblem = ["mfa_decrypt_failed", "mfa_key_unavailable", "mfa_unavailable"].includes(error && error.code);
+          await appendAudit(store, actor, "mfa_verification_error", "admin_user", mfaUser.id, { request_id: ctx.requestId, method: body.method, failure_reason: keyProblem ? "key_or_decrypt" : "store_error", at: new Date().toISOString() }, req, "failure").catch(() => {});
+          json(res, 503, { error: keyProblem ? "mfa_unavailable" : "mfa_verification_unavailable", message: "Sign-in is temporarily unavailable." }, headersOut); // server-side fault: never password-only, never counted against the person
+          return;
+        }
+        if (!outcome.ok) {
+          let failure;
+          try { failure = await store.recordMfaFailure(mfaUser.id); } catch { json(res, 503, { error: "mfa_verification_unavailable", message: "Sign-in is temporarily unavailable." }, headersOut); return; }
+          await auditFailure(actor, mfaUser.id, outcome.reason, { method: body.method, failed_attempts: failure ? failure.failed_attempts : undefined });
+          const lockedNow = failure && failure.locked_until ? Date.parse(failure.locked_until) - Date.now() : 0;
+          if (lockedNow > 0) {
+            await appendAudit(store, actor, "mfa_locked", "admin_user", mfaUser.id, { request_id: ctx.requestId, failed_attempts: failure.failed_attempts, locked_until: failure.locked_until, at: new Date().toISOString() }, req, "failure").catch(() => {});
+            json(res, 429, { error: "mfa_locked", message: "Too many incorrect codes. Try again later.", retry_after_seconds: Math.ceil(lockedNow / 1000) }, { ...headersOut, "retry-after": String(Math.ceil(lockedNow / 1000)) });
+            return;
+          }
+          failedGeneric();
+          return;
+        }
+        // factor accepted (the S7.5.1 single-use/replay operation already recorded it)
+        try { await store.clearMfaFailures(mfaUser.id); } catch { /* the counter heals on the next success; the factor itself was verified */ }
+        let remaining;
+        if (body.method === "recovery_code") {
+          // using a recovery code signals a lost device: end every other session first (decision D-3), then issue this one at the new generation
+          try { await revokeSessionsFor({ store, config, target: mfaUser, auditActor: actor, trigger: "mfa_recovery_code", requestId: ctx.requestId, req }); remaining = await store.countMfaRecoveryCodes(mfaUser.id); }
+          catch { json(res, 503, { error: "mfa_verification_unavailable", message: "Sign-in is temporarily unavailable." }, headersOut); return; }
+        }
+        adminLoginRateLimiter.resetKey(limiterKey);
+        adminLoginRateLimiter.resetKey(loginAttemptKey(req, mfaUser.email));
+        const verifiedAt = Date.now();
+        await store.updateAdminUser(mfaUser.id, { last_login_at: new Date(verifiedAt).toISOString() });
+        await appendAudit(store, actor, "mfa_verified", "admin_user", mfaUser.id, { request_id: ctx.requestId, method: body.method, ...(remaining !== undefined ? { recovery_codes_remaining: remaining } : {}), at: new Date(verifiedAt).toISOString() }, req);
+        if (body.method === "recovery_code") await appendAudit(store, actor, "mfa_recovery_code_used", "admin_user", mfaUser.id, { request_id: ctx.requestId, recovery_codes_remaining: remaining, at: new Date(verifiedAt).toISOString() }, req);
+        await appendAudit(store, actor, "session_login", "admin_user", mfaUser.id, { mfa: true }, req);
+        const { token: mfaToken, ttl: mfaTtl } = await issueSession(store, config, mfaUser, { mfaAt: verifiedAt });
+        json(res, 200, { ok: true, admin: adminSummary(mfaUser), mfa: { verified: true, method: body.method, ...(remaining !== undefined ? { recovery_codes_remaining: remaining } : {}) } }, { ...headersOut, "set-cookie": createSessionCookie(mfaToken, config, mfaTtl.ttlMs) });
+        return;
+      }
+
       if (pathname === "/api/lead-agents/admin/session/logout") {
         if (req.method !== "POST") {
           methodNotAllowed(res, "POST");
@@ -3093,7 +3244,7 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
         try {
           currentUser = (await enrichAuthContext(meContext, store, config)).user;
         } catch (meError) {
-          json(res, meError.statusCode === 503 ? 503 : 401, { error: meError.statusCode === 503 ? "session_verification_unavailable" : (meError.message === "session_revoked" ? "session_revoked" : "unauthorized") }, { "x-request-id": ctx.requestId });
+          json(res, meError.statusCode === 503 ? 503 : 401, { error: meError.statusCode === 503 ? "session_verification_unavailable" : (["session_revoked", "mfa_required"].includes(meError.message) ? meError.message : "unauthorized") }, { "x-request-id": ctx.requestId });
           return;
         }
         json(
@@ -3101,6 +3252,7 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           200,
           {
             ok: true,
+            mfa: { verified: meContext.sessionMfa === true },
             admin: {
               id: currentUser.id,
               email: currentUser.email,
@@ -3216,7 +3368,7 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
         try { body = await readJsonBody(req); } catch { body = {}; }
         const keepCurrent = Boolean(body && body.keep_current === true);
         const result = await revokeSessionsFor({ store, config, target: authContext.user, auditActor: authContext, trigger: "self", requestId: ctx.requestId, req, required: true });
-        const kept = keepCurrent ? await issueSession(store, config, await store.getAdminUserById(authContext.user.id)) : null;
+        const kept = keepCurrent ? await issueSession(store, config, await store.getAdminUserById(authContext.user.id), { mfaAt: authContext.sessionMfa ? authContext.sessionMfaAt || Date.now() : undefined }) : null;
         json(res, 200, { ok: true, user_id: authContext.user.id, session_generation: result.generation_after, revoked_at: result.revoked_at, kept_current: Boolean(kept), scope: "every_server_running_this_version" }, { "x-request-id": ctx.requestId, "cache-control": "no-store", "set-cookie": kept ? createSessionCookie(kept.token, config, kept.ttl.ttlMs) : clearSessionCookie(config) });
         return;
       }
@@ -3266,7 +3418,7 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
         const { user: updated, status: revocationStatus } = await applyCredentialChange({ store, config, target: currentUser, patch: { password_hash: hashPassword(body.new_password), password_changed_at: new Date().toISOString() }, auditActor: authContext, trigger: "password_change", requestId: ctx.requestId, req });
         const revocation = { status: revocationStatus };
         await appendAudit(store, authContext, "password_changed", "admin_user", currentUser.id, {});
-        const reissued = revocation.status === "revoked" ? await issueSession(store, config, updated || currentUser) : null;
+        const reissued = revocation.status === "revoked" ? await issueSession(store, config, updated || currentUser, { mfaAt: authContext.sessionMfa ? authContext.sessionMfaAt || Date.now() : undefined }) : null;
         json(res, 200, { ok: true, user: sanitizeAdminUser(updated), other_sessions_signed_out: revocation.status === "revoked" }, { "x-request-id": ctx.requestId, ...(reissued ? { "set-cookie": createSessionCookie(reissued.token, config, reissued.ttl.ttlMs) } : {}) });
         return;
       }

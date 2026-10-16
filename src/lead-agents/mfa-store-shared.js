@@ -31,6 +31,7 @@ function sanitizeStoreError(error, operation) {
   if (error && typeof error.code === "string" && error.code.startsWith("mfa_")) code = error.code;
   else if (status === 404 && (pg === "PGRST202" || pg === "PGRST205" || pg === "42P01")) code = "mfa_unavailable";
   else if (status === 409 || pg === "23505" || pg === "23503") code = "mfa_conflict";
+  else if (pg === "42703") code = "mfa_schema_outdated"; // a column from a newer additive migration is missing
   else if (status === 400 && (pg === "22P02" || pg === "23514" || pg === "22023")) code = "mfa_invalid_input";
   else if (!status) code = "mfa_store_unreachable";
   return mfaError(code, { operation, ...(status ? { status } : {}) });
@@ -73,6 +74,13 @@ function validateCredentialInput(input) {
   };
 }
 
+const KEY_ID_PATTERN = /^[A-Za-z0-9._-]{1,32}$/;
+function validateKeyId(keyId) {
+  if (keyId === undefined || keyId === null) return null;
+  if (typeof keyId !== "string" || !KEY_ID_PATTERN.test(keyId)) throw mfaError("mfa_invalid_input", { field: "key_id" });
+  return keyId;
+}
+
 function validateRecoveryHmacs(hmacs) {
   if (!Array.isArray(hmacs) || hmacs.length < 1 || hmacs.length > MAX_RECOVERY_CODES) throw mfaError("mfa_invalid_input", { field: "hmacs" });
   for (const h of hmacs) if (typeof h !== "string" || !/^[A-Za-z0-9+/_=-]{16,128}$/.test(h)) throw mfaError("mfa_invalid_input", { field: "hmacs" });
@@ -94,4 +102,4 @@ function validateRotationInput(input) {
   return { expected: { key_id: e.key_id, nonce: e.nonce }, next: { secret_ciphertext: n.secret_ciphertext, secret_nonce: n.secret_nonce, secret_key_id: n.secret_key_id } };
 }
 
-module.exports = { validateRotationInput, UUID_PATTERN, CHALLENGE_PURPOSES, CREDENTIAL_TYPES, MAX_CHALLENGE_TTL_SECONDS, MAX_RECOVERY_CODES, lockDurationMs, mfaError, sanitizeStoreError, sanitizeCredential, validateCredentialInput, validateRecoveryHmacs, validateChallengeInput };
+module.exports = { validateKeyId, validateRotationInput, UUID_PATTERN, CHALLENGE_PURPOSES, CREDENTIAL_TYPES, MAX_CHALLENGE_TTL_SECONDS, MAX_RECOVERY_CODES, lockDurationMs, mfaError, sanitizeStoreError, sanitizeCredential, validateCredentialInput, validateRecoveryHmacs, validateChallengeInput };

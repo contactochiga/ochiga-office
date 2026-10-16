@@ -37,7 +37,7 @@ function sessionSignature(payload, secret) {
   return crypto.createHmac("sha256", String(secret || "")).update(payload).digest("hex");
 }
 
-function createAdminSessionToken(adminUser, config, ttlMs) {
+function createAdminSessionToken(adminUser, config, ttlMs, extra = {}) {
   // Settings S7.0: never sign with an invalid/absent secret. The error carries a code only, never configuration detail.
   if (!validateAuthConfig(config).valid) {
     const error = new Error("auth_configuration_invalid");
@@ -57,6 +57,8 @@ function createAdminSessionToken(adminUser, config, ttlMs) {
       // S7.4: the account's session generation at issuance; a revocation increments it and orphans every earlier token.
       ...(revocationEnabled(config) ? { sg: effectiveGeneration(adminUser) } : {}),
       // S7.5.0: fingerprint of the password hash this session was authenticated with. Any later change of the hash, in any order relative to the generation bump, ends the session.
+      // S7.5.3: set ONLY after a second factor was verified (mf = 1, mft = when). Absent means "password only".
+      ...(extra && Number.isFinite(extra.mfaAt) ? { mf: 1, mft: Math.floor(extra.mfaAt) } : {}),
       ...(adminUser.password_hash ? { pf: passwordFingerprint(config, adminUser.password_hash) } : {}),
     })
   ).toString("base64url");
@@ -105,6 +107,9 @@ function readAdminSession(req, config) {
     generation: Number.isInteger(decoded.sg) ? decoded.sg : null,
     // Settings S7.5.0: null for a token issued before password binding existed.
     passwordFingerprint: typeof decoded.pf === "string" && decoded.pf ? decoded.pf : null,
+    // Settings S7.5.3: second factor verified at sign-in (absent/0 for password-only and legacy tokens).
+    mfa: decoded.mf === 1 && Number.isFinite(decoded.mft),
+    mfaAt: decoded.mf === 1 && Number.isFinite(decoded.mft) ? decoded.mft : null,
     // Settings S7.2: identifies THIS session token (never the token itself) so step-up authorisations can be bound to it.
     binding: crypto.createHash("sha256").update(String(rawToken)).digest("hex"),
   };
@@ -199,6 +204,8 @@ function authenticateSessionCookie(req, config) {
     sessionBinding: session.binding,
     sessionGeneration: session.generation,
     sessionPasswordFingerprint: session.passwordFingerprint,
+    sessionMfa: session.mfa,
+    sessionMfaAt: session.mfaAt,
     sessionExpiresAt: session.expiresAt,
   };
 }

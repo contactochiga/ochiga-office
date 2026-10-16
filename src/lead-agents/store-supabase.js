@@ -1625,10 +1625,12 @@ class SupabaseLeadAgentsStore {
     if (typeof result !== "boolean") throw mfaShared.mfaError("mfa_store_error", { operation: "consumeTotpStep" });
     return result;
   }
-  async replaceMfaRecoveryCodes(userId, batchId, hmacs) {
+  async replaceMfaRecoveryCodes(userId, batchId, hmacs, { keyId } = {}) {
     mfaShared.validateRecoveryHmacs(hmacs);
+    const recordedKeyId = mfaShared.validateKeyId(keyId);
     await this._mfaRequireSchema();
-    const count = await this._mfaRpc("replaceMfaRecoveryCodes", "office_mfa_replace_recovery_codes", { p_user_id: userId, p_batch_id: batchId, p_hmacs: hmacs });
+    // p_key_id is sent only when a key id is supplied, so callers (and databases) that predate S7.5.3 keep working
+    const count = await this._mfaRpc("replaceMfaRecoveryCodes", "office_mfa_replace_recovery_codes", { p_user_id: userId, p_batch_id: batchId, p_hmacs: hmacs, ...(recordedKeyId ? { p_key_id: recordedKeyId } : {}) });
     if (!Number.isInteger(count)) throw mfaShared.mfaError("mfa_store_error", { operation: "replaceMfaRecoveryCodes" });
     return count;
   }
@@ -1638,6 +1640,34 @@ class SupabaseLeadAgentsStore {
     const result = await this._mfaRpc("consumeMfaRecoveryCode", "office_mfa_consume_recovery_code", { p_user_id: userId, p_code_hmac: hmac });
     if (typeof result !== "boolean") throw mfaShared.mfaError("mfa_store_error", { operation: "consumeMfaRecoveryCode" });
     return result;
+  }
+  // S7.5.3 (db/20261023_admin_mfa_recovery_code_key_id.sql). Before that migration the column is missing: these report `mfa_schema_outdated` and callers fall back to trying every key.
+  async listMfaRecoveryKeyIds(userId) {
+    await this._mfaRequireSchema();
+    const rows = await this._mfaCall("listMfaRecoveryKeyIds", async () => (await this.client.get(`/admin_mfa_recovery_codes?admin_user_id=eq.${encodeURIComponent(userId)}&used_at=is.null&select=key_id`)).data);
+    return [...new Set(rows.map((r) => r.key_id || null))];
+  }
+  async countUnusedRecoveryCodesNotUsingKey(keyId) {
+    mfaShared.validateKeyId(keyId); await this._mfaRequireSchema();
+    const response = await this._mfaCall("countUnusedRecoveryCodesNotUsingKey", async () => this.client.get(`/admin_mfa_recovery_codes?used_at=is.null&or=(key_id.is.null,key_id.neq.${encodeURIComponent(keyId)})&select=id`, { headers: { prefer: "count=exact", range: "0-0" } }));
+    const total = Number(String(response.headers?.["content-range"] || "").split("/")[1]);
+    if (!Number.isInteger(total)) throw mfaShared.mfaError("mfa_store_error", { operation: "countUnusedRecoveryCodesNotUsingKey" });
+    return total;
+  }
+  async hasActiveMfa(userId) {
+    await this._mfaRequireSchema();
+    const rows = await this._mfaCall("hasActiveMfa", async () => (await this.client.get(`/admin_mfa_credentials?admin_user_id=eq.${encodeURIComponent(userId)}&status=eq.active&select=id&limit=1`)).data);
+    return rows.length > 0;
+  }
+  async getActiveTotpCredential(userId) {
+    await this._mfaRequireSchema();
+    const rows = await this._mfaCall("getActiveTotpCredential", async () => (await this.client.get(`/admin_mfa_credentials?admin_user_id=eq.${encodeURIComponent(userId)}&type=eq.totp&status=eq.active&select=id,admin_user_id,type,label,status,created_at,activated_at,last_used_at,revoked_at&limit=1`)).data);
+    return mfaShared.sanitizeCredential(rows[0] || null);
+  }
+  async countMfaEnrolledAccounts() {
+    await this._mfaRequireSchema();
+    const rows = await this._mfaCall("countMfaEnrolledAccounts", async () => (await this.client.get("/admin_mfa_credentials?status=eq.active&select=admin_user_id&limit=5000")).data);
+    return new Set(rows.map((r) => r.admin_user_id)).size;
   }
   async countMfaRecoveryCodes(userId) {
     await this._mfaRequireSchema();

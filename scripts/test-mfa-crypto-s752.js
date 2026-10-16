@@ -70,8 +70,8 @@ async function main() {
   throwsCode(() => m.createMfaCrypto(cfg({ mfaMode: "off" })), "mfa_unavailable", "MFA off: no keyed operation exists");
   throwsCode(() => m.createMfaCrypto(cfg({ mfaKey: "" })), "mfa_unavailable"); throwsCode(() => m.createMfaCrypto(cfg({ mfaKey: b64(16) })), "mfa_unavailable"); throwsCode(() => m.createMfaCrypto(cfg({ mfaKeyId: "bad id" })), "mfa_unavailable"); throwsCode(() => m.createMfaCrypto(cfg({ sessionSecret: "" })), "mfa_unavailable");
   throwsCode(() => m.createMfaCrypto(cfg({ sessionSecret: KEY1 })), "mfa_unavailable", "an MFA key equal to the session secret is refused"); throwsCode(() => m.createMfaCrypto(createConfig()), "mfa_unavailable", "the default configuration cannot build it");
-  const serverSrc = fs.readFileSync(path.join(ROOT, "src/lead-agents/server.js"), "utf8"); ok(!/mfa-crypto/.test(serverSrc), "server.js never imports the module: no route, login or enrollment uses it");
-  for (const f of fs.readdirSync(path.join(ROOT, "src/lead-agents"))) if (f.endsWith(".js") && f !== "mfa-crypto.js") ok(!fs.readFileSync(path.join(ROOT, "src/lead-agents", f), "utf8").includes('require("./mfa-crypto")'), `${f} does not import it`);
+  const serverSrc = fs.readFileSync(path.join(ROOT, "src/lead-agents/server.js"), "utf8"); ok((serverSrc.match(/require\("\.\/mfa-crypto"\)/g) || []).length === 1 && /const \{ createMfaCrypto, challengeSubject \} = require\("\.\/mfa-crypto"\)/.test(serverSrc), "server.js imports only the two entry points the login challenge needs (S7.5.3); no enrollment helper is reachable");
+  for (const f of fs.readdirSync(path.join(ROOT, "src/lead-agents"))) if (f.endsWith(".js") && f !== "mfa-crypto.js" && f !== "server.js") ok(!fs.readFileSync(path.join(ROOT, "src/lead-agents", f), "utf8").includes('require("./mfa-crypto")'), `${f} does not import it`);
 
   // ===== 5. encryption: round trip, tamper, AAD, rotation
   const mfa = m.createMfaCrypto(cfg()); const ctx = { userId: UID, credentialId: CID };

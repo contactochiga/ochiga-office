@@ -63,10 +63,11 @@ async function main() {
   const defaults = createConfig(); eq(defaults.mfaMode, "off", "MFA is off by default"); eq(defaults.mfaKey, "", "no key by default");
   process.env.LEAD_AGENTS_MFA = "On"; eq(createConfig().mfaMode, "on", "mode parses case-insensitively"); process.env.LEAD_AGENTS_MFA = "true"; eq(createConfig().mfaMode, "off", "only the word `on` enables it"); delete process.env.LEAD_AGENTS_MFA;
   const src = fs.readFileSync(path.join(__dirname, "..", "src", "lead-agents", "server.js"), "utf8");
-  const methods = ["createMfaCredential", "activateMfaCredential", "revokeMfaCredential", "listMfaCredentials", "getMfaCredentialSecret", "consumeTotpStep", "replaceMfaRecoveryCodes", "consumeMfaRecoveryCode", "countMfaRecoveryCodes", "createMfaChallenge", "consumeMfaChallenge", "recordMfaFailure", "clearMfaFailures", "getMfaLockState", "resetMfa", "pruneMfaChallenges"];
-  for (const m of methods) ok(!src.includes(m), `server.js never calls ${m} (no enrollment, challenge, issuance or enforcement in this slice)`);
-  ok(!/pathname[^\n]*\/mfa/.test(src) && !/"\/api\/lead-agents\/[a-z/-]*mfa/.test(src), "no route path contains /mfa");
-  ok(src.split("\n").filter((l) => l.includes("supportsMfa")).length === 1, "the only MFA store call is the readiness schema probe (one line in /healthz)");
+  // S7.5.1 proved the foundation was unreachable. S7.5.3 adds exactly the LOGIN-time methods; everything that enrolls, issues, resets or manages credentials stays unreachable from server.js.
+  const forbidden = ["createMfaCredential", "activateMfaCredential", "revokeMfaCredential", "listMfaCredentials", "getMfaCredentialSecret", "replaceMfaRecoveryCodes", "createMfaChallenge", "consumeMfaChallenge", "resetMfa", "pruneMfaChallenges", "rotateMfaCredentialSecret", "consumeTotpStep", "consumeMfaRecoveryCode"];
+  for (const m of forbidden) ok(!src.includes(m), `server.js never calls ${m} directly (enrollment, issuance, reset and management are not in this slice; verification goes through the crypto library)`);
+  const mfaPaths = [...new Set([...src.matchAll(/pathname === "(\/api\/lead-agents[^"]*mfa[^"]*)"/g)].map((x) => x[1]))]; assert.deepEqual(mfaPaths, ["/api/lead-agents/admin/session/mfa/verify"]); passed += 1;
+  ok(src.split("\n").filter((l) => l.includes("supportsMfa")).length === 1, "the readiness schema probe is still a single line in /healthz");
 
   // ===== 3. /healthz: readiness reporting
   const { store, filePath } = await createTempStore();
