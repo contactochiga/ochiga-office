@@ -68,6 +68,7 @@ begin
   end loop;
   -- shared trigger helper: not a callable interface for the Data API roles
   if to_regprocedure('public.set_updated_at()') is not null then
+    revoke all on function public.set_updated_at() from public;
     if exists (select 1 from pg_roles where rolname = 'anon') then revoke all on function public.set_updated_at() from anon; end if;
     if exists (select 1 from pg_roles where rolname = 'authenticated') then revoke all on function public.set_updated_at() from authenticated; end if;
   end if;

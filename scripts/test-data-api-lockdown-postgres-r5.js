@@ -134,6 +134,8 @@ s.main(async () => {
     s.check("R5-401", "the read-only production audit reports zero exposure rows in sections 1-5a after remediation", zeroSections(audit.out) >= 5 && !/ERROR/.test(audit.out), { zeroSections: zeroSections(audit.out), err: /ERROR/.test(audit.out), shape: audit.out.split('\n').filter((l) => /^(\d|\()|rows\)/.test(l)).slice(0, 40) });
     const f = st.one("select string_agg(p.oid::regprocedure::text, ',') from pg_proc p where p.pronamespace='public'::regnamespace and p.proname like 'office\\_%' and (has_function_privilege('anon', p.oid, 'execute') or has_function_privilege('authenticated', p.oid, 'execute'))");
     s.check("R5-402", "no office_* function is executable by anon or authenticated", f.out === "" , f.out);
+    const su = st.one("select has_function_privilege('anon', 'public.set_updated_at()', 'execute') or has_function_privilege('authenticated', 'public.set_updated_at()', 'execute')");
+    s.check("R5-403", "the shared trigger helper set_updated_at() is not executable by anon/authenticated", su.out === "f", su.out);
     const rb = st.applyFile(path.join(SUTDIR, "db/rollback/20261027_data_api_lockdown.down.sql"));
     const after = await exposure(st, "anon");
     s.check("R5-410", "the rollback file is a no-op and does NOT re-open the tables", rb.status === 0 && after.rowsAll === 0 && after.admin_invites === 0);
