@@ -6,10 +6,8 @@ class MemoryRateLimiter {
   }
 
   keyFromRequest(req) {
-    const forwarded = String(req.headers["x-forwarded-for"] || "")
-      .split(",")[0]
-      .trim();
-    return forwarded || req.socket.remoteAddress || "unknown";
+    // R6: never the raw X-Forwarded-For (client-controlled). The server sets req.clientAddress from the trusted-proxy boundary.
+    return req.clientAddress || req.socket.remoteAddress || "unknown";
   }
 
   check(req) {

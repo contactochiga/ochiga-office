@@ -170,7 +170,7 @@ async function main() {
 
   // ---- unrelated operations unchanged (no step-up demanded anywhere else)
   eq((await fetch(`${base}/api/lead-agents/admin/session/me`, { headers: { cookie: sup } })).status, 200, "session read needs no step-up");
-  eq((await call("password", { current_password: PW, new_password: "unrelated change still works 1" }, { cookie: await login("super2@x.test", "second super pass phrase 2").then(() => sup2) })).status, 401, "unrelated route behaves as before (wrong current password)");
+  eq((await call("password", { current_password: PW, new_password: "unrelated change still works 1" }, { cookie: await login("super2@x.test", "second super pass phrase 2").then(() => sup2) })).status, 429, "R6: the password prompt shares the per-account wrong-password budget that the step-up attempts above already spent (was 401 before R6; unthrottled guessing was finding H4)");
 
   // ---- invalid auth configuration
   assert.throws(() => issueStepUpToken({ config: { ...config, sessionSecret: "" }, authContext: ctxFor(live, "b1"), purpose: "security_policy_write" }), (e) => e.statusCode === 503); passed += 1;

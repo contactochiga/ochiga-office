@@ -1,4 +1,5 @@
 const path = require("path");
+const { parseTrustedProxyHops } = require("./client-address");
 const { resolveSessionSecret } = require("./auth-config");
 const { mfaMode } = require("./mfa-config");
 const { parseOrigins } = require("./webauthn-config");
@@ -97,6 +98,9 @@ function createConfig() {
     sessionSecret: sessionSecretResolution.secret,
     sessionSecretEphemeral: sessionSecretResolution.ephemeral,
     // Legacy "API key as password" sign-in (auto-provisions an admin). Disabled unless the value is exactly "true"; see docs/settings-domain/19_S7_0_AUTH_SECURITY_CONTRACT.md.
+    // R6 (H3): number of reverse proxies WE operate in front of this process (0 = none: X-Forwarded-For is ignored). See client-address.js.
+    trustedProxyHops: parseTrustedProxyHops(process.env.LEAD_AGENTS_TRUSTED_PROXY_HOPS).hops,
+    trustedProxyHopsInvalid: !parseTrustedProxyHops(process.env.LEAD_AGENTS_TRUSTED_PROXY_HOPS).valid,
     allowApiKeyPasswordLogin: process.env.LEAD_AGENTS_ALLOW_API_KEY_LOGIN === "true",
     // Step-up authorisation lifetime (S7.2): default 5 minutes, hard-clamped to 10 minutes in step-up.js.
     stepUpTtlMs: numberFromEnv(process.env.LEAD_AGENTS_STEP_UP_TTL_MS, 5 * 60 * 1000),

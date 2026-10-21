@@ -38,6 +38,8 @@ const {
   sessionIdDigest,
 } = require("./auth");
 const { MemoryRateLimiter } = require("./rate-limit");
+const { SharedRateLimiter } = require("./shared-rate-limit");
+const { resolveClientAddress } = require("./client-address");
 const { issuePublicSession, publicRequestIdentity } = require("./public-session-authority");
 const { PATCH_FIELDS, normalizeEmail, normalizeLeadInput, normalizeText } = require("./normalize-lead");
 const {
@@ -221,10 +223,7 @@ function tryEdgeAuth(req, config) {
 }
 
 function loginAttemptKey(req, email) {
-  const forwarded = String(req.headers["x-forwarded-for"] || "")
-    .split(",")[0]
-    .trim();
-  const ip = forwarded || req.socket.remoteAddress || "unknown";
+  const ip = req.clientAddress || req.socket.remoteAddress || "unknown"; // R6: from the trusted-proxy boundary, never the raw header
   return `${normalizeEmail(email) || "unknown"}:${ip}`;
 }
 
@@ -2250,15 +2249,31 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
   const officeInternalRateLimiter = officeRateLimiter || rateLimiter;
   const adminLoginRateLimiter =
     loginRateLimiter ||
-    new MemoryRateLimiter({
+    new SharedRateLimiter({
+      store,
+      namespace: "login",
+      secret: config.sessionSecret,
       windowMs: config.loginRateLimitWindowMs || 15 * 60 * 1000,
       maxRequests: config.loginRateLimitMaxAttempts || 10,
     });
   // R1 (F-1): failure-only counter per account (normalised e-mail alone), five times the per-address budget over the same window.
-  const adminAccountFailureLimiter = new MemoryRateLimiter({
+  const adminAccountFailureLimiter = new SharedRateLimiter({
+    store,
+    namespace: "account-failure",
+    secret: config.sessionSecret,
     windowMs: adminLoginRateLimiter.windowMs || 15 * 60 * 1000,
     maxRequests: Math.max(1, (adminLoginRateLimiter.maxRequests || 10) * 5),
   });
+  // R6 (H4): wrong-password counter for the AUTHENTICATED password prompts (/session/password and step-up), keyed by account id: holding a session cookie must not allow unlimited
+  // guessing of the account password, from one address or many. Failures only; cleared by a success.
+  const passwordGuessLimiter = new SharedRateLimiter({
+    store,
+    namespace: "password-guess",
+    secret: config.sessionSecret,
+    windowMs: adminLoginRateLimiter.windowMs || 15 * 60 * 1000,
+    maxRequests: adminLoginRateLimiter.maxRequests || 10,
+  });
+  const isRateLimitHit = (error) => Boolean(error && error.statusCode === 429);
   const eventBus = createRealtimeHub();
   // Scheduled-content publisher (Phase 8) — off by default, same
   // precedent as Ochiga Backend's own proactive scheduler (also
@@ -2395,6 +2410,7 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
 
   let communicationOutboxWorkerHandle = null;
   const server = http.createServer(async (req, res) => {
+    req.clientAddress = resolveClientAddress(req, config.trustedProxyHops);
     const ctx = createRequestContext(req);
     const pathname = getPathname(req);
     const corsAccepted = setCorsHeaders(req, res, config.allowedOrigins);
@@ -2549,6 +2565,8 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
         json(res, ready ? 200 : 503, {
           ok: ready,
           ready,
+          // R6: where the sign-in counters live. "shared" = Postgres (every instance), "process" = this process only (file store or migration 20261028 not applied), "unavailable" = store error.
+          rate_limit: { scope: typeof adminLoginRateLimiter.scope === "function" ? await adminLoginRateLimiter.scope() : "process", trusted_proxy_hops: config.trustedProxyHops, ...(config.trustedProxyHopsInvalid ? { trusted_proxy_hops_config: "invalid_ignored" } : {}) },
           mfa: { mode: mfaStatus.mode, key: mfaStatus.key, schema: mfaSchema, enrolled_accounts: mfaEnrolled, webauthn: (() => { const w = validateWebauthnConfig(config); return { status: w.status, ...(w.problems.length ? { problems: w.problems } : {}) }; })(), recovery: recoverySummary(config), ...(mfaStatus.problems.length ? { problems: mfaStatus.problems } : {}) },
           // codes and mode names only; never a secret or anything derived from one
           auth_config: {
@@ -3024,8 +3042,9 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
         const body = await readJsonBody(req);
         const email = normalizeEmail(body.email);
         try {
-          adminLoginRateLimiter.checkKey(loginAttemptKey(req, email));
+          await adminLoginRateLimiter.checkKey(loginAttemptKey(req, email));
         } catch (error) {
+          if (!isRateLimitHit(error)) { json(res, 503, { error: "reset_unavailable", message: "Password reset is temporarily unavailable." }, { "x-request-id": ctx.requestId }); return; }
           json(res, 429, {
             error: "reset_rate_limit_exceeded",
             message: "Too many reset requests. Please wait a few minutes and try again.",
@@ -3089,15 +3108,21 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           { "x-request-id": ctx.requestId, "x-login-ratelimit-reset": resetAt ? new Date(resetAt).toISOString() : "" }
         );
         try {
-          const loginLimit = adminLoginRateLimiter.checkKey(attemptKey);
+          const loginLimit = await adminLoginRateLimiter.checkKey(attemptKey);
           res.setHeader("x-login-ratelimit-remaining", String(loginLimit.remaining));
           res.setHeader("x-login-ratelimit-reset", new Date(loginLimit.resetAt).toISOString());
         } catch (error) {
+          if (!isRateLimitHit(error)) { json(res, 503, { error: "sign_in_unavailable", message: "Sign-in is temporarily unavailable." }, { "x-request-id": ctx.requestId }); return; } // fail closed: a counter that cannot be read never means "allow"
           limitedAnswer(error.rateLimit?.resetAt);
           return;
         }
-        if (adminAccountFailureLimiter.isLimited(accountKey)) {
-          limitedAnswer(adminAccountFailureLimiter.resetAtOf(accountKey));
+        try {
+          if (await adminAccountFailureLimiter.isLimited(accountKey)) {
+            limitedAnswer(await adminAccountFailureLimiter.resetAtOf(accountKey));
+            return;
+          }
+        } catch {
+          json(res, 503, { error: "sign_in_unavailable", message: "Sign-in is temporarily unavailable." }, { "x-request-id": ctx.requestId });
           return;
         }
         let adminUser;
@@ -3119,7 +3144,7 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
         const credentialsValid = fallbackAllowed || (verifyPasswordOrDummy(body.password, adminUser && adminUser.password_hash) && Boolean(adminUser));
         // R1 (F-2): one failure answer for wrong password, unknown account AND inactive account (whatever its password). Deactivation is still absolute: no session is issued.
         if (!credentialsValid || (adminUser && adminUser.status !== "active")) {
-          adminAccountFailureLimiter.hit(accountKey);
+          try { await adminAccountFailureLimiter.hit(accountKey); } catch { json(res, 503, { error: "sign_in_unavailable", message: "Sign-in is temporarily unavailable." }, { "x-request-id": ctx.requestId }); return; }
           if (credentialsValid && adminUser) {
             await appendAudit(store, { userId: adminUser.id, email: adminUser.email, role: adminUser.role }, "session_login_denied_inactive", "admin_user", adminUser.id, { request_id: ctx.requestId, at: new Date().toISOString() }, req, "failure").catch(() => {});
           }
@@ -3185,7 +3210,7 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
         await store.updateAdminUser(sessionUser.id, {
           last_login_at: new Date().toISOString(),
         });
-        adminLoginRateLimiter.resetKey(attemptKey);
+        try { await adminLoginRateLimiter.resetKey(attemptKey); } catch { /* the window expires on its own; a failed clear only keeps the stricter state */ }
         await appendAudit(
           store,
           {
@@ -3272,7 +3297,7 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
         else if (error && ["mfa_decrypt_failed", "mfa_key_unavailable", "mfa_unavailable"].includes(error.code)) json(res, 503, { error: "mfa_unavailable" }, mfaHeaders);
         else json(res, 503, { error: "mfa_verification_unavailable" }, mfaHeaders);
       };
-      const enrollLimiter = (label, user) => { try { adminLoginRateLimiter.checkKey(`${label}|${loginAttemptKey(req, user.email)}`); return true; } catch { json(res, 429, { error: "login_rate_limit_exceeded", message: "Too many attempts. Please wait a few minutes and try again." }, mfaHeaders); return false; } };
+      const enrollLimiter = async (label, user) => { try { await adminLoginRateLimiter.checkKey(`${label}|${loginAttemptKey(req, user.email)}`); return true; } catch (error) { if (!isRateLimitHit(error)) { json(res, 503, { error: "mfa_verification_unavailable" }, mfaHeaders); return false; } json(res, 429, { error: "login_rate_limit_exceeded", message: "Too many attempts. Please wait a few minutes and try again." }, mfaHeaders); return false; } };
 
       // shared by the voluntary and the forced path: a fresh pending TOTP, the secret returned ONCE
       const beginTotp = async (gate, user) => {
@@ -3326,7 +3351,7 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
       if (pathname === "/api/lead-agents/admin/session/mfa/enroll/totp/begin") {
         if (req.method !== "POST") { methodNotAllowed(res, "POST"); return; }
         const gate = await mfaManagementGate("enroll_begin"); if (!gate) return;
-        if (!enrollLimiter("mfa-enroll", gate.user)) return;
+        if (!(await enrollLimiter("mfa-enroll", gate.user))) return;
         try { await beginTotp(gate, gate.user); } catch (error) { await mfaStoreFault(error, gate.actor, "enroll_begin"); }
         return;
       }
@@ -3336,7 +3361,7 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
         const gate = await mfaManagementGate("enroll_confirm"); if (!gate) return;
         const body = await readJsonBody(req); requireObject(body, "body");
         if (typeof body.credential_id !== "string" || typeof body.code !== "string" || body.code.length > 32) { json(res, 400, { error: "invalid_request" }, mfaHeaders); return; }
-        if (!enrollLimiter("mfa-enroll", gate.user)) return;
+        if (!(await enrollLimiter("mfa-enroll", gate.user))) return;
         try { await confirmTotp(gate, gate.user, body, { forced: false }); } catch (error) { await mfaStoreFault(error, gate.actor, "enroll_confirm"); }
         return;
       }
@@ -3390,7 +3415,7 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
         if (req.method !== "POST") { methodNotAllowed(res, "POST"); return; }
         const body = await readJsonBody(req); requireObject(body, "body");
         const subjectUser = await (async () => { const uid = challengeSubject(body.challenge_token); if (!uid) return null; try { return await store.getAdminUserById(uid); } catch { return null; } })();
-        if (subjectUser && !enrollLimiter("mfa-enroll-mail", subjectUser)) return;
+        if (subjectUser && !(await enrollLimiter("mfa-enroll-mail", subjectUser))) return;
         const gate = await forcedGate("enroll", body.challenge_token, { quiet: true });
         // an invalid token and a valid one get the SAME answer (no oracle on which challenges exist); only real faults (503) answer differently
         if (!gate) { if (!res.headersSent) json(res, 200, { ok: true, message: "If this sign-in is valid, a verification code was sent to the account's mailbox." }, mfaHeaders); return; }
@@ -3409,7 +3434,7 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
         if (req.method !== "POST") { methodNotAllowed(res, "POST"); return; }
         const body = await readJsonBody(req); requireObject(body, "body");
         const gate = await forcedGate("enroll", body.challenge_token); if (!gate) return;
-        if (!enrollLimiter("mfa-enroll-verify", gate.user)) return;
+        if (!(await enrollLimiter("mfa-enroll-verify", gate.user))) return;
         if (!gate.lib.verifyMailboxCode(gate.claims, body.email_code)) { await appendAudit(store, gate.actor, "mfa_enrollment_failed", "admin_user", gate.user.id, { request_id: ctx.requestId, failure_reason: "mailbox_code", at: new Date().toISOString() }, req, "failure").catch(() => {}); json(res, 401, { error: "mfa_failed" }, mfaHeaders); return; }
         const issued = gate.lib.issueChallengeToken({ user: gate.user, purpose: "enroll_verified", ttlMs: 10 * 60_000 });
         await appendAudit(store, gate.actor, "mfa_mailbox_verified", "admin_user", gate.user.id, { request_id: ctx.requestId, at: new Date().toISOString() }, req);
@@ -3421,7 +3446,7 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
         if (req.method !== "POST") { methodNotAllowed(res, "POST"); return; }
         const body = await readJsonBody(req); requireObject(body, "body");
         const gate = await forcedGate("enroll_verified", body.enrollment_token); if (!gate) return;
-        try { if (await store.hasActiveMfa(gate.user.id)) { json(res, 409, { error: "mfa_conflict" }, mfaHeaders); return; } if (!enrollLimiter("mfa-enroll", gate.user)) return; await beginTotp(gate, gate.user); } catch (error) { await mfaStoreFault(error, gate.actor, "forced_begin"); }
+        try { if (await store.hasActiveMfa(gate.user.id)) { json(res, 409, { error: "mfa_conflict" }, mfaHeaders); return; } if (!(await enrollLimiter("mfa-enroll", gate.user))) return; await beginTotp(gate, gate.user); } catch (error) { await mfaStoreFault(error, gate.actor, "forced_begin"); }
         return;
       }
 
@@ -3430,7 +3455,7 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
         const body = await readJsonBody(req); requireObject(body, "body");
         const gate = await forcedGate("enroll_verified", body.enrollment_token); if (!gate) return;
         if (typeof body.credential_id !== "string" || typeof body.code !== "string" || body.code.length > 32) { json(res, 400, { error: "invalid_request" }, mfaHeaders); return; }
-        if (!enrollLimiter("mfa-enroll", gate.user)) return;
+        if (!(await enrollLimiter("mfa-enroll", gate.user))) return;
         try { await confirmTotp(gate, gate.user, body, { forced: true }); } catch (error) { await mfaStoreFault(error, gate.actor, "forced_confirm"); }
         return;
       }
@@ -3449,7 +3474,7 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
         if (req.method !== "POST") { methodNotAllowed(res, "POST"); return; }
         const gate = await mfaManagementGate("webauthn_register_options"); if (!gate) return;
         const wa = await webauthnService(); if (!wa) { await mfaDeny(503, "webauthn_unavailable", "webauthn_unavailable", gate.actor); return; }
-        if (!enrollLimiter("mfa-enroll", gate.user)) return;
+        if (!(await enrollLimiter("mfa-enroll", gate.user))) return;
         try {
           const existing = await store.listWebauthnCredentialsForAuth(gate.user.id);
           if (existing.length >= MAX_WEBAUTHN_CREDENTIALS) { await mfaDeny(409, "credential_limit", "credential_limit", gate.actor); return; }
@@ -3467,7 +3492,7 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
         const wa = await webauthnService(); if (!wa) { await mfaDeny(503, "webauthn_unavailable", "webauthn_unavailable", gate.actor); return; }
         const body = await readJsonBody(req); requireObject(body, "body");
         if (typeof body.challenge_id !== "string" || !body.response || typeof body.response !== "object") { json(res, 400, { error: "invalid_request" }, mfaHeaders); return; }
-        if (!enrollLimiter("mfa-enroll", gate.user)) return;
+        if (!(await enrollLimiter("mfa-enroll", gate.user))) return;
         const fail = async (status, error, reason, category) => { await appendAudit(store, gate.actor, "mfa_enrollment_failed", "admin_user", gate.user.id, { request_id: ctx.requestId, method: "webauthn", failure_reason: reason, ...(category ? { category } : {}), at: new Date().toISOString() }, req, "failure").catch(() => {}); json(res, status, { error }, mfaHeaders); };
         let createdId = null;
         try {
@@ -3503,7 +3528,7 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
         if (req.method !== "POST") { methodNotAllowed(res, "POST"); return; }
         const gate = await mfaManagementGate("webauthn_stepup_options", { stepUp: false }); if (!gate) return;
         const wa = await webauthnService(); if (!wa) { await mfaDeny(503, "webauthn_unavailable", "webauthn_unavailable", gate.actor); return; }
-        if (!enrollLimiter("mfa-webauthn-options", gate.user)) return;
+        if (!(await enrollLimiter("mfa-webauthn-options", gate.user))) return;
         try {
           const creds = await store.listWebauthnCredentialsForAuth(gate.user.id);
           if (!creds.length) { json(res, 409, { error: "no_webauthn_credential" }, mfaHeaders); return; }
@@ -3524,7 +3549,7 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
         const subject = challengeSubject(body.challenge_token); if (!subject) { failedGeneric(); return; }
         let user; try { user = await store.getAdminUserById(subject); } catch { json(res, 503, { error: "mfa_verification_unavailable" }, mfaHeaders); return; }
         if (!user || user.status !== "active" || !lib.verifyChallengeToken({ token: body.challenge_token, user, purpose: "login" }).ok) { failedGeneric(); return; }
-        if (!enrollLimiter("mfa-webauthn-options", user)) return;
+        if (!(await enrollLimiter("mfa-webauthn-options", user))) return;
         try {
           const creds = await store.listWebauthnCredentialsForAuth(user.id);
           if (!creds.length) { failedGeneric(); return; }
@@ -3559,7 +3584,8 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
         if (!mfaUser || mfaUser.status !== "active") { await auditFailure(unknownActor, "", "unknown_account"); failedGeneric(); return; }
         const actor = { userId: mfaUser.id, email: mfaUser.email, role: mfaUser.role };
         const limiterKey = `mfa|${loginAttemptKey(req, mfaUser.email)}`;
-        try { adminLoginRateLimiter.checkKey(limiterKey); } catch (error) {
+        try { await adminLoginRateLimiter.checkKey(limiterKey); } catch (error) {
+          if (!isRateLimitHit(error)) { json(res, 503, { error: "mfa_verification_unavailable", message: "Sign-in is temporarily unavailable." }, headersOut); return; }
           json(res, 429, { error: "login_rate_limit_exceeded", message: "Too many sign-in attempts. Please wait a few minutes and try again." }, { ...headersOut, "x-login-ratelimit-reset": error.rateLimit?.resetAt ? new Date(error.rateLimit.resetAt).toISOString() : "" });
           return;
         }
@@ -3622,8 +3648,7 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           await notifyMfaEvent({ store, config, user: mfaUser, event: "recovery_code_used", requestId: ctx.requestId, req });
           if (remaining === undefined) { json(res, 503, { error: "mfa_verification_unavailable", message: "Sign-in is temporarily unavailable." }, headersOut); return; }
         }
-        adminLoginRateLimiter.resetKey(limiterKey);
-        adminLoginRateLimiter.resetKey(loginAttemptKey(req, mfaUser.email));
+        try { await adminLoginRateLimiter.resetKey(limiterKey); await adminLoginRateLimiter.resetKey(loginAttemptKey(req, mfaUser.email)); } catch { /* windows expire on their own */ }
         const verifiedAt = Date.now();
         await store.updateAdminUser(mfaUser.id, { last_login_at: new Date(verifiedAt).toISOString() });
         await appendAudit(store, actor, "mfa_verified", "admin_user", mfaUser.id, { request_id: ctx.requestId, method: body.method, ...(remaining !== undefined ? { recovery_codes_remaining: remaining } : {}), at: new Date(verifiedAt).toISOString() }, req);
@@ -3775,14 +3800,18 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           } catch { json(res, 503, { error: "mfa_verification_unavailable" }, { "x-request-id": ctx.requestId }); return; }
         }
         const stepUpKeyId = `step-up|${loginAttemptKey(req, authContext.user.email)}`;
+        const guessKey = `user:${authContext.user.id}`;
         try {
-          adminLoginRateLimiter.checkKey(stepUpKeyId);
+          await adminLoginRateLimiter.checkKey(stepUpKeyId);
+          if (await passwordGuessLimiter.isLimited(guessKey)) { const limited = new Error("rate_limit_exceeded"); limited.statusCode = 429; throw limited; } // R6 (H4): per-account wrong-password ceiling, whatever the address
         } catch (error) {
+          if (!isRateLimitHit(error)) { json(res, 503, { error: "step_up_unavailable" }, { "x-request-id": ctx.requestId }); return; }
           await stepUpAudit("failed", "rate_limited");
           json(res, 429, { error: "step_up_rate_limit_exceeded", message: "Too many verification attempts. Please wait a few minutes and try again." }, { "x-request-id": ctx.requestId });
           return;
         }
         if (typeof body.password !== "string" || !body.password || !verifyPassword(body.password, authContext.user.password_hash)) {
+          try { await passwordGuessLimiter.hit(guessKey); } catch { json(res, 503, { error: "step_up_unavailable" }, { "x-request-id": ctx.requestId }); return; }
           await stepUpAudit("failed", "invalid_password");
           json(res, 401, { error: "step_up_failed", message: "That password is incorrect." }, { "x-request-id": ctx.requestId });
           return;
@@ -3817,7 +3846,7 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
             }
           }
         }
-        adminLoginRateLimiter.resetKey(stepUpKeyId);
+        try { await adminLoginRateLimiter.resetKey(stepUpKeyId); await passwordGuessLimiter.resetKey(guessKey); } catch { /* windows expire on their own */ }
         const grant = issueStepUpToken({ config, authContext, purpose, mfa: grantHasFactor, mfaAt: secondFactorAt });
         await stepUpAudit("verified", undefined, secondFactor);
         json(res, 200, { ok: true, step_up: { ...grant, mfa_verified: grantHasFactor, ...(grantHasFactor ? { second_factor: secondFactor } : {}) } }, { "x-request-id": ctx.requestId, "cache-control": "no-store" });
@@ -3958,11 +3987,25 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           json(res, 400, { error: "current_password and new_password are required" });
           return;
         }
+        // R6 (H4): bounded guessing of the current password. Network dimension (address + account) and account dimension (wrong guesses per account id). The answers stay generic:
+        // 401 for any wrong password, 429 once a budget is spent (also for the right password: a tripped limiter refuses everything until the window ends).
+        const pwKey = `session-password|${loginAttemptKey(req, authContext.email)}`;
+        const pwGuessKey = `user:${authContext.userId || authContext.user?.id || normalizeEmail(authContext.email)}`;
+        try {
+          await adminLoginRateLimiter.checkKey(pwKey);
+          if (await passwordGuessLimiter.isLimited(pwGuessKey)) { const limited = new Error("rate_limit_exceeded"); limited.statusCode = 429; throw limited; }
+        } catch (error) {
+          if (!isRateLimitHit(error)) { json(res, 503, { error: "password_change_unavailable" }, { "x-request-id": ctx.requestId }); return; }
+          json(res, 429, { error: "password_rate_limit_exceeded", message: "Too many attempts. Please wait a few minutes and try again." }, { "x-request-id": ctx.requestId });
+          return;
+        }
         const currentUser = await store.getAdminUserByEmail(authContext.email);
         if (!currentUser || !verifyPassword(body.current_password, currentUser.password_hash)) {
+          try { await passwordGuessLimiter.hit(pwGuessKey); } catch { json(res, 503, { error: "password_change_unavailable" }, { "x-request-id": ctx.requestId }); return; }
           json(res, 401, { error: "unauthorized" });
           return;
         }
+        try { await adminLoginRateLimiter.resetKey(pwKey); await passwordGuessLimiter.resetKey(pwGuessKey); } catch { /* windows expire on their own */ }
         if (rejectPasswordViolation(res, body.new_password, ctx)) return;
         // S7.4: bump first (fail-safe order), then write the password, then re-issue THIS browser's cookie at the new generation; every other session is signed out.
         const { user: updated, status: revocationStatus } = await applyCredentialChange({ store, config, target: currentUser, patch: { password_hash: hashPassword(body.new_password), password_changed_at: new Date().toISOString() }, auditActor: authContext, trigger: "password_change", requestId: ctx.requestId, req });
@@ -10194,10 +10237,7 @@ async function start() {
     windowMs: config.officeRateLimitWindowMs,
     maxRequests: config.officeRateLimitMaxRequests,
   });
-  const loginRateLimiter = new MemoryRateLimiter({
-    windowMs: config.loginRateLimitWindowMs,
-    maxRequests: config.loginRateLimitMaxAttempts,
-  });
+  // R6: no injected login limiter here -- buildServer builds the shared (database-backed when available) limiters from config.loginRateLimit* itself.
 
   const server = buildServer({
     config,
@@ -10205,7 +10245,7 @@ async function start() {
     rateLimiter,
     publicRateLimiter,
     officeRateLimiter,
-    loginRateLimiter,
+    
     whatsappAdapter,
     openaiClient,
     toolExecutor,

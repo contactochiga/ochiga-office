@@ -45,8 +45,8 @@ const LEGACY_ACTION_NAMES = Object.freeze({
 });
 
 function requestIp(req) {
-  const forwarded = String(req?.headers?.["x-forwarded-for"] || "").split(",")[0].trim();
-  return forwarded || req?.socket?.remoteAddress || "";
+  // R6: the server resolves the client address once per request from the trusted-proxy boundary; the raw header is never used here.
+  return req?.clientAddress || req?.socket?.remoteAddress || "";
 }
 
 function normalizeAuditInput(input = {}) {

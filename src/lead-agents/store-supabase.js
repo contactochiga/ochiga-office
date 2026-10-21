@@ -1514,6 +1514,29 @@ class SupabaseLeadAgentsStore {
       return response.data;
     } catch { throw new Error("session_revocation_store_error"); }
   }
+  // R6: shared rate-limit counters (db/20261028_shared_rate_limits.sql). Capability is probed through a read-only function and re-probed at most once a minute while absent; an
+  // unexpected failure is NOT treated as "absent" (that would silently fall back to per-process counting): it propagates and callers fail closed.
+  async supportsSharedRateLimit() {
+    if (this.sharedRateLimit === true) return true;
+    if (this.sharedRateLimit === false && Date.now() - (this.sharedRateLimitCheckedAt || 0) < 60_000) return false;
+    try {
+      const response = await this.client.post("/rpc/office_rate_limit_version", {});
+      if (response.data !== 1) throw new Error("rate_limit_probe_malformed");
+      this.sharedRateLimit = true;
+    } catch (error) {
+      if (error?.response?.status === 404 || error?.response?.data?.code === "PGRST202") { this.sharedRateLimit = false; this.sharedRateLimitCheckedAt = Date.now(); } else throw new Error("rate_limit_store_error");
+    }
+    return this.sharedRateLimit === true;
+  }
+  async rateLimitOp(op, digest, windowSeconds) {
+    try {
+      if (op === "reset") { const r = await this.client.post("/rpc/office_rate_limit_reset", { p_key_digest: digest }); if (r.data !== true) throw new Error("malformed"); return {}; }
+      const response = await this.client.post(op === "hit" ? "/rpc/office_rate_limit_hit" : "/rpc/office_rate_limit_peek", op === "hit" ? { p_key_digest: digest, p_window_seconds: windowSeconds } : { p_key_digest: digest });
+      const row = Array.isArray(response.data) ? response.data[0] : response.data;
+      if (!row || !Number.isInteger(row.hits)) throw new Error("malformed");
+      return { hits: row.hits, resetAt: row.window_ends_at ? Date.parse(row.window_ends_at) : 0 };
+    } catch { throw new Error("rate_limit_store_error"); } // never the driver message: it names internal hosts and ports
+  }
   async supportsSessionRevocation() {
     if (this.sessionRevocation === true) return true;
     if (this.sessionRevocation === false && Date.now() - (this.sessionRevocationCheckedAt || 0) < 60_000) return false;
