@@ -7,11 +7,11 @@ const path = require("node:path");
 const L = require("./final-cert/C/lib");
 const T = require("./final-cert/C/dbtools");
 
-const LOCK = "20261027_credential_tables_lockdown.sql";
+const LOCK = "20261027_data_api_lockdown.sql";
 const TABLES = ["admin_users", "admin_invites", "password_reset_tokens", "audit_events"];
 const s = new L.Suite("credential-lockdown-r5", "R5");
 const SUTDIR = process.env.SUT_DIR || path.resolve(__dirname, "..");
-const auditSql = fs.readFileSync(path.join(SUTDIR, "scripts/sql/production-credential-exposure-audit.sql"), "utf8");
+const auditSql = fs.readFileSync(path.join(SUTDIR, "scripts/sql/production-data-api-exposure-audit.sql"), "utf8");
 const rows = (r) => (Array.isArray(r.json) ? r.json.length : 0);
 const leaks = (r) => r.status === 200 && Array.isArray(r.json) && (r.json.length > 0 || (r.json[0] && r.json[0].count > 0));
 const denied = (r) => !(r.status >= 200 && r.status < 300 && ((Array.isArray(r.json) && r.json.length > 0) || r.status === 201));
@@ -120,6 +120,10 @@ s.main(async () => {
     const rpc2 = await st.rpc("service_role", "office_mfa_schema_version");
     s.check("R5-327", "service_role still runs the MFA functions", rpc2.status === 200 && rpc2.json === 1);
 
+    const priv = st.one("select string_agg(x, ',') from (select 'cred_delete' x where has_table_privilege('service_role','public.admin_mfa_credentials','delete') union all select 'cred_truncate' where has_table_privilege('service_role','public.admin_mfa_credentials','truncate') union all select 'hist_truncate' where has_table_privilege('service_role','public.office_runtime_setting_history','truncate') union all select 'hist_delete' where has_table_privilege('service_role','public.office_runtime_setting_history','delete')) q");
+    s.check("R5-328", "service_role holds no DELETE/TRUNCATE on MFA credentials and none on the append-only setting history (least privilege)", priv.out === "", priv.out);
+    const need = st.one("select has_table_privilege('service_role','public.admin_mfa_credentials','select,insert,update') and has_table_privilege('service_role','public.admin_mfa_recovery_codes','select,insert,update,delete') and has_table_privilege('service_role','public.admin_mfa_challenges','select,insert,update,delete') and has_table_privilege('service_role','public.office_runtime_setting_history','select,insert')");
+    s.check("R5-329", "service_role keeps every privilege the application uses on the MFA and history tables", need.out === "t", need.out);
     // table-owner (direct connection deployment) is unaffected
     const own = st.one("select count(*) from admin_users");
     s.check("R5-330", "the owning role (direct-connection deployments) still reads admin_users", own.status === 0 && Number(own.out) >= 1, own.err);
@@ -130,7 +134,7 @@ s.main(async () => {
     s.check("R5-401", "the read-only production audit reports zero exposure rows in sections 1-5a after remediation", zeroSections(audit.out) >= 5 && !/ERROR/.test(audit.out), { zeroSections: zeroSections(audit.out), err: /ERROR/.test(audit.out), shape: audit.out.split('\n').filter((l) => /^(\d|\()|rows\)/.test(l)).slice(0, 40) });
     const f = st.one("select string_agg(p.oid::regprocedure::text, ',') from pg_proc p where p.pronamespace='public'::regnamespace and p.proname like 'office\\_%' and (has_function_privilege('anon', p.oid, 'execute') or has_function_privilege('authenticated', p.oid, 'execute'))");
     s.check("R5-402", "no office_* function is executable by anon or authenticated", f.out === "" , f.out);
-    const rb = st.applyFile(path.join(SUTDIR, "db/rollback/20261027_credential_tables_lockdown.down.sql"));
+    const rb = st.applyFile(path.join(SUTDIR, "db/rollback/20261027_data_api_lockdown.down.sql"));
     const after = await exposure(st, "anon");
     s.check("R5-410", "the rollback file is a no-op and does NOT re-open the tables", rb.status === 0 && after.rowsAll === 0 && after.admin_invites === 0);
     const reseedOk = st.applyFile(path.join(SUTDIR, "db", LOCK));

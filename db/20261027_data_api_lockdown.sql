@@ -10,7 +10,7 @@
 do $$
 begin
   if to_regclass('public.admin_users') is null then
-    raise exception 'apply db/lead-agents-schema.sql before 20261027_credential_tables_lockdown.sql';
+    raise exception 'apply db/lead-agents-schema.sql before 20261027_data_api_lockdown.sql';
   end if;
 end $$;
 
@@ -53,5 +53,34 @@ begin
     revoke all on public.office_runtime_settings from public;
     if exists (select 1 from pg_roles where rolname = 'anon') then revoke all on public.office_runtime_settings from anon; end if;
     if exists (select 1 from pg_roles where rolname = 'authenticated') then revoke all on public.office_runtime_settings from authenticated; end if;
+  end if;
+end $$;
+
+-- Defence in depth for tables that already had RLS and no policy but still carried Data API privileges.
+do $$
+declare t text;
+begin
+  foreach t in array array['communication_delivery_outbox', 'whatsapp_inbound_claims', 'whatsapp_manual_sends'] loop
+    if to_regclass('public.' || t) is null then continue; end if;
+    execute format('revoke all on public.%I from public', t);
+    if exists (select 1 from pg_roles where rolname = 'anon') then execute format('revoke all on public.%I from anon', t); end if;
+    if exists (select 1 from pg_roles where rolname = 'authenticated') then execute format('revoke all on public.%I from authenticated', t); end if;
+  end loop;
+  -- shared trigger helper: not a callable interface for the Data API roles
+  if to_regprocedure('public.set_updated_at()') is not null then
+    if exists (select 1 from pg_roles where rolname = 'anon') then revoke all on function public.set_updated_at() from anon; end if;
+    if exists (select 1 from pg_roles where rolname = 'authenticated') then revoke all on function public.set_updated_at() from authenticated; end if;
+  end if;
+end $$;
+
+-- Supabase default privileges had given service_role more than the MFA/history migrations intended (they grant only what the application uses).
+-- Credentials are revoked, never deleted; the append-only history is never truncated. Row deletion by cascade from admin_users is unaffected (FK actions need no privilege).
+do $$
+begin
+  if exists (select 1 from pg_roles where rolname = 'service_role') then
+    if to_regclass('public.admin_mfa_credentials') is not null then revoke delete, truncate, references, trigger on public.admin_mfa_credentials from service_role; end if;
+    if to_regclass('public.admin_mfa_recovery_codes') is not null then revoke truncate, references, trigger on public.admin_mfa_recovery_codes from service_role; end if;
+    if to_regclass('public.admin_mfa_challenges') is not null then revoke truncate, references, trigger on public.admin_mfa_challenges from service_role; end if;
+    if to_regclass('public.office_runtime_setting_history') is not null then revoke truncate, delete, update, references, trigger on public.office_runtime_setting_history from service_role; end if;
   end if;
 end $$;
