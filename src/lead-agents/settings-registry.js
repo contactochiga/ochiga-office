@@ -181,7 +181,7 @@ async function readEntry(descriptor, store) {
     return { ...r, value: publicValue(descriptor, r.value), error: null };
   } catch (error) {
     // fail closed: no invented value
-    return { value: null, version: null, updated_by: null, updated_at: null, source: "unreadable", history_supported: false, error: String(error?.message || error).slice(0, 160) };
+    return { value: null, version: null, updated_by: null, updated_at: null, source: "unreadable", history_supported: false, error: "setting_unreadable" }; // R8: a stable code; the driver text (hosts, ports, SQL) never reaches a response
   }
 }
 

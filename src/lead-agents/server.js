@@ -2635,8 +2635,7 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           },
           uptime_ms: Date.now() - startedAt,
           ...(healthDetail ? { stats: await store.stats() } : {}),
-          environment: config.environment,
-          store_driver: config.storeDriver,
+          ...(healthDetail ? { environment: config.environment, store_driver: config.storeDriver } : {}),
           // booleans / a mode name only: lets an operator confirm that webhook authentication is enforced without exposing any secret
           whatsapp_webhook: { signature_mode: config.whatsappWebhookSignatureMode === "report" ? "report" : "enforce", app_secret_configured: Boolean(config.metaAppSecret) },
           ...(healthDetail ? { tier1: {

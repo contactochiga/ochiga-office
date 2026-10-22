@@ -127,6 +127,14 @@ async function main() {
     const withKey = await sys.call("GET", "/healthz", { apiKey: sys.config.apiKeys[0] }); check(withKey.json && withKey.json.stats, "M12 an API key still gets the full operator view");
     const bad = await sys.call("GET", "/healthz", { cookie: "lead_agents_admin=garbage" }); check(bad.status === 200 && bad.json.stats === undefined, "M12 a bad cookie gets the anonymous view, not an error"); await sys.close(); }
 
+  // ===== M13 the settings list never echoes a store failure's driver text
+  { const sys = await boot({}, {}); const u = await seed(sys, "setr", "super_admin"); const s = await login(sys, u.email, u.password);
+    const orig = sys.store.getRuntimeSetting && sys.store.getRuntimeSetting.bind(sys.store);
+    if (orig) sys.store.getRuntimeSetting = async () => { throw new Error("connect ECONNREFUSED 127.0.0.1:5432 (authenticator)"); };
+    const r = await sys.call("GET", `${A}/settings`, { cookie: s.cookie });
+    check(r.status === 200 && !/ECONN|127\.0\.0\.1|authenticator/.test(r.text), "M13 the settings list carries no driver text when a setting cannot be read (" + r.status + ")");
+    check(!orig || /setting_unreadable/.test(r.text), "M13 …it carries a stable code instead"); await sys.close(); }
+
   const failed = R.done(); process.exit(failed.length ? 1 : 0);
 }
 main().catch((e) => { console.error(e); process.exit(2); });
