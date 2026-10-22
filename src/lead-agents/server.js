@@ -2446,7 +2446,11 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
   const server = http.createServer(async (req, res) => {
     req.clientAddress = resolveClientAddress(req, config.trustedProxyHops);
     // the ONE place a request is authenticated and its live account state verified (protected routes and the /healthz detail decision share it)
-    const resolveRequestAuth = async () => enrichAuthContext(tryEdgeAuth(req, config) || enforceAuth(req, config), store, config);
+    const resolveRequestAuth = async () => {
+      let authContext = tryEdgeAuth(req, config) || enforceAuth(req, config);
+      authContext = await enrichAuthContext(authContext, store, config);
+      return authContext;
+    };
     // R8: response hardening that applies to everything. nosniff and a referrer policy always; framing only by the same origin; credential-bearing (admin API) responses are never cached.
     res.setHeader("x-content-type-options", "nosniff");
     res.setHeader("referrer-policy", "no-referrer");
