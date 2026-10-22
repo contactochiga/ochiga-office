@@ -2445,6 +2445,8 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
   let communicationOutboxWorkerHandle = null;
   const server = http.createServer(async (req, res) => {
     req.clientAddress = resolveClientAddress(req, config.trustedProxyHops);
+    // the ONE place a request is authenticated and its live account state verified (protected routes and the /healthz detail decision share it)
+    const resolveRequestAuth = async () => enrichAuthContext(tryEdgeAuth(req, config) || enforceAuth(req, config), store, config);
     // R8: response hardening that applies to everything. nosniff and a referrer policy always; framing only by the same origin; credential-bearing (admin API) responses are never cached.
     res.setHeader("x-content-type-options", "nosniff");
     res.setHeader("referrer-policy", "no-referrer");
@@ -2577,8 +2579,7 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
         !isPublicDocumentSharePath &&
         !isBackendBridgePath
       ) {
-        authContext = tryEdgeAuth(req, config) || enforceAuth(req, config);
-        authContext = await enrichAuthContext(authContext, store, config);
+        authContext = await resolveRequestAuth();
         const rateLimitState = officeInternalRateLimiter.check(req);
         res.setHeader("x-ratelimit-remaining", String(rateLimitState.remaining));
         res.setHeader(
@@ -2605,7 +2606,7 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
         // R8: readiness and security-posture codes are public (load balancers and operators need them); BUSINESS statistics and the deployment inventory (cookie name, auth mode, e-mail provider,
         // storage and realtime internals) are shown only to a caller who holds a valid session or API key.
         let healthDetail = false;
-        try { const probe = await enrichAuthContext(tryEdgeAuth(req, config) || enforceAuth(req, config), store, config); healthDetail = Boolean(probe); } catch { healthDetail = false; }
+        try { healthDetail = Boolean(await resolveRequestAuth()); } catch { healthDetail = false; }
         json(res, ready ? 200 : 503, {
           ok: ready,
           ready,
