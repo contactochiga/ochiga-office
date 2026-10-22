@@ -2302,10 +2302,10 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
     windowMs: adminLoginRateLimiter.windowMs || 15 * 60 * 1000,
     maxRequests: Math.max(1, Number(config.passwordGuessMaxFailures) || 10), // independent of the sign-in budget: a generous login limit must not loosen the account password ceiling
   });
-  // R8: password SPRAYING -- one address trying one password against many different accounts never trips a per-(account,address) budget. A failures-only counter per ADDRESS closes that,
-  // but only where an address identifies a client: it is on by default behind a trusted proxy (LEAD_AGENTS_TRUSTED_PROXY_HOPS > 0) and off otherwise (every client would share the proxy's
-  // address and one attacker could lock everyone out). LEAD_AGENTS_LOGIN_ADDRESS_FAILURE_MAX overrides (0 = off).
-  const addressFailureMax = Number.isInteger(config.loginAddressFailureMax) ? config.loginAddressFailureMax : (Number(config.trustedProxyHops) > 0 ? 50 : 0);
+  // R8/R10: password SPRAYING -- one address trying one password against many different accounts never trips a per-(account,address) budget. A failures-only counter per ADDRESS closes that,
+  // but ONLY where the address identifies one client. Behind Vercel -> Render the address the application can trust may be a shared egress address, and a ceiling on a shared address is a
+  // global lock-out lever for anyone. So it is OFF unless the owner sets LEAD_AGENTS_LOGIN_ADDRESS_FAILURE_MAX after verifying (via the client-address diagnostic) what the address means.
+  const addressFailureMax = Number.isInteger(config.loginAddressFailureMax) ? config.loginAddressFailureMax : 0;
   const addressFailureLimiter = addressFailureMax > 0 ? new SharedRateLimiter({ store, namespace: "address-failure", secret: config.sessionSecret, windowMs: adminLoginRateLimiter.windowMs || 15 * 60 * 1000, maxRequests: addressFailureMax }) : null;
   const isRateLimitHit = (error) => Boolean(error && error.statusCode === 429);
   const eventBus = createRealtimeHub();
@@ -3200,7 +3200,9 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           normalizeEmail(body.email) &&
           config.apiKeys.includes(String(body.password || ""));
         // R1 (F-3): the password is verified for every request (a fixed dummy hash stands in when no account exists), so an unknown address costs the same hashing work.
-        const credentialsValid = fallbackAllowed || (verifyPasswordOrDummy(body.password, adminUser && adminUser.password_hash) && Boolean(adminUser));
+        // R10: an absurdly long "password" is never a real one; it is answered exactly like a wrong password WITHOUT being hashed (bounded work per request regardless of body size).
+        const oversizedPassword = typeof body.password === "string" && body.password.length > 1024;
+        const credentialsValid = !oversizedPassword && (fallbackAllowed || (verifyPasswordOrDummy(body.password, adminUser && adminUser.password_hash) && Boolean(adminUser)));
         // R1 (F-2): one failure answer for wrong password, unknown account AND inactive account (whatever its password). Deactivation is still absolute: no session is issued.
         if (!credentialsValid || (adminUser && adminUser.status !== "active")) {
           try { await adminAccountFailureLimiter.hit(accountKey); if (addressFailureLimiter) await addressFailureLimiter.hit(`address:${req.clientAddress || "unknown"}`); } catch { json(res, 503, { error: "sign_in_unavailable", message: "Sign-in is temporarily unavailable." }, { "x-request-id": ctx.requestId }); return; }
@@ -3761,6 +3763,25 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           return;
         }
         json(res, 200, { ok: true, revoked: outcome.revoked, ...(outcome.reason ? { reason: outcome.reason } : {}) }, logoutHeaders);
+        return;
+      }
+
+      // R10: lets the deployment owner establish the REAL proxy chain from inside a signed-in administrator session: what the application sees for THIS request, nothing about anyone else.
+      // Read-only; no secret; needs settings.manage. Compare the result for a request through the public domain with one sent straight to the origin before choosing LEAD_AGENTS_TRUSTED_PROXY_HOPS.
+      if (pathname === "/api/lead-agents/admin/diagnostics/client-address") {
+        if (req.method !== "GET") { methodNotAllowed(res, "GET"); return; }
+        requireHumanSession(authContext);
+        authorizePermission(authContext, "settings.manage");
+        const headerValue = req.headers["x-forwarded-for"];
+        const entries = (Array.isArray(headerValue) ? headerValue.join(",") : String(headerValue || "")).split(",").map((part) => part.trim()).filter(Boolean);
+        json(res, 200, {
+          configured_trusted_proxy_hops: config.trustedProxyHops,
+          resolved_client_address: req.clientAddress,
+          peer_address: resolveClientAddress({ headers: {}, socket: req.socket }, 0),
+          x_forwarded_for_entries: entries.slice(-8),
+          x_forwarded_for_entry_count: entries.length,
+          note: "Entries are listed left to right (client-supplied first, proxy-appended last). Choose the hop count so that the N-th entry from the RIGHT is the address you expect for a real client on EVERY path that can reach this origin, including a direct request that bypasses any front-end proxy.",
+        }, { "x-request-id": ctx.requestId });
         return;
       }
 
