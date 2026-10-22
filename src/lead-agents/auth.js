@@ -16,21 +16,24 @@ function secureEqual(a, b) {
   return crypto.timingSafeEqual(left, right);
 }
 
+// R8: strict, total cookie parsing. A pair with whitespace inside its name, or a value that is not valid percent-encoding, is ignored (never throws, so a hostile header cannot cause a 5xx).
+// A name that appears more than once is AMBIGUOUS: it maps to null, so the outcome never depends on the order the browser (or an attacker) sent them in.
+const DUPLICATE = null;
 function parseCookies(headerValue) {
-  return String(headerValue || "")
-    .split(";")
-    .map((item) => item.trim())
-    .filter(Boolean)
-    .reduce((acc, item) => {
-      const eqIndex = item.indexOf("=");
-      if (eqIndex === -1) {
-        return acc;
-      }
-      const key = item.slice(0, eqIndex).trim();
-      const value = item.slice(eqIndex + 1).trim();
-      acc[key] = decodeURIComponent(value);
-      return acc;
-    }, {});
+  const out = Object.create(null);
+  for (const item of String(headerValue || "").split(";")) {
+    const piece = item.replace(/^\s+/, "");
+    const eqIndex = piece.indexOf("=");
+    if (eqIndex <= 0) continue;
+    const key = piece.slice(0, eqIndex);
+    if (/\s/.test(key)) continue;
+    const rawValue = piece.slice(eqIndex + 1).trim();
+    let value;
+    try { value = decodeURIComponent(rawValue); } catch { value = undefined; }
+    if (key in out) { out[key] = DUPLICATE; continue; }
+    out[key] = value === undefined ? DUPLICATE : value;
+  }
+  return out;
 }
 
 function sessionSignature(payload, secret) {
@@ -97,15 +100,21 @@ function readAdminSession(req, config) {
     return null;
   }
 
-  if (!decoded || !decoded.email || !decoded.exp || decoded.exp < Date.now()) {
-    return null;
-  }
+  // R8: claim TYPES are part of the contract. Expiry must be a finite number in the future; the identity must be an e-mail AND the account id (a token is bound to an account, never to an
+  // e-mail alone); a generation claim, when present, must be an integer. Anything else is a malformed token, not "close enough".
+  if (!decoded || typeof decoded !== "object" || Array.isArray(decoded)) return null;
+  if (typeof decoded.email !== "string" || !decoded.email.trim()) return null;
+  if (typeof decoded.exp !== "number" || !Number.isFinite(decoded.exp) || decoded.exp <= Date.now()) return null;
+  if (typeof decoded.user_id !== "string" || !decoded.user_id.trim()) return null;
+  if (decoded.sg !== undefined && !Number.isInteger(decoded.sg)) return null;
+  if (decoded.role !== undefined && typeof decoded.role !== "string") return null;
+  if (decoded.permission_scopes !== undefined && !Array.isArray(decoded.permission_scopes)) return null;
 
   return {
     email: normalizeEmail(decoded.email),
     role: decoded.role || "admin",
-    userId: decoded.user_id || "",
-    permissionScopes: Array.isArray(decoded.permission_scopes) ? decoded.permission_scopes : [],
+    userId: decoded.user_id,
+    permissionScopes: Array.isArray(decoded.permission_scopes) ? decoded.permission_scopes.filter((scope) => typeof scope === "string") : [],
     expiresAt: decoded.exp,
     // Settings S7.4: null for a legacy token (no generation claim).
     generation: Number.isInteger(decoded.sg) ? decoded.sg : null,
@@ -148,9 +157,15 @@ function getApiKey(req) {
   return String(req.headers["x-api-key"] || req.headers["x-office-api-key"] || "").trim();
 }
 
+// R8: only a real string is a password. An object with a hostile toString, an array, a number or null must never reach String() (a throw there became a 500 with internal detail).
+function passwordText(password) { return typeof password === "string" ? password : ""; }
+// R8: Node's scrypt takes the password as a C string, so everything after a NUL byte is IGNORED ("pw" and "pw\u0000x" derive the same key). A NUL is never part of a valid password: it is refused on
+// verification (without effect on any real password) and by the password policy on creation.
+const hasNul = (password) => typeof password === "string" && password.includes("\u0000");
+
 function hashPassword(password, salt) {
   const actualSalt = salt || crypto.randomBytes(16).toString("hex");
-  const hash = crypto.scryptSync(String(password || ""), actualSalt, 64).toString("hex");
+  const hash = crypto.scryptSync(passwordText(password), actualSalt, 64).toString("hex");
   return `${actualSalt}:${hash}`;
 }
 
@@ -159,7 +174,10 @@ function verifyPassword(password, storedHash) {
   if (!salt || !expectedHash) {
     return false;
   }
-  const actualHash = crypto.scryptSync(String(password || ""), salt, 64).toString("hex");
+  if (hasNul(password)) {
+    return false;
+  }
+  const actualHash = crypto.scryptSync(passwordText(password), salt, 64).toString("hex");
   return secureEqual(actualHash, expectedHash);
 }
 

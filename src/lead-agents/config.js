@@ -101,6 +101,10 @@ function createConfig() {
     // R6 (H3): number of reverse proxies WE operate in front of this process (0 = none: X-Forwarded-For is ignored). See client-address.js.
     trustedProxyHops: parseTrustedProxyHops(process.env.LEAD_AGENTS_TRUSTED_PROXY_HOPS).hops,
     trustedProxyHopsInvalid: !parseTrustedProxyHops(process.env.LEAD_AGENTS_TRUSTED_PROXY_HOPS).valid,
+    // R8: wrong-password ceiling per account for the authenticated password prompts (/session/password, step-up) per login window.
+    // R8: failures per client address across ALL accounts per login window (spraying). undefined = default (50 behind a trusted proxy, otherwise off); 0 = off.
+    loginAddressFailureMax: process.env.LEAD_AGENTS_LOGIN_ADDRESS_FAILURE_MAX === undefined || process.env.LEAD_AGENTS_LOGIN_ADDRESS_FAILURE_MAX === "" ? undefined : Math.max(0, Math.floor(Number(process.env.LEAD_AGENTS_LOGIN_ADDRESS_FAILURE_MAX)) || 0),
+    passwordGuessMaxFailures: numberFromEnv(process.env.LEAD_AGENTS_PASSWORD_GUESS_MAX_FAILURES, 10),
     allowApiKeyPasswordLogin: process.env.LEAD_AGENTS_ALLOW_API_KEY_LOGIN === "true",
     // Step-up authorisation lifetime (S7.2): default 5 minutes, hard-clamped to 10 minutes in step-up.js.
     stepUpTtlMs: numberFromEnv(process.env.LEAD_AGENTS_STEP_UP_TTL_MS, 5 * 60 * 1000),

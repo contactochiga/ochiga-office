@@ -1400,11 +1400,14 @@ class SupabaseLeadAgentsStore {
     const response = await this.client.get(
       `/admin_users?email=eq.${encodeURIComponent(normalizeEmail(email))}&limit=1`
     );
+    // R8: the answer must be a list of account objects. HTML, a string or a bare object from a misbehaving gateway is an error (callers answer 503), never "no such account" and never a character of a string.
+    if (!Array.isArray(response.data) || (response.data[0] !== undefined && (response.data[0] === null || typeof response.data[0] !== "object"))) throw new Error("admin_users_response_malformed");
     return response.data[0] || null;
   }
 
   async listAdminUsers() {
     const response = await this.client.get("/admin_users?order=email.asc");
+    if (!Array.isArray(response.data)) throw new Error("admin_users_response_malformed");
     return response.data;
   }
 
@@ -1606,6 +1609,8 @@ class SupabaseLeadAgentsStore {
   async _mfaCall(operation, fn) {
     try { return await fn(); } catch (error) { throw mfaShared.sanitizeStoreError(error, operation); }
   }
+  // R8: a list the data API was asked for must BE a list. A JSON object (or anything else) in its place is a malformed answer and fails closed -- it must never read as "no factors".
+  _mfaRows(data, operation) { if (!Array.isArray(data)) throw mfaShared.mfaError("mfa_store_error", { operation }); return data; }
   _mfaRpc(operation, name, args) {
     return this._mfaCall(operation, async () => (await this.client.post(`/rpc/${name}`, args)).data);
   }
@@ -1645,12 +1650,12 @@ class SupabaseLeadAgentsStore {
   async listMfaCredentials(userId) {
     await this._mfaRequireSchema();
     // explicit column list: secret columns are never selected by this reader
-    const rows = await this._mfaCall("listMfaCredentials", async () => (await this.client.get(`/admin_mfa_credentials?admin_user_id=eq.${encodeURIComponent(userId)}&select=id,admin_user_id,type,label,status,created_at,activated_at,last_used_at,revoked_at,webauthn_transports,webauthn_backup_eligible&order=created_at.asc`)).data);
+    const rows = this._mfaRows(await this._mfaCall("listMfaCredentials", async () => (await this.client.get(`/admin_mfa_credentials?admin_user_id=eq.${encodeURIComponent(userId)}&select=id,admin_user_id,type,label,status,created_at,activated_at,last_used_at,revoked_at,webauthn_transports,webauthn_backup_eligible&order=created_at.asc`)).data), "listMfaCredentials");
     return rows.map(mfaShared.sanitizeCredential);
   }
   async getMfaCredentialSecret(userId, credentialId) {
     await this._mfaRequireSchema();
-    const rows = await this._mfaCall("getMfaCredentialSecret", async () => (await this.client.get(`/admin_mfa_credentials?id=eq.${encodeURIComponent(credentialId)}&admin_user_id=eq.${encodeURIComponent(userId)}&type=eq.totp&status=neq.revoked&select=id,status,secret_ciphertext,secret_nonce,secret_key_id,totp_last_step&limit=1`)).data);
+    const rows = this._mfaRows(await this._mfaCall("getMfaCredentialSecret", async () => (await this.client.get(`/admin_mfa_credentials?id=eq.${encodeURIComponent(credentialId)}&admin_user_id=eq.${encodeURIComponent(userId)}&type=eq.totp&status=neq.revoked&select=id,status,secret_ciphertext,secret_nonce,secret_key_id,totp_last_step&limit=1`)).data), "getMfaCredentialSecret");
     return rows[0] || null;
   }
   // S7.5.2 rotation: one PATCH guarded by the key id and nonce that were decrypted (the nonce identifies the exact ciphertext without putting it in a URL). Zero rows = lost the race.
@@ -1712,7 +1717,7 @@ class SupabaseLeadAgentsStore {
   _bytea(value) { const text = String(value || ""); return text.startsWith("\\x") ? Buffer.from(text.slice(2), "hex").toString("base64") : text; }
   async listWebauthnCredentialsForAuth(userId) {
     await this._mfaRequireSchema();
-    const rows = await this._mfaCall("listWebauthnCredentialsForAuth", async () => (await this.client.get(`/admin_mfa_credentials?admin_user_id=eq.${encodeURIComponent(userId)}&type=eq.webauthn&status=eq.active&select=id,webauthn_credential_id,webauthn_public_key,webauthn_sign_count,webauthn_transports,webauthn_backup_eligible&order=created_at.asc`)).data);
+    const rows = this._mfaRows(await this._mfaCall("listWebauthnCredentialsForAuth", async () => (await this.client.get(`/admin_mfa_credentials?admin_user_id=eq.${encodeURIComponent(userId)}&type=eq.webauthn&status=eq.active&select=id,webauthn_credential_id,webauthn_public_key,webauthn_sign_count,webauthn_transports,webauthn_backup_eligible&order=created_at.asc`)).data), "listWebauthnCredentialsForAuth");
     return rows.map((r) => ({ id: r.id, credential_id: this._bytea(r.webauthn_credential_id), public_key: this._bytea(r.webauthn_public_key), sign_count: Number(r.webauthn_sign_count) || 0, transports: r.webauthn_transports || [], backup_eligible: r.webauthn_backup_eligible ?? null }));
   }
   async recordWebauthnUse(userId, credentialRowId, newCount) {
@@ -1763,7 +1768,7 @@ class SupabaseLeadAgentsStore {
   // S7.5.3 (db/20261023_admin_mfa_recovery_code_key_id.sql). Before that migration the column is missing: these report `mfa_schema_outdated` and callers fall back to trying every key.
   async listMfaRecoveryKeyIds(userId) {
     await this._mfaRequireSchema();
-    const rows = await this._mfaCall("listMfaRecoveryKeyIds", async () => (await this.client.get(`/admin_mfa_recovery_codes?admin_user_id=eq.${encodeURIComponent(userId)}&used_at=is.null&select=key_id`)).data);
+    const rows = this._mfaRows(await this._mfaCall("listMfaRecoveryKeyIds", async () => (await this.client.get(`/admin_mfa_recovery_codes?admin_user_id=eq.${encodeURIComponent(userId)}&used_at=is.null&select=key_id`)).data), "listMfaRecoveryKeyIds");
     return [...new Set(rows.map((r) => r.key_id || null))];
   }
   async countUnusedRecoveryCodesNotUsingKey(keyId) {
@@ -1775,22 +1780,22 @@ class SupabaseLeadAgentsStore {
   }
   async hasActiveMfa(userId) {
     await this._mfaRequireSchema();
-    const rows = await this._mfaCall("hasActiveMfa", async () => (await this.client.get(`/admin_mfa_credentials?admin_user_id=eq.${encodeURIComponent(userId)}&status=eq.active&select=id&limit=1`)).data);
+    const rows = this._mfaRows(await this._mfaCall("hasActiveMfa", async () => (await this.client.get(`/admin_mfa_credentials?admin_user_id=eq.${encodeURIComponent(userId)}&status=eq.active&select=id&limit=1`)).data), "hasActiveMfa");
     return rows.length > 0;
   }
   async getActiveTotpCredential(userId) {
     await this._mfaRequireSchema();
-    const rows = await this._mfaCall("getActiveTotpCredential", async () => (await this.client.get(`/admin_mfa_credentials?admin_user_id=eq.${encodeURIComponent(userId)}&type=eq.totp&status=eq.active&select=id,admin_user_id,type,label,status,created_at,activated_at,last_used_at,revoked_at&limit=1`)).data);
+    const rows = this._mfaRows(await this._mfaCall("getActiveTotpCredential", async () => (await this.client.get(`/admin_mfa_credentials?admin_user_id=eq.${encodeURIComponent(userId)}&type=eq.totp&status=eq.active&select=id,admin_user_id,type,label,status,created_at,activated_at,last_used_at,revoked_at&limit=1`)).data), "getActiveTotpCredential");
     return mfaShared.sanitizeCredential(rows[0] || null);
   }
   async countMfaEnrolledAccounts() {
     await this._mfaRequireSchema();
-    const rows = await this._mfaCall("countMfaEnrolledAccounts", async () => (await this.client.get("/admin_mfa_credentials?status=eq.active&select=admin_user_id&limit=5000")).data);
+    const rows = this._mfaRows(await this._mfaCall("countMfaEnrolledAccounts", async () => (await this.client.get("/admin_mfa_credentials?status=eq.active&select=admin_user_id&limit=5000")).data), "countMfaEnrolledAccounts");
     return new Set(rows.map((r) => r.admin_user_id)).size;
   }
   async listMfaEnrolledUserIds() {
     await this._mfaRequireSchema();
-    const rows = await this._mfaCall("listMfaEnrolledUserIds", async () => (await this.client.get("/admin_mfa_credentials?status=eq.active&select=admin_user_id&limit=5000")).data);
+    const rows = this._mfaRows(await this._mfaCall("listMfaEnrolledUserIds", async () => (await this.client.get("/admin_mfa_credentials?status=eq.active&select=admin_user_id&limit=5000")).data), "listMfaEnrolledUserIds");
     return [...new Set(rows.map((r) => r.admin_user_id))];
   }
   async countMfaRecoveryCodes(userId) {
@@ -1830,7 +1835,7 @@ class SupabaseLeadAgentsStore {
   }
   async getMfaLockState(userId) {
     await this._mfaRequireSchema();
-    const rows = await this._mfaCall("getMfaLockState", async () => (await this.client.get(`/admin_users?id=eq.${encodeURIComponent(userId)}&select=mfa_failed_attempts,mfa_locked_until&limit=1`)).data);
+    const rows = this._mfaRows(await this._mfaCall("getMfaLockState", async () => (await this.client.get(`/admin_users?id=eq.${encodeURIComponent(userId)}&select=mfa_failed_attempts,mfa_locked_until&limit=1`)).data), "getMfaLockState");
     return rows[0] ? { failed_attempts: rows[0].mfa_failed_attempts || 0, locked_until: rows[0].mfa_locked_until || null } : null;
   }
   async resetMfa(userId, { actor = "" } = {}) {

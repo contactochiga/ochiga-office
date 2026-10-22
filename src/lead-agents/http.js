@@ -11,6 +11,17 @@ function json(res, statusCode, payload, headers = {}) {
   res.end(JSON.stringify(payload));
 }
 
+// R8: what may leave the process. Intentional client errors (4xx) keep their message. Server-side failures (no status, 5xx) are reduced to a stable code: unexpected exceptions and failures of
+// the data store/gateway must never put driver text, hostnames, ports or SQL in a response (the full error is in the log under the same request_id).
+function externalErrorBody(err, requestId) {
+  const status = Number.isInteger(err?.statusCode) ? err.statusCode : 0;
+  if (status >= 400 && status < 500) return { statusCode: status, body: { error: String(err.message || "bad_request").slice(0, 300), request_id: requestId } };
+  const upstream = Boolean(err?.isAxiosError || err?.response || ["ECONNREFUSED", "ECONNRESET", "ETIMEDOUT", "ENOTFOUND", "EAI_AGAIN", "EPIPE"].includes(err?.code) || /socket hang up|Request failed with status code/i.test(String(err?.message)));
+  if (status >= 500 && /^[a-z][a-z0-9_]{2,63}$/.test(String(err.message))) return { statusCode: status, body: { error: err.message, request_id: requestId } }; // an intentional code such as session_verification_unavailable
+  if (upstream) return { statusCode: 503, body: { error: "service_unavailable", request_id: requestId } };
+  return { statusCode: status >= 500 ? status : 500, body: { error: "internal_server_error", request_id: requestId } };
+}
+
 function notFound(res) {
   json(res, 404, { error: "not_found" });
 }
@@ -37,11 +48,13 @@ function setCorsHeaders(req, res, allowedOrigins) {
   } catch {
     sameHost = false;
   }
+  // R8: with NO allow-list a foreign origin is never given credentialed access. It may still call public, unauthenticated endpoints (the chat widget) through a wildcard that
+  // browsers refuse to combine with cookies; only the same host or an explicitly approved origin receives access-control-allow-credentials.
   const allowAll = allowedOrigins.length === 0;
   const allowOrigin = sameHost
     ? requestOrigin
     : allowAll
-    ? requestOrigin || "*"
+    ? "*"
     : allowedOrigins.includes(requestOrigin)
     ? requestOrigin
     : "";
@@ -57,7 +70,7 @@ function setCorsHeaders(req, res, allowedOrigins) {
     "access-control-allow-headers",
     "authorization,content-type,x-api-key,x-request-id"
   );
-  res.setHeader("access-control-allow-credentials", "true");
+  if (allowOrigin !== "*") res.setHeader("access-control-allow-credentials", "true");
   return true;
 }
 
@@ -96,13 +109,21 @@ async function readJsonBody(req, maxBytes = 1024 * 1024) {
     return {};
   }
 
+  let parsed;
   try {
-    return JSON.parse(raw);
+    parsed = JSON.parse(raw);
   } catch (err) {
     err.statusCode = 400;
     err.message = "Invalid JSON body";
     throw err;
   }
+  // R8: a body that is JSON null or a bare scalar is not an object any handler can use; refuse it here instead of letting a property read throw (a 500 with internal detail).
+  if (parsed === null || (typeof parsed !== "object")) {
+    const error = new Error("Invalid JSON body");
+    error.statusCode = 400;
+    throw error;
+  }
+  return parsed;
 }
 
 // Signature-verified webhooks (Meta) need the EXACT raw bytes to HMAC --
@@ -183,6 +204,7 @@ function serveBuffer(res, buffer, contentType, filenameForTypeGuess) {
 }
 
 module.exports = {
+  externalErrorBody,
   createRequestContext,
   getPathname,
   json,

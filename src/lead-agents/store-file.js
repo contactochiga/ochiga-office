@@ -1953,8 +1953,13 @@ class FileLeadAgentsStore {
   async deleteAdminUser(userId) {
     const index = this.state.admin_users.findIndex((item) => item.id === userId);
     if (index === -1) return false;
+    // R8: mirror the database's ON DELETE CASCADE. Factor material, recovery codes, challenges, reset tokens and invitations of a permanently deleted account must not survive it.
+    const snapshot = ["admin_users", "admin_invites", "password_reset_tokens", "admin_mfa_credentials", "admin_mfa_recovery_codes", "admin_mfa_challenges"].map((key) => [key, Array.isArray(this.state[key]) ? [...this.state[key]] : this.state[key]]);
     this.state.admin_users.splice(index, 1);
-    await this.persist();
+    for (const key of ["admin_invites", "password_reset_tokens", "admin_mfa_credentials", "admin_mfa_recovery_codes", "admin_mfa_challenges"]) {
+      if (Array.isArray(this.state[key])) this.state[key] = this.state[key].filter((row) => row.admin_user_id !== userId);
+    }
+    try { await this.persist(); } catch (error) { for (const [key, value] of snapshot) this.state[key] = value; throw error; }
     return true;
   }
 

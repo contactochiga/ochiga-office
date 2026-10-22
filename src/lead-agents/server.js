@@ -171,6 +171,7 @@ const {
   createRequestContext,
   getPathname,
   json,
+  externalErrorBody,
   methodNotAllowed,
   notFound,
   readJsonBody,
@@ -225,6 +226,18 @@ function tryEdgeAuth(req, config) {
 function loginAttemptKey(req, email) {
   const ip = req.clientAddress || req.socket.remoteAddress || "unknown"; // R6: from the trusted-proxy boundary, never the raw header
   return `${normalizeEmail(email) || "unknown"}:${ip}`;
+}
+
+// R8: an issuance lifetime must be a plain number of hours in a sane range; anything else is a client error, never an "Invalid time value" 500.
+function expiryHours(value, fallback) {
+  if (value === undefined || value === null || value === "") return fallback;
+  const hours = typeof value === "number" ? value : typeof value === "string" && /^\d+(\.\d+)?$/.test(value.trim()) ? Number(value) : NaN;
+  if (!Number.isFinite(hours) || hours < 1 || hours > 24 * 30) {
+    const error = new Error("expires_in_hours must be a number between 1 and 720");
+    error.statusCode = 400;
+    throw error;
+  }
+  return hours;
 }
 
 function requireObject(body, name) {
@@ -1253,8 +1266,13 @@ async function geocodeOfficeEstates({ config, store, limit = 50, force = false, 
 }
 
 function absoluteUrl(req, pathname, token, config = {}) {
-  const requestProto = String(req.headers["x-forwarded-proto"] || "http").split(",")[0].trim();
-  const requestHost = String(req.headers["x-forwarded-host"] || req.headers.host || "localhost").split(",")[0].trim();
+  // R8: a link that is e-mailed to someone is built from configuration. Only when no canonical origin is configured (development) is the request consulted, and then forwarded host/proto
+  // are honoured solely behind a TRUSTED proxy, and a Host header only when it names this machine; anything else would let an attacker steer the link in a victim's mailbox.
+  const trusted = Number(config.trustedProxyHops) > 0;
+  const rawHost = String((trusted && req.headers["x-forwarded-host"]) || req.headers.host || "localhost").split(",")[0].trim();
+  const loopback = /^(localhost|127\.\d+\.\d+\.\d+|\[::1\])(:\d+)?$/i.test(rawHost);
+  const requestHost = trusted || loopback ? rawHost : "localhost";
+  const requestProto = trusted ? (String(req.headers["x-forwarded-proto"] || "http").split(",")[0].trim() === "https" ? "https" : "http") : "http";
   const configuredOrigin = String(config.officeAppUrl || "").trim();
   if (config.environment === "production" && !configuredOrigin) {
     const error = new Error("OFFICE_APP_URL is required for production identity links");
@@ -2159,6 +2177,17 @@ async function bootstrapAdminUser(store, config) {
   });
 }
 
+// R8: routes that act on "my own account" are for a signed-in HUMAN only. An API key or edge token that happens to carry (or collide with) an account's e-mail address is not that person.
+function requireHumanSession(authContext) {
+  if (!authContext) { const error = new Error("unauthorized"); error.statusCode = 401; throw error; }
+  if (authContext.type !== "session" || !authContext.user) {
+    const error = new Error("forbidden");
+    error.statusCode = 403;
+    throw error;
+  }
+  return authContext;
+}
+
 async function enrichAuthContext(authContext, store, config = {}) {
   if (!authContext || authContext.type !== "session") {
     return authContext;
@@ -2271,8 +2300,13 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
     namespace: "password-guess",
     secret: config.sessionSecret,
     windowMs: adminLoginRateLimiter.windowMs || 15 * 60 * 1000,
-    maxRequests: adminLoginRateLimiter.maxRequests || 10,
+    maxRequests: Math.max(1, Number(config.passwordGuessMaxFailures) || 10), // independent of the sign-in budget: a generous login limit must not loosen the account password ceiling
   });
+  // R8: password SPRAYING -- one address trying one password against many different accounts never trips a per-(account,address) budget. A failures-only counter per ADDRESS closes that,
+  // but only where an address identifies a client: it is on by default behind a trusted proxy (LEAD_AGENTS_TRUSTED_PROXY_HOPS > 0) and off otherwise (every client would share the proxy's
+  // address and one attacker could lock everyone out). LEAD_AGENTS_LOGIN_ADDRESS_FAILURE_MAX overrides (0 = off).
+  const addressFailureMax = Number.isInteger(config.loginAddressFailureMax) ? config.loginAddressFailureMax : (Number(config.trustedProxyHops) > 0 ? 50 : 0);
+  const addressFailureLimiter = addressFailureMax > 0 ? new SharedRateLimiter({ store, namespace: "address-failure", secret: config.sessionSecret, windowMs: adminLoginRateLimiter.windowMs || 15 * 60 * 1000, maxRequests: addressFailureMax }) : null;
   const isRateLimitHit = (error) => Boolean(error && error.statusCode === 429);
   const eventBus = createRealtimeHub();
   // Scheduled-content publisher (Phase 8) — off by default, same
@@ -2411,6 +2445,12 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
   let communicationOutboxWorkerHandle = null;
   const server = http.createServer(async (req, res) => {
     req.clientAddress = resolveClientAddress(req, config.trustedProxyHops);
+    // R8: response hardening that applies to everything. nosniff and a referrer policy always; framing only by the same origin; credential-bearing (admin API) responses are never cached.
+    res.setHeader("x-content-type-options", "nosniff");
+    res.setHeader("referrer-policy", "no-referrer");
+    res.setHeader("x-frame-options", "SAMEORIGIN");
+    res.setHeader("content-security-policy", "frame-ancestors 'self'");
+    { const earlyPath = getPathname(req); if (earlyPath.startsWith("/api/lead-agents/admin/") && !earlyPath.startsWith("/api/lead-agents/admin/storage/")) { res.setHeader("cache-control", "no-store"); res.setHeader("pragma", "no-cache"); } }
     const ctx = createRequestContext(req);
     const pathname = getPathname(req);
     const corsAccepted = setCorsHeaders(req, res, config.allowedOrigins);
@@ -2562,6 +2602,10 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
         let revocationCapability = "unknown";
         try { revocationCapability = typeof store.supportsSessionRevocation === "function" ? ((await store.supportsSessionRevocation()) ? "available" : "unavailable") : "unavailable"; } catch { revocationCapability = "unknown"; }
         const ready = authConfigStatus.valid && mfaStatus.valid && (mfaStatus.mode !== "on" || mfaSchema === "available");
+        // R8: readiness and security-posture codes are public (load balancers and operators need them); BUSINESS statistics and the deployment inventory (cookie name, auth mode, e-mail provider,
+        // storage and realtime internals) are shown only to a caller who holds a valid session or API key.
+        let healthDetail = false;
+        try { const probe = await enrichAuthContext(tryEdgeAuth(req, config) || enforceAuth(req, config), store, config); healthDetail = Boolean(probe); } catch { healthDetail = false; }
         json(res, ready ? 200 : 503, {
           ok: ready,
           ready,
@@ -2585,12 +2629,12 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
             rejected_requests: { ...revokedSessionRejections },
           },
           uptime_ms: Date.now() - startedAt,
-          stats: await store.stats(),
+          ...(healthDetail ? { stats: await store.stats() } : {}),
           environment: config.environment,
           store_driver: config.storeDriver,
           // booleans / a mode name only: lets an operator confirm that webhook authentication is enforced without exposing any secret
           whatsapp_webhook: { signature_mode: config.whatsappWebhookSignatureMode === "report" ? "report" : "enforce", app_secret_configured: Boolean(config.metaAppSecret) },
-          tier1: {
+          ...(healthDetail ? { tier1: {
             auth: {
               mode: config.authMode,
               session_cookie: config.sessionCookieName,
@@ -2616,7 +2660,7 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
               resend_api_key_configured: Boolean(config.resendApiKey),
               from_address: config.officeEmailFrom || null,
             },
-          },
+          } } : {}),
         });
         return;
       }
@@ -3121,6 +3165,10 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
             limitedAnswer(await adminAccountFailureLimiter.resetAtOf(accountKey));
             return;
           }
+          if (addressFailureLimiter && (await addressFailureLimiter.isLimited(`address:${req.clientAddress || "unknown"}`))) {
+            limitedAnswer(await addressFailureLimiter.resetAtOf(`address:${req.clientAddress || "unknown"}`));
+            return;
+          }
         } catch {
           json(res, 503, { error: "sign_in_unavailable", message: "Sign-in is temporarily unavailable." }, { "x-request-id": ctx.requestId });
           return;
@@ -3144,7 +3192,7 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
         const credentialsValid = fallbackAllowed || (verifyPasswordOrDummy(body.password, adminUser && adminUser.password_hash) && Boolean(adminUser));
         // R1 (F-2): one failure answer for wrong password, unknown account AND inactive account (whatever its password). Deactivation is still absolute: no session is issued.
         if (!credentialsValid || (adminUser && adminUser.status !== "active")) {
-          try { await adminAccountFailureLimiter.hit(accountKey); } catch { json(res, 503, { error: "sign_in_unavailable", message: "Sign-in is temporarily unavailable." }, { "x-request-id": ctx.requestId }); return; }
+          try { await adminAccountFailureLimiter.hit(accountKey); if (addressFailureLimiter) await addressFailureLimiter.hit(`address:${req.clientAddress || "unknown"}`); } catch { json(res, 503, { error: "sign_in_unavailable", message: "Sign-in is temporarily unavailable." }, { "x-request-id": ctx.requestId }); return; }
           if (credentialsValid && adminUser) {
             await appendAudit(store, { userId: adminUser.id, email: adminUser.email, role: adminUser.role }, "session_login_denied_inactive", "admin_user", adminUser.id, { request_id: ctx.requestId, at: new Date().toISOString() }, req, "failure").catch(() => {});
           }
@@ -3211,18 +3259,13 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           last_login_at: new Date().toISOString(),
         });
         try { await adminLoginRateLimiter.resetKey(attemptKey); } catch { /* the window expires on its own; a failed clear only keeps the stricter state */ }
-        await appendAudit(
-          store,
-          {
-            userId: sessionUser.id,
-            email: sessionUser.email,
-            role: sessionUser.role,
-          },
-          "session_login",
-          "admin_user",
-          sessionUser.id,
-          {}
-        );
+        // R8: a sign-in whose audit record cannot be written is not completed: no session is issued and the answer is an honest, generic 503 (security evidence is not optional).
+        try {
+          await appendAudit(store, { userId: sessionUser.id, email: sessionUser.email, role: sessionUser.role }, "session_login", "admin_user", sessionUser.id, {});
+        } catch {
+          json(res, 503, { error: "sign_in_unavailable", message: "Sign-in is temporarily unavailable." }, { "x-request-id": ctx.requestId });
+          return;
+        }
         if (fallbackAllowed) {
           await appendAudit(
             store,
@@ -3813,7 +3856,7 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
         if (typeof body.password !== "string" || !body.password || !verifyPassword(body.password, authContext.user.password_hash)) {
           try { await passwordGuessLimiter.hit(guessKey); } catch { json(res, 503, { error: "step_up_unavailable" }, { "x-request-id": ctx.requestId }); return; }
           await stepUpAudit("failed", "invalid_password");
-          json(res, 401, { error: "step_up_failed", message: "That password is incorrect." }, { "x-request-id": ctx.requestId });
+          json(res, 401, { error: "step_up_failed", message: "That verification could not be completed." }, { "x-request-id": ctx.requestId }); // R8: identical to every other step-up refusal (no oracle on which part was wrong)
           return;
         }
         let grantHasFactor = false, secondFactor = "none", secondFactorAt;
@@ -3981,6 +4024,7 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           return;
         }
         authorizePermission(authContext, "change_password");
+        requireHumanSession(authContext);
         const body = await readJsonBody(req);
         requireObject(body, "body");
         if (!body.current_password || !body.new_password) {
@@ -3999,7 +4043,8 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           json(res, 429, { error: "password_rate_limit_exceeded", message: "Too many attempts. Please wait a few minutes and try again." }, { "x-request-id": ctx.requestId });
           return;
         }
-        const currentUser = await store.getAdminUserByEmail(authContext.email);
+        requireHumanSession(authContext);
+        const currentUser = await store.getAdminUserByEmail(authContext.user.email);
         if (!currentUser || !verifyPassword(body.current_password, currentUser.password_hash)) {
           try { await passwordGuessLimiter.hit(pwGuessKey); } catch { json(res, 503, { error: "password_change_unavailable" }, { "x-request-id": ctx.requestId }); return; }
           json(res, 401, { error: "unauthorized" });
@@ -4032,7 +4077,8 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           json(res, 400, { error: "photo_data_url is required" });
           return;
         }
-        const currentUser = await store.getAdminUserByEmail(authContext.email);
+        requireHumanSession(authContext);
+        const currentUser = await store.getAdminUserByEmail(authContext.user.email);
         if (!currentUser) {
           json(res, 401, { error: "unauthorized" });
           return;
@@ -4071,7 +4117,8 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
         }
         const body = await readJsonBody(req);
         requireObject(body, "body");
-        const currentUser = await store.getAdminUserByEmail(authContext.email);
+        requireHumanSession(authContext);
+        const currentUser = await store.getAdminUserByEmail(authContext.user.email);
         if (!currentUser) {
           json(res, 401, { error: "unauthorized" });
           return;
@@ -4099,7 +4146,7 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
         }
         const body = await readJsonBody(req);
         requireObject(body, "body");
-        if (!body.token || !body.password) {
+        if (typeof body.token !== "string" || typeof body.password !== "string" || !body.token || !body.password) {
           json(res, 400, { error: "token and password are required" });
           return;
         }
@@ -4179,7 +4226,7 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
         }
         const body = await readJsonBody(req);
         requireObject(body, "body");
-        if (!body.token || !body.new_password) {
+        if (typeof body.token !== "string" || typeof body.new_password !== "string" || !body.token || !body.new_password) {
           json(res, 400, { error: "token and new_password are required" });
           return;
         }
@@ -9775,7 +9822,7 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           token_hash: hashOpaqueToken(rawToken),
           status: "pending",
           invited_by: authContext?.email || "",
-          expires_at: new Date(Date.now() + (Number(body.expires_in_hours || 72) * 60 * 60 * 1000)).toISOString(),
+          expires_at: new Date(Date.now() + expiryHours(body.expires_in_hours, 72) * 60 * 60 * 1000).toISOString(),
         });
         const inviteUrl = absoluteUrl(req, "/office?mode=invite", rawToken, config);
         const inviteMessage = staffInviteEmail({
@@ -9953,7 +10000,7 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           email: user.email,
           token_hash: hashOpaqueToken(rawToken),
           requested_by: authContext?.email || "",
-          expires_at: new Date(Date.now() + (Number(body?.expires_in_hours || 24) * 60 * 60 * 1000)).toISOString(),
+          expires_at: new Date(Date.now() + expiryHours(body?.expires_in_hours, 24) * 60 * 60 * 1000).toISOString(),
         });
         const resetUrl = absoluteUrl(req, "/office?mode=reset", rawToken, config);
         const resetMessage = passwordResetEmail({
@@ -9982,7 +10029,7 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           res,
           201,
           {
-            reset,
+            reset: { id: reset.id, admin_user_id: reset.admin_user_id, email: reset.email, status: reset.status, expires_at: reset.expires_at, created_at: reset.created_at }, // R8: never the stored token digest
             reset_token: rawToken,
             reset_url: resetUrl,
             email_delivery: emailDelivery,
@@ -10176,17 +10223,8 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
         upstream_data: config.environment === "production" ? undefined : err?.response?.data,
       });
 
-      json(
-        res,
-        err.statusCode || 500,
-        {
-          error: err.message || "internal_server_error",
-          upstream_status: err?.response?.status,
-          upstream_data: config.environment === "production" ? undefined : err?.response?.data,
-          request_id: ctx.requestId,
-        },
-        { "x-request-id": ctx.requestId }
-      );
+      const external = externalErrorBody(err, ctx.requestId); // R8: no driver text, hostnames, SQL or upstream bodies in a response; the log above has them under this request_id
+      json(res, external.statusCode, external.body, { "x-request-id": ctx.requestId });
     }
   });
 

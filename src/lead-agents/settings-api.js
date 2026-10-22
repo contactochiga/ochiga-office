@@ -121,7 +121,8 @@ async function handleSettingsRequest({ req, res, pathname, authContext, store, r
     return true;
   }
   const changed = !result.previous || !sameValue(result.previous.value, result.current.value);
-  await audit(descriptor.audit_action, descriptor.key, "success", { setting_key: descriptor.key, outcome: "success", version: result.current.version, previous_version: result.previous ? result.previous.version : 0, old_value: result.previous ? historyValue(descriptor, result.previous.value) : null, new_value: historyValue(descriptor, result.current.value), changed, reason: typeof body.reason === "string" ? body.reason.slice(0, 200) : undefined, actor });
+  await audit(descriptor.audit_action, descriptor.key, "success", { setting_key: descriptor.key, outcome: "success", version: result.current.version, previous_version: result.previous ? result.previous.version : 0, old_value: result.previous ? historyValue(descriptor, result.previous.value) : (descriptor.audit_effective_old_value && descriptor.default !== undefined ? historyValue(descriptor, descriptor.default) : null), ...(descriptor.audit_effective_old_value && !result.previous ? { old_value_source: "default" } : {}), // R8: for security policy a first write replaces the EFFECTIVE default, so the trail says what was in force
+    new_value: historyValue(descriptor, result.current.value), changed, reason: typeof body.reason === "string" ? body.reason.slice(0, 200) : undefined, actor });
   if (descriptor.after_write) { try { descriptor.after_write(); } catch { /* a stale cache expires on its own */ } }
   // server-confirmed: report what is stored now, not what was requested
   send(200, { setting: await describeEntry(descriptor, store, can), changed });

@@ -101,7 +101,7 @@ function productionDescriptors(config) {
     defineSetting({
       key: ENFORCEMENT_KEY, label: "Two-step verification requirement", description: "Who must use two-step verification: off, optional, privileged (accounts that manage the team, settings or staff) or all. Takes effect only when two-step verification is switched on for the deployment. Raising it is checked first (preflight); accounts get 14 days to enrol.",
       type: "enum", choices: [...ENFORCEMENT_LEVELS], default: "off", owner: "office", mode: "generic", storage: "runtime_settings", read_permission: "staff.manage", write_permission: "team.manage", requires_confirmation: true,
-      validator: validateEnforcementLevel, audit_action: "mfa_enforcement_changed", edit_section: "people", requires_step_up: "security_policy_write",
+      validator: validateEnforcementLevel, audit_action: "mfa_enforcement_changed", audit_effective_old_value: true, edit_section: "people", requires_step_up: "security_policy_write",
       guard: (input) => enforcementGuard({ ...input, config }), after_write: () => afterEnforcementChange(config),
     }),
     defineSetting({
