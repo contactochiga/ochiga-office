@@ -70,14 +70,22 @@ begin
 end $f$;
 
 -- Closes the S7.5.3 gap: consuming a recovery code and ending the account's other sessions are ONE statement. No row = the code was not valid; nothing changed.
+-- R6 (H2): same definition as db/20261029_mfa_lock_order.sql (admin_users locked first), so re-applying this older file never re-introduces the deadlock.
 create or replace function office_mfa_consume_recovery_code_revoking(p_user_id uuid, p_code_hmac text, p_actor text)
-returns table (session_generation integer, sessions_revoked_at timestamptz) language sql as $f$
-  with c as (
-    update admin_mfa_recovery_codes set used_at = now() where admin_user_id = p_user_id and code_hmac = p_code_hmac and used_at is null returning 1)
-  update admin_users set session_generation = admin_users.session_generation + 1, sessions_revoked_at = now(), sessions_revoked_by = left(coalesce(p_actor, ''), 200)
-   where admin_users.id = p_user_id and exists (select 1 from c)
-  returning admin_users.session_generation, admin_users.sessions_revoked_at;
-$f$;
+returns table (session_generation integer, sessions_revoked_at timestamptz) language plpgsql as $f$
+declare consumed integer;
+begin
+  perform 1 from admin_users where id = p_user_id for no key update;   -- lock order: admin_users first, then the code rows (as every other MFA function does)
+  if not found then return; end if;
+  update admin_mfa_recovery_codes set used_at = now() where admin_user_id = p_user_id and code_hmac = p_code_hmac and used_at is null;
+  get diagnostics consumed = row_count;
+  if consumed = 0 then return; end if;
+  return query
+    update admin_users set session_generation = admin_users.session_generation + 1, sessions_revoked_at = now(), sessions_revoked_by = left(coalesce(p_actor, ''), 200)
+     where admin_users.id = p_user_id
+    returning admin_users.session_generation, admin_users.sessions_revoked_at;
+end $f$;
+
 
 do $$
 declare f text;

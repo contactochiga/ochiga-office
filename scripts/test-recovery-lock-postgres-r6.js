@@ -17,6 +17,9 @@ s.main(async () => {
   st.applyBase();
   const mig = st.applyMigrations(L.dbFiles().filter((f) => f !== FIX));
   s.check("R6-000", "all migrations before the fix apply", mig.every((m) => m.status === 0), mig.filter((m) => m.status).map((m) => m.file));
+  // db/20261024 now carries the fixed definition too (so re-applying it can never reinstate the deadlock); the reproduction needs the ORIGINAL (S7.5.4) one, which the rollback file restores.
+  const orig = st.applyFile(path.join(SUTDIR, "db/rollback/20261029_mfa_lock_order.down.sql")); s.check("R6-001", "the pre-fix (S7.5.4) definition is installed for the reproduction", orig.status === 0, orig.out.slice(0, 200));
+  s.check("R6-002", "…and the pre-fix definition is the one that updates the code row first", /with c as/.test(st.one("select pg_get_functiondef('office_mfa_consume_recovery_code_revoking(uuid,text,text)'::regprocedure)").out.replace(/\n/g, " ")));
   const adm = st.session();
   const q = async (sql) => { const r = await adm.query(sql); if (r.error) throw new Error("sql: " + r.error.message + " :: " + sql.slice(0, 100)); return r.rows; };
   const num = async (sql) => Number((await q(sql))[0][0]);
