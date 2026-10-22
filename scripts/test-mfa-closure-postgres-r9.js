@@ -106,10 +106,8 @@ s.main(async () => {
     const burst = await Promise.all(Array.from({ length: 40 }, (_, i) => (i % 2 ? sb : sa).recordMailboxAttempt(u, burstCid, exp, 5).then((r) => r.allowed, () => "error")));
     s.eq("R9-502", "40 concurrent attempts across two instances: exactly 5 allowed, 35 refused, none errors", `${burst.filter((x) => x === true).length}/${burst.filter((x) => x === false).length}/${burst.filter((x) => x === "error").length}`, "5/35/0");
     s.check("R9-503", "another account holding the same challenge id has its own budget", (await sa.recordMailboxAttempt(v, cid, exp, 5)).allowed === true);
-    const used = "used" + L.randomHex(8); await sa.recordMailboxAttempt(u, used, exp, 5);
-    const races = await Promise.all(Array.from({ length: 12 }, (_, i) => (i % 2 ? sb : sa).markMailboxVerified(u, used))); s.eq("R9-504", "a challenge is marked verified exactly once under 12 concurrent calls", races.filter(Boolean).length, 1);
-    s.check("R9-505", "after verification further attempts are refused", (await sa.recordMailboxAttempt(u, used, exp, 5)).allowed === false);
-    s.eq("R9-506", "an unknown challenge cannot be marked verified", await sa.markMailboxVerified(u, "nonesuch" + L.randomHex(4)), false);
+    const reuse = "reuse" + L.randomHex(8); const spentRight = []; for (let i = 0; i < 7; i++) spentRight.push((await sa.recordMailboxAttempt(u, reuse, exp, 5)).allowed);
+    s.eq("R9-504", "every evaluation spends the same budget, right or wrong: re-verification is allowed within it (S7.5.8 contract) and refused after", JSON.stringify(spentRight), JSON.stringify([true, true, true, true, true, false, false]));
     const longCid = "long" + L.randomHex(8); await sa.recordMailboxAttempt(u, longCid, Date.now() + 86_400_000, 5);
     s.check("R9-507", "an expiry far in the future is capped at 15 minutes", (await num(`select extract(epoch from (expires_at - now())) from admin_mfa_mailbox_attempts where admin_user_id='${u}' and challenge_id='${longCid}'`)) <= 905);
     s.check("R9-508", "rows contain no code and no e-mail/address material", (await q(`select challenge_id from admin_mfa_mailbox_attempts`)).every((r) => /^[A-Za-z0-9_-]{8,64}$/.test(r[0])));

@@ -3492,7 +3492,7 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
         // R9: three PERSISTED bounds in front of the 8-digit comparison, none of which depends on the client address, process memory or request timing:
         //   1. the account-level progressive MFA lock (shared with TOTP/recovery guessing), checked before anything is compared;
         //   2. a per-(account, challenge) attempt budget (5) in the database -- exhausted for this challenge even if the account is not locked;
-        //   3. single use: a challenge whose code was already accepted cannot be accepted again.
+        // A correct code may be re-verified within the challenge's lifetime (S7.5.8 contract: the ENROLMENT TOKEN is single-use), but every evaluation spends the same budget.
         // Every store fault answers 503 (never "try the code anyway"); every refusal below the budget is the same 401 as a wrong code.
         const mailboxDeny = (status, error, retry) => json(res, status, { error, ...(retry ? { retry_after_seconds: retry } : {}) }, { ...mfaHeaders, ...(retry ? { "retry-after": String(retry) } : {}) });
         try {
@@ -3508,13 +3508,9 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           }
         } catch { json(res, 503, { error: "mfa_verification_unavailable" }, mfaHeaders); return; }
         const codeOk = gate.lib.verifyMailboxCode(gate.claims, body.email_code);
-        let fresh = codeOk;
-        if (codeOk) {
-          try { fresh = await store.markMailboxVerified(gate.user.id, gate.claims.jti); } catch { json(res, 503, { error: "mfa_verification_unavailable" }, mfaHeaders); return; }
-        }
-        if (!codeOk || !fresh) {
-          if (!codeOk) { try { await store.recordMfaFailure(gate.user.id); } catch { json(res, 503, { error: "mfa_verification_unavailable" }, mfaHeaders); return; } }
-          await appendAudit(store, gate.actor, "mfa_enrollment_failed", "admin_user", gate.user.id, { request_id: ctx.requestId, failure_reason: codeOk ? "mailbox_code_replay" : "mailbox_code", at: new Date().toISOString() }, req, "failure").catch(() => {});
+        if (!codeOk) {
+          try { await store.recordMfaFailure(gate.user.id); } catch { json(res, 503, { error: "mfa_verification_unavailable" }, mfaHeaders); return; }
+          await appendAudit(store, gate.actor, "mfa_enrollment_failed", "admin_user", gate.user.id, { request_id: ctx.requestId, failure_reason: "mailbox_code", at: new Date().toISOString() }, req, "failure").catch(() => {});
           json(res, 401, { error: "mfa_failed" }, mfaHeaders);
           return;
         }

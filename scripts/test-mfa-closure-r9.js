@@ -42,8 +42,11 @@ async function main() {
     const after = await verify(ch.token, good, { "x-forwarded-for": "198.51.100.1" }); eq(after.status, 429, "B2 even the CORRECT code is refused once the challenge budget or the account lock is spent");
     const row = fs.readFileSync(sys.store.filePath || sys.store.storePath || sys.store.path, "utf8"); check(/admin_mfa_mailbox_attempts/.test(row) && !new RegExp(good).test(row), "B3 the budget is persisted with the state (survives a restart) and never stores the code");
     const other = await challengeFor(sys, v); const ok = await verify(other.token, codeFor(sys, other.token), {}); eq(ok.status, 200, "B4 another account's challenge is unaffected (cross-account isolation)");
-    const replay = await verify(other.token, codeFor(sys, other.token), {}); check(replay.status === 429 || replay.status === 401, `B5 replay: the same correct code is accepted once; the second use is refused (${replay.status})`);
-    check(!/token_hash|admin_mfa|attempts/.test(replay.text), "B6 refusals disclose no budget internals");
+    const again = await verify(other.token, codeFor(sys, other.token), {}); eq(again.status, 200, "B5 contract (S7.5.8): a correct code may be re-verified within the challenge lifetime; the enrolment token is what is single-use");
+    const replay = { text: again.text };
+    const spent = []; for (let i = 0; i < 6; i++) spent.push((await verify(other.token, codeFor(sys, other.token), {})).status);
+    check(spent.includes(429), `B6 correct re-verifications spend the SAME budget: they stop once it is used (${spent})`);
+    check(!/token_hash|admin_mfa|attempts/.test(replay.text) && !/attempts/.test(JSON.stringify(spent)), "B6 answers disclose no budget internals");
     // account lock: a NEW challenge for the same account after five failures is still locked (the lock lives on the account, not on the challenge or the address)
     const ch2 = await challengeFor(sys, u); const locked = await verify(ch2.token, codeFor(sys, ch2.token), { "x-forwarded-for": "203.0.113.77" });
     eq(locked.status, 429, "B7 a fresh challenge does not reset the account lock: the correct code is refused while it holds (no budget reset by re-challenging)");

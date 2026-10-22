@@ -1889,17 +1889,9 @@ class FileLeadAgentsStore {
       const list = this.state.admin_mfa_mailbox_attempts = (Array.isArray(this.state.admin_mfa_mailbox_attempts) ? this.state.admin_mfa_mailbox_attempts : []).filter((row) => Date.parse(row.expires_at) > Date.now() - 3600_000);
       let row = list.find((item) => item.admin_user_id === userId && item.challenge_id === challengeId);
       const cap = Date.now() + 15 * 60_000;
-      if (!row) { row = { admin_user_id: userId, challenge_id: String(challengeId), attempts: 0, verified_at: null, expires_at: new Date(Math.min(Number(expiresAtMs) || cap, cap)).toISOString() }; list.push(row); }
+      if (!row) { row = { admin_user_id: userId, challenge_id: String(challengeId), attempts: 0, expires_at: new Date(Math.min(Number(expiresAtMs) || cap, cap)).toISOString() }; list.push(row); }
       row.attempts += 1;
-      return { result: { attempts: row.attempts, allowed: row.attempts <= Math.max(1, Number(max) || 5) && !row.verified_at }, undo: () => { row.attempts -= 1; } };
-    });
-  }
-  async markMailboxVerified(userId, challengeId) {
-    return this._mfaTxn(() => {
-      const row = (this.state.admin_mfa_mailbox_attempts || []).find((item) => item.admin_user_id === userId && item.challenge_id === challengeId);
-      if (!row || row.verified_at) return { result: false, undo: () => {} };
-      row.verified_at = this.nowIso();
-      return { result: true, undo: () => { row.verified_at = null; } };
+      return { result: { attempts: row.attempts, allowed: row.attempts <= Math.max(1, Number(max) || 5) }, undo: () => { row.attempts -= 1; } };
     });
   }
   async getActiveTotpCredential(userId) { return mfaShared.sanitizeCredential(this.state.admin_mfa_credentials.find((c) => c.admin_user_id === userId && c.type === "totp" && c.status === "active") || null); }

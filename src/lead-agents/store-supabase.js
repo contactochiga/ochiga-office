@@ -1825,13 +1825,6 @@ class SupabaseLeadAgentsStore {
     if (!row || !Number.isInteger(row.attempts) || typeof row.allowed !== "boolean") throw mfaShared.mfaError("mfa_store_error", { operation: "recordMailboxAttempt" });
     return { attempts: row.attempts, allowed: row.allowed };
   }
-  async markMailboxVerified(userId, challengeId) {
-    await this._mfaRequireSchema();
-    if (!(await this.supportsMailboxAttempts())) return true;
-    const result = await this._mfaRpc("markMailboxVerified", "office_mfa_mailbox_verified", { p_user_id: userId, p_challenge_id: String(challengeId || "") });
-    if (typeof result !== "boolean") throw mfaShared.mfaError("mfa_store_error", { operation: "markMailboxVerified" });
-    return result;
-  }
   async getActiveTotpCredential(userId) {
     await this._mfaRequireSchema();
     const rows = this._mfaRows(await this._mfaCall("getActiveTotpCredential", async () => (await this.client.get(`/admin_mfa_credentials?admin_user_id=eq.${encodeURIComponent(userId)}&type=eq.totp&status=eq.active&select=id,admin_user_id,type,label,status,created_at,activated_at,last_used_at,revoked_at&limit=1`)).data), "getActiveTotpCredential");
