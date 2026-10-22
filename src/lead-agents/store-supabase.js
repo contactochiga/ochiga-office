@@ -1778,10 +1778,59 @@ class SupabaseLeadAgentsStore {
     if (!Number.isInteger(total)) throw mfaShared.mfaError("mfa_store_error", { operation: "countUnusedRecoveryCodesNotUsingKey" });
     return total;
   }
+  // R9 (db/20261030): "does this account have an active second factor?" is decided from TWO independent reads -- the active credential rows and the account's own mfa_active_count, which a trigger
+  // keeps equal to that number in the same transaction as every change. They must agree. An empty, truncated, stale or malformed answer to either read makes them disagree (or makes one unreadable)
+  // and the question is REFUSED (mfa_store_error => callers answer 503); it is never answered "no factor". Verified zero (marker 0 and no rows) is the only way to be unenrolled.
+  // Without the migration the capability is reported unavailable (/healthz) and the pre-R9 single read is used; with MFA mode on, /healthz is then not ready.
+  async supportsMfaEvidence() {
+    if (this.mfaEvidence === true) return true;
+    if (this.mfaEvidence === false && Date.now() - (this.mfaEvidenceCheckedAt || 0) < 60_000) return false;
+    try {
+      const response = await this.client.post("/rpc/office_mfa_evidence_version", {});
+      if (response.data !== 1) throw mfaShared.mfaError("mfa_store_error");
+      this.mfaEvidence = true;
+    } catch (error) {
+      if (error?.response?.status === 404 || error?.response?.data?.code === "PGRST202") { this.mfaEvidence = false; this.mfaEvidenceCheckedAt = Date.now(); } else throw mfaShared.sanitizeStoreError(error, "supportsMfaEvidence");
+    }
+    return this.mfaEvidence === true;
+  }
   async hasActiveMfa(userId) {
     await this._mfaRequireSchema();
-    const rows = this._mfaRows(await this._mfaCall("hasActiveMfa", async () => (await this.client.get(`/admin_mfa_credentials?admin_user_id=eq.${encodeURIComponent(userId)}&status=eq.active&select=id&limit=1`)).data), "hasActiveMfa");
-    return rows.length > 0;
+    const evidence = await this.supportsMfaEvidence();
+    const rows = this._mfaRows(await this._mfaCall("hasActiveMfa", async () => (await this.client.get(`/admin_mfa_credentials?admin_user_id=eq.${encodeURIComponent(userId)}&status=eq.active&select=id&limit=50`)).data), "hasActiveMfa");
+    if (!evidence) return rows.length > 0;
+    const marker = this._mfaRows(await this._mfaCall("hasActiveMfa", async () => (await this.client.get(`/admin_users?id=eq.${encodeURIComponent(userId)}&select=mfa_active_count&limit=1`)).data), "hasActiveMfa");
+    const count = marker[0] && marker[0].mfa_active_count;
+    if (!Number.isInteger(count) || count < 0 || count !== rows.length || rows.some((row) => !row || typeof row !== "object" || typeof row.id !== "string")) throw mfaShared.mfaError("mfa_store_error", { operation: "hasActiveMfa" });
+    return count > 0;
+  }
+  // R9 (db/20261031): per-(account, challenge) attempt budget for the mailbox code. Returns { attempts, allowed }; throws on any fault so callers fail closed. Unavailable (migration not applied) => null.
+  async supportsMailboxAttempts() {
+    if (this.mailboxAttempts === true) return true;
+    if (this.mailboxAttempts === false && Date.now() - (this.mailboxAttemptsCheckedAt || 0) < 60_000) return false;
+    try {
+      const response = await this.client.post("/rpc/office_mfa_mailbox_version", {});
+      if (response.data !== 1) throw mfaShared.mfaError("mfa_store_error");
+      this.mailboxAttempts = true;
+    } catch (error) {
+      if (error?.response?.status === 404 || error?.response?.data?.code === "PGRST202") { this.mailboxAttempts = false; this.mailboxAttemptsCheckedAt = Date.now(); } else throw mfaShared.sanitizeStoreError(error, "supportsMailboxAttempts");
+    }
+    return this.mailboxAttempts === true;
+  }
+  async recordMailboxAttempt(userId, challengeId, expiresAtMs, max = 5) {
+    await this._mfaRequireSchema();
+    if (!(await this.supportsMailboxAttempts())) return null;
+    const rows = await this._mfaRpc("recordMailboxAttempt", "office_mfa_mailbox_attempt", { p_user_id: userId, p_challenge_id: String(challengeId || ""), p_expires_at: new Date(Number(expiresAtMs) || Date.now() + 600_000).toISOString(), p_max: max });
+    const row = Array.isArray(rows) ? rows[0] : rows;
+    if (!row || !Number.isInteger(row.attempts) || typeof row.allowed !== "boolean") throw mfaShared.mfaError("mfa_store_error", { operation: "recordMailboxAttempt" });
+    return { attempts: row.attempts, allowed: row.allowed };
+  }
+  async markMailboxVerified(userId, challengeId) {
+    await this._mfaRequireSchema();
+    if (!(await this.supportsMailboxAttempts())) return true;
+    const result = await this._mfaRpc("markMailboxVerified", "office_mfa_mailbox_verified", { p_user_id: userId, p_challenge_id: String(challengeId || "") });
+    if (typeof result !== "boolean") throw mfaShared.mfaError("mfa_store_error", { operation: "markMailboxVerified" });
+    return result;
   }
   async getActiveTotpCredential(userId) {
     await this._mfaRequireSchema();

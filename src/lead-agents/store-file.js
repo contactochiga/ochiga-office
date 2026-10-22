@@ -25,6 +25,7 @@ class FileLeadAgentsStore {
       admin_mfa_credentials: [],
       admin_mfa_recovery_codes: [],
       admin_mfa_challenges: [],
+      admin_mfa_mailbox_attempts: [],
       revoked_sessions: {},
       audit_events: [],
       timeline_events: [],
@@ -108,6 +109,7 @@ class FileLeadAgentsStore {
         admin_mfa_credentials: Array.isArray(parsed.admin_mfa_credentials) ? parsed.admin_mfa_credentials : [],
         admin_mfa_recovery_codes: Array.isArray(parsed.admin_mfa_recovery_codes) ? parsed.admin_mfa_recovery_codes : [],
         admin_mfa_challenges: Array.isArray(parsed.admin_mfa_challenges) ? parsed.admin_mfa_challenges : [],
+        admin_mfa_mailbox_attempts: Array.isArray(parsed.admin_mfa_mailbox_attempts) ? parsed.admin_mfa_mailbox_attempts : [],
         revoked_sessions: parsed.revoked_sessions && typeof parsed.revoked_sessions === "object" && !Array.isArray(parsed.revoked_sessions) ? parsed.revoked_sessions : {},
         audit_events: Array.isArray(parsed.audit_events) ? parsed.audit_events : [],
         timeline_events: Array.isArray(parsed.timeline_events) ? parsed.timeline_events : [],
@@ -1872,7 +1874,34 @@ class FileLeadAgentsStore {
   // S7.5.3: which keys the account's UNUSED recovery codes were hashed under (null = recorded before key ids existed), and how many unused codes still depend on an older key.
   async listMfaRecoveryKeyIds(userId) { return [...new Set(this.state.admin_mfa_recovery_codes.filter((c) => c.admin_user_id === userId && !c.used_at).map((c) => c.key_id || null))]; }
   async countUnusedRecoveryCodesNotUsingKey(keyId) { return this.state.admin_mfa_recovery_codes.filter((c) => !c.used_at && (c.key_id || null) !== keyId).length; }
-  async hasActiveMfa(userId) { return this.state.admin_mfa_credentials.some((c) => c.admin_user_id === userId && c.status === "active"); }
+  // R9: the file store has one writer and no gateway between it and its data; it still refuses a corrupt in-memory population instead of reading it as "no factor".
+  async supportsMfaEvidence() { return true; }
+  async hasActiveMfa(userId) {
+    const rows = this.state.admin_mfa_credentials;
+    if (!Array.isArray(rows) || rows.some((c) => !c || typeof c !== "object")) throw mfaShared.mfaError("mfa_store_error", { operation: "hasActiveMfa" });
+    return rows.some((c) => c.admin_user_id === userId && c.status === "active");
+  }
+  // R9: per-(account, challenge) mailbox-code attempt budget, persisted with the rest of the state (survives a restart). Same contract as the database function.
+  async supportsMailboxAttempts() { return true; }
+  async recordMailboxAttempt(userId, challengeId, expiresAtMs, max = 5) {
+    return this._mfaTxn(() => {
+      if (this._mfaUserIndex(userId) === -1) return { result: null, undo: () => {} };
+      const list = this.state.admin_mfa_mailbox_attempts = (Array.isArray(this.state.admin_mfa_mailbox_attempts) ? this.state.admin_mfa_mailbox_attempts : []).filter((row) => Date.parse(row.expires_at) > Date.now() - 3600_000);
+      let row = list.find((item) => item.admin_user_id === userId && item.challenge_id === challengeId);
+      const cap = Date.now() + 15 * 60_000;
+      if (!row) { row = { admin_user_id: userId, challenge_id: String(challengeId), attempts: 0, verified_at: null, expires_at: new Date(Math.min(Number(expiresAtMs) || cap, cap)).toISOString() }; list.push(row); }
+      row.attempts += 1;
+      return { result: { attempts: row.attempts, allowed: row.attempts <= Math.max(1, Number(max) || 5) && !row.verified_at }, undo: () => { row.attempts -= 1; } };
+    });
+  }
+  async markMailboxVerified(userId, challengeId) {
+    return this._mfaTxn(() => {
+      const row = (this.state.admin_mfa_mailbox_attempts || []).find((item) => item.admin_user_id === userId && item.challenge_id === challengeId);
+      if (!row || row.verified_at) return { result: false, undo: () => {} };
+      row.verified_at = this.nowIso();
+      return { result: true, undo: () => { row.verified_at = null; } };
+    });
+  }
   async getActiveTotpCredential(userId) { return mfaShared.sanitizeCredential(this.state.admin_mfa_credentials.find((c) => c.admin_user_id === userId && c.type === "totp" && c.status === "active") || null); }
   async countMfaEnrolledAccounts() { return new Set(this.state.admin_mfa_credentials.filter((c) => c.status === "active").map((c) => c.admin_user_id)).size; }
   async listMfaEnrolledUserIds() { return [...new Set(this.state.admin_mfa_credentials.filter((c) => c.status === "active").map((c) => c.admin_user_id))]; }
@@ -1954,9 +1983,9 @@ class FileLeadAgentsStore {
     const index = this.state.admin_users.findIndex((item) => item.id === userId);
     if (index === -1) return false;
     // R8: mirror the database's ON DELETE CASCADE. Factor material, recovery codes, challenges, reset tokens and invitations of a permanently deleted account must not survive it.
-    const snapshot = ["admin_users", "admin_invites", "password_reset_tokens", "admin_mfa_credentials", "admin_mfa_recovery_codes", "admin_mfa_challenges"].map((key) => [key, Array.isArray(this.state[key]) ? [...this.state[key]] : this.state[key]]);
+    const snapshot = ["admin_users", "admin_invites", "password_reset_tokens", "admin_mfa_credentials", "admin_mfa_recovery_codes", "admin_mfa_challenges", "admin_mfa_mailbox_attempts"].map((key) => [key, Array.isArray(this.state[key]) ? [...this.state[key]] : this.state[key]]);
     this.state.admin_users.splice(index, 1);
-    for (const key of ["admin_invites", "password_reset_tokens", "admin_mfa_credentials", "admin_mfa_recovery_codes", "admin_mfa_challenges"]) {
+    for (const key of ["admin_invites", "password_reset_tokens", "admin_mfa_credentials", "admin_mfa_recovery_codes", "admin_mfa_challenges", "admin_mfa_mailbox_attempts"]) {
       if (Array.isArray(this.state[key])) this.state[key] = this.state[key].filter((row) => row.admin_user_id !== userId);
     }
     try { await this.persist(); } catch (error) { for (const [key, value] of snapshot) this.state[key] = value; throw error; }

@@ -2606,7 +2606,14 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
         try { if (typeof store.countMfaEnrolledAccounts === "function") mfaEnrolled = await store.countMfaEnrolledAccounts(); } catch { mfaEnrolled = null; }
         let revocationCapability = "unknown";
         try { revocationCapability = typeof store.supportsSessionRevocation === "function" ? ((await store.supportsSessionRevocation()) ? "available" : "unavailable") : "unavailable"; } catch { revocationCapability = "unknown"; }
-        const ready = authConfigStatus.valid && mfaStatus.valid && (mfaStatus.mode !== "on" || mfaSchema === "available");
+        // R9: independent factor evidence (db/20261030) and the mailbox attempt budget (db/20261031). With MFA ON the evidence is part of readiness: without it an empty/stale factor list could
+        // let a password alone sign an enrolled account in. The mailbox budget degrades to the account lock + limiter and is only reported.
+        let mfaEvidence = "not_checked", mailboxAttempts = "not_checked";
+        if (mfaStatus.mode === "on" && mfaSchema === "available") {
+          try { mfaEvidence = typeof store.supportsMfaEvidence === "function" ? ((await store.supportsMfaEvidence()) ? "available" : "unavailable") : "unavailable"; } catch { mfaEvidence = "unknown"; }
+          try { mailboxAttempts = typeof store.supportsMailboxAttempts === "function" ? ((await store.supportsMailboxAttempts()) ? "available" : "unavailable") : "unavailable"; } catch { mailboxAttempts = "unknown"; }
+        }
+        const ready = authConfigStatus.valid && mfaStatus.valid && (mfaStatus.mode !== "on" || (mfaSchema === "available" && mfaEvidence === "available"));
         // R8: readiness and security-posture codes are public (load balancers and operators need them); BUSINESS statistics and the deployment inventory (cookie name, auth mode, e-mail provider,
         // storage and realtime internals) are shown only to a caller who holds a valid session or API key.
         let healthDetail = false;
@@ -2616,7 +2623,7 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           ready,
           // R6: where the sign-in counters live. "shared" = Postgres (every instance), "process" = this process only (file store or migration 20261028 not applied), "unavailable" = store error.
           rate_limit: { scope: typeof adminLoginRateLimiter.scope === "function" ? await adminLoginRateLimiter.scope() : "process", trusted_proxy_hops: config.trustedProxyHops, ...(config.trustedProxyHopsInvalid ? { trusted_proxy_hops_config: "invalid_ignored" } : {}) },
-          mfa: { mode: mfaStatus.mode, key: mfaStatus.key, schema: mfaSchema, enrolled_accounts: mfaEnrolled, webauthn: (() => { const w = validateWebauthnConfig(config); return { status: w.status, ...(w.problems.length ? { problems: w.problems } : {}) }; })(), recovery: recoverySummary(config), ...(mfaStatus.problems.length ? { problems: mfaStatus.problems } : {}) },
+          mfa: { mode: mfaStatus.mode, key: mfaStatus.key, schema: mfaSchema, evidence: mfaEvidence, mailbox_attempts: mailboxAttempts, enrolled_accounts: mfaEnrolled, webauthn: (() => { const w = validateWebauthnConfig(config); return { status: w.status, ...(w.problems.length ? { problems: w.problems } : {}) }; })(), recovery: recoverySummary(config), ...(mfaStatus.problems.length ? { problems: mfaStatus.problems } : {}) },
           // codes and mode names only; never a secret or anything derived from one
           auth_config: {
             session_secret: authConfigStatus.session_secret,
@@ -3482,7 +3489,35 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
         const body = await readJsonBody(req); requireObject(body, "body");
         const gate = await forcedGate("enroll", body.challenge_token); if (!gate) return;
         if (!(await enrollLimiter("mfa-enroll-verify", gate.user))) return;
-        if (!gate.lib.verifyMailboxCode(gate.claims, body.email_code)) { await appendAudit(store, gate.actor, "mfa_enrollment_failed", "admin_user", gate.user.id, { request_id: ctx.requestId, failure_reason: "mailbox_code", at: new Date().toISOString() }, req, "failure").catch(() => {}); json(res, 401, { error: "mfa_failed" }, mfaHeaders); return; }
+        // R9: three PERSISTED bounds in front of the 8-digit comparison, none of which depends on the client address, process memory or request timing:
+        //   1. the account-level progressive MFA lock (shared with TOTP/recovery guessing), checked before anything is compared;
+        //   2. a per-(account, challenge) attempt budget (5) in the database -- exhausted for this challenge even if the account is not locked;
+        //   3. single use: a challenge whose code was already accepted cannot be accepted again.
+        // Every store fault answers 503 (never "try the code anyway"); every refusal below the budget is the same 401 as a wrong code.
+        const mailboxDeny = (status, error, retry) => json(res, status, { error, ...(retry ? { retry_after_seconds: retry } : {}) }, { ...mfaHeaders, ...(retry ? { "retry-after": String(retry) } : {}) });
+        try {
+          const lock = await store.getMfaLockState(gate.user.id);
+          const lockedFor = lock && lock.locked_until ? Date.parse(lock.locked_until) - Date.now() : 0;
+          if (lockedFor > 0) { mailboxDeny(429, "mfa_locked", Math.ceil(lockedFor / 1000)); return; }
+          if (typeof store.recordMailboxAttempt === "function") {
+            const attempt = await store.recordMailboxAttempt(gate.user.id, gate.claims.jti, gate.claims.exp, 5);
+            if (attempt && !attempt.allowed) {
+              await appendAudit(store, gate.actor, "mfa_enrollment_failed", "admin_user", gate.user.id, { request_id: ctx.requestId, failure_reason: "mailbox_attempts_exhausted", at: new Date().toISOString() }, req, "failure").catch(() => {});
+              mailboxDeny(429, "mfa_locked", 60); return;
+            }
+          }
+        } catch { json(res, 503, { error: "mfa_verification_unavailable" }, mfaHeaders); return; }
+        const codeOk = gate.lib.verifyMailboxCode(gate.claims, body.email_code);
+        let fresh = codeOk;
+        if (codeOk) {
+          try { fresh = await store.markMailboxVerified(gate.user.id, gate.claims.jti); } catch { json(res, 503, { error: "mfa_verification_unavailable" }, mfaHeaders); return; }
+        }
+        if (!codeOk || !fresh) {
+          if (!codeOk) { try { await store.recordMfaFailure(gate.user.id); } catch { json(res, 503, { error: "mfa_verification_unavailable" }, mfaHeaders); return; } }
+          await appendAudit(store, gate.actor, "mfa_enrollment_failed", "admin_user", gate.user.id, { request_id: ctx.requestId, failure_reason: codeOk ? "mailbox_code_replay" : "mailbox_code", at: new Date().toISOString() }, req, "failure").catch(() => {});
+          json(res, 401, { error: "mfa_failed" }, mfaHeaders);
+          return;
+        }
         const issued = gate.lib.issueChallengeToken({ user: gate.user, purpose: "enroll_verified", ttlMs: 10 * 60_000 });
         await appendAudit(store, gate.actor, "mfa_mailbox_verified", "admin_user", gate.user.id, { request_id: ctx.requestId, at: new Date().toISOString() }, req);
         json(res, 200, { ok: true, enrollment_token: issued.token, expires_at: issued.expires_at }, mfaHeaders);
