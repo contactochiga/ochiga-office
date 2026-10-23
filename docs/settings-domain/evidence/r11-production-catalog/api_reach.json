@@ -1,0 +1,46 @@
+[
+ {
+  "check_name": "anon_can_use_public_schema",
+  "v": false
+ },
+ {
+  "check_name": "authenticated_can_use_public_schema",
+  "v": false
+ },
+ {
+  "check_name": "PUBLIC_has_schema_usage",
+  "v": false
+ },
+ {
+  "check_name": "anon_can_create_in_public",
+  "v": false
+ },
+ {
+  "check_name": "authenticated_can_create_in_public",
+  "v": false
+ },
+ {
+  "check_name": "service_role_can_use_public",
+  "v": true
+ },
+ {
+  "check_name": "anon_database_create",
+  "v": false
+ },
+ {
+  "check_name": "anon_database_temp",
+  "v": true
+ },
+ {
+  "check_name": "PUBLIC_database_temp",
+  "v": true
+ },
+ {
+  "check_name": "anon_security_definer_fns_anywhere_executable",
+  "v": false
+ },
+ {
+  "check_name": "graphql_public_function_usable_by_anon",
+  "v": true
+ }
+]

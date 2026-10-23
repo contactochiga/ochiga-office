@@ -1,5 +1,7 @@
 # S7 R10 — Proxy and Migration Acceptance (production boundary)
 
+> **R11 update (2026-10-23):** the open item "production exposure of admin_users and the 50 business tables UNKNOWN" is RESOLVED by read-only production evidence: all 58 tables have RLS, no Data API privilege exists, and schema `public` is closed to anon/authenticated. See `54_S7_R11_PRODUCTION_DB_RECONCILIATION.md`. The R10 lockdown proposal is therefore not needed for production. The trusted-proxy chain remains UNKNOWN.
+
 Baseline R9 `ef0af76`. Runtime/schema commit `5db4bb8` (+ this document). Clean-checkout evidence: `s7-official-results/r10full`; adjudication runs: `s7-official-results/r10`. Nothing was merged, deployed, applied to production, or MFA-enforced. No production system was contacted.
 
 ## A. Trusted-proxy chain — status: **UNKNOWN (no authorized read-only evidence available); `LEAD_AGENTS_TRUSTED_PROXY_HOPS` stays 0**

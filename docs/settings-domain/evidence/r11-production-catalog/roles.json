@@ -1,0 +1,152 @@
+[
+ {
+  "members": "authenticator,postgres",
+  "rolbypassrls": false,
+  "rolcanlogin": false,
+  "rolcreatedb": false,
+  "rolcreaterole": false,
+  "rolinherit": true,
+  "rolname": "anon",
+  "rolsuper": false
+ },
+ {
+  "members": "authenticator,postgres",
+  "rolbypassrls": false,
+  "rolcanlogin": false,
+  "rolcreatedb": false,
+  "rolcreaterole": false,
+  "rolinherit": true,
+  "rolname": "authenticated",
+  "rolsuper": false
+ },
+ {
+  "members": "postgres,supabase_storage_admin",
+  "rolbypassrls": false,
+  "rolcanlogin": true,
+  "rolcreatedb": false,
+  "rolcreaterole": false,
+  "rolinherit": false,
+  "rolname": "authenticator",
+  "rolsuper": false
+ },
+ {
+  "members": null,
+  "rolbypassrls": false,
+  "rolcanlogin": false,
+  "rolcreatedb": true,
+  "rolcreaterole": true,
+  "rolinherit": true,
+  "rolname": "dashboard_user",
+  "rolsuper": false
+ },
+ {
+  "members": null,
+  "rolbypassrls": false,
+  "rolcanlogin": true,
+  "rolcreatedb": false,
+  "rolcreaterole": false,
+  "rolinherit": true,
+  "rolname": "pgbouncer",
+  "rolsuper": false
+ },
+ {
+  "members": "cli_login_postgres",
+  "rolbypassrls": true,
+  "rolcanlogin": true,
+  "rolcreatedb": true,
+  "rolcreaterole": true,
+  "rolinherit": true,
+  "rolname": "postgres",
+  "rolsuper": false
+ },
+ {
+  "members": "authenticator,postgres",
+  "rolbypassrls": true,
+  "rolcanlogin": false,
+  "rolcreatedb": false,
+  "rolcreaterole": false,
+  "rolinherit": true,
+  "rolname": "service_role",
+  "rolsuper": false
+ },
+ {
+  "members": null,
+  "rolbypassrls": true,
+  "rolcanlogin": true,
+  "rolcreatedb": true,
+  "rolcreaterole": true,
+  "rolinherit": true,
+  "rolname": "supabase_admin",
+  "rolsuper": true
+ },
+ {
+  "members": null,
+  "rolbypassrls": false,
+  "rolcanlogin": true,
+  "rolcreatedb": false,
+  "rolcreaterole": true,
+  "rolinherit": false,
+  "rolname": "supabase_auth_admin",
+  "rolsuper": false
+ },
+ {
+  "members": null,
+  "rolbypassrls": true,
+  "rolcanlogin": true,
+  "rolcreatedb": false,
+  "rolcreaterole": false,
+  "rolinherit": true,
+  "rolname": "supabase_etl_admin",
+  "rolsuper": false
+ },
+ {
+  "members": "postgres,supabase_etl_admin",
+  "rolbypassrls": false,
+  "rolcanlogin": false,
+  "rolcreatedb": false,
+  "rolcreaterole": false,
+  "rolinherit": true,
+  "rolname": "supabase_privileged_role",
+  "rolsuper": false
+ },
+ {
+  "members": null,
+  "rolbypassrls": true,
+  "rolcanlogin": true,
+  "rolcreatedb": false,
+  "rolcreaterole": false,
+  "rolinherit": true,
+  "rolname": "supabase_read_only_user",
+  "rolsuper": false
+ },
+ {
+  "members": null,
+  "rolbypassrls": false,
+  "rolcanlogin": false,
+  "rolcreatedb": false,
+  "rolcreaterole": false,
+  "rolinherit": false,
+  "rolname": "supabase_realtime_admin",
+  "rolsuper": false
+ },
+ {
+  "members": null,
+  "rolbypassrls": false,
+  "rolcanlogin": true,
+  "rolcreatedb": false,
+  "rolcreaterole": false,
+  "rolinherit": true,
+  "rolname": "supabase_replication_admin",
+  "rolsuper": false
+ },
+ {
+  "members": null,
+  "rolbypassrls": false,
+  "rolcanlogin": true,
+  "rolcreatedb": false,
+  "rolcreaterole": true,
+  "rolinherit": false,
+  "rolname": "supabase_storage_admin",
+  "rolsuper": false
+ }
+]

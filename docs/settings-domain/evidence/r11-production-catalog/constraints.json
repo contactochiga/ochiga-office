@@ -1,0 +1,788 @@
+[
+ {
+  "conname": "admin_invites_admin_user_id_fkey",
+  "contype": "f",
+  "def": "FOREIGN KEY (admin_user_id) REFERENCES admin_users(id) ON DELETE CASCADE",
+  "tbl": "admin_invites"
+ },
+ {
+  "conname": "admin_invites_pkey",
+  "contype": "p",
+  "def": "PRIMARY KEY (id)",
+  "tbl": "admin_invites"
+ },
+ {
+  "conname": "admin_invites_token_hash_key",
+  "contype": "u",
+  "def": "UNIQUE (token_hash)",
+  "tbl": "admin_invites"
+ },
+ {
+  "conname": "admin_users_email_key",
+  "contype": "u",
+  "def": "UNIQUE (email)",
+  "tbl": "admin_users"
+ },
+ {
+  "conname": "admin_users_pkey",
+  "contype": "p",
+  "def": "PRIMARY KEY (id)",
+  "tbl": "admin_users"
+ },
+ {
+  "conname": "audit_events_actor_user_id_fkey",
+  "contype": "f",
+  "def": "FOREIGN KEY (actor_user_id) REFERENCES admin_users(id) ON DELETE SET NULL",
+  "tbl": "audit_events"
+ },
+ {
+  "conname": "audit_events_pkey",
+  "contype": "p",
+  "def": "PRIMARY KEY (id)",
+  "tbl": "audit_events"
+ },
+ {
+  "conname": "communication_delivery_outbox_delivery_key_key",
+  "contype": "u",
+  "def": "UNIQUE (delivery_key)",
+  "tbl": "communication_delivery_outbox"
+ },
+ {
+  "conname": "communication_delivery_outbox_event_type_check",
+  "contype": "c",
+  "def": "CHECK ((event_type = ANY (ARRAY['message'::text, 'status'::text])))",
+  "tbl": "communication_delivery_outbox"
+ },
+ {
+  "conname": "communication_delivery_outbox_mode_check",
+  "contype": "c",
+  "def": "CHECK ((mode = ANY (ARRAY['live'::text, 'replay'::text])))",
+  "tbl": "communication_delivery_outbox"
+ },
+ {
+  "conname": "communication_delivery_outbox_pkey",
+  "contype": "p",
+  "def": "PRIMARY KEY (id)",
+  "tbl": "communication_delivery_outbox"
+ },
+ {
+  "conname": "communication_delivery_outbox_status_check",
+  "contype": "c",
+  "def": "CHECK ((status = ANY (ARRAY['pending'::text, 'delivered'::text, 'dead'::text])))",
+  "tbl": "communication_delivery_outbox"
+ },
+ {
+  "conname": "conversations_lead_id_fkey",
+  "contype": "f",
+  "def": "FOREIGN KEY (lead_id) REFERENCES leads(id) ON DELETE CASCADE",
+  "tbl": "conversations"
+ },
+ {
+  "conname": "conversations_pkey",
+  "contype": "p",
+  "def": "PRIMARY KEY (id)",
+  "tbl": "conversations"
+ },
+ {
+  "conname": "crm_activities_contact_id_fkey",
+  "contype": "f",
+  "def": "FOREIGN KEY (contact_id) REFERENCES crm_contacts(id) ON DELETE SET NULL",
+  "tbl": "crm_activities"
+ },
+ {
+  "conname": "crm_activities_lead_id_fkey",
+  "contype": "f",
+  "def": "FOREIGN KEY (lead_id) REFERENCES leads(id) ON DELETE SET NULL",
+  "tbl": "crm_activities"
+ },
+ {
+  "conname": "crm_activities_opportunity_id_fkey",
+  "contype": "f",
+  "def": "FOREIGN KEY (opportunity_id) REFERENCES crm_opportunities(id) ON DELETE SET NULL",
+  "tbl": "crm_activities"
+ },
+ {
+  "conname": "crm_activities_organization_id_fkey",
+  "contype": "f",
+  "def": "FOREIGN KEY (organization_id) REFERENCES crm_organizations(id) ON DELETE SET NULL",
+  "tbl": "crm_activities"
+ },
+ {
+  "conname": "crm_activities_pkey",
+  "contype": "p",
+  "def": "PRIMARY KEY (id)",
+  "tbl": "crm_activities"
+ },
+ {
+  "conname": "crm_contacts_organization_id_fkey",
+  "contype": "f",
+  "def": "FOREIGN KEY (organization_id) REFERENCES crm_organizations(id) ON DELETE SET NULL",
+  "tbl": "crm_contacts"
+ },
+ {
+  "conname": "crm_contacts_pkey",
+  "contype": "p",
+  "def": "PRIMARY KEY (id)",
+  "tbl": "crm_contacts"
+ },
+ {
+  "conname": "crm_opportunities_contact_id_fkey",
+  "contype": "f",
+  "def": "FOREIGN KEY (contact_id) REFERENCES crm_contacts(id) ON DELETE SET NULL",
+  "tbl": "crm_opportunities"
+ },
+ {
+  "conname": "crm_opportunities_lead_id_fkey",
+  "contype": "f",
+  "def": "FOREIGN KEY (lead_id) REFERENCES leads(id) ON DELETE SET NULL",
+  "tbl": "crm_opportunities"
+ },
+ {
+  "conname": "crm_opportunities_organization_id_fkey",
+  "contype": "f",
+  "def": "FOREIGN KEY (organization_id) REFERENCES crm_organizations(id) ON DELETE SET NULL",
+  "tbl": "crm_opportunities"
+ },
+ {
+  "conname": "crm_opportunities_pkey",
+  "contype": "p",
+  "def": "PRIMARY KEY (id)",
+  "tbl": "crm_opportunities"
+ },
+ {
+  "conname": "crm_organizations_pkey",
+  "contype": "p",
+  "def": "PRIMARY KEY (id)",
+  "tbl": "crm_organizations"
+ },
+ {
+  "conname": "crm_tasks_lead_id_fkey",
+  "contype": "f",
+  "def": "FOREIGN KEY (lead_id) REFERENCES leads(id) ON DELETE SET NULL",
+  "tbl": "crm_tasks"
+ },
+ {
+  "conname": "crm_tasks_opportunity_id_fkey",
+  "contype": "f",
+  "def": "FOREIGN KEY (opportunity_id) REFERENCES crm_opportunities(id) ON DELETE SET NULL",
+  "tbl": "crm_tasks"
+ },
+ {
+  "conname": "crm_tasks_pkey",
+  "contype": "p",
+  "def": "PRIMARY KEY (id)",
+  "tbl": "crm_tasks"
+ },
+ {
+  "conname": "demos_lead_id_fkey",
+  "contype": "f",
+  "def": "FOREIGN KEY (lead_id) REFERENCES leads(id) ON DELETE CASCADE",
+  "tbl": "demos"
+ },
+ {
+  "conname": "demos_pkey",
+  "contype": "p",
+  "def": "PRIMARY KEY (id)",
+  "tbl": "demos"
+ },
+ {
+  "conname": "deployment_projects_lead_id_fkey",
+  "contype": "f",
+  "def": "FOREIGN KEY (lead_id) REFERENCES leads(id) ON DELETE SET NULL",
+  "tbl": "deployment_projects"
+ },
+ {
+  "conname": "deployment_projects_pkey",
+  "contype": "p",
+  "def": "PRIMARY KEY (id)",
+  "tbl": "deployment_projects"
+ },
+ {
+  "conname": "facility_workspaces_lead_id_fkey",
+  "contype": "f",
+  "def": "FOREIGN KEY (lead_id) REFERENCES leads(id) ON DELETE SET NULL",
+  "tbl": "facility_workspaces"
+ },
+ {
+  "conname": "facility_workspaces_pkey",
+  "contype": "p",
+  "def": "PRIMARY KEY (id)",
+  "tbl": "facility_workspaces"
+ },
+ {
+  "conname": "facility_workspaces_portfolio_id_fkey",
+  "contype": "f",
+  "def": "FOREIGN KEY (portfolio_id) REFERENCES office_portfolio_entries(id) ON DELETE SET NULL",
+  "tbl": "facility_workspaces"
+ },
+ {
+  "conname": "inbound_events_lead_id_fkey",
+  "contype": "f",
+  "def": "FOREIGN KEY (lead_id) REFERENCES leads(id) ON DELETE SET NULL",
+  "tbl": "inbound_events"
+ },
+ {
+  "conname": "inbound_events_pkey",
+  "contype": "p",
+  "def": "PRIMARY KEY (id)",
+  "tbl": "inbound_events"
+ },
+ {
+  "conname": "lead_channel_states_lead_id_channel_key",
+  "contype": "u",
+  "def": "UNIQUE (lead_id, channel)",
+  "tbl": "lead_channel_states"
+ },
+ {
+  "conname": "lead_channel_states_lead_id_fkey",
+  "contype": "f",
+  "def": "FOREIGN KEY (lead_id) REFERENCES leads(id) ON DELETE CASCADE",
+  "tbl": "lead_channel_states"
+ },
+ {
+  "conname": "lead_channel_states_pkey",
+  "contype": "p",
+  "def": "PRIMARY KEY (id)",
+  "tbl": "lead_channel_states"
+ },
+ {
+  "conname": "lead_memories_lead_id_fkey",
+  "contype": "f",
+  "def": "FOREIGN KEY (lead_id) REFERENCES leads(id) ON DELETE CASCADE",
+  "tbl": "lead_memories"
+ },
+ {
+  "conname": "lead_memories_pkey",
+  "contype": "p",
+  "def": "PRIMARY KEY (lead_id)",
+  "tbl": "lead_memories"
+ },
+ {
+  "conname": "leads_pkey",
+  "contype": "p",
+  "def": "PRIMARY KEY (id)",
+  "tbl": "leads"
+ },
+ {
+  "conname": "notifications_lead_id_fkey",
+  "contype": "f",
+  "def": "FOREIGN KEY (lead_id) REFERENCES leads(id) ON DELETE SET NULL",
+  "tbl": "notifications"
+ },
+ {
+  "conname": "notifications_pkey",
+  "contype": "p",
+  "def": "PRIMARY KEY (id)",
+  "tbl": "notifications"
+ },
+ {
+  "conname": "ochiga_workflow_links_pkey",
+  "contype": "p",
+  "def": "PRIMARY KEY (id)",
+  "tbl": "ochiga_workflow_links"
+ },
+ {
+  "conname": "office_analytics_pkey",
+  "contype": "p",
+  "def": "PRIMARY KEY (id)",
+  "tbl": "office_analytics"
+ },
+ {
+  "conname": "office_buildings_estate_id_fkey",
+  "contype": "f",
+  "def": "FOREIGN KEY (estate_id) REFERENCES office_estates(id) ON DELETE CASCADE",
+  "tbl": "office_buildings"
+ },
+ {
+  "conname": "office_buildings_pkey",
+  "contype": "p",
+  "def": "PRIMARY KEY (id)",
+  "tbl": "office_buildings"
+ },
+ {
+  "conname": "office_content_items_pkey",
+  "contype": "p",
+  "def": "PRIMARY KEY (id)",
+  "tbl": "office_content_items"
+ },
+ {
+  "conname": "office_development_projects_pkey",
+  "contype": "p",
+  "def": "PRIMARY KEY (id)",
+  "tbl": "office_development_projects"
+ },
+ {
+  "conname": "office_development_projects_slug_key",
+  "contype": "u",
+  "def": "UNIQUE (slug)",
+  "tbl": "office_development_projects"
+ },
+ {
+  "conname": "office_devices_building_id_fkey",
+  "contype": "f",
+  "def": "FOREIGN KEY (building_id) REFERENCES office_buildings(id) ON DELETE CASCADE",
+  "tbl": "office_devices"
+ },
+ {
+  "conname": "office_devices_estate_id_fkey",
+  "contype": "f",
+  "def": "FOREIGN KEY (estate_id) REFERENCES office_estates(id) ON DELETE CASCADE",
+  "tbl": "office_devices"
+ },
+ {
+  "conname": "office_devices_home_id_fkey",
+  "contype": "f",
+  "def": "FOREIGN KEY (home_id) REFERENCES office_homes(id) ON DELETE SET NULL",
+  "tbl": "office_devices"
+ },
+ {
+  "conname": "office_devices_pkey",
+  "contype": "p",
+  "def": "PRIMARY KEY (id)",
+  "tbl": "office_devices"
+ },
+ {
+  "conname": "office_document_folders_pkey",
+  "contype": "p",
+  "def": "PRIMARY KEY (id)",
+  "tbl": "office_document_folders"
+ },
+ {
+  "conname": "office_documents_folder_id_fkey",
+  "contype": "f",
+  "def": "FOREIGN KEY (folder_id) REFERENCES office_document_folders(id) ON DELETE SET NULL",
+  "tbl": "office_documents"
+ },
+ {
+  "conname": "office_documents_pkey",
+  "contype": "p",
+  "def": "PRIMARY KEY (id)",
+  "tbl": "office_documents"
+ },
+ {
+  "conname": "office_estates_package_id_fkey",
+  "contype": "f",
+  "def": "FOREIGN KEY (package_id) REFERENCES office_packages(id) ON DELETE SET NULL",
+  "tbl": "office_estates"
+ },
+ {
+  "conname": "office_estates_pkey",
+  "contype": "p",
+  "def": "PRIMARY KEY (id)",
+  "tbl": "office_estates"
+ },
+ {
+  "conname": "office_files_pkey",
+  "contype": "p",
+  "def": "PRIMARY KEY (id)",
+  "tbl": "office_files"
+ },
+ {
+  "conname": "office_handoffs_pkey",
+  "contype": "p",
+  "def": "PRIMARY KEY (handoff_id)",
+  "tbl": "office_handoffs"
+ },
+ {
+  "conname": "office_homes_building_id_fkey",
+  "contype": "f",
+  "def": "FOREIGN KEY (building_id) REFERENCES office_buildings(id) ON DELETE CASCADE",
+  "tbl": "office_homes"
+ },
+ {
+  "conname": "office_homes_estate_id_fkey",
+  "contype": "f",
+  "def": "FOREIGN KEY (estate_id) REFERENCES office_estates(id) ON DELETE CASCADE",
+  "tbl": "office_homes"
+ },
+ {
+  "conname": "office_homes_pkey",
+  "contype": "p",
+  "def": "PRIMARY KEY (id)",
+  "tbl": "office_homes"
+ },
+ {
+  "conname": "office_letterhead_config_pkey",
+  "contype": "p",
+  "def": "PRIMARY KEY (id)",
+  "tbl": "office_letterhead_config"
+ },
+ {
+  "conname": "office_meetings_follow_up_task_id_fkey",
+  "contype": "f",
+  "def": "FOREIGN KEY (follow_up_task_id) REFERENCES crm_tasks(id) ON DELETE SET NULL",
+  "tbl": "office_meetings"
+ },
+ {
+  "conname": "office_meetings_pkey",
+  "contype": "p",
+  "def": "PRIMARY KEY (id)",
+  "tbl": "office_meetings"
+ },
+ {
+  "conname": "office_packages_pkey",
+  "contype": "p",
+  "def": "PRIMARY KEY (id)",
+  "tbl": "office_packages"
+ },
+ {
+  "conname": "office_partnership_relationships_contact_id_fkey",
+  "contype": "f",
+  "def": "FOREIGN KEY (contact_id) REFERENCES crm_contacts(id) ON DELETE SET NULL",
+  "tbl": "office_partnership_relationships"
+ },
+ {
+  "conname": "office_partnership_relationships_opportunity_id_fkey",
+  "contype": "f",
+  "def": "FOREIGN KEY (opportunity_id) REFERENCES crm_opportunities(id) ON DELETE SET NULL",
+  "tbl": "office_partnership_relationships"
+ },
+ {
+  "conname": "office_partnership_relationships_organization_id_fkey",
+  "contype": "f",
+  "def": "FOREIGN KEY (organization_id) REFERENCES crm_organizations(id) ON DELETE SET NULL",
+  "tbl": "office_partnership_relationships"
+ },
+ {
+  "conname": "office_partnership_relationships_pkey",
+  "contype": "p",
+  "def": "PRIMARY KEY (id)",
+  "tbl": "office_partnership_relationships"
+ },
+ {
+  "conname": "office_portfolio_entries_pkey",
+  "contype": "p",
+  "def": "PRIMARY KEY (id)",
+  "tbl": "office_portfolio_entries"
+ },
+ {
+  "conname": "office_portfolio_entries_project_id_fkey",
+  "contype": "f",
+  "def": "FOREIGN KEY (project_id) REFERENCES office_projects(id) ON DELETE SET NULL",
+  "tbl": "office_portfolio_entries"
+ },
+ {
+  "conname": "office_private_relationships_contact_id_fkey",
+  "contype": "f",
+  "def": "FOREIGN KEY (contact_id) REFERENCES crm_contacts(id) ON DELETE SET NULL",
+  "tbl": "office_private_relationships"
+ },
+ {
+  "conname": "office_private_relationships_opportunity_id_fkey",
+  "contype": "f",
+  "def": "FOREIGN KEY (opportunity_id) REFERENCES crm_opportunities(id) ON DELETE SET NULL",
+  "tbl": "office_private_relationships"
+ },
+ {
+  "conname": "office_private_relationships_organization_id_fkey",
+  "contype": "f",
+  "def": "FOREIGN KEY (organization_id) REFERENCES crm_organizations(id) ON DELETE SET NULL",
+  "tbl": "office_private_relationships"
+ },
+ {
+  "conname": "office_private_relationships_pkey",
+  "contype": "p",
+  "def": "PRIMARY KEY (id)",
+  "tbl": "office_private_relationships"
+ },
+ {
+  "conname": "office_projects_contact_id_fkey",
+  "contype": "f",
+  "def": "FOREIGN KEY (contact_id) REFERENCES crm_contacts(id) ON DELETE SET NULL",
+  "tbl": "office_projects"
+ },
+ {
+  "conname": "office_projects_lead_id_fkey",
+  "contype": "f",
+  "def": "FOREIGN KEY (lead_id) REFERENCES leads(id) ON DELETE SET NULL",
+  "tbl": "office_projects"
+ },
+ {
+  "conname": "office_projects_linked_opportunity_id_fkey",
+  "contype": "f",
+  "def": "FOREIGN KEY (linked_opportunity_id) REFERENCES crm_opportunities(id) ON DELETE SET NULL",
+  "tbl": "office_projects"
+ },
+ {
+  "conname": "office_projects_organization_id_fkey",
+  "contype": "f",
+  "def": "FOREIGN KEY (organization_id) REFERENCES crm_organizations(id) ON DELETE SET NULL",
+  "tbl": "office_projects"
+ },
+ {
+  "conname": "office_projects_pkey",
+  "contype": "p",
+  "def": "PRIMARY KEY (id)",
+  "tbl": "office_projects"
+ },
+ {
+  "conname": "office_reports_pkey",
+  "contype": "p",
+  "def": "PRIMARY KEY (id)",
+  "tbl": "office_reports"
+ },
+ {
+  "conname": "office_runtime_settings_pkey",
+  "contype": "p",
+  "def": "PRIMARY KEY (key)",
+  "tbl": "office_runtime_settings"
+ },
+ {
+  "conname": "office_staff_capabilities_pkey",
+  "contype": "p",
+  "def": "PRIMARY KEY (id)",
+  "tbl": "office_staff_capabilities"
+ },
+ {
+  "conname": "office_staff_capabilities_staff_email_fkey",
+  "contype": "f",
+  "def": "FOREIGN KEY (staff_email) REFERENCES admin_users(email) ON DELETE CASCADE",
+  "tbl": "office_staff_capabilities"
+ },
+ {
+  "conname": "office_staff_profiles_pkey",
+  "contype": "p",
+  "def": "PRIMARY KEY (staff_email)",
+  "tbl": "office_staff_profiles"
+ },
+ {
+  "conname": "office_staff_profiles_staff_email_fkey",
+  "contype": "f",
+  "def": "FOREIGN KEY (staff_email) REFERENCES admin_users(email) ON DELETE CASCADE",
+  "tbl": "office_staff_profiles"
+ },
+ {
+  "conname": "office_support_cases_customer_contact_id_fkey",
+  "contype": "f",
+  "def": "FOREIGN KEY (customer_contact_id) REFERENCES crm_contacts(id) ON DELETE SET NULL",
+  "tbl": "office_support_cases"
+ },
+ {
+  "conname": "office_support_cases_organization_id_fkey",
+  "contype": "f",
+  "def": "FOREIGN KEY (organization_id) REFERENCES crm_organizations(id) ON DELETE SET NULL",
+  "tbl": "office_support_cases"
+ },
+ {
+  "conname": "office_support_cases_pkey",
+  "contype": "p",
+  "def": "PRIMARY KEY (id)",
+  "tbl": "office_support_cases"
+ },
+ {
+  "conname": "office_support_cases_portfolio_id_fkey",
+  "contype": "f",
+  "def": "FOREIGN KEY (portfolio_id) REFERENCES office_portfolio_entries(id) ON DELETE SET NULL",
+  "tbl": "office_support_cases"
+ },
+ {
+  "conname": "office_support_mappings_building_id_fkey",
+  "contype": "f",
+  "def": "FOREIGN KEY (building_id) REFERENCES office_buildings(id) ON DELETE SET NULL",
+  "tbl": "office_support_mappings"
+ },
+ {
+  "conname": "office_support_mappings_estate_id_fkey",
+  "contype": "f",
+  "def": "FOREIGN KEY (estate_id) REFERENCES office_estates(id) ON DELETE CASCADE",
+  "tbl": "office_support_mappings"
+ },
+ {
+  "conname": "office_support_mappings_home_id_fkey",
+  "contype": "f",
+  "def": "FOREIGN KEY (home_id) REFERENCES office_homes(id) ON DELETE SET NULL",
+  "tbl": "office_support_mappings"
+ },
+ {
+  "conname": "office_support_mappings_pkey",
+  "contype": "p",
+  "def": "PRIMARY KEY (id)",
+  "tbl": "office_support_mappings"
+ },
+ {
+  "conname": "office_wallets_pkey",
+  "contype": "p",
+  "def": "PRIMARY KEY (id)",
+  "tbl": "office_wallets"
+ },
+ {
+  "conname": "onboarding_emails_deployment_project_id_fkey",
+  "contype": "f",
+  "def": "FOREIGN KEY (deployment_project_id) REFERENCES deployment_projects(id) ON DELETE SET NULL",
+  "tbl": "onboarding_emails"
+ },
+ {
+  "conname": "onboarding_emails_lead_id_fkey",
+  "contype": "f",
+  "def": "FOREIGN KEY (lead_id) REFERENCES leads(id) ON DELETE SET NULL",
+  "tbl": "onboarding_emails"
+ },
+ {
+  "conname": "onboarding_emails_pkey",
+  "contype": "p",
+  "def": "PRIMARY KEY (id)",
+  "tbl": "onboarding_emails"
+ },
+ {
+  "conname": "partners_pkey",
+  "contype": "p",
+  "def": "PRIMARY KEY (id)",
+  "tbl": "partners"
+ },
+ {
+  "conname": "password_reset_tokens_admin_user_id_fkey",
+  "contype": "f",
+  "def": "FOREIGN KEY (admin_user_id) REFERENCES admin_users(id) ON DELETE CASCADE",
+  "tbl": "password_reset_tokens"
+ },
+ {
+  "conname": "password_reset_tokens_pkey",
+  "contype": "p",
+  "def": "PRIMARY KEY (id)",
+  "tbl": "password_reset_tokens"
+ },
+ {
+  "conname": "password_reset_tokens_token_hash_key",
+  "contype": "u",
+  "def": "UNIQUE (token_hash)",
+  "tbl": "password_reset_tokens"
+ },
+ {
+  "conname": "proposals_lead_id_fkey",
+  "contype": "f",
+  "def": "FOREIGN KEY (lead_id) REFERENCES leads(id) ON DELETE CASCADE",
+  "tbl": "proposals"
+ },
+ {
+  "conname": "proposals_opportunity_id_fkey",
+  "contype": "f",
+  "def": "FOREIGN KEY (opportunity_id) REFERENCES crm_opportunities(id) ON DELETE SET NULL",
+  "tbl": "proposals"
+ },
+ {
+  "conname": "proposals_pkey",
+  "contype": "p",
+  "def": "PRIMARY KEY (id)",
+  "tbl": "proposals"
+ },
+ {
+  "conname": "staff_conversation_participants_conversation_id_fkey",
+  "contype": "f",
+  "def": "FOREIGN KEY (conversation_id) REFERENCES staff_conversations(id) ON DELETE CASCADE",
+  "tbl": "staff_conversation_participants"
+ },
+ {
+  "conname": "staff_conversation_participants_pkey",
+  "contype": "p",
+  "def": "PRIMARY KEY (id)",
+  "tbl": "staff_conversation_participants"
+ },
+ {
+  "conname": "staff_conversations_pkey",
+  "contype": "p",
+  "def": "PRIMARY KEY (id)",
+  "tbl": "staff_conversations"
+ },
+ {
+  "conname": "staff_message_attachments_message_id_fkey",
+  "contype": "f",
+  "def": "FOREIGN KEY (message_id) REFERENCES staff_messages(id) ON DELETE CASCADE",
+  "tbl": "staff_message_attachments"
+ },
+ {
+  "conname": "staff_message_attachments_pkey",
+  "contype": "p",
+  "def": "PRIMARY KEY (id)",
+  "tbl": "staff_message_attachments"
+ },
+ {
+  "conname": "staff_message_reactions_message_id_fkey",
+  "contype": "f",
+  "def": "FOREIGN KEY (message_id) REFERENCES staff_messages(id) ON DELETE CASCADE",
+  "tbl": "staff_message_reactions"
+ },
+ {
+  "conname": "staff_message_reactions_pkey",
+  "contype": "p",
+  "def": "PRIMARY KEY (id)",
+  "tbl": "staff_message_reactions"
+ },
+ {
+  "conname": "staff_message_reads_message_id_fkey",
+  "contype": "f",
+  "def": "FOREIGN KEY (message_id) REFERENCES staff_messages(id) ON DELETE CASCADE",
+  "tbl": "staff_message_reads"
+ },
+ {
+  "conname": "staff_message_reads_pkey",
+  "contype": "p",
+  "def": "PRIMARY KEY (id)",
+  "tbl": "staff_message_reads"
+ },
+ {
+  "conname": "staff_messages_conversation_id_fkey",
+  "contype": "f",
+  "def": "FOREIGN KEY (conversation_id) REFERENCES staff_conversations(id) ON DELETE CASCADE",
+  "tbl": "staff_messages"
+ },
+ {
+  "conname": "staff_messages_pkey",
+  "contype": "p",
+  "def": "PRIMARY KEY (id)",
+  "tbl": "staff_messages"
+ },
+ {
+  "conname": "timeline_events_lead_id_fkey",
+  "contype": "f",
+  "def": "FOREIGN KEY (lead_id) REFERENCES leads(id) ON DELETE CASCADE",
+  "tbl": "timeline_events"
+ },
+ {
+  "conname": "timeline_events_pkey",
+  "contype": "p",
+  "def": "PRIMARY KEY (id)",
+  "tbl": "timeline_events"
+ },
+ {
+  "conname": "traces_lead_id_fkey",
+  "contype": "f",
+  "def": "FOREIGN KEY (lead_id) REFERENCES leads(id) ON DELETE CASCADE",
+  "tbl": "traces"
+ },
+ {
+  "conname": "traces_pkey",
+  "contype": "p",
+  "def": "PRIMARY KEY (id)",
+  "tbl": "traces"
+ },
+ {
+  "conname": "whatsapp_inbound_claims_pkey",
+  "contype": "p",
+  "def": "PRIMARY KEY (provider_message_id)",
+  "tbl": "whatsapp_inbound_claims"
+ },
+ {
+  "conname": "whatsapp_inbound_claims_status_check",
+  "contype": "c",
+  "def": "CHECK ((status = ANY (ARRAY['processing'::text, 'completed'::text])))",
+  "tbl": "whatsapp_inbound_claims"
+ },
+ {
+  "conname": "whatsapp_manual_sends_lead_id_actor_email_client_request_id_key",
+  "contype": "u",
+  "def": "UNIQUE (lead_id, actor_email, client_request_id)",
+  "tbl": "whatsapp_manual_sends"
+ },
+ {
+  "conname": "whatsapp_manual_sends_pkey",
+  "contype": "p",
+  "def": "PRIMARY KEY (id)",
+  "tbl": "whatsapp_manual_sends"
+ },
+ {
+  "conname": "whatsapp_manual_sends_status_check",
+  "contype": "c",
+  "def": "CHECK ((status = ANY (ARRAY['pending'::text, 'provider_accepted'::text, 'provider_rejected'::text, 'outcome_unknown'::text, 'not_sent'::text])))",
+  "tbl": "whatsapp_manual_sends"
+ }
+]

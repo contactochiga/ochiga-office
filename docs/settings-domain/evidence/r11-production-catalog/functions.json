@@ -1,0 +1,13 @@
+[
+ {
+  "anon": false,
+  "authenticated": false,
+  "fn": "set_updated_at()",
+  "owner": "postgres",
+  "proconfig": null,
+  "prokind": "f",
+  "public_grant": false,
+  "secdef": false,
+  "service_role": true
+ }
+]

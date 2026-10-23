@@ -1,0 +1,52 @@
+[
+ {
+  "calls": 207336,
+  "rolname": "service_role",
+  "statements": 315
+ },
+ {
+  "calls": 99527,
+  "rolname": "authenticator",
+  "statements": 22
+ },
+ {
+  "calls": 28656,
+  "rolname": "pgbouncer",
+  "statements": 3
+ },
+ {
+  "calls": 25570,
+  "rolname": "supabase_admin",
+  "statements": 78
+ },
+ {
+  "calls": 2531,
+  "rolname": "postgres",
+  "statements": 1200
+ },
+ {
+  "calls": 520,
+  "rolname": "supabase_storage_admin",
+  "statements": 49
+ },
+ {
+  "calls": 261,
+  "rolname": "supabase_auth_admin",
+  "statements": 26
+ },
+ {
+  "calls": 55,
+  "rolname": "anon",
+  "statements": 25
+ },
+ {
+  "calls": 3,
+  "rolname": "supabase_read_only_user",
+  "statements": 1
+ },
+ {
+  "calls": 1,
+  "rolname": "authenticated",
+  "statements": 1
+ }
+]

@@ -1,0 +1,524 @@
+[
+ {
+  "api_grants": null,
+  "force_rls": false,
+  "owner": "postgres",
+  "policies": 0,
+  "relkind": "r",
+  "relname": "admin_invites",
+  "rls": true
+ },
+ {
+  "api_grants": null,
+  "force_rls": false,
+  "owner": "postgres",
+  "policies": 0,
+  "relkind": "r",
+  "relname": "admin_users",
+  "rls": true
+ },
+ {
+  "api_grants": null,
+  "force_rls": false,
+  "owner": "postgres",
+  "policies": 0,
+  "relkind": "r",
+  "relname": "audit_events",
+  "rls": true
+ },
+ {
+  "api_grants": null,
+  "force_rls": false,
+  "owner": "postgres",
+  "policies": 0,
+  "relkind": "r",
+  "relname": "communication_delivery_outbox",
+  "rls": true
+ },
+ {
+  "api_grants": null,
+  "force_rls": false,
+  "owner": "postgres",
+  "policies": 0,
+  "relkind": "r",
+  "relname": "conversations",
+  "rls": true
+ },
+ {
+  "api_grants": null,
+  "force_rls": false,
+  "owner": "postgres",
+  "policies": 0,
+  "relkind": "r",
+  "relname": "crm_activities",
+  "rls": true
+ },
+ {
+  "api_grants": null,
+  "force_rls": false,
+  "owner": "postgres",
+  "policies": 0,
+  "relkind": "r",
+  "relname": "crm_contacts",
+  "rls": true
+ },
+ {
+  "api_grants": null,
+  "force_rls": false,
+  "owner": "postgres",
+  "policies": 0,
+  "relkind": "r",
+  "relname": "crm_opportunities",
+  "rls": true
+ },
+ {
+  "api_grants": null,
+  "force_rls": false,
+  "owner": "postgres",
+  "policies": 0,
+  "relkind": "r",
+  "relname": "crm_organizations",
+  "rls": true
+ },
+ {
+  "api_grants": null,
+  "force_rls": false,
+  "owner": "postgres",
+  "policies": 0,
+  "relkind": "r",
+  "relname": "crm_tasks",
+  "rls": true
+ },
+ {
+  "api_grants": null,
+  "force_rls": false,
+  "owner": "postgres",
+  "policies": 0,
+  "relkind": "r",
+  "relname": "demos",
+  "rls": true
+ },
+ {
+  "api_grants": null,
+  "force_rls": false,
+  "owner": "postgres",
+  "policies": 0,
+  "relkind": "r",
+  "relname": "deployment_projects",
+  "rls": true
+ },
+ {
+  "api_grants": null,
+  "force_rls": false,
+  "owner": "postgres",
+  "policies": 0,
+  "relkind": "r",
+  "relname": "facility_workspaces",
+  "rls": true
+ },
+ {
+  "api_grants": null,
+  "force_rls": false,
+  "owner": "postgres",
+  "policies": 0,
+  "relkind": "r",
+  "relname": "inbound_events",
+  "rls": true
+ },
+ {
+  "api_grants": null,
+  "force_rls": false,
+  "owner": "postgres",
+  "policies": 0,
+  "relkind": "r",
+  "relname": "lead_channel_states",
+  "rls": true
+ },
+ {
+  "api_grants": null,
+  "force_rls": false,
+  "owner": "postgres",
+  "policies": 0,
+  "relkind": "r",
+  "relname": "lead_memories",
+  "rls": true
+ },
+ {
+  "api_grants": null,
+  "force_rls": false,
+  "owner": "postgres",
+  "policies": 0,
+  "relkind": "r",
+  "relname": "leads",
+  "rls": true
+ },
+ {
+  "api_grants": null,
+  "force_rls": false,
+  "owner": "postgres",
+  "policies": 0,
+  "relkind": "r",
+  "relname": "notifications",
+  "rls": true
+ },
+ {
+  "api_grants": null,
+  "force_rls": false,
+  "owner": "postgres",
+  "policies": 0,
+  "relkind": "r",
+  "relname": "ochiga_workflow_links",
+  "rls": true
+ },
+ {
+  "api_grants": null,
+  "force_rls": false,
+  "owner": "postgres",
+  "policies": 0,
+  "relkind": "r",
+  "relname": "office_analytics",
+  "rls": true
+ },
+ {
+  "api_grants": null,
+  "force_rls": false,
+  "owner": "postgres",
+  "policies": 0,
+  "relkind": "r",
+  "relname": "office_buildings",
+  "rls": true
+ },
+ {
+  "api_grants": null,
+  "force_rls": false,
+  "owner": "postgres",
+  "policies": 0,
+  "relkind": "r",
+  "relname": "office_content_items",
+  "rls": true
+ },
+ {
+  "api_grants": null,
+  "force_rls": false,
+  "owner": "postgres",
+  "policies": 0,
+  "relkind": "r",
+  "relname": "office_development_projects",
+  "rls": true
+ },
+ {
+  "api_grants": null,
+  "force_rls": false,
+  "owner": "postgres",
+  "policies": 0,
+  "relkind": "r",
+  "relname": "office_devices",
+  "rls": true
+ },
+ {
+  "api_grants": null,
+  "force_rls": false,
+  "owner": "postgres",
+  "policies": 0,
+  "relkind": "r",
+  "relname": "office_document_folders",
+  "rls": true
+ },
+ {
+  "api_grants": null,
+  "force_rls": false,
+  "owner": "postgres",
+  "policies": 0,
+  "relkind": "r",
+  "relname": "office_documents",
+  "rls": true
+ },
+ {
+  "api_grants": null,
+  "force_rls": false,
+  "owner": "postgres",
+  "policies": 0,
+  "relkind": "r",
+  "relname": "office_estates",
+  "rls": true
+ },
+ {
+  "api_grants": null,
+  "force_rls": false,
+  "owner": "postgres",
+  "policies": 0,
+  "relkind": "r",
+  "relname": "office_files",
+  "rls": true
+ },
+ {
+  "api_grants": null,
+  "force_rls": false,
+  "owner": "postgres",
+  "policies": 0,
+  "relkind": "r",
+  "relname": "office_handoffs",
+  "rls": true
+ },
+ {
+  "api_grants": null,
+  "force_rls": false,
+  "owner": "postgres",
+  "policies": 0,
+  "relkind": "r",
+  "relname": "office_homes",
+  "rls": true
+ },
+ {
+  "api_grants": null,
+  "force_rls": false,
+  "owner": "postgres",
+  "policies": 0,
+  "relkind": "r",
+  "relname": "office_letterhead_config",
+  "rls": true
+ },
+ {
+  "api_grants": null,
+  "force_rls": false,
+  "owner": "postgres",
+  "policies": 0,
+  "relkind": "r",
+  "relname": "office_meetings",
+  "rls": true
+ },
+ {
+  "api_grants": null,
+  "force_rls": false,
+  "owner": "postgres",
+  "policies": 0,
+  "relkind": "r",
+  "relname": "office_packages",
+  "rls": true
+ },
+ {
+  "api_grants": null,
+  "force_rls": false,
+  "owner": "postgres",
+  "policies": 0,
+  "relkind": "r",
+  "relname": "office_partnership_relationships",
+  "rls": true
+ },
+ {
+  "api_grants": null,
+  "force_rls": false,
+  "owner": "postgres",
+  "policies": 0,
+  "relkind": "r",
+  "relname": "office_portfolio_entries",
+  "rls": true
+ },
+ {
+  "api_grants": null,
+  "force_rls": false,
+  "owner": "postgres",
+  "policies": 0,
+  "relkind": "r",
+  "relname": "office_private_relationships",
+  "rls": true
+ },
+ {
+  "api_grants": null,
+  "force_rls": false,
+  "owner": "postgres",
+  "policies": 0,
+  "relkind": "r",
+  "relname": "office_projects",
+  "rls": true
+ },
+ {
+  "api_grants": null,
+  "force_rls": false,
+  "owner": "postgres",
+  "policies": 0,
+  "relkind": "r",
+  "relname": "office_reports",
+  "rls": true
+ },
+ {
+  "api_grants": null,
+  "force_rls": false,
+  "owner": "postgres",
+  "policies": 0,
+  "relkind": "r",
+  "relname": "office_runtime_settings",
+  "rls": true
+ },
+ {
+  "api_grants": null,
+  "force_rls": false,
+  "owner": "postgres",
+  "policies": 0,
+  "relkind": "r",
+  "relname": "office_staff_capabilities",
+  "rls": true
+ },
+ {
+  "api_grants": null,
+  "force_rls": false,
+  "owner": "postgres",
+  "policies": 0,
+  "relkind": "r",
+  "relname": "office_staff_profiles",
+  "rls": true
+ },
+ {
+  "api_grants": null,
+  "force_rls": false,
+  "owner": "postgres",
+  "policies": 0,
+  "relkind": "r",
+  "relname": "office_support_cases",
+  "rls": true
+ },
+ {
+  "api_grants": null,
+  "force_rls": false,
+  "owner": "postgres",
+  "policies": 0,
+  "relkind": "r",
+  "relname": "office_support_mappings",
+  "rls": true
+ },
+ {
+  "api_grants": null,
+  "force_rls": false,
+  "owner": "postgres",
+  "policies": 0,
+  "relkind": "r",
+  "relname": "office_wallets",
+  "rls": true
+ },
+ {
+  "api_grants": null,
+  "force_rls": false,
+  "owner": "postgres",
+  "policies": 0,
+  "relkind": "r",
+  "relname": "onboarding_emails",
+  "rls": true
+ },
+ {
+  "api_grants": null,
+  "force_rls": false,
+  "owner": "postgres",
+  "policies": 0,
+  "relkind": "r",
+  "relname": "partners",
+  "rls": true
+ },
+ {
+  "api_grants": null,
+  "force_rls": false,
+  "owner": "postgres",
+  "policies": 0,
+  "relkind": "r",
+  "relname": "password_reset_tokens",
+  "rls": true
+ },
+ {
+  "api_grants": null,
+  "force_rls": false,
+  "owner": "postgres",
+  "policies": 0,
+  "relkind": "r",
+  "relname": "proposals",
+  "rls": true
+ },
+ {
+  "api_grants": null,
+  "force_rls": false,
+  "owner": "postgres",
+  "policies": 0,
+  "relkind": "r",
+  "relname": "staff_conversation_participants",
+  "rls": true
+ },
+ {
+  "api_grants": null,
+  "force_rls": false,
+  "owner": "postgres",
+  "policies": 0,
+  "relkind": "r",
+  "relname": "staff_conversations",
+  "rls": true
+ },
+ {
+  "api_grants": null,
+  "force_rls": false,
+  "owner": "postgres",
+  "policies": 0,
+  "relkind": "r",
+  "relname": "staff_message_attachments",
+  "rls": true
+ },
+ {
+  "api_grants": null,
+  "force_rls": false,
+  "owner": "postgres",
+  "policies": 0,
+  "relkind": "r",
+  "relname": "staff_message_reactions",
+  "rls": true
+ },
+ {
+  "api_grants": null,
+  "force_rls": false,
+  "owner": "postgres",
+  "policies": 0,
+  "relkind": "r",
+  "relname": "staff_message_reads",
+  "rls": true
+ },
+ {
+  "api_grants": null,
+  "force_rls": false,
+  "owner": "postgres",
+  "policies": 0,
+  "relkind": "r",
+  "relname": "staff_messages",
+  "rls": true
+ },
+ {
+  "api_grants": null,
+  "force_rls": false,
+  "owner": "postgres",
+  "policies": 0,
+  "relkind": "r",
+  "relname": "timeline_events",
+  "rls": true
+ },
+ {
+  "api_grants": null,
+  "force_rls": false,
+  "owner": "postgres",
+  "policies": 0,
+  "relkind": "r",
+  "relname": "traces",
+  "rls": true
+ },
+ {
+  "api_grants": null,
+  "force_rls": false,
+  "owner": "postgres",
+  "policies": 0,
+  "relkind": "r",
+  "relname": "whatsapp_inbound_claims",
+  "rls": true
+ },
+ {
+  "api_grants": null,
+  "force_rls": false,
+  "owner": "postgres",
+  "policies": 0,
+  "relkind": "r",
+  "relname": "whatsapp_manual_sends",
+  "rls": true
+ }
+]

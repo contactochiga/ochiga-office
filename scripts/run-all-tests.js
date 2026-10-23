@@ -20,7 +20,7 @@ const repeat = Math.max(1, Number(value("--repeat")) || 1);
 
 // seconds. Default for a plain API suite; browser suites drive a real browser; the long ones are named because they sign in many times or start Docker databases.
 const BUDGET = { default: 180, browser: 300, postgres: 900, cert: 900 };
-const LONG = { "test-mfa-ui-browser-s758.js": 900, "test-s5-integration-acceptance.js": 300 };
+const LONG = { "test-mfa-ui-browser-s758.js": 900, "test-s5-integration-acceptance.js": 300, "test-production-rehearsal-postgres-r11.js": 1800 };
 const budgetFor = (file, kind) => (LONG[file] || (kind === "postgres" ? BUDGET.postgres : kind === "cert" ? BUDGET.cert : /browser|acceptance/.test(file) ? BUDGET.browser : BUDGET.default)) * scale;
 
 function select() {

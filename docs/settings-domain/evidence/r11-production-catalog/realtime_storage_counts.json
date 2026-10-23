@@ -1,0 +1,42 @@
+[
+ {
+  "k": "realtime.messages policies",
+  "v": "0"
+ },
+ {
+  "k": "storage.objects policies",
+  "v": "0"
+ },
+ {
+  "k": "storage.buckets rows (count only)",
+  "v": "1"
+ },
+ {
+  "k": "storage.objects rows (count only)",
+  "v": "21"
+ },
+ {
+  "k": "realtime publication tables",
+  "v": "0"
+ },
+ {
+  "k": "pg_cron installed",
+  "v": "0"
+ },
+ {
+  "k": "pg_net installed",
+  "v": "0"
+ },
+ {
+  "k": "edge/webhook triggers calling net/http",
+  "v": "0"
+ },
+ {
+  "k": "database webhooks (supabase_functions)",
+  "v": "0"
+ },
+ {
+  "k": "auth.users row count (count only)",
+  "v": "0"
+ }
+]

@@ -1,0 +1,642 @@
+[
+ {
+  "def": " admin_invites USING btree (admin_user_id)",
+  "indexname": "admin_invites_admin_user_id_idx",
+  "tablename": "admin_invites"
+ },
+ {
+  "def": " admin_invites USING btree (email, created_at DESC)",
+  "indexname": "admin_invites_email_created_at_idx",
+  "tablename": "admin_invites"
+ },
+ {
+  "def": "UNIQUE  admin_invites USING btree (id)",
+  "indexname": "admin_invites_pkey",
+  "tablename": "admin_invites"
+ },
+ {
+  "def": "UNIQUE  admin_invites USING btree (token_hash)",
+  "indexname": "admin_invites_token_hash_key",
+  "tablename": "admin_invites"
+ },
+ {
+  "def": "UNIQUE  admin_users USING btree (email)",
+  "indexname": "admin_users_email_key",
+  "tablename": "admin_users"
+ },
+ {
+  "def": "UNIQUE  admin_users USING btree (id)",
+  "indexname": "admin_users_pkey",
+  "tablename": "admin_users"
+ },
+ {
+  "def": " audit_events USING btree (created_at DESC)",
+  "indexname": "audit_events_created_at_idx",
+  "tablename": "audit_events"
+ },
+ {
+  "def": "UNIQUE  audit_events USING btree (id)",
+  "indexname": "audit_events_pkey",
+  "tablename": "audit_events"
+ },
+ {
+  "def": "UNIQUE  communication_delivery_outbox USING btree (delivery_key)",
+  "indexname": "communication_delivery_outbox_delivery_key_key",
+  "tablename": "communication_delivery_outbox"
+ },
+ {
+  "def": " communication_delivery_outbox USING btree (next_attempt_at) WHERE (status = 'pending'::text)",
+  "indexname": "communication_delivery_outbox_due_idx",
+  "tablename": "communication_delivery_outbox"
+ },
+ {
+  "def": "UNIQUE  communication_delivery_outbox USING btree (id)",
+  "indexname": "communication_delivery_outbox_pkey",
+  "tablename": "communication_delivery_outbox"
+ },
+ {
+  "def": " communication_delivery_outbox USING btree (provider_message_id)",
+  "indexname": "communication_delivery_outbox_provider_idx",
+  "tablename": "communication_delivery_outbox"
+ },
+ {
+  "def": "UNIQUE  conversations USING btree (correlation_id) WHERE (correlation_id IS NOT NULL)",
+  "indexname": "conversations_correlation_id_uidx",
+  "tablename": "conversations"
+ },
+ {
+  "def": " conversations USING btree (lead_id, created_at)",
+  "indexname": "conversations_lead_id_created_at_idx",
+  "tablename": "conversations"
+ },
+ {
+  "def": "UNIQUE  conversations USING btree (id)",
+  "indexname": "conversations_pkey",
+  "tablename": "conversations"
+ },
+ {
+  "def": "UNIQUE  crm_activities USING btree (id)",
+  "indexname": "crm_activities_pkey",
+  "tablename": "crm_activities"
+ },
+ {
+  "def": " crm_activities USING btree (portfolio_id, occurred_at DESC)",
+  "indexname": "crm_activities_portfolio_idx",
+  "tablename": "crm_activities"
+ },
+ {
+  "def": " crm_activities USING btree (project_id, occurred_at DESC)",
+  "indexname": "crm_activities_project_idx",
+  "tablename": "crm_activities"
+ },
+ {
+  "def": " crm_activities USING btree (related_type, related_id, occurred_at DESC)",
+  "indexname": "crm_activities_related_object_idx",
+  "tablename": "crm_activities"
+ },
+ {
+  "def": " crm_activities USING btree (support_case_id, occurred_at DESC)",
+  "indexname": "crm_activities_support_case_idx",
+  "tablename": "crm_activities"
+ },
+ {
+  "def": "UNIQUE  crm_contacts USING btree (id)",
+  "indexname": "crm_contacts_pkey",
+  "tablename": "crm_contacts"
+ },
+ {
+  "def": "UNIQUE  crm_opportunities USING btree (id)",
+  "indexname": "crm_opportunities_pkey",
+  "tablename": "crm_opportunities"
+ },
+ {
+  "def": "UNIQUE  crm_organizations USING btree (id)",
+  "indexname": "crm_organizations_pkey",
+  "tablename": "crm_organizations"
+ },
+ {
+  "def": " crm_tasks USING btree (partnership_relationship_id, status, due_at)",
+  "indexname": "crm_tasks_partnership_relationship_idx",
+  "tablename": "crm_tasks"
+ },
+ {
+  "def": "UNIQUE  crm_tasks USING btree (id)",
+  "indexname": "crm_tasks_pkey",
+  "tablename": "crm_tasks"
+ },
+ {
+  "def": " crm_tasks USING btree (private_relationship_id, status, due_at)",
+  "indexname": "crm_tasks_private_relationship_idx",
+  "tablename": "crm_tasks"
+ },
+ {
+  "def": " demos USING btree (lead_id, created_at DESC)",
+  "indexname": "demos_lead_id_created_at_idx",
+  "tablename": "demos"
+ },
+ {
+  "def": "UNIQUE  demos USING btree (id)",
+  "indexname": "demos_pkey",
+  "tablename": "demos"
+ },
+ {
+  "def": " deployment_projects USING btree (lead_id)",
+  "indexname": "deployment_projects_lead_id_idx",
+  "tablename": "deployment_projects"
+ },
+ {
+  "def": "UNIQUE  deployment_projects USING btree (id)",
+  "indexname": "deployment_projects_pkey",
+  "tablename": "deployment_projects"
+ },
+ {
+  "def": " deployment_projects USING btree (status, owner)",
+  "indexname": "deployment_projects_status_idx",
+  "tablename": "deployment_projects"
+ },
+ {
+  "def": " facility_workspaces USING btree (lead_id)",
+  "indexname": "facility_workspaces_lead_id_idx",
+  "tablename": "facility_workspaces"
+ },
+ {
+  "def": "UNIQUE  facility_workspaces USING btree (id)",
+  "indexname": "facility_workspaces_pkey",
+  "tablename": "facility_workspaces"
+ },
+ {
+  "def": " facility_workspaces USING btree (portfolio_id)",
+  "indexname": "facility_workspaces_portfolio_id_idx",
+  "tablename": "facility_workspaces"
+ },
+ {
+  "def": " facility_workspaces USING btree (status)",
+  "indexname": "facility_workspaces_status_idx",
+  "tablename": "facility_workspaces"
+ },
+ {
+  "def": " inbound_events USING btree (channel, created_at DESC)",
+  "indexname": "inbound_events_channel_created_at_idx",
+  "tablename": "inbound_events"
+ },
+ {
+  "def": "UNIQUE  inbound_events USING btree (id)",
+  "indexname": "inbound_events_pkey",
+  "tablename": "inbound_events"
+ },
+ {
+  "def": "UNIQUE  lead_channel_states USING btree (lead_id, channel)",
+  "indexname": "lead_channel_states_lead_id_channel_key",
+  "tablename": "lead_channel_states"
+ },
+ {
+  "def": "UNIQUE  lead_channel_states USING btree (id)",
+  "indexname": "lead_channel_states_pkey",
+  "tablename": "lead_channel_states"
+ },
+ {
+  "def": "UNIQUE  lead_memories USING btree (lead_id)",
+  "indexname": "lead_memories_pkey",
+  "tablename": "lead_memories"
+ },
+ {
+  "def": " leads USING btree (business_unit, inquiry_type)",
+  "indexname": "leads_business_unit_idx",
+  "tablename": "leads"
+ },
+ {
+  "def": "UNIQUE  leads USING btree (idempotency_key) WHERE (idempotency_key IS NOT NULL)",
+  "indexname": "leads_idempotency_key_idx",
+  "tablename": "leads"
+ },
+ {
+  "def": "UNIQUE  leads USING btree (id)",
+  "indexname": "leads_pkey",
+  "tablename": "leads"
+ },
+ {
+  "def": " leads USING btree (stage, owner)",
+  "indexname": "leads_stage_idx",
+  "tablename": "leads"
+ },
+ {
+  "def": " leads USING btree (status, owner)",
+  "indexname": "leads_status_owner_idx",
+  "tablename": "leads"
+ },
+ {
+  "def": " leads USING btree (updated_at DESC)",
+  "indexname": "leads_updated_at_idx",
+  "tablename": "leads"
+ },
+ {
+  "def": " notifications USING btree (lead_id, created_at DESC)",
+  "indexname": "notifications_lead_id_created_at_idx",
+  "tablename": "notifications"
+ },
+ {
+  "def": "UNIQUE  notifications USING btree (id)",
+  "indexname": "notifications_pkey",
+  "tablename": "notifications"
+ },
+ {
+  "def": " notifications USING btree (recipient_email, read_at, created_at DESC)",
+  "indexname": "notifications_recipient_idx",
+  "tablename": "notifications"
+ },
+ {
+  "def": " notifications USING btree (status, type)",
+  "indexname": "notifications_status_idx",
+  "tablename": "notifications"
+ },
+ {
+  "def": "UNIQUE  ochiga_workflow_links USING btree (id)",
+  "indexname": "ochiga_workflow_links_pkey",
+  "tablename": "ochiga_workflow_links"
+ },
+ {
+  "def": "UNIQUE  ochiga_workflow_links USING btree (record_type, record_id)",
+  "indexname": "ochiga_workflow_links_record_idx",
+  "tablename": "ochiga_workflow_links"
+ },
+ {
+  "def": "UNIQUE  office_analytics USING btree (id)",
+  "indexname": "office_analytics_pkey",
+  "tablename": "office_analytics"
+ },
+ {
+  "def": "UNIQUE  office_buildings USING btree (id)",
+  "indexname": "office_buildings_pkey",
+  "tablename": "office_buildings"
+ },
+ {
+  "def": "UNIQUE  office_content_items USING btree (id)",
+  "indexname": "office_content_items_pkey",
+  "tablename": "office_content_items"
+ },
+ {
+  "def": " office_content_items USING btree (scheduled_publish_at) WHERE (scheduled_publish_at IS NOT NULL)",
+  "indexname": "office_content_items_scheduled_idx",
+  "tablename": "office_content_items"
+ },
+ {
+  "def": " office_content_items USING btree (workflow_status, updated_at DESC)",
+  "indexname": "office_content_items_status_idx",
+  "tablename": "office_content_items"
+ },
+ {
+  "def": "UNIQUE  office_development_projects USING btree (id)",
+  "indexname": "office_development_projects_pkey",
+  "tablename": "office_development_projects"
+ },
+ {
+  "def": " office_development_projects USING btree (slug)",
+  "indexname": "office_development_projects_slug_idx",
+  "tablename": "office_development_projects"
+ },
+ {
+  "def": "UNIQUE  office_development_projects USING btree (slug)",
+  "indexname": "office_development_projects_slug_key",
+  "tablename": "office_development_projects"
+ },
+ {
+  "def": "UNIQUE  office_devices USING btree (id)",
+  "indexname": "office_devices_pkey",
+  "tablename": "office_devices"
+ },
+ {
+  "def": "UNIQUE  office_document_folders USING btree (id)",
+  "indexname": "office_document_folders_pkey",
+  "tablename": "office_document_folders"
+ },
+ {
+  "def": " office_documents USING btree (folder_id)",
+  "indexname": "office_documents_folder_id_idx",
+  "tablename": "office_documents"
+ },
+ {
+  "def": "UNIQUE  office_documents USING btree (id)",
+  "indexname": "office_documents_pkey",
+  "tablename": "office_documents"
+ },
+ {
+  "def": " office_documents USING btree (document_type, status, updated_at DESC)",
+  "indexname": "office_documents_type_status_idx",
+  "tablename": "office_documents"
+ },
+ {
+  "def": "UNIQUE  office_estates USING btree (id)",
+  "indexname": "office_estates_pkey",
+  "tablename": "office_estates"
+ },
+ {
+  "def": "UNIQUE  office_files USING btree (id)",
+  "indexname": "office_files_pkey",
+  "tablename": "office_files"
+ },
+ {
+  "def": " office_files USING btree (purpose, created_at DESC)",
+  "indexname": "office_files_purpose_created_at_idx",
+  "tablename": "office_files"
+ },
+ {
+  "def": " office_handoffs USING btree (lead_id, status)",
+  "indexname": "office_handoffs_lead_idx",
+  "tablename": "office_handoffs"
+ },
+ {
+  "def": "UNIQUE  office_handoffs USING btree (handoff_id)",
+  "indexname": "office_handoffs_pkey",
+  "tablename": "office_handoffs"
+ },
+ {
+  "def": " office_handoffs USING btree (status, business_unit, requested_capability, created_at)",
+  "indexname": "office_handoffs_status_idx",
+  "tablename": "office_handoffs"
+ },
+ {
+  "def": "UNIQUE  office_homes USING btree (id)",
+  "indexname": "office_homes_pkey",
+  "tablename": "office_homes"
+ },
+ {
+  "def": "UNIQUE  office_letterhead_config USING btree (id)",
+  "indexname": "office_letterhead_config_pkey",
+  "tablename": "office_letterhead_config"
+ },
+ {
+  "def": "UNIQUE  office_meetings USING btree (id)",
+  "indexname": "office_meetings_pkey",
+  "tablename": "office_meetings"
+ },
+ {
+  "def": " office_meetings USING btree (scheduled_at DESC)",
+  "indexname": "office_meetings_scheduled_at_idx",
+  "tablename": "office_meetings"
+ },
+ {
+  "def": "UNIQUE  office_packages USING btree (id)",
+  "indexname": "office_packages_pkey",
+  "tablename": "office_packages"
+ },
+ {
+  "def": "UNIQUE  office_partnership_relationships USING btree (id)",
+  "indexname": "office_partnership_relationships_pkey",
+  "tablename": "office_partnership_relationships"
+ },
+ {
+  "def": " office_partnership_relationships USING btree (status, relationship_type)",
+  "indexname": "office_partnership_relationships_status_idx",
+  "tablename": "office_partnership_relationships"
+ },
+ {
+  "def": " office_portfolio_entries USING btree (backend_building_id)",
+  "indexname": "office_portfolio_backend_building_idx",
+  "tablename": "office_portfolio_entries"
+ },
+ {
+  "def": "UNIQUE  office_portfolio_entries USING btree (id)",
+  "indexname": "office_portfolio_entries_pkey",
+  "tablename": "office_portfolio_entries"
+ },
+ {
+  "def": "UNIQUE  office_private_relationships USING btree (id)",
+  "indexname": "office_private_relationships_pkey",
+  "tablename": "office_private_relationships"
+ },
+ {
+  "def": " office_private_relationships USING btree (status, review_status)",
+  "indexname": "office_private_relationships_status_idx",
+  "tablename": "office_private_relationships"
+ },
+ {
+  "def": "UNIQUE  office_projects USING btree (id)",
+  "indexname": "office_projects_pkey",
+  "tablename": "office_projects"
+ },
+ {
+  "def": " office_projects USING btree (status, stage)",
+  "indexname": "office_projects_stage_idx",
+  "tablename": "office_projects"
+ },
+ {
+  "def": "UNIQUE  office_reports USING btree (id)",
+  "indexname": "office_reports_pkey",
+  "tablename": "office_reports"
+ },
+ {
+  "def": " office_reports USING btree (related_type, related_id)",
+  "indexname": "office_reports_related_idx",
+  "tablename": "office_reports"
+ },
+ {
+  "def": " office_reports USING btree (status, updated_at DESC)",
+  "indexname": "office_reports_status_idx",
+  "tablename": "office_reports"
+ },
+ {
+  "def": "UNIQUE  office_runtime_settings USING btree (key)",
+  "indexname": "office_runtime_settings_pkey",
+  "tablename": "office_runtime_settings"
+ },
+ {
+  "def": "UNIQUE  office_staff_capabilities USING btree (id)",
+  "indexname": "office_staff_capabilities_pkey",
+  "tablename": "office_staff_capabilities"
+ },
+ {
+  "def": "UNIQUE  office_staff_capabilities USING btree (staff_email, capability)",
+  "indexname": "office_staff_capabilities_unique_idx",
+  "tablename": "office_staff_capabilities"
+ },
+ {
+  "def": "UNIQUE  office_staff_profiles USING btree (staff_email)",
+  "indexname": "office_staff_profiles_pkey",
+  "tablename": "office_staff_profiles"
+ },
+ {
+  "def": "UNIQUE  office_support_cases USING btree (id)",
+  "indexname": "office_support_cases_pkey",
+  "tablename": "office_support_cases"
+ },
+ {
+  "def": " office_support_cases USING btree (status, priority, severity)",
+  "indexname": "office_support_cases_status_idx",
+  "tablename": "office_support_cases"
+ },
+ {
+  "def": "UNIQUE  office_support_mappings USING btree (id)",
+  "indexname": "office_support_mappings_pkey",
+  "tablename": "office_support_mappings"
+ },
+ {
+  "def": "UNIQUE  office_wallets USING btree (id)",
+  "indexname": "office_wallets_pkey",
+  "tablename": "office_wallets"
+ },
+ {
+  "def": "UNIQUE  onboarding_emails USING btree (id)",
+  "indexname": "onboarding_emails_pkey",
+  "tablename": "onboarding_emails"
+ },
+ {
+  "def": " onboarding_emails USING btree (status)",
+  "indexname": "onboarding_emails_status_idx",
+  "tablename": "onboarding_emails"
+ },
+ {
+  "def": "UNIQUE  partners USING btree (id)",
+  "indexname": "partners_pkey",
+  "tablename": "partners"
+ },
+ {
+  "def": " partners USING btree (status, tier)",
+  "indexname": "partners_status_idx",
+  "tablename": "partners"
+ },
+ {
+  "def": " password_reset_tokens USING btree (email, created_at DESC)",
+  "indexname": "password_reset_tokens_email_created_at_idx",
+  "tablename": "password_reset_tokens"
+ },
+ {
+  "def": "UNIQUE  password_reset_tokens USING btree (id)",
+  "indexname": "password_reset_tokens_pkey",
+  "tablename": "password_reset_tokens"
+ },
+ {
+  "def": "UNIQUE  password_reset_tokens USING btree (token_hash)",
+  "indexname": "password_reset_tokens_token_hash_key",
+  "tablename": "password_reset_tokens"
+ },
+ {
+  "def": " proposals USING btree (lead_id, created_at DESC)",
+  "indexname": "proposals_lead_id_created_at_idx",
+  "tablename": "proposals"
+ },
+ {
+  "def": " proposals USING btree (opportunity_id)",
+  "indexname": "proposals_opportunity_id_idx",
+  "tablename": "proposals"
+ },
+ {
+  "def": "UNIQUE  proposals USING btree (id)",
+  "indexname": "proposals_pkey",
+  "tablename": "proposals"
+ },
+ {
+  "def": " staff_conversation_participants USING btree (staff_email)",
+  "indexname": "staff_conversation_participants_email_idx",
+  "tablename": "staff_conversation_participants"
+ },
+ {
+  "def": "UNIQUE  staff_conversation_participants USING btree (id)",
+  "indexname": "staff_conversation_participants_pkey",
+  "tablename": "staff_conversation_participants"
+ },
+ {
+  "def": "UNIQUE  staff_conversation_participants USING btree (conversation_id, staff_email)",
+  "indexname": "staff_conversation_participants_unique_idx",
+  "tablename": "staff_conversation_participants"
+ },
+ {
+  "def": "UNIQUE  staff_conversations USING btree (id)",
+  "indexname": "staff_conversations_pkey",
+  "tablename": "staff_conversations"
+ },
+ {
+  "def": " staff_message_attachments USING btree (message_id)",
+  "indexname": "staff_message_attachments_message_idx",
+  "tablename": "staff_message_attachments"
+ },
+ {
+  "def": "UNIQUE  staff_message_attachments USING btree (id)",
+  "indexname": "staff_message_attachments_pkey",
+  "tablename": "staff_message_attachments"
+ },
+ {
+  "def": " staff_message_reactions USING btree (message_id)",
+  "indexname": "staff_message_reactions_message_idx",
+  "tablename": "staff_message_reactions"
+ },
+ {
+  "def": "UNIQUE  staff_message_reactions USING btree (id)",
+  "indexname": "staff_message_reactions_pkey",
+  "tablename": "staff_message_reactions"
+ },
+ {
+  "def": "UNIQUE  staff_message_reactions USING btree (message_id, staff_email, emoji)",
+  "indexname": "staff_message_reactions_unique_idx",
+  "tablename": "staff_message_reactions"
+ },
+ {
+  "def": "UNIQUE  staff_message_reads USING btree (id)",
+  "indexname": "staff_message_reads_pkey",
+  "tablename": "staff_message_reads"
+ },
+ {
+  "def": "UNIQUE  staff_message_reads USING btree (message_id, staff_email)",
+  "indexname": "staff_message_reads_unique_idx",
+  "tablename": "staff_message_reads"
+ },
+ {
+  "def": " staff_messages USING btree (conversation_id, created_at DESC)",
+  "indexname": "staff_messages_conversation_created_at_idx",
+  "tablename": "staff_messages"
+ },
+ {
+  "def": "UNIQUE  staff_messages USING btree (id)",
+  "indexname": "staff_messages_pkey",
+  "tablename": "staff_messages"
+ },
+ {
+  "def": " timeline_events USING btree (lead_id, created_at DESC)",
+  "indexname": "timeline_events_lead_id_created_at_idx",
+  "tablename": "timeline_events"
+ },
+ {
+  "def": "UNIQUE  timeline_events USING btree (id)",
+  "indexname": "timeline_events_pkey",
+  "tablename": "timeline_events"
+ },
+ {
+  "def": " traces USING btree (lead_id, created_at DESC)",
+  "indexname": "traces_lead_id_created_at_idx",
+  "tablename": "traces"
+ },
+ {
+  "def": "UNIQUE  traces USING btree (id)",
+  "indexname": "traces_pkey",
+  "tablename": "traces"
+ },
+ {
+  "def": " traces USING btree (trace_id)",
+  "indexname": "traces_trace_id_idx",
+  "tablename": "traces"
+ },
+ {
+  "def": "UNIQUE  whatsapp_inbound_claims USING btree (provider_message_id)",
+  "indexname": "whatsapp_inbound_claims_pkey",
+  "tablename": "whatsapp_inbound_claims"
+ },
+ {
+  "def": " whatsapp_manual_sends USING btree (lead_id, created_at DESC)",
+  "indexname": "whatsapp_manual_sends_lead_created_idx",
+  "tablename": "whatsapp_manual_sends"
+ },
+ {
+  "def": "UNIQUE  whatsapp_manual_sends USING btree (lead_id, actor_email, client_request_id)",
+  "indexname": "whatsapp_manual_sends_lead_id_actor_email_client_request_id_key",
+  "tablename": "whatsapp_manual_sends"
+ },
+ {
+  "def": " whatsapp_manual_sends USING btree (status, created_at) WHERE ((status = ANY (ARRAY['pending'::text, 'outcome_unknown'::text])) OR (conversation_recorded_at IS NULL))",
+  "indexname": "whatsapp_manual_sends_open_idx",
+  "tablename": "whatsapp_manual_sends"
+ },
+ {
+  "def": "UNIQUE  whatsapp_manual_sends USING btree (id)",
+  "indexname": "whatsapp_manual_sends_pkey",
+  "tablename": "whatsapp_manual_sends"
+ }
+]

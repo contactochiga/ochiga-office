@@ -1,0 +1,26 @@
+[
+ {
+  "name": "default_transaction_read_only",
+  "setting": "off"
+ },
+ {
+  "name": "max_connections",
+  "setting": "60"
+ },
+ {
+  "name": "row_security",
+  "setting": "on"
+ },
+ {
+  "name": "search_path",
+  "setting": "\"\\$user\", public, extensions"
+ },
+ {
+  "name": "server_version",
+  "setting": "17.6"
+ },
+ {
+  "name": "statement_timeout",
+  "setting": "120000"
+ }
+]

@@ -1,0 +1,97 @@
+[
+ {
+  "detail": "",
+  "gate": "B1 schema public is closed to the Data API roles (no USAGE for anon/authenticated)",
+  "status": "PASS"
+ },
+ {
+  "detail": "0 table(s) without RLS",
+  "gate": "B2 row level security on every public table",
+  "status": "PASS"
+ },
+ {
+  "detail": "0 grant(s)",
+  "gate": "B3 anon/authenticated hold no privilege on any public relation, column or sequence",
+  "status": "PASS"
+ },
+ {
+  "detail": "0 grant(s)",
+  "gate": "B3b \u2026and no column-level or sequence privilege",
+  "status": "PASS"
+ },
+ {
+  "detail": "0 function(s)",
+  "gate": "B4 no public function is executable by anon/authenticated",
+  "status": "PASS"
+ },
+ {
+  "detail": "0 object(s)",
+  "gate": "B5 no SECURITY DEFINER function and no view in public (nothing runs with the owner's rights on a caller's behalf)",
+  "status": "PASS"
+ },
+ {
+  "detail": "0 table(s) lacking a right",
+  "gate": "B6 service_role keeps the rights the application uses on every public table (20261027 intentionally withholds UPDATE/DELETE on the append-only settings history and DELETE on MFA credentials)",
+  "status": "PASS"
+ },
+ {
+  "detail": "0 policy(ies)",
+  "gate": "B7 no row level security policy in public (deny by default stays deny by default)",
+  "status": "PASS"
+ },
+ {
+  "detail": "0 relation(s)",
+  "gate": "B8 PUBLIC holds nothing on any public relation",
+  "status": "PASS"
+ },
+ {
+  "detail": "0 problem(s)",
+  "gate": "B9 the four credential tables and the settings table: RLS on and no privilege for anon/authenticated/PUBLIC",
+  "status": "PASS"
+ },
+ {
+  "detail": "0 of 11 present; missing: col:admin_users.session_generation, col:admin_users.sessions_revoked_at, col:admin_users.sessions_revoked_by, col:office_runtime_settings.version, fn:office_admin_update_revoking_sessions, fn:office_revoke_admin_sessions, fn:office_runtime_setting_history_immutable, fn:office_runtime_setting_record_attempt, fn:office_runtime_setting_write, table:office_runtime_setting_history, trigger:office_runtime_setting_history_no_change",
+  "gate": "STAGE S1 (20261019 + 20261020 + 20261021)",
+  "status": "ABSENT"
+ },
+ {
+  "detail": "0 of 4 present; missing: fn:office_is_session_revoked, fn:office_revoke_session, fn:office_session_revocation_version, table:admin_revoked_sessions",
+  "gate": "STAGE S2 (20261026)",
+  "status": "ABSENT"
+ },
+ {
+  "detail": "0 of 5 present; missing: fn:office_rate_limit_hit, fn:office_rate_limit_peek, fn:office_rate_limit_reset, fn:office_rate_limit_version, table:admin_rate_limits",
+  "gate": "STAGE S3 (20261028)",
+  "status": "ABSENT"
+ },
+ {
+  "detail": "0 of 33 present; missing: col:admin_mfa_recovery_codes.key_id, col:admin_users.mfa_active_count, col:admin_users.mfa_failed_attempts, col:admin_users.mfa_locked_until, col:admin_users.mfa_required_after, col:admin_users.mfa_reset_at, col:admin_users.mfa_reset_by, fn:office_mfa_activate_credential, fn:office_mfa_active_count_trigger, fn:office_mfa_clear_failures, fn:office_mfa_consume_challenge, fn:office_mfa_consume_recovery_code, fn:office_mfa_consume_recovery_code_revoking, fn:office_mfa_consume_totp_step, fn:office_mfa_create_challenge, fn:office_mfa_evidence_version, fn:office_mfa_mailbox_attempt, fn:office_mfa_mailbox_version, fn:office_mfa_management_version, fn:office_mfa_prune_challenges, fn:office_mfa_record_failure, fn:office_mfa_replace_recovery_codes, fn:office_mfa_reset, fn:office_mfa_revoke_credential, fn:office_mfa_schema_version, fn:office_mfa_sync_active_count, fn:office_mfa_webauthn_record_use, fn:office_mfa_webauthn_version, table:admin_mfa_challenges, table:admin_mfa_credentials, table:admin_mfa_mailbox_attempts, table:admin_mfa_recovery_codes, trigger:admin_mfa_credentials_active_count",
+  "gate": "STAGE S4 (20261022-20261025 + 20261029-20261031)",
+  "status": "ABSENT"
+ },
+ {
+  "detail": "none of its tables exist yet",
+  "gate": "STAGE S5 (20261027 service_role narrowing on credential/history tables)",
+  "status": "NOT_APPLICABLE"
+ },
+ {
+  "detail": "run 20261027 after S1 and again after S4; re-run it after any later table it covers",
+  "gate": "FOLLOW-UP S5: every credential/history table created by an earlier stage is narrowed for service_role",
+  "status": "PASS"
+ },
+ {
+  "detail": "",
+  "gate": "ORDER S2 needs S1 (admin_users.session_generation)",
+  "status": "PASS"
+ },
+ {
+  "detail": "",
+  "gate": "ORDER S4 needs S1 (session generation) before any MFA object",
+  "status": "PASS"
+ },
+ {
+  "detail": "10 of 10 baseline rows PASS",
+  "gate": "VERDICT (GO = every BASELINE row PASS, no stage PARTIAL, no ORDER failure, nothing pending)",
+  "status": "GO"
+ }
+]

@@ -1,0 +1,137 @@
+[
+ {
+  "kind": "table",
+  "name": "office_runtime_settings",
+  "present": true
+ },
+ {
+  "kind": "table",
+  "name": "office_runtime_setting_history",
+  "present": false
+ },
+ {
+  "kind": "table",
+  "name": "whatsapp_inbound_claims",
+  "present": true
+ },
+ {
+  "kind": "table",
+  "name": "whatsapp_manual_sends",
+  "present": true
+ },
+ {
+  "kind": "table",
+  "name": "communication_delivery_outbox",
+  "present": true
+ },
+ {
+  "kind": "table",
+  "name": "admin_mfa_credentials",
+  "present": false
+ },
+ {
+  "kind": "table",
+  "name": "admin_mfa_recovery_codes",
+  "present": false
+ },
+ {
+  "kind": "table",
+  "name": "admin_mfa_challenges",
+  "present": false
+ },
+ {
+  "kind": "table",
+  "name": "admin_mfa_mailbox_attempts",
+  "present": false
+ },
+ {
+  "kind": "table",
+  "name": "admin_revoked_sessions",
+  "present": false
+ },
+ {
+  "kind": "table",
+  "name": "admin_rate_limits",
+  "present": false
+ },
+ {
+  "kind": "table",
+  "name": "admin_sessions",
+  "present": false
+ },
+ {
+  "kind": "table",
+  "name": "audit_events",
+  "present": true
+ },
+ {
+  "kind": "table",
+  "name": "password_reset_tokens",
+  "present": true
+ },
+ {
+  "kind": "table",
+  "name": "admin_invites",
+  "present": true
+ },
+ {
+  "kind": "column",
+  "name": "admin_users.session_generation",
+  "present": false
+ },
+ {
+  "kind": "column",
+  "name": "admin_users.mfa_active_count",
+  "present": false
+ },
+ {
+  "kind": "column",
+  "name": "admin_users.mfa_enforced_at",
+  "present": false
+ },
+ {
+  "kind": "column",
+  "name": "admin_users.password_hash",
+  "present": true
+ },
+ {
+  "kind": "column",
+  "name": "admin_users.password_changed_at",
+  "present": true
+ },
+ {
+  "kind": "column",
+  "name": "admin_users.failed_login_count",
+  "present": false
+ },
+ {
+  "kind": "column",
+  "name": "admin_users.locked_until",
+  "present": false
+ },
+ {
+  "kind": "column",
+  "name": "admin_users.office_position",
+  "present": true
+ },
+ {
+  "kind": "column",
+  "name": "office_runtime_settings.version",
+  "present": false
+ },
+ {
+  "kind": "column",
+  "name": "office_runtime_settings.updated_at",
+  "present": true
+ },
+ {
+  "kind": "column",
+  "name": "office_runtime_settings.value",
+  "present": true
+ },
+ {
+  "kind": "column",
+  "name": "facility_workspaces.portfolio_id",
+  "present": true
+ }
+]

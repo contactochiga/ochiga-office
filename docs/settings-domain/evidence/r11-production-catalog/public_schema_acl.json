@@ -1,0 +1,6 @@
+[
+ {
+  "nspacl": "{pg_database_owner=UC/pg_database_owner,postgres=U/pg_database_owner,service_role=U/pg_database_owner,supabase_etl_admin=U/pg_database_owner,dashboard_user=U/pg_database_owner,cli_login_postgres=U/pg_database_owner,supabase_privileged_role=U/pg_database_owner,supabase_admin=U/pg_database_owner,authenticator=U/pg_database_owner,pgbouncer=U/pg_database_owner,supabase_auth_admin=U/pg_database_owner,supabase_read_only_user=U/pg_database_owner,supabase_storage_admin=U/pg_database_owner,supabase_realtime_admin=U/pg_database_owner,supabase_replication_admin=U/pg_database_owner}",
+  "nspname": "public"
+ }
+]

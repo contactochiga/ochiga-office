@@ -1,0 +1,112 @@
+[
+ {
+  "kind": "trigger",
+  "name": "lead_channel_states_set_updated_at on lead_channel_states",
+  "present": true
+ },
+ {
+  "kind": "trigger",
+  "name": "proposals_set_updated_at on proposals",
+  "present": true
+ },
+ {
+  "kind": "trigger",
+  "name": "leads_set_updated_at on leads",
+  "present": true
+ },
+ {
+  "kind": "trigger",
+  "name": "notifications_set_updated_at on notifications",
+  "present": true
+ },
+ {
+  "kind": "trigger",
+  "name": "partners_set_updated_at on partners",
+  "present": true
+ },
+ {
+  "kind": "trigger",
+  "name": "deployment_projects_set_updated_at on deployment_projects",
+  "present": true
+ },
+ {
+  "kind": "trigger",
+  "name": "facility_workspaces_set_updated_at on facility_workspaces",
+  "present": true
+ },
+ {
+  "kind": "trigger",
+  "name": "onboarding_emails_set_updated_at on onboarding_emails",
+  "present": true
+ },
+ {
+  "kind": "trigger",
+  "name": "admin_users_set_updated_at on admin_users",
+  "present": true
+ },
+ {
+  "kind": "trigger",
+  "name": "admin_invites_set_updated_at on admin_invites",
+  "present": true
+ },
+ {
+  "kind": "trigger",
+  "name": "office_packages_set_updated_at on office_packages",
+  "present": true
+ },
+ {
+  "kind": "trigger",
+  "name": "office_estates_set_updated_at on office_estates",
+  "present": true
+ },
+ {
+  "kind": "trigger",
+  "name": "office_buildings_set_updated_at on office_buildings",
+  "present": true
+ },
+ {
+  "kind": "trigger",
+  "name": "office_homes_set_updated_at on office_homes",
+  "present": true
+ },
+ {
+  "kind": "trigger",
+  "name": "office_documents_set_updated_at on office_documents",
+  "present": true
+ },
+ {
+  "kind": "trigger",
+  "name": "office_devices_set_updated_at on office_devices",
+  "present": true
+ },
+ {
+  "kind": "trigger",
+  "name": "office_wallets_set_updated_at on office_wallets",
+  "present": true
+ },
+ {
+  "kind": "trigger",
+  "name": "office_analytics_set_updated_at on office_analytics",
+  "present": true
+ },
+ {
+  "kind": "trigger",
+  "name": "office_support_mappings_set_updated_at on office_support_mappings",
+  "present": true
+ },
+ {
+  "kind": "trigger",
+  "name": "password_reset_tokens_set_updated_at on password_reset_tokens",
+  "present": true
+ },
+ {
+  "kind": "trigger",
+  "name": "office_document_folders_set_updated_at on office_document_folders",
+  "present": true
+ },
+ {
+  "kind": "trigger",
+  "name": "office_letterhead_config_set_updated_at on office_letterhead_config",
+  "present": true
+ }
+]

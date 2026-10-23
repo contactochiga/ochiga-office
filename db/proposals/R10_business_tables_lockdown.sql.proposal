@@ -1,3 +1,7 @@
+-- R11 STATUS: NOT NEEDED FOR THE OFFICE PRODUCTION DATABASE. The production catalog (read-only, 2026-10-23) already has row level security on all 58 public tables, no privilege for anon/authenticated/PUBLIC on any
+-- table, column, sequence or function, and no USAGE on schema public for the Data API roles -- the result of the production migration `ochiga_office_p0_access_hardening` (20261014210318, verbatim copy in
+-- docs/settings-domain/evidence/r11-production-catalog/). Applying this proposal there would be a no-op at best. It remains useful ONLY for a NEW or restored environment built from db/lead-agents-schema.sql,
+-- where the equivalent (and stricter) step is that production migration. See docs/settings-domain/54_S7_R11_PRODUCTION_DB_RECONCILIATION.md.
 -- PROPOSAL ONLY -- NOT part of the migration chain, NOT applied anywhere. Stored with a non-.sql extension so no tool picks it up. See docs/settings-domain/53_S7_R10_PRODUCTION_BOUNDARY.md section C.
 -- Scope: the 50 ordinary tables of schema public that have no row level security in the bootstrap schema (list generated from a disposable fixture with every migration through 20261031).
 -- Effect per table: ENABLE ROW LEVEL SECURITY (no policy => deny by default for every role that does not bypass RLS), REVOKE ALL from PUBLIC / anon / authenticated, and nothing for service_role

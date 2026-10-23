@@ -1,0 +1,34 @@
+[
+ {
+  "k": "realtime.subscription rows (count only)",
+  "v": "0"
+ },
+ {
+  "k": "extensions schema: relations readable by anon",
+  "v": "2"
+ },
+ {
+  "k": "storage.* tables where anon holds a privilege and RLS is OFF",
+  "v": "0"
+ },
+ {
+  "k": "storage.* policies",
+  "v": "0"
+ },
+ {
+  "k": "graphql schema relations anon may select",
+  "v": "0"
+ },
+ {
+  "k": "pg_graphql extension installed",
+  "v": "0"
+ },
+ {
+  "k": "vault schema usable by anon/authenticated",
+  "v": "false"
+ },
+ {
+  "k": "anon-executable functions outside public/graphql_public/storage/realtime/extensions/auth (non-system)",
+  "v": "0"
+ }
+]

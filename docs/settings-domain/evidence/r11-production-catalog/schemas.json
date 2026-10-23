@@ -1,0 +1,92 @@
+[
+ {
+  "anon_create": false,
+  "anon_usage": true,
+  "auth_create": false,
+  "auth_usage": true,
+  "nspname": "auth",
+  "owner": "supabase_admin",
+  "rels": 27
+ },
+ {
+  "anon_create": false,
+  "anon_usage": true,
+  "auth_create": false,
+  "auth_usage": true,
+  "nspname": "extensions",
+  "owner": "postgres",
+  "rels": 2
+ },
+ {
+  "anon_create": false,
+  "anon_usage": true,
+  "auth_create": false,
+  "auth_usage": true,
+  "nspname": "graphql",
+  "owner": "supabase_admin",
+  "rels": 0
+ },
+ {
+  "anon_create": false,
+  "anon_usage": true,
+  "auth_create": false,
+  "auth_usage": true,
+  "nspname": "graphql_public",
+  "owner": "supabase_admin",
+  "rels": 0
+ },
+ {
+  "anon_create": false,
+  "anon_usage": false,
+  "auth_create": false,
+  "auth_usage": false,
+  "nspname": "pgbouncer",
+  "owner": "pgbouncer",
+  "rels": 0
+ },
+ {
+  "anon_create": false,
+  "anon_usage": false,
+  "auth_create": false,
+  "auth_usage": false,
+  "nspname": "public",
+  "owner": "pg_database_owner",
+  "rels": 58
+ },
+ {
+  "anon_create": false,
+  "anon_usage": true,
+  "auth_create": false,
+  "auth_usage": true,
+  "nspname": "realtime",
+  "owner": "supabase_admin",
+  "rels": 3
+ },
+ {
+  "anon_create": false,
+  "anon_usage": true,
+  "auth_create": false,
+  "auth_usage": true,
+  "nspname": "storage",
+  "owner": "supabase_admin",
+  "rels": 8
+ },
+ {
+  "anon_create": false,
+  "anon_usage": false,
+  "auth_create": false,
+  "auth_usage": false,
+  "nspname": "supabase_migrations",
+  "owner": "postgres",
+  "rels": 1
+ },
+ {
+  "anon_create": false,
+  "anon_usage": false,
+  "auth_create": false,
+  "auth_usage": false,
+  "nspname": "vault",
+  "owner": "supabase_admin",
+  "rels": 2
+ }
+]

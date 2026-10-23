@@ -1,0 +1,22 @@
+[
+ {
+  "rolname": "anon",
+  "setconfig": "{statement_timeout=3s}"
+ },
+ {
+  "rolname": "authenticated",
+  "setconfig": "{statement_timeout=8s}"
+ },
+ {
+  "rolname": "postgres",
+  "setconfig": "{\"search_path=\\\"\\\\$user\\\", public, extensions\"}"
+ },
+ {
+  "rolname": "authenticator",
+  "setconfig": "{session_preload_libraries=safeupdate,statement_timeout=8s,lock_timeout=8s}"
+ },
+ {
+  "rolname": "db:postgres",
+  "setconfig": "{app.settings.jwt_exp=3600}"
+ }
+]

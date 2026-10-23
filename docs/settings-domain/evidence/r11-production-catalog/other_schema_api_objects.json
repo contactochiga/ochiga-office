@@ -1,0 +1,90 @@
+[
+ {
+  "anon_priv": null,
+  "auth_priv": null,
+  "relkind": "v",
+  "relname": "pg_stat_statements",
+  "rls": false,
+  "sch": "extensions"
+ },
+ {
+  "anon_priv": null,
+  "auth_priv": null,
+  "relkind": "v",
+  "relname": "pg_stat_statements_info",
+  "rls": false,
+  "sch": "extensions"
+ },
+ {
+  "anon_priv": "INSERT,SELECT,UPDATE",
+  "auth_priv": "INSERT,SELECT,UPDATE",
+  "relkind": "p",
+  "relname": "messages",
+  "rls": true,
+  "sch": "realtime"
+ },
+ {
+  "anon_priv": "SELECT",
+  "auth_priv": "SELECT",
+  "relkind": "r",
+  "relname": "subscription",
+  "rls": false,
+  "sch": "realtime"
+ },
+ {
+  "anon_priv": "DELETE,INSERT,SELECT,UPDATE",
+  "auth_priv": "DELETE,INSERT,SELECT,UPDATE",
+  "relkind": "r",
+  "relname": "buckets",
+  "rls": true,
+  "sch": "storage"
+ },
+ {
+  "anon_priv": "DELETE,INSERT,SELECT,UPDATE",
+  "auth_priv": "DELETE,INSERT,SELECT,UPDATE",
+  "relkind": "r",
+  "relname": "buckets_analytics",
+  "rls": true,
+  "sch": "storage"
+ },
+ {
+  "anon_priv": "SELECT",
+  "auth_priv": "SELECT",
+  "relkind": "r",
+  "relname": "buckets_vectors",
+  "rls": true,
+  "sch": "storage"
+ },
+ {
+  "anon_priv": "DELETE,INSERT,SELECT,UPDATE",
+  "auth_priv": "DELETE,INSERT,SELECT,UPDATE",
+  "relkind": "r",
+  "relname": "objects",
+  "rls": true,
+  "sch": "storage"
+ },
+ {
+  "anon_priv": "SELECT",
+  "auth_priv": "SELECT",
+  "relkind": "r",
+  "relname": "s3_multipart_uploads",
+  "rls": true,
+  "sch": "storage"
+ },
+ {
+  "anon_priv": "SELECT",
+  "auth_priv": "SELECT",
+  "relkind": "r",
+  "relname": "s3_multipart_uploads_parts",
+  "rls": true,
+  "sch": "storage"
+ },
+ {
+  "anon_priv": "SELECT",
+  "auth_priv": "SELECT",
+  "relkind": "r",
+  "relname": "vector_indexes",
+  "rls": true,
+  "sch": "storage"
+ }
+]

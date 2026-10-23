@@ -1,0 +1,7832 @@
+[
+ {
+  "character_maximum_length": null,
+  "column_name": "id",
+  "data_type": "uuid",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 1,
+  "table_name": "admin_invites",
+  "udt_name": "uuid"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "email",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "NO",
+  "ordinal_position": 2,
+  "table_name": "admin_invites",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "role",
+  "data_type": "text",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 3,
+  "table_name": "admin_invites",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "display_name",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 4,
+  "table_name": "admin_invites",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "token_hash",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "NO",
+  "ordinal_position": 5,
+  "table_name": "admin_invites",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "status",
+  "data_type": "text",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 6,
+  "table_name": "admin_invites",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "invited_by",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 7,
+  "table_name": "admin_invites",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "expires_at",
+  "data_type": "timestamp with time zone",
+  "has_default": false,
+  "is_nullable": "NO",
+  "ordinal_position": 8,
+  "table_name": "admin_invites",
+  "udt_name": "timestamptz"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "accepted_at",
+  "data_type": "timestamp with time zone",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 9,
+  "table_name": "admin_invites",
+  "udt_name": "timestamptz"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "created_at",
+  "data_type": "timestamp with time zone",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 10,
+  "table_name": "admin_invites",
+  "udt_name": "timestamptz"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "updated_at",
+  "data_type": "timestamp with time zone",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 11,
+  "table_name": "admin_invites",
+  "udt_name": "timestamptz"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "office_position",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 12,
+  "table_name": "admin_invites",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "admin_user_id",
+  "data_type": "uuid",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 13,
+  "table_name": "admin_invites",
+  "udt_name": "uuid"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "phone",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 14,
+  "table_name": "admin_invites",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "id",
+  "data_type": "uuid",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 1,
+  "table_name": "admin_users",
+  "udt_name": "uuid"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "email",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "NO",
+  "ordinal_position": 2,
+  "table_name": "admin_users",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "password_hash",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "NO",
+  "ordinal_position": 3,
+  "table_name": "admin_users",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "role",
+  "data_type": "text",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 4,
+  "table_name": "admin_users",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "status",
+  "data_type": "text",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 5,
+  "table_name": "admin_users",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "display_name",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 6,
+  "table_name": "admin_users",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "created_at",
+  "data_type": "timestamp with time zone",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 7,
+  "table_name": "admin_users",
+  "udt_name": "timestamptz"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "updated_at",
+  "data_type": "timestamp with time zone",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 8,
+  "table_name": "admin_users",
+  "udt_name": "timestamptz"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "last_login_at",
+  "data_type": "timestamp with time zone",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 9,
+  "table_name": "admin_users",
+  "udt_name": "timestamptz"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "password_changed_at",
+  "data_type": "timestamp with time zone",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 10,
+  "table_name": "admin_users",
+  "udt_name": "timestamptz"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "passport_photo_url",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 11,
+  "table_name": "admin_users",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "qr_credential",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 12,
+  "table_name": "admin_users",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "permission_scopes",
+  "data_type": "ARRAY",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 13,
+  "table_name": "admin_users",
+  "udt_name": "_text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "office_position",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 14,
+  "table_name": "admin_users",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "phone",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 15,
+  "table_name": "admin_users",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "removed_at",
+  "data_type": "timestamp with time zone",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 16,
+  "table_name": "admin_users",
+  "udt_name": "timestamptz"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "removed_by",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 17,
+  "table_name": "admin_users",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "id",
+  "data_type": "uuid",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 1,
+  "table_name": "audit_events",
+  "udt_name": "uuid"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "actor_user_id",
+  "data_type": "uuid",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 2,
+  "table_name": "audit_events",
+  "udt_name": "uuid"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "actor_email",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 3,
+  "table_name": "audit_events",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "actor_role",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 4,
+  "table_name": "audit_events",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "action",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "NO",
+  "ordinal_position": 5,
+  "table_name": "audit_events",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "target_type",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "NO",
+  "ordinal_position": 6,
+  "table_name": "audit_events",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "target_id",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 7,
+  "table_name": "audit_events",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "metadata",
+  "data_type": "jsonb",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 8,
+  "table_name": "audit_events",
+  "udt_name": "jsonb"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "created_at",
+  "data_type": "timestamp with time zone",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 9,
+  "table_name": "audit_events",
+  "udt_name": "timestamptz"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "resource_type",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 10,
+  "table_name": "audit_events",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "resource_id",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 11,
+  "table_name": "audit_events",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "estate_id",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 12,
+  "table_name": "audit_events",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "status",
+  "data_type": "text",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 13,
+  "table_name": "audit_events",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "ip",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 14,
+  "table_name": "audit_events",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "user_agent",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 15,
+  "table_name": "audit_events",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "id",
+  "data_type": "uuid",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 1,
+  "table_name": "communication_delivery_outbox",
+  "udt_name": "uuid"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "delivery_key",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "NO",
+  "ordinal_position": 2,
+  "table_name": "communication_delivery_outbox",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "channel",
+  "data_type": "text",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 3,
+  "table_name": "communication_delivery_outbox",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "event_type",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "NO",
+  "ordinal_position": 4,
+  "table_name": "communication_delivery_outbox",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "provider_message_id",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "NO",
+  "ordinal_position": 5,
+  "table_name": "communication_delivery_outbox",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "status_value",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 6,
+  "table_name": "communication_delivery_outbox",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "source_event_id",
+  "data_type": "uuid",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 7,
+  "table_name": "communication_delivery_outbox",
+  "udt_name": "uuid"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "lead_id",
+  "data_type": "uuid",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 8,
+  "table_name": "communication_delivery_outbox",
+  "udt_name": "uuid"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "payload",
+  "data_type": "jsonb",
+  "has_default": false,
+  "is_nullable": "NO",
+  "ordinal_position": 9,
+  "table_name": "communication_delivery_outbox",
+  "udt_name": "jsonb"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "mode",
+  "data_type": "text",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 10,
+  "table_name": "communication_delivery_outbox",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "status",
+  "data_type": "text",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 11,
+  "table_name": "communication_delivery_outbox",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "attempts",
+  "data_type": "integer",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 12,
+  "table_name": "communication_delivery_outbox",
+  "udt_name": "int4"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "next_attempt_at",
+  "data_type": "timestamp with time zone",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 13,
+  "table_name": "communication_delivery_outbox",
+  "udt_name": "timestamptz"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "lease_until",
+  "data_type": "timestamp with time zone",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 14,
+  "table_name": "communication_delivery_outbox",
+  "udt_name": "timestamptz"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "leased_by",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 15,
+  "table_name": "communication_delivery_outbox",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "last_error",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 16,
+  "table_name": "communication_delivery_outbox",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "last_http_status",
+  "data_type": "integer",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 17,
+  "table_name": "communication_delivery_outbox",
+  "udt_name": "int4"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "last_attempt_at",
+  "data_type": "timestamp with time zone",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 18,
+  "table_name": "communication_delivery_outbox",
+  "udt_name": "timestamptz"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "delivered_at",
+  "data_type": "timestamp with time zone",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 19,
+  "table_name": "communication_delivery_outbox",
+  "udt_name": "timestamptz"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "dead_at",
+  "data_type": "timestamp with time zone",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 20,
+  "table_name": "communication_delivery_outbox",
+  "udt_name": "timestamptz"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "created_at",
+  "data_type": "timestamp with time zone",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 21,
+  "table_name": "communication_delivery_outbox",
+  "udt_name": "timestamptz"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "updated_at",
+  "data_type": "timestamp with time zone",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 22,
+  "table_name": "communication_delivery_outbox",
+  "udt_name": "timestamptz"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "id",
+  "data_type": "uuid",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 1,
+  "table_name": "conversations",
+  "udt_name": "uuid"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "lead_id",
+  "data_type": "uuid",
+  "has_default": false,
+  "is_nullable": "NO",
+  "ordinal_position": 2,
+  "table_name": "conversations",
+  "udt_name": "uuid"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "agent_name",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "NO",
+  "ordinal_position": 3,
+  "table_name": "conversations",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "message_role",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "NO",
+  "ordinal_position": 4,
+  "table_name": "conversations",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "content",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "NO",
+  "ordinal_position": 5,
+  "table_name": "conversations",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "created_at",
+  "data_type": "timestamp with time zone",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 6,
+  "table_name": "conversations",
+  "udt_name": "timestamptz"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "channel",
+  "data_type": "text",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 7,
+  "table_name": "conversations",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "external_message_id",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 8,
+  "table_name": "conversations",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "parent_external_message_id",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 9,
+  "table_name": "conversations",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "correlation_id",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 10,
+  "table_name": "conversations",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "id",
+  "data_type": "uuid",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 1,
+  "table_name": "crm_activities",
+  "udt_name": "uuid"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "lead_id",
+  "data_type": "uuid",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 2,
+  "table_name": "crm_activities",
+  "udt_name": "uuid"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "contact_id",
+  "data_type": "uuid",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 3,
+  "table_name": "crm_activities",
+  "udt_name": "uuid"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "organization_id",
+  "data_type": "uuid",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 4,
+  "table_name": "crm_activities",
+  "udt_name": "uuid"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "opportunity_id",
+  "data_type": "uuid",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 5,
+  "table_name": "crm_activities",
+  "udt_name": "uuid"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "project_id",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 6,
+  "table_name": "crm_activities",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "portfolio_id",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 7,
+  "table_name": "crm_activities",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "support_case_id",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 8,
+  "table_name": "crm_activities",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "meeting_id",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 9,
+  "table_name": "crm_activities",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "related_type",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 10,
+  "table_name": "crm_activities",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "related_id",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 11,
+  "table_name": "crm_activities",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "activity_type",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "NO",
+  "ordinal_position": 12,
+  "table_name": "crm_activities",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "title",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 13,
+  "table_name": "crm_activities",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "body",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 14,
+  "table_name": "crm_activities",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "source",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 15,
+  "table_name": "crm_activities",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "actor",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 16,
+  "table_name": "crm_activities",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "metadata",
+  "data_type": "jsonb",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 17,
+  "table_name": "crm_activities",
+  "udt_name": "jsonb"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "occurred_at",
+  "data_type": "timestamp with time zone",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 18,
+  "table_name": "crm_activities",
+  "udt_name": "timestamptz"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "created_at",
+  "data_type": "timestamp with time zone",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 19,
+  "table_name": "crm_activities",
+  "udt_name": "timestamptz"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "business_unit",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 20,
+  "table_name": "crm_activities",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "status",
+  "data_type": "text",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 21,
+  "table_name": "crm_activities",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "owner",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 22,
+  "table_name": "crm_activities",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "updated_at",
+  "data_type": "timestamp with time zone",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 23,
+  "table_name": "crm_activities",
+  "udt_name": "timestamptz"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "id",
+  "data_type": "uuid",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 1,
+  "table_name": "crm_contacts",
+  "udt_name": "uuid"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "organization_id",
+  "data_type": "uuid",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 2,
+  "table_name": "crm_contacts",
+  "udt_name": "uuid"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "name",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 3,
+  "table_name": "crm_contacts",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "email",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 4,
+  "table_name": "crm_contacts",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "phone",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 5,
+  "table_name": "crm_contacts",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "role",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 6,
+  "table_name": "crm_contacts",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "source",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 7,
+  "table_name": "crm_contacts",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "metadata",
+  "data_type": "jsonb",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 8,
+  "table_name": "crm_contacts",
+  "udt_name": "jsonb"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "created_at",
+  "data_type": "timestamp with time zone",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 9,
+  "table_name": "crm_contacts",
+  "udt_name": "timestamptz"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "updated_at",
+  "data_type": "timestamp with time zone",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 10,
+  "table_name": "crm_contacts",
+  "udt_name": "timestamptz"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "business_unit",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 11,
+  "table_name": "crm_contacts",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "status",
+  "data_type": "text",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 12,
+  "table_name": "crm_contacts",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "owner",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 13,
+  "table_name": "crm_contacts",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "id",
+  "data_type": "uuid",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 1,
+  "table_name": "crm_opportunities",
+  "udt_name": "uuid"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "contact_id",
+  "data_type": "uuid",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 2,
+  "table_name": "crm_opportunities",
+  "udt_name": "uuid"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "organization_id",
+  "data_type": "uuid",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 3,
+  "table_name": "crm_opportunities",
+  "udt_name": "uuid"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "lead_id",
+  "data_type": "uuid",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 4,
+  "table_name": "crm_opportunities",
+  "udt_name": "uuid"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "business_unit",
+  "data_type": "text",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 5,
+  "table_name": "crm_opportunities",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "inquiry_type",
+  "data_type": "text",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 6,
+  "table_name": "crm_opportunities",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "pipeline",
+  "data_type": "text",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 7,
+  "table_name": "crm_opportunities",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "stage",
+  "data_type": "text",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 8,
+  "table_name": "crm_opportunities",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "status",
+  "data_type": "text",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 9,
+  "table_name": "crm_opportunities",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "owner",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 10,
+  "table_name": "crm_opportunities",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "source",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 11,
+  "table_name": "crm_opportunities",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "metadata",
+  "data_type": "jsonb",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 12,
+  "table_name": "crm_opportunities",
+  "udt_name": "jsonb"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "created_at",
+  "data_type": "timestamp with time zone",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 13,
+  "table_name": "crm_opportunities",
+  "udt_name": "timestamptz"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "updated_at",
+  "data_type": "timestamp with time zone",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 14,
+  "table_name": "crm_opportunities",
+  "udt_name": "timestamptz"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "id",
+  "data_type": "uuid",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 1,
+  "table_name": "crm_organizations",
+  "udt_name": "uuid"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "name",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "NO",
+  "ordinal_position": 2,
+  "table_name": "crm_organizations",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "account_type",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 3,
+  "table_name": "crm_organizations",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "website",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 4,
+  "table_name": "crm_organizations",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "city",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 5,
+  "table_name": "crm_organizations",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "country",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 6,
+  "table_name": "crm_organizations",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "metadata",
+  "data_type": "jsonb",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 7,
+  "table_name": "crm_organizations",
+  "udt_name": "jsonb"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "created_at",
+  "data_type": "timestamp with time zone",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 8,
+  "table_name": "crm_organizations",
+  "udt_name": "timestamptz"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "updated_at",
+  "data_type": "timestamp with time zone",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 9,
+  "table_name": "crm_organizations",
+  "udt_name": "timestamptz"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "business_unit",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 10,
+  "table_name": "crm_organizations",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "status",
+  "data_type": "text",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 11,
+  "table_name": "crm_organizations",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "owner",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 12,
+  "table_name": "crm_organizations",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "id",
+  "data_type": "uuid",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 1,
+  "table_name": "crm_tasks",
+  "udt_name": "uuid"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "lead_id",
+  "data_type": "uuid",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 2,
+  "table_name": "crm_tasks",
+  "udt_name": "uuid"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "opportunity_id",
+  "data_type": "uuid",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 3,
+  "table_name": "crm_tasks",
+  "udt_name": "uuid"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "private_relationship_id",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 4,
+  "table_name": "crm_tasks",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "partnership_relationship_id",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 5,
+  "table_name": "crm_tasks",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "title",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "NO",
+  "ordinal_position": 6,
+  "table_name": "crm_tasks",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "status",
+  "data_type": "text",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 7,
+  "table_name": "crm_tasks",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "assignee",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 8,
+  "table_name": "crm_tasks",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "due_at",
+  "data_type": "timestamp with time zone",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 9,
+  "table_name": "crm_tasks",
+  "udt_name": "timestamptz"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "metadata",
+  "data_type": "jsonb",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 10,
+  "table_name": "crm_tasks",
+  "udt_name": "jsonb"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "created_at",
+  "data_type": "timestamp with time zone",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 11,
+  "table_name": "crm_tasks",
+  "udt_name": "timestamptz"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "updated_at",
+  "data_type": "timestamp with time zone",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 12,
+  "table_name": "crm_tasks",
+  "udt_name": "timestamptz"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "project_id",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 13,
+  "table_name": "crm_tasks",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "portfolio_id",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 14,
+  "table_name": "crm_tasks",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "support_case_id",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 15,
+  "table_name": "crm_tasks",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "description",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 16,
+  "table_name": "crm_tasks",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "priority",
+  "data_type": "text",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 17,
+  "table_name": "crm_tasks",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "completed_at",
+  "data_type": "timestamp with time zone",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 18,
+  "table_name": "crm_tasks",
+  "udt_name": "timestamptz"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "business_unit",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 19,
+  "table_name": "crm_tasks",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "owner",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 20,
+  "table_name": "crm_tasks",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "id",
+  "data_type": "uuid",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 1,
+  "table_name": "demos",
+  "udt_name": "uuid"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "lead_id",
+  "data_type": "uuid",
+  "has_default": false,
+  "is_nullable": "NO",
+  "ordinal_position": 2,
+  "table_name": "demos",
+  "udt_name": "uuid"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "scheduled_for",
+  "data_type": "timestamp with time zone",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 3,
+  "table_name": "demos",
+  "udt_name": "timestamptz"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "status",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 4,
+  "table_name": "demos",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "notes",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 5,
+  "table_name": "demos",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "created_at",
+  "data_type": "timestamp with time zone",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 6,
+  "table_name": "demos",
+  "udt_name": "timestamptz"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "id",
+  "data_type": "uuid",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 1,
+  "table_name": "deployment_projects",
+  "udt_name": "uuid"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "lead_id",
+  "data_type": "uuid",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 2,
+  "table_name": "deployment_projects",
+  "udt_name": "uuid"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "customer_name",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 3,
+  "table_name": "deployment_projects",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "property_name",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 4,
+  "table_name": "deployment_projects",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "property_type",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 5,
+  "table_name": "deployment_projects",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "location",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 6,
+  "table_name": "deployment_projects",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "package_name",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 7,
+  "table_name": "deployment_projects",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "status",
+  "data_type": "text",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 8,
+  "table_name": "deployment_projects",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "owner",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 9,
+  "table_name": "deployment_projects",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "checklist",
+  "data_type": "jsonb",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 10,
+  "table_name": "deployment_projects",
+  "udt_name": "jsonb"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "notes",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 11,
+  "table_name": "deployment_projects",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "created_at",
+  "data_type": "timestamp with time zone",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 12,
+  "table_name": "deployment_projects",
+  "udt_name": "timestamptz"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "updated_at",
+  "data_type": "timestamp with time zone",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 13,
+  "table_name": "deployment_projects",
+  "udt_name": "timestamptz"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "id",
+  "data_type": "uuid",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 1,
+  "table_name": "facility_workspaces",
+  "udt_name": "uuid"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "lead_id",
+  "data_type": "uuid",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 2,
+  "table_name": "facility_workspaces",
+  "udt_name": "uuid"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "customer_organization",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 3,
+  "table_name": "facility_workspaces",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "estate_name",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 4,
+  "table_name": "facility_workspaces",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "facility_admin_email",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 5,
+  "table_name": "facility_workspaces",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "status",
+  "data_type": "text",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 6,
+  "table_name": "facility_workspaces",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "activation_link",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 7,
+  "table_name": "facility_workspaces",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "checklist",
+  "data_type": "jsonb",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 8,
+  "table_name": "facility_workspaces",
+  "udt_name": "jsonb"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "notes",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 9,
+  "table_name": "facility_workspaces",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "created_at",
+  "data_type": "timestamp with time zone",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 10,
+  "table_name": "facility_workspaces",
+  "udt_name": "timestamptz"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "updated_at",
+  "data_type": "timestamp with time zone",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 11,
+  "table_name": "facility_workspaces",
+  "udt_name": "timestamptz"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "portfolio_id",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 12,
+  "table_name": "facility_workspaces",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "facility_admin_full_name",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 13,
+  "table_name": "facility_workspaces",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "facility_admin_phone",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 14,
+  "table_name": "facility_workspaces",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "id",
+  "data_type": "uuid",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 1,
+  "table_name": "inbound_events",
+  "udt_name": "uuid"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "channel",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "NO",
+  "ordinal_position": 2,
+  "table_name": "inbound_events",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "provider",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "NO",
+  "ordinal_position": 3,
+  "table_name": "inbound_events",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "event_type",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "NO",
+  "ordinal_position": 4,
+  "table_name": "inbound_events",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "lead_id",
+  "data_type": "uuid",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 5,
+  "table_name": "inbound_events",
+  "udt_name": "uuid"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "external_event_id",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 6,
+  "table_name": "inbound_events",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "payload",
+  "data_type": "jsonb",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 7,
+  "table_name": "inbound_events",
+  "udt_name": "jsonb"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "created_at",
+  "data_type": "timestamp with time zone",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 8,
+  "table_name": "inbound_events",
+  "udt_name": "timestamptz"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "id",
+  "data_type": "uuid",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 1,
+  "table_name": "lead_channel_states",
+  "udt_name": "uuid"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "lead_id",
+  "data_type": "uuid",
+  "has_default": false,
+  "is_nullable": "NO",
+  "ordinal_position": 2,
+  "table_name": "lead_channel_states",
+  "udt_name": "uuid"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "channel",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "NO",
+  "ordinal_position": 3,
+  "table_name": "lead_channel_states",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "ai_paused",
+  "data_type": "boolean",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 4,
+  "table_name": "lead_channel_states",
+  "udt_name": "bool"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "human_owner",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 5,
+  "table_name": "lead_channel_states",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "human_status",
+  "data_type": "text",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 6,
+  "table_name": "lead_channel_states",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "takeover_started_at",
+  "data_type": "timestamp with time zone",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 7,
+  "table_name": "lead_channel_states",
+  "udt_name": "timestamptz"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "takeover_reason",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 8,
+  "table_name": "lead_channel_states",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "resume_mode",
+  "data_type": "text",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 9,
+  "table_name": "lead_channel_states",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "customer_service_window_expires_at",
+  "data_type": "timestamp with time zone",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 10,
+  "table_name": "lead_channel_states",
+  "udt_name": "timestamptz"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "last_external_message_id",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 11,
+  "table_name": "lead_channel_states",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "last_inbound_at",
+  "data_type": "timestamp with time zone",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 12,
+  "table_name": "lead_channel_states",
+  "udt_name": "timestamptz"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "last_outbound_at",
+  "data_type": "timestamp with time zone",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 13,
+  "table_name": "lead_channel_states",
+  "udt_name": "timestamptz"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "created_at",
+  "data_type": "timestamp with time zone",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 14,
+  "table_name": "lead_channel_states",
+  "udt_name": "timestamptz"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "updated_at",
+  "data_type": "timestamp with time zone",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 15,
+  "table_name": "lead_channel_states",
+  "udt_name": "timestamptz"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "lead_id",
+  "data_type": "uuid",
+  "has_default": false,
+  "is_nullable": "NO",
+  "ordinal_position": 1,
+  "table_name": "lead_memories",
+  "udt_name": "uuid"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "known_fields",
+  "data_type": "jsonb",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 2,
+  "table_name": "lead_memories",
+  "udt_name": "jsonb"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "need_signals",
+  "data_type": "ARRAY",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 3,
+  "table_name": "lead_memories",
+  "udt_name": "_text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "open_questions",
+  "data_type": "ARRAY",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 4,
+  "table_name": "lead_memories",
+  "udt_name": "_text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "keywords",
+  "data_type": "ARRAY",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 5,
+  "table_name": "lead_memories",
+  "udt_name": "_text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "last_user_message",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 6,
+  "table_name": "lead_memories",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "last_agent_message",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 7,
+  "table_name": "lead_memories",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "last_status",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 8,
+  "table_name": "lead_memories",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "last_owner",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 9,
+  "table_name": "lead_memories",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "last_summary",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 10,
+  "table_name": "lead_memories",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "tool_calls",
+  "data_type": "ARRAY",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 11,
+  "table_name": "lead_memories",
+  "udt_name": "_text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "updated_at",
+  "data_type": "timestamp with time zone",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 12,
+  "table_name": "lead_memories",
+  "udt_name": "timestamptz"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "id",
+  "data_type": "uuid",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 1,
+  "table_name": "leads",
+  "udt_name": "uuid"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "name",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 2,
+  "table_name": "leads",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "company",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 3,
+  "table_name": "leads",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "role",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 4,
+  "table_name": "leads",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "email",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 5,
+  "table_name": "leads",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "phone",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 6,
+  "table_name": "leads",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "source",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "NO",
+  "ordinal_position": 7,
+  "table_name": "leads",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "location",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 8,
+  "table_name": "leads",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "status",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 9,
+  "table_name": "leads",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "owner",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 10,
+  "table_name": "leads",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "score",
+  "data_type": "numeric",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 11,
+  "table_name": "leads",
+  "udt_name": "numeric"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "summary",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 12,
+  "table_name": "leads",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "next_action",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 13,
+  "table_name": "leads",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "created_at",
+  "data_type": "timestamp with time zone",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 14,
+  "table_name": "leads",
+  "udt_name": "timestamptz"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "updated_at",
+  "data_type": "timestamp with time zone",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 15,
+  "table_name": "leads",
+  "udt_name": "timestamptz"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "whatsapp_phone",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 16,
+  "table_name": "leads",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "primary_channel",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 17,
+  "table_name": "leads",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "channel_last_seen_at",
+  "data_type": "timestamp with time zone",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 18,
+  "table_name": "leads",
+  "udt_name": "timestamptz"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "unit_count",
+  "data_type": "integer",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 19,
+  "table_name": "leads",
+  "udt_name": "int4"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "project_type",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 20,
+  "table_name": "leads",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "commercial_stage",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 21,
+  "table_name": "leads",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "lost_reason",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 22,
+  "table_name": "leads",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "source_channel",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 23,
+  "table_name": "leads",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "property_type",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 24,
+  "table_name": "leads",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "city",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 25,
+  "table_name": "leads",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "country",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 26,
+  "table_name": "leads",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "property_size",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 27,
+  "table_name": "leads",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "number_of_units",
+  "data_type": "integer",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 28,
+  "table_name": "leads",
+  "udt_name": "int4"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "pain_points",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 29,
+  "table_name": "leads",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "budget_range",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 30,
+  "table_name": "leads",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "timeline",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 31,
+  "table_name": "leads",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "decision_maker_status",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 32,
+  "table_name": "leads",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "interest_package",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 33,
+  "table_name": "leads",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "lead_score",
+  "data_type": "numeric",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 34,
+  "table_name": "leads",
+  "udt_name": "numeric"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "qualification_status",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 35,
+  "table_name": "leads",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "stage",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 36,
+  "table_name": "leads",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "next_action_at",
+  "data_type": "timestamp with time zone",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 37,
+  "table_name": "leads",
+  "udt_name": "timestamptz"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "last_contact_at",
+  "data_type": "timestamp with time zone",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 38,
+  "table_name": "leads",
+  "udt_name": "timestamptz"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "notes",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 39,
+  "table_name": "leads",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "business_unit",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 40,
+  "table_name": "leads",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "inquiry_type",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 41,
+  "table_name": "leads",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "source_site",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 42,
+  "table_name": "leads",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "source_page",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 43,
+  "table_name": "leads",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "source_form",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 44,
+  "table_name": "leads",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "idempotency_key",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 45,
+  "table_name": "leads",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "organization_id",
+  "data_type": "uuid",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 46,
+  "table_name": "leads",
+  "udt_name": "uuid"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "opportunity_id",
+  "data_type": "uuid",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 47,
+  "table_name": "leads",
+  "udt_name": "uuid"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "metadata",
+  "data_type": "jsonb",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 48,
+  "table_name": "leads",
+  "udt_name": "jsonb"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "contactability_status",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 49,
+  "table_name": "leads",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "contactability_channels",
+  "data_type": "ARRAY",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 50,
+  "table_name": "leads",
+  "udt_name": "_text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "consent_source",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 51,
+  "table_name": "leads",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "consent_recorded_at",
+  "data_type": "timestamp with time zone",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 52,
+  "table_name": "leads",
+  "udt_name": "timestamptz"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "id",
+  "data_type": "uuid",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 1,
+  "table_name": "notifications",
+  "udt_name": "uuid"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "lead_id",
+  "data_type": "uuid",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 2,
+  "table_name": "notifications",
+  "udt_name": "uuid"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "type",
+  "data_type": "text",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 3,
+  "table_name": "notifications",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "urgency",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 4,
+  "table_name": "notifications",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "reason",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 5,
+  "table_name": "notifications",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "summary",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 6,
+  "table_name": "notifications",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "delivered",
+  "data_type": "boolean",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 7,
+  "table_name": "notifications",
+  "udt_name": "bool"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "channel",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 8,
+  "table_name": "notifications",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "response_code",
+  "data_type": "integer",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 9,
+  "table_name": "notifications",
+  "udt_name": "int4"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "status",
+  "data_type": "text",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 10,
+  "table_name": "notifications",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "metadata",
+  "data_type": "jsonb",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 11,
+  "table_name": "notifications",
+  "udt_name": "jsonb"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "created_at",
+  "data_type": "timestamp with time zone",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 12,
+  "table_name": "notifications",
+  "udt_name": "timestamptz"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "updated_at",
+  "data_type": "timestamp with time zone",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 13,
+  "table_name": "notifications",
+  "udt_name": "timestamptz"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "recipient_email",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 14,
+  "table_name": "notifications",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "read_at",
+  "data_type": "timestamp with time zone",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 15,
+  "table_name": "notifications",
+  "udt_name": "timestamptz"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "related_type",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 16,
+  "table_name": "notifications",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "related_id",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 17,
+  "table_name": "notifications",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "id",
+  "data_type": "uuid",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 1,
+  "table_name": "ochiga_workflow_links",
+  "udt_name": "uuid"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "record_type",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "NO",
+  "ordinal_position": 2,
+  "table_name": "ochiga_workflow_links",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "record_id",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "NO",
+  "ordinal_position": 3,
+  "table_name": "ochiga_workflow_links",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "workflow_id",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "NO",
+  "ordinal_position": 4,
+  "table_name": "ochiga_workflow_links",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "created_at",
+  "data_type": "timestamp with time zone",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 5,
+  "table_name": "ochiga_workflow_links",
+  "udt_name": "timestamptz"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "id",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "NO",
+  "ordinal_position": 1,
+  "table_name": "office_analytics",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "surface",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "NO",
+  "ordinal_position": 2,
+  "table_name": "office_analytics",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "label",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "NO",
+  "ordinal_position": 3,
+  "table_name": "office_analytics",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "period",
+  "data_type": "text",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 4,
+  "table_name": "office_analytics",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "sessions",
+  "data_type": "integer",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 5,
+  "table_name": "office_analytics",
+  "udt_name": "int4"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "unique_visitors",
+  "data_type": "integer",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 6,
+  "table_name": "office_analytics",
+  "udt_name": "int4"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "conversions",
+  "data_type": "integer",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 7,
+  "table_name": "office_analytics",
+  "udt_name": "int4"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "active_agent",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 8,
+  "table_name": "office_analytics",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "top_source",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 9,
+  "table_name": "office_analytics",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "top_location",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 10,
+  "table_name": "office_analytics",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "created_at",
+  "data_type": "timestamp with time zone",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 11,
+  "table_name": "office_analytics",
+  "udt_name": "timestamptz"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "updated_at",
+  "data_type": "timestamp with time zone",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 12,
+  "table_name": "office_analytics",
+  "udt_name": "timestamptz"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "id",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "NO",
+  "ordinal_position": 1,
+  "table_name": "office_buildings",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "estate_id",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 2,
+  "table_name": "office_buildings",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "name",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "NO",
+  "ordinal_position": 3,
+  "table_name": "office_buildings",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "type",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 4,
+  "table_name": "office_buildings",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "homes_count",
+  "data_type": "integer",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 5,
+  "table_name": "office_buildings",
+  "udt_name": "int4"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "devices_count",
+  "data_type": "integer",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 6,
+  "table_name": "office_buildings",
+  "udt_name": "int4"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "permitted_users",
+  "data_type": "integer",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 7,
+  "table_name": "office_buildings",
+  "udt_name": "int4"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "live_cameras",
+  "data_type": "integer",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 8,
+  "table_name": "office_buildings",
+  "udt_name": "int4"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "occupancy_pct",
+  "data_type": "numeric",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 9,
+  "table_name": "office_buildings",
+  "udt_name": "numeric"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "created_at",
+  "data_type": "timestamp with time zone",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 10,
+  "table_name": "office_buildings",
+  "udt_name": "timestamptz"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "updated_at",
+  "data_type": "timestamp with time zone",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 11,
+  "table_name": "office_buildings",
+  "udt_name": "timestamptz"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "status",
+  "data_type": "text",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 12,
+  "table_name": "office_buildings",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "metadata",
+  "data_type": "jsonb",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 13,
+  "table_name": "office_buildings",
+  "udt_name": "jsonb"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "id",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "NO",
+  "ordinal_position": 1,
+  "table_name": "office_content_items",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "title",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "NO",
+  "ordinal_position": 2,
+  "table_name": "office_content_items",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "slug",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 3,
+  "table_name": "office_content_items",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "excerpt",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 4,
+  "table_name": "office_content_items",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "category",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 5,
+  "table_name": "office_content_items",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "author",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 6,
+  "table_name": "office_content_items",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "tags",
+  "data_type": "ARRAY",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 7,
+  "table_name": "office_content_items",
+  "udt_name": "_text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "body",
+  "data_type": "text",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 8,
+  "table_name": "office_content_items",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "featured_image_url",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 9,
+  "table_name": "office_content_items",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "seo_title",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 10,
+  "table_name": "office_content_items",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "seo_description",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 11,
+  "table_name": "office_content_items",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "workflow_status",
+  "data_type": "text",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 12,
+  "table_name": "office_content_items",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "scheduled_publish_at",
+  "data_type": "timestamp with time zone",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 13,
+  "table_name": "office_content_items",
+  "udt_name": "timestamptz"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "sanity_document_id",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 14,
+  "table_name": "office_content_items",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "sanity_live_url",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 15,
+  "table_name": "office_content_items",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "created_by",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "NO",
+  "ordinal_position": 16,
+  "table_name": "office_content_items",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "reviewed_by",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 17,
+  "table_name": "office_content_items",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "approved_by",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 18,
+  "table_name": "office_content_items",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "published_by",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 19,
+  "table_name": "office_content_items",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "metadata",
+  "data_type": "jsonb",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 20,
+  "table_name": "office_content_items",
+  "udt_name": "jsonb"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "created_at",
+  "data_type": "timestamp with time zone",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 21,
+  "table_name": "office_content_items",
+  "udt_name": "timestamptz"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "updated_at",
+  "data_type": "timestamp with time zone",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 22,
+  "table_name": "office_content_items",
+  "udt_name": "timestamptz"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "id",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "NO",
+  "ordinal_position": 1,
+  "table_name": "office_development_projects",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "name",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "NO",
+  "ordinal_position": 2,
+  "table_name": "office_development_projects",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "slug",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "NO",
+  "ordinal_position": 3,
+  "table_name": "office_development_projects",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "type_line",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 4,
+  "table_name": "office_development_projects",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "location",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 5,
+  "table_name": "office_development_projects",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "status",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 6,
+  "table_name": "office_development_projects",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "one_liner",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 7,
+  "table_name": "office_development_projects",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "status_stages",
+  "data_type": "ARRAY",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 8,
+  "table_name": "office_development_projects",
+  "udt_name": "_text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "status_active_index",
+  "data_type": "integer",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 9,
+  "table_name": "office_development_projects",
+  "udt_name": "int4"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "sanity_document_id",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 10,
+  "table_name": "office_development_projects",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "published",
+  "data_type": "boolean",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 11,
+  "table_name": "office_development_projects",
+  "udt_name": "bool"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "created_by",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "NO",
+  "ordinal_position": 12,
+  "table_name": "office_development_projects",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "created_at",
+  "data_type": "timestamp with time zone",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 13,
+  "table_name": "office_development_projects",
+  "udt_name": "timestamptz"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "updated_at",
+  "data_type": "timestamp with time zone",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 14,
+  "table_name": "office_development_projects",
+  "udt_name": "timestamptz"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "display_order",
+  "data_type": "integer",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 15,
+  "table_name": "office_development_projects",
+  "udt_name": "int4"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "cover_image_url",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 16,
+  "table_name": "office_development_projects",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "cover_image_alt",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 17,
+  "table_name": "office_development_projects",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "id",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "NO",
+  "ordinal_position": 1,
+  "table_name": "office_devices",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "estate_id",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 2,
+  "table_name": "office_devices",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "building_id",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 3,
+  "table_name": "office_devices",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "home_id",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 4,
+  "table_name": "office_devices",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "name",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "NO",
+  "ordinal_position": 5,
+  "table_name": "office_devices",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "category",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "NO",
+  "ordinal_position": 6,
+  "table_name": "office_devices",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "provider",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 7,
+  "table_name": "office_devices",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "protocol",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 8,
+  "table_name": "office_devices",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "status",
+  "data_type": "text",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 9,
+  "table_name": "office_devices",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "battery_level",
+  "data_type": "numeric",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 10,
+  "table_name": "office_devices",
+  "udt_name": "numeric"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "last_seen_at",
+  "data_type": "timestamp with time zone",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 11,
+  "table_name": "office_devices",
+  "udt_name": "timestamptz"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "metadata",
+  "data_type": "jsonb",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 12,
+  "table_name": "office_devices",
+  "udt_name": "jsonb"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "created_at",
+  "data_type": "timestamp with time zone",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 13,
+  "table_name": "office_devices",
+  "udt_name": "timestamptz"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "updated_at",
+  "data_type": "timestamp with time zone",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 14,
+  "table_name": "office_devices",
+  "udt_name": "timestamptz"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "id",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "NO",
+  "ordinal_position": 1,
+  "table_name": "office_document_folders",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "name",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "NO",
+  "ordinal_position": 2,
+  "table_name": "office_document_folders",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "created_by",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 3,
+  "table_name": "office_document_folders",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "created_at",
+  "data_type": "timestamp with time zone",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 4,
+  "table_name": "office_document_folders",
+  "udt_name": "timestamptz"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "updated_at",
+  "data_type": "timestamp with time zone",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 5,
+  "table_name": "office_document_folders",
+  "udt_name": "timestamptz"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "id",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "NO",
+  "ordinal_position": 1,
+  "table_name": "office_documents",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "title",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "NO",
+  "ordinal_position": 2,
+  "table_name": "office_documents",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "document_type",
+  "data_type": "text",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 3,
+  "table_name": "office_documents",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "status",
+  "data_type": "text",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 4,
+  "table_name": "office_documents",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "owner",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 5,
+  "table_name": "office_documents",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "related_type",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 6,
+  "table_name": "office_documents",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "related_id",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 7,
+  "table_name": "office_documents",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "amount",
+  "data_type": "numeric",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 8,
+  "table_name": "office_documents",
+  "udt_name": "numeric"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "currency",
+  "data_type": "text",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 9,
+  "table_name": "office_documents",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "file_url",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 10,
+  "table_name": "office_documents",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "html_url",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 11,
+  "table_name": "office_documents",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "email_to",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 12,
+  "table_name": "office_documents",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "metadata",
+  "data_type": "jsonb",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 13,
+  "table_name": "office_documents",
+  "udt_name": "jsonb"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "created_at",
+  "data_type": "timestamp with time zone",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 14,
+  "table_name": "office_documents",
+  "udt_name": "timestamptz"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "updated_at",
+  "data_type": "timestamp with time zone",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 15,
+  "table_name": "office_documents",
+  "udt_name": "timestamptz"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "share_token",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 16,
+  "table_name": "office_documents",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "folder_id",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 17,
+  "table_name": "office_documents",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "body",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 18,
+  "table_name": "office_documents",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "trashed_at",
+  "data_type": "timestamp with time zone",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 19,
+  "table_name": "office_documents",
+  "udt_name": "timestamptz"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "trashed_by",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 20,
+  "table_name": "office_documents",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "id",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "NO",
+  "ordinal_position": 1,
+  "table_name": "office_estates",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "name",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "NO",
+  "ordinal_position": 2,
+  "table_name": "office_estates",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "package_id",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 3,
+  "table_name": "office_estates",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "status",
+  "data_type": "text",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 4,
+  "table_name": "office_estates",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "subscription_status",
+  "data_type": "text",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 5,
+  "table_name": "office_estates",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "location",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 6,
+  "table_name": "office_estates",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "buildings_count",
+  "data_type": "integer",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 7,
+  "table_name": "office_estates",
+  "udt_name": "int4"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "homes_count",
+  "data_type": "integer",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 8,
+  "table_name": "office_estates",
+  "udt_name": "int4"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "devices_count",
+  "data_type": "integer",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 9,
+  "table_name": "office_estates",
+  "udt_name": "int4"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "resident_count",
+  "data_type": "integer",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 10,
+  "table_name": "office_estates",
+  "udt_name": "int4"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "wallet_balance",
+  "data_type": "numeric",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 11,
+  "table_name": "office_estates",
+  "udt_name": "numeric"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "monthly_recurring_revenue",
+  "data_type": "numeric",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 12,
+  "table_name": "office_estates",
+  "udt_name": "numeric"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "support_open",
+  "data_type": "integer",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 13,
+  "table_name": "office_estates",
+  "udt_name": "int4"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "support_escalated",
+  "data_type": "integer",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 14,
+  "table_name": "office_estates",
+  "udt_name": "int4"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "connected_at",
+  "data_type": "timestamp with time zone",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 15,
+  "table_name": "office_estates",
+  "udt_name": "timestamptz"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "created_at",
+  "data_type": "timestamp with time zone",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 16,
+  "table_name": "office_estates",
+  "udt_name": "timestamptz"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "updated_at",
+  "data_type": "timestamp with time zone",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 17,
+  "table_name": "office_estates",
+  "udt_name": "timestamptz"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "latitude",
+  "data_type": "numeric",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 18,
+  "table_name": "office_estates",
+  "udt_name": "numeric"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "longitude",
+  "data_type": "numeric",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 19,
+  "table_name": "office_estates",
+  "udt_name": "numeric"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "health_score",
+  "data_type": "numeric",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 20,
+  "table_name": "office_estates",
+  "udt_name": "numeric"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "metadata",
+  "data_type": "jsonb",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 21,
+  "table_name": "office_estates",
+  "udt_name": "jsonb"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "id",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "NO",
+  "ordinal_position": 1,
+  "table_name": "office_files",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "storage_driver",
+  "data_type": "text",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 2,
+  "table_name": "office_files",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "storage_key",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "NO",
+  "ordinal_position": 3,
+  "table_name": "office_files",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "filename",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "NO",
+  "ordinal_position": 4,
+  "table_name": "office_files",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "mime_type",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "NO",
+  "ordinal_position": 5,
+  "table_name": "office_files",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "size",
+  "data_type": "integer",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 6,
+  "table_name": "office_files",
+  "udt_name": "int4"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "purpose",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "NO",
+  "ordinal_position": 7,
+  "table_name": "office_files",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "resource_type",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 8,
+  "table_name": "office_files",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "resource_id",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 9,
+  "table_name": "office_files",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "url",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 10,
+  "table_name": "office_files",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "metadata",
+  "data_type": "jsonb",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 11,
+  "table_name": "office_files",
+  "udt_name": "jsonb"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "created_at",
+  "data_type": "timestamp with time zone",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 12,
+  "table_name": "office_files",
+  "udt_name": "timestamptz"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "handoff_id",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "NO",
+  "ordinal_position": 1,
+  "table_name": "office_handoffs",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "communications_session_id",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 2,
+  "table_name": "office_handoffs",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "public_session_id",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 3,
+  "table_name": "office_handoffs",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "oyi_thread_id",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 4,
+  "table_name": "office_handoffs",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "business_unit",
+  "data_type": "text",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 5,
+  "table_name": "office_handoffs",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "requested_capability",
+  "data_type": "text",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 6,
+  "table_name": "office_handoffs",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "media_mode",
+  "data_type": "text",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 7,
+  "table_name": "office_handoffs",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "reason",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 8,
+  "table_name": "office_handoffs",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "status",
+  "data_type": "text",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 9,
+  "table_name": "office_handoffs",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "priority",
+  "data_type": "text",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 10,
+  "table_name": "office_handoffs",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "assigned_staff_id",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 11,
+  "table_name": "office_handoffs",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "crm_contact_ref",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 12,
+  "table_name": "office_handoffs",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "crm_opportunity_ref",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 13,
+  "table_name": "office_handoffs",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "safe_visitor_context",
+  "data_type": "jsonb",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 14,
+  "table_name": "office_handoffs",
+  "udt_name": "jsonb"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "metadata",
+  "data_type": "jsonb",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 15,
+  "table_name": "office_handoffs",
+  "udt_name": "jsonb"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "created_at",
+  "data_type": "timestamp with time zone",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 16,
+  "table_name": "office_handoffs",
+  "udt_name": "timestamptz"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "updated_at",
+  "data_type": "timestamp with time zone",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 17,
+  "table_name": "office_handoffs",
+  "udt_name": "timestamptz"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "lead_id",
+  "data_type": "uuid",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 18,
+  "table_name": "office_handoffs",
+  "udt_name": "uuid"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "accepted_at",
+  "data_type": "timestamp with time zone",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 19,
+  "table_name": "office_handoffs",
+  "udt_name": "timestamptz"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "declined_at",
+  "data_type": "timestamp with time zone",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 20,
+  "table_name": "office_handoffs",
+  "udt_name": "timestamptz"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "decline_reason",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 21,
+  "table_name": "office_handoffs",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "callback_requested_at",
+  "data_type": "timestamp with time zone",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 22,
+  "table_name": "office_handoffs",
+  "udt_name": "timestamptz"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "id",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "NO",
+  "ordinal_position": 1,
+  "table_name": "office_homes",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "estate_id",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 2,
+  "table_name": "office_homes",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "building_id",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 3,
+  "table_name": "office_homes",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "name",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "NO",
+  "ordinal_position": 4,
+  "table_name": "office_homes",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "residents_count",
+  "data_type": "integer",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 5,
+  "table_name": "office_homes",
+  "udt_name": "int4"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "devices_count",
+  "data_type": "integer",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 6,
+  "table_name": "office_homes",
+  "udt_name": "int4"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "wallet_balance",
+  "data_type": "numeric",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 7,
+  "table_name": "office_homes",
+  "udt_name": "numeric"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "automation_state",
+  "data_type": "text",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 8,
+  "table_name": "office_homes",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "created_at",
+  "data_type": "timestamp with time zone",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 9,
+  "table_name": "office_homes",
+  "udt_name": "timestamptz"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "updated_at",
+  "data_type": "timestamp with time zone",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 10,
+  "table_name": "office_homes",
+  "udt_name": "timestamptz"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "id",
+  "data_type": "text",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 1,
+  "table_name": "office_letterhead_config",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "logo_url",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 2,
+  "table_name": "office_letterhead_config",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "tagline",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 3,
+  "table_name": "office_letterhead_config",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "email",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 4,
+  "table_name": "office_letterhead_config",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "website",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 5,
+  "table_name": "office_letterhead_config",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "whatsapp",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 6,
+  "table_name": "office_letterhead_config",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "address",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 7,
+  "table_name": "office_letterhead_config",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "social_handle",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 8,
+  "table_name": "office_letterhead_config",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "updated_by",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 9,
+  "table_name": "office_letterhead_config",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "updated_at",
+  "data_type": "timestamp with time zone",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 10,
+  "table_name": "office_letterhead_config",
+  "udt_name": "timestamptz"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "id",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "NO",
+  "ordinal_position": 1,
+  "table_name": "office_meetings",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "title",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "NO",
+  "ordinal_position": 2,
+  "table_name": "office_meetings",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "business_unit",
+  "data_type": "text",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 3,
+  "table_name": "office_meetings",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "status",
+  "data_type": "text",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 4,
+  "table_name": "office_meetings",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "owner",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 5,
+  "table_name": "office_meetings",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "scheduled_at",
+  "data_type": "timestamp with time zone",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 6,
+  "table_name": "office_meetings",
+  "udt_name": "timestamptz"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "participants",
+  "data_type": "jsonb",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 7,
+  "table_name": "office_meetings",
+  "udt_name": "jsonb"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "related_type",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 8,
+  "table_name": "office_meetings",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "related_id",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 9,
+  "table_name": "office_meetings",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "notes",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 10,
+  "table_name": "office_meetings",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "outcome",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 11,
+  "table_name": "office_meetings",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "follow_up_task_id",
+  "data_type": "uuid",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 12,
+  "table_name": "office_meetings",
+  "udt_name": "uuid"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "completed_at",
+  "data_type": "timestamp with time zone",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 13,
+  "table_name": "office_meetings",
+  "udt_name": "timestamptz"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "cancelled_at",
+  "data_type": "timestamp with time zone",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 14,
+  "table_name": "office_meetings",
+  "udt_name": "timestamptz"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "metadata",
+  "data_type": "jsonb",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 15,
+  "table_name": "office_meetings",
+  "udt_name": "jsonb"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "created_at",
+  "data_type": "timestamp with time zone",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 16,
+  "table_name": "office_meetings",
+  "udt_name": "timestamptz"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "updated_at",
+  "data_type": "timestamp with time zone",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 17,
+  "table_name": "office_meetings",
+  "udt_name": "timestamptz"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "trashed_at",
+  "data_type": "timestamp with time zone",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 18,
+  "table_name": "office_meetings",
+  "udt_name": "timestamptz"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "trashed_by",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 19,
+  "table_name": "office_meetings",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "id",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "NO",
+  "ordinal_position": 1,
+  "table_name": "office_packages",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "name",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "NO",
+  "ordinal_position": 2,
+  "table_name": "office_packages",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "code",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "NO",
+  "ordinal_position": 3,
+  "table_name": "office_packages",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "status",
+  "data_type": "text",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 4,
+  "table_name": "office_packages",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "setup_fee",
+  "data_type": "numeric",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 5,
+  "table_name": "office_packages",
+  "udt_name": "numeric"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "monthly_fee",
+  "data_type": "numeric",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 6,
+  "table_name": "office_packages",
+  "udt_name": "numeric"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "estate_limit",
+  "data_type": "integer",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 7,
+  "table_name": "office_packages",
+  "udt_name": "int4"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "building_limit",
+  "data_type": "integer",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 8,
+  "table_name": "office_packages",
+  "udt_name": "int4"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "home_limit",
+  "data_type": "integer",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 9,
+  "table_name": "office_packages",
+  "udt_name": "int4"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "device_limit",
+  "data_type": "integer",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 10,
+  "table_name": "office_packages",
+  "udt_name": "int4"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "api_access",
+  "data_type": "boolean",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 11,
+  "table_name": "office_packages",
+  "udt_name": "bool"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "support_tier",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 12,
+  "table_name": "office_packages",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "created_at",
+  "data_type": "timestamp with time zone",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 13,
+  "table_name": "office_packages",
+  "udt_name": "timestamptz"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "updated_at",
+  "data_type": "timestamp with time zone",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 14,
+  "table_name": "office_packages",
+  "udt_name": "timestamptz"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "id",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "NO",
+  "ordinal_position": 1,
+  "table_name": "office_partnership_relationships",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "contact_id",
+  "data_type": "uuid",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 2,
+  "table_name": "office_partnership_relationships",
+  "udt_name": "uuid"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "organization_id",
+  "data_type": "uuid",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 3,
+  "table_name": "office_partnership_relationships",
+  "udt_name": "uuid"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "opportunity_id",
+  "data_type": "uuid",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 4,
+  "table_name": "office_partnership_relationships",
+  "udt_name": "uuid"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "business_unit",
+  "data_type": "text",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 5,
+  "table_name": "office_partnership_relationships",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "relationship_type",
+  "data_type": "text",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 6,
+  "table_name": "office_partnership_relationships",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "status",
+  "data_type": "text",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 7,
+  "table_name": "office_partnership_relationships",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "owner",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 8,
+  "table_name": "office_partnership_relationships",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "relationship_manager",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 9,
+  "table_name": "office_partnership_relationships",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "review_status",
+  "data_type": "text",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 10,
+  "table_name": "office_partnership_relationships",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "notes",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 11,
+  "table_name": "office_partnership_relationships",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "metadata",
+  "data_type": "jsonb",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 12,
+  "table_name": "office_partnership_relationships",
+  "udt_name": "jsonb"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "created_at",
+  "data_type": "timestamp with time zone",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 13,
+  "table_name": "office_partnership_relationships",
+  "udt_name": "timestamptz"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "updated_at",
+  "data_type": "timestamp with time zone",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 14,
+  "table_name": "office_partnership_relationships",
+  "udt_name": "timestamptz"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "id",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "NO",
+  "ordinal_position": 1,
+  "table_name": "office_portfolio_entries",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "name",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "NO",
+  "ordinal_position": 2,
+  "table_name": "office_portfolio_entries",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "client_account",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 3,
+  "table_name": "office_portfolio_entries",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "location",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 4,
+  "table_name": "office_portfolio_entries",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "business_unit",
+  "data_type": "text",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 5,
+  "table_name": "office_portfolio_entries",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "relationship_type",
+  "data_type": "text",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 6,
+  "table_name": "office_portfolio_entries",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "status",
+  "data_type": "text",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 7,
+  "table_name": "office_portfolio_entries",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "owner",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 8,
+  "table_name": "office_portfolio_entries",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "project_id",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 9,
+  "table_name": "office_portfolio_entries",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "backend_estate_id",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 10,
+  "table_name": "office_portfolio_entries",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "backend_building_id",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 11,
+  "table_name": "office_portfolio_entries",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "facility_deep_link",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 12,
+  "table_name": "office_portfolio_entries",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "oyi_deployment_status",
+  "data_type": "text",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 13,
+  "table_name": "office_portfolio_entries",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "facility_os_status",
+  "data_type": "text",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 14,
+  "table_name": "office_portfolio_entries",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "consumer_os_status",
+  "data_type": "text",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 15,
+  "table_name": "office_portfolio_entries",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "health_summary",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 16,
+  "table_name": "office_portfolio_entries",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "support_status",
+  "data_type": "text",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 17,
+  "table_name": "office_portfolio_entries",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "major_escalations",
+  "data_type": "integer",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 18,
+  "table_name": "office_portfolio_entries",
+  "udt_name": "int4"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "metadata",
+  "data_type": "jsonb",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 19,
+  "table_name": "office_portfolio_entries",
+  "udt_name": "jsonb"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "created_at",
+  "data_type": "timestamp with time zone",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 20,
+  "table_name": "office_portfolio_entries",
+  "udt_name": "timestamptz"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "updated_at",
+  "data_type": "timestamp with time zone",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 21,
+  "table_name": "office_portfolio_entries",
+  "udt_name": "timestamptz"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "id",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "NO",
+  "ordinal_position": 1,
+  "table_name": "office_private_relationships",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "contact_id",
+  "data_type": "uuid",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 2,
+  "table_name": "office_private_relationships",
+  "udt_name": "uuid"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "organization_id",
+  "data_type": "uuid",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 3,
+  "table_name": "office_private_relationships",
+  "udt_name": "uuid"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "opportunity_id",
+  "data_type": "uuid",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 4,
+  "table_name": "office_private_relationships",
+  "udt_name": "uuid"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "business_unit",
+  "data_type": "text",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 5,
+  "table_name": "office_private_relationships",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "relationship_type",
+  "data_type": "text",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 6,
+  "table_name": "office_private_relationships",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "status",
+  "data_type": "text",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 7,
+  "table_name": "office_private_relationships",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "owner",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 8,
+  "table_name": "office_private_relationships",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "relationship_manager",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 9,
+  "table_name": "office_private_relationships",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "review_status",
+  "data_type": "text",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 10,
+  "table_name": "office_private_relationships",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "notes",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 11,
+  "table_name": "office_private_relationships",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "metadata",
+  "data_type": "jsonb",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 12,
+  "table_name": "office_private_relationships",
+  "udt_name": "jsonb"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "created_at",
+  "data_type": "timestamp with time zone",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 13,
+  "table_name": "office_private_relationships",
+  "udt_name": "timestamptz"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "updated_at",
+  "data_type": "timestamp with time zone",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 14,
+  "table_name": "office_private_relationships",
+  "udt_name": "timestamptz"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "id",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "NO",
+  "ordinal_position": 1,
+  "table_name": "office_projects",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "name",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "NO",
+  "ordinal_position": 2,
+  "table_name": "office_projects",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "location",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 3,
+  "table_name": "office_projects",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "business_unit",
+  "data_type": "text",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 4,
+  "table_name": "office_projects",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "status",
+  "data_type": "text",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 5,
+  "table_name": "office_projects",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "stage",
+  "data_type": "text",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 6,
+  "table_name": "office_projects",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "owner",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 7,
+  "table_name": "office_projects",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "linked_opportunity_id",
+  "data_type": "uuid",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 8,
+  "table_name": "office_projects",
+  "udt_name": "uuid"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "lead_id",
+  "data_type": "uuid",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 9,
+  "table_name": "office_projects",
+  "udt_name": "uuid"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "organization_id",
+  "data_type": "uuid",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 10,
+  "table_name": "office_projects",
+  "udt_name": "uuid"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "contact_id",
+  "data_type": "uuid",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 11,
+  "table_name": "office_projects",
+  "udt_name": "uuid"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "portfolio_id",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 12,
+  "table_name": "office_projects",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "backend_building_id",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 13,
+  "table_name": "office_projects",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "oyi_deployment_status",
+  "data_type": "text",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 14,
+  "table_name": "office_projects",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "milestones",
+  "data_type": "jsonb",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 15,
+  "table_name": "office_projects",
+  "udt_name": "jsonb"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "metadata",
+  "data_type": "jsonb",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 16,
+  "table_name": "office_projects",
+  "udt_name": "jsonb"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "created_at",
+  "data_type": "timestamp with time zone",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 17,
+  "table_name": "office_projects",
+  "udt_name": "timestamptz"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "updated_at",
+  "data_type": "timestamp with time zone",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 18,
+  "table_name": "office_projects",
+  "udt_name": "timestamptz"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "id",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "NO",
+  "ordinal_position": 1,
+  "table_name": "office_reports",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "title",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "NO",
+  "ordinal_position": 2,
+  "table_name": "office_reports",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "body",
+  "data_type": "text",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 3,
+  "table_name": "office_reports",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "related_type",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 4,
+  "table_name": "office_reports",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "related_id",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 5,
+  "table_name": "office_reports",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "author",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "NO",
+  "ordinal_position": 6,
+  "table_name": "office_reports",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "status",
+  "data_type": "text",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 7,
+  "table_name": "office_reports",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "reviewer",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 8,
+  "table_name": "office_reports",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "decision_note",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 9,
+  "table_name": "office_reports",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "decided_at",
+  "data_type": "timestamp with time zone",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 10,
+  "table_name": "office_reports",
+  "udt_name": "timestamptz"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "attachments",
+  "data_type": "jsonb",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 11,
+  "table_name": "office_reports",
+  "udt_name": "jsonb"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "created_at",
+  "data_type": "timestamp with time zone",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 12,
+  "table_name": "office_reports",
+  "udt_name": "timestamptz"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "updated_at",
+  "data_type": "timestamp with time zone",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 13,
+  "table_name": "office_reports",
+  "udt_name": "timestamptz"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "key",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "NO",
+  "ordinal_position": 1,
+  "table_name": "office_runtime_settings",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "value",
+  "data_type": "jsonb",
+  "has_default": false,
+  "is_nullable": "NO",
+  "ordinal_position": 2,
+  "table_name": "office_runtime_settings",
+  "udt_name": "jsonb"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "updated_by",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 3,
+  "table_name": "office_runtime_settings",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "updated_at",
+  "data_type": "timestamp with time zone",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 4,
+  "table_name": "office_runtime_settings",
+  "udt_name": "timestamptz"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "id",
+  "data_type": "uuid",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 1,
+  "table_name": "office_staff_capabilities",
+  "udt_name": "uuid"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "staff_email",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "NO",
+  "ordinal_position": 2,
+  "table_name": "office_staff_capabilities",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "capability",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "NO",
+  "ordinal_position": 3,
+  "table_name": "office_staff_capabilities",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "specialty",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 4,
+  "table_name": "office_staff_capabilities",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "created_at",
+  "data_type": "timestamp with time zone",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 5,
+  "table_name": "office_staff_capabilities",
+  "udt_name": "timestamptz"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "staff_email",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "NO",
+  "ordinal_position": 1,
+  "table_name": "office_staff_profiles",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "business_unit",
+  "data_type": "text",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 2,
+  "table_name": "office_staff_profiles",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "availability",
+  "data_type": "text",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 3,
+  "table_name": "office_staff_profiles",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "routing_priority",
+  "data_type": "numeric",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 4,
+  "table_name": "office_staff_profiles",
+  "udt_name": "numeric"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "updated_at",
+  "data_type": "timestamp with time zone",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 5,
+  "table_name": "office_staff_profiles",
+  "udt_name": "timestamptz"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "id",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "NO",
+  "ordinal_position": 1,
+  "table_name": "office_support_cases",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "title",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "NO",
+  "ordinal_position": 2,
+  "table_name": "office_support_cases",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "business_unit",
+  "data_type": "text",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 3,
+  "table_name": "office_support_cases",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "status",
+  "data_type": "text",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 4,
+  "table_name": "office_support_cases",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "owner",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 5,
+  "table_name": "office_support_cases",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "customer_contact_id",
+  "data_type": "uuid",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 6,
+  "table_name": "office_support_cases",
+  "udt_name": "uuid"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "organization_id",
+  "data_type": "uuid",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 7,
+  "table_name": "office_support_cases",
+  "udt_name": "uuid"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "portfolio_id",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 8,
+  "table_name": "office_support_cases",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "backend_incident_ref",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 9,
+  "table_name": "office_support_cases",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "product_area",
+  "data_type": "text",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 10,
+  "table_name": "office_support_cases",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "category",
+  "data_type": "text",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 11,
+  "table_name": "office_support_cases",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "priority",
+  "data_type": "text",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 12,
+  "table_name": "office_support_cases",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "severity",
+  "data_type": "text",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 13,
+  "table_name": "office_support_cases",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "assigned_staff",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 14,
+  "table_name": "office_support_cases",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "sla_target_at",
+  "data_type": "timestamp with time zone",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 15,
+  "table_name": "office_support_cases",
+  "udt_name": "timestamptz"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "resolution_notes",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 16,
+  "table_name": "office_support_cases",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "resolved_at",
+  "data_type": "timestamp with time zone",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 17,
+  "table_name": "office_support_cases",
+  "udt_name": "timestamptz"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "metadata",
+  "data_type": "jsonb",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 18,
+  "table_name": "office_support_cases",
+  "udt_name": "jsonb"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "created_at",
+  "data_type": "timestamp with time zone",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 19,
+  "table_name": "office_support_cases",
+  "udt_name": "timestamptz"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "updated_at",
+  "data_type": "timestamp with time zone",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 20,
+  "table_name": "office_support_cases",
+  "udt_name": "timestamptz"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "id",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "NO",
+  "ordinal_position": 1,
+  "table_name": "office_support_mappings",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "estate_id",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 2,
+  "table_name": "office_support_mappings",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "building_id",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 3,
+  "table_name": "office_support_mappings",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "home_id",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 4,
+  "table_name": "office_support_mappings",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "title",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "NO",
+  "ordinal_position": 5,
+  "table_name": "office_support_mappings",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "category",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "NO",
+  "ordinal_position": 6,
+  "table_name": "office_support_mappings",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "channel",
+  "data_type": "text",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 7,
+  "table_name": "office_support_mappings",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "priority",
+  "data_type": "text",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 8,
+  "table_name": "office_support_mappings",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "status",
+  "data_type": "text",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 9,
+  "table_name": "office_support_mappings",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "assigned_team",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 10,
+  "table_name": "office_support_mappings",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "created_at",
+  "data_type": "timestamp with time zone",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 11,
+  "table_name": "office_support_mappings",
+  "udt_name": "timestamptz"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "updated_at",
+  "data_type": "timestamp with time zone",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 12,
+  "table_name": "office_support_mappings",
+  "udt_name": "timestamptz"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "id",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "NO",
+  "ordinal_position": 1,
+  "table_name": "office_wallets",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "scope_type",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "NO",
+  "ordinal_position": 2,
+  "table_name": "office_wallets",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "scope_id",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "NO",
+  "ordinal_position": 3,
+  "table_name": "office_wallets",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "label",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "NO",
+  "ordinal_position": 4,
+  "table_name": "office_wallets",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "balance",
+  "data_type": "numeric",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 5,
+  "table_name": "office_wallets",
+  "udt_name": "numeric"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "currency",
+  "data_type": "text",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 6,
+  "table_name": "office_wallets",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "pending_charges",
+  "data_type": "numeric",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 7,
+  "table_name": "office_wallets",
+  "udt_name": "numeric"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "created_at",
+  "data_type": "timestamp with time zone",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 8,
+  "table_name": "office_wallets",
+  "udt_name": "timestamptz"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "updated_at",
+  "data_type": "timestamp with time zone",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 9,
+  "table_name": "office_wallets",
+  "udt_name": "timestamptz"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "id",
+  "data_type": "uuid",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 1,
+  "table_name": "onboarding_emails",
+  "udt_name": "uuid"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "lead_id",
+  "data_type": "uuid",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 2,
+  "table_name": "onboarding_emails",
+  "udt_name": "uuid"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "deployment_project_id",
+  "data_type": "uuid",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 3,
+  "table_name": "onboarding_emails",
+  "udt_name": "uuid"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "recipient_email",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 4,
+  "table_name": "onboarding_emails",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "subject",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 5,
+  "table_name": "onboarding_emails",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "body",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 6,
+  "table_name": "onboarding_emails",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "status",
+  "data_type": "text",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 7,
+  "table_name": "onboarding_emails",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "sent_at",
+  "data_type": "timestamp with time zone",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 8,
+  "table_name": "onboarding_emails",
+  "udt_name": "timestamptz"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "metadata",
+  "data_type": "jsonb",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 9,
+  "table_name": "onboarding_emails",
+  "udt_name": "jsonb"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "created_at",
+  "data_type": "timestamp with time zone",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 10,
+  "table_name": "onboarding_emails",
+  "udt_name": "timestamptz"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "updated_at",
+  "data_type": "timestamp with time zone",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 11,
+  "table_name": "onboarding_emails",
+  "udt_name": "timestamptz"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "id",
+  "data_type": "uuid",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 1,
+  "table_name": "partners",
+  "udt_name": "uuid"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "partner_company",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "NO",
+  "ordinal_position": 2,
+  "table_name": "partners",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "partner_type",
+  "data_type": "text",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 3,
+  "table_name": "partners",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "tier",
+  "data_type": "text",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 4,
+  "table_name": "partners",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "contact_name",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 5,
+  "table_name": "partners",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "contact_email",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 6,
+  "table_name": "partners",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "contact_phone",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 7,
+  "table_name": "partners",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "city",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 8,
+  "table_name": "partners",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "country",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 9,
+  "table_name": "partners",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "status",
+  "data_type": "text",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 10,
+  "table_name": "partners",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "certification_status",
+  "data_type": "text",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 11,
+  "table_name": "partners",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "leads_referred",
+  "data_type": "integer",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 12,
+  "table_name": "partners",
+  "udt_name": "int4"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "deployments_supported",
+  "data_type": "integer",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 13,
+  "table_name": "partners",
+  "udt_name": "int4"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "revenue_share_terms",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 14,
+  "table_name": "partners",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "notes",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 15,
+  "table_name": "partners",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "created_at",
+  "data_type": "timestamp with time zone",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 16,
+  "table_name": "partners",
+  "udt_name": "timestamptz"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "updated_at",
+  "data_type": "timestamp with time zone",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 17,
+  "table_name": "partners",
+  "udt_name": "timestamptz"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "id",
+  "data_type": "uuid",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 1,
+  "table_name": "password_reset_tokens",
+  "udt_name": "uuid"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "admin_user_id",
+  "data_type": "uuid",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 2,
+  "table_name": "password_reset_tokens",
+  "udt_name": "uuid"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "email",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "NO",
+  "ordinal_position": 3,
+  "table_name": "password_reset_tokens",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "token_hash",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "NO",
+  "ordinal_position": 4,
+  "table_name": "password_reset_tokens",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "status",
+  "data_type": "text",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 5,
+  "table_name": "password_reset_tokens",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "requested_by",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 6,
+  "table_name": "password_reset_tokens",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "expires_at",
+  "data_type": "timestamp with time zone",
+  "has_default": false,
+  "is_nullable": "NO",
+  "ordinal_position": 7,
+  "table_name": "password_reset_tokens",
+  "udt_name": "timestamptz"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "used_at",
+  "data_type": "timestamp with time zone",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 8,
+  "table_name": "password_reset_tokens",
+  "udt_name": "timestamptz"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "created_at",
+  "data_type": "timestamp with time zone",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 9,
+  "table_name": "password_reset_tokens",
+  "udt_name": "timestamptz"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "updated_at",
+  "data_type": "timestamp with time zone",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 10,
+  "table_name": "password_reset_tokens",
+  "udt_name": "timestamptz"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "id",
+  "data_type": "uuid",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 1,
+  "table_name": "proposals",
+  "udt_name": "uuid"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "lead_id",
+  "data_type": "uuid",
+  "has_default": false,
+  "is_nullable": "NO",
+  "ordinal_position": 2,
+  "table_name": "proposals",
+  "udt_name": "uuid"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "title",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "NO",
+  "ordinal_position": 3,
+  "table_name": "proposals",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "tier_name",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 4,
+  "table_name": "proposals",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "unit_count",
+  "data_type": "integer",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 5,
+  "table_name": "proposals",
+  "udt_name": "int4"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "monthly_price",
+  "data_type": "numeric",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 6,
+  "table_name": "proposals",
+  "udt_name": "numeric"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "currency",
+  "data_type": "text",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 7,
+  "table_name": "proposals",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "status",
+  "data_type": "text",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 8,
+  "table_name": "proposals",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "body",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "NO",
+  "ordinal_position": 9,
+  "table_name": "proposals",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "metadata",
+  "data_type": "jsonb",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 10,
+  "table_name": "proposals",
+  "udt_name": "jsonb"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "created_at",
+  "data_type": "timestamp with time zone",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 11,
+  "table_name": "proposals",
+  "udt_name": "timestamptz"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "updated_at",
+  "data_type": "timestamp with time zone",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 12,
+  "table_name": "proposals",
+  "udt_name": "timestamptz"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "opportunity_id",
+  "data_type": "uuid",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 13,
+  "table_name": "proposals",
+  "udt_name": "uuid"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "id",
+  "data_type": "uuid",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 1,
+  "table_name": "staff_conversation_participants",
+  "udt_name": "uuid"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "conversation_id",
+  "data_type": "uuid",
+  "has_default": false,
+  "is_nullable": "NO",
+  "ordinal_position": 2,
+  "table_name": "staff_conversation_participants",
+  "udt_name": "uuid"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "staff_email",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "NO",
+  "ordinal_position": 3,
+  "table_name": "staff_conversation_participants",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "joined_at",
+  "data_type": "timestamp with time zone",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 4,
+  "table_name": "staff_conversation_participants",
+  "udt_name": "timestamptz"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "archived_at",
+  "data_type": "timestamp with time zone",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 5,
+  "table_name": "staff_conversation_participants",
+  "udt_name": "timestamptz"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "muted_at",
+  "data_type": "timestamp with time zone",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 6,
+  "table_name": "staff_conversation_participants",
+  "udt_name": "timestamptz"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "pinned_at",
+  "data_type": "timestamp with time zone",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 7,
+  "table_name": "staff_conversation_participants",
+  "udt_name": "timestamptz"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "id",
+  "data_type": "uuid",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 1,
+  "table_name": "staff_conversations",
+  "udt_name": "uuid"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "type",
+  "data_type": "text",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 2,
+  "table_name": "staff_conversations",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "title",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 3,
+  "table_name": "staff_conversations",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "created_by",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "NO",
+  "ordinal_position": 4,
+  "table_name": "staff_conversations",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "last_message_at",
+  "data_type": "timestamp with time zone",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 5,
+  "table_name": "staff_conversations",
+  "udt_name": "timestamptz"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "created_at",
+  "data_type": "timestamp with time zone",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 6,
+  "table_name": "staff_conversations",
+  "udt_name": "timestamptz"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "updated_at",
+  "data_type": "timestamp with time zone",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 7,
+  "table_name": "staff_conversations",
+  "udt_name": "timestamptz"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "id",
+  "data_type": "uuid",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 1,
+  "table_name": "staff_message_attachments",
+  "udt_name": "uuid"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "message_id",
+  "data_type": "uuid",
+  "has_default": false,
+  "is_nullable": "NO",
+  "ordinal_position": 2,
+  "table_name": "staff_message_attachments",
+  "udt_name": "uuid"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "file_id",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 3,
+  "table_name": "staff_message_attachments",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "file_url",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "NO",
+  "ordinal_position": 4,
+  "table_name": "staff_message_attachments",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "filename",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 5,
+  "table_name": "staff_message_attachments",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "mime_type",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 6,
+  "table_name": "staff_message_attachments",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "size_bytes",
+  "data_type": "integer",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 7,
+  "table_name": "staff_message_attachments",
+  "udt_name": "int4"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "created_at",
+  "data_type": "timestamp with time zone",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 8,
+  "table_name": "staff_message_attachments",
+  "udt_name": "timestamptz"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "duration_seconds",
+  "data_type": "integer",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 9,
+  "table_name": "staff_message_attachments",
+  "udt_name": "int4"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "id",
+  "data_type": "uuid",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 1,
+  "table_name": "staff_message_reactions",
+  "udt_name": "uuid"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "message_id",
+  "data_type": "uuid",
+  "has_default": false,
+  "is_nullable": "NO",
+  "ordinal_position": 2,
+  "table_name": "staff_message_reactions",
+  "udt_name": "uuid"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "staff_email",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "NO",
+  "ordinal_position": 3,
+  "table_name": "staff_message_reactions",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "emoji",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "NO",
+  "ordinal_position": 4,
+  "table_name": "staff_message_reactions",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "created_at",
+  "data_type": "timestamp with time zone",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 5,
+  "table_name": "staff_message_reactions",
+  "udt_name": "timestamptz"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "id",
+  "data_type": "uuid",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 1,
+  "table_name": "staff_message_reads",
+  "udt_name": "uuid"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "message_id",
+  "data_type": "uuid",
+  "has_default": false,
+  "is_nullable": "NO",
+  "ordinal_position": 2,
+  "table_name": "staff_message_reads",
+  "udt_name": "uuid"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "staff_email",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "NO",
+  "ordinal_position": 3,
+  "table_name": "staff_message_reads",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "read_at",
+  "data_type": "timestamp with time zone",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 4,
+  "table_name": "staff_message_reads",
+  "udt_name": "timestamptz"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "id",
+  "data_type": "uuid",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 1,
+  "table_name": "staff_messages",
+  "udt_name": "uuid"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "conversation_id",
+  "data_type": "uuid",
+  "has_default": false,
+  "is_nullable": "NO",
+  "ordinal_position": 2,
+  "table_name": "staff_messages",
+  "udt_name": "uuid"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "sender_email",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "NO",
+  "ordinal_position": 3,
+  "table_name": "staff_messages",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "body",
+  "data_type": "text",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 4,
+  "table_name": "staff_messages",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "created_at",
+  "data_type": "timestamp with time zone",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 5,
+  "table_name": "staff_messages",
+  "udt_name": "timestamptz"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "deleted_at",
+  "data_type": "timestamp with time zone",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 6,
+  "table_name": "staff_messages",
+  "udt_name": "timestamptz"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "deleted_by",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 7,
+  "table_name": "staff_messages",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "id",
+  "data_type": "uuid",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 1,
+  "table_name": "timeline_events",
+  "udt_name": "uuid"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "lead_id",
+  "data_type": "uuid",
+  "has_default": false,
+  "is_nullable": "NO",
+  "ordinal_position": 2,
+  "table_name": "timeline_events",
+  "udt_name": "uuid"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "event_type",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "NO",
+  "ordinal_position": 3,
+  "table_name": "timeline_events",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "actor",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 4,
+  "table_name": "timeline_events",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "title",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 5,
+  "table_name": "timeline_events",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "body",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 6,
+  "table_name": "timeline_events",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "metadata",
+  "data_type": "jsonb",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 7,
+  "table_name": "timeline_events",
+  "udt_name": "jsonb"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "created_at",
+  "data_type": "timestamp with time zone",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 8,
+  "table_name": "timeline_events",
+  "udt_name": "timestamptz"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "id",
+  "data_type": "uuid",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 1,
+  "table_name": "traces",
+  "udt_name": "uuid"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "trace_id",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 2,
+  "table_name": "traces",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "lead_id",
+  "data_type": "uuid",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 3,
+  "table_name": "traces",
+  "udt_name": "uuid"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "type",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "NO",
+  "ordinal_position": 4,
+  "table_name": "traces",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "agent",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 5,
+  "table_name": "traces",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "tool_name",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 6,
+  "table_name": "traces",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "request_id",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 7,
+  "table_name": "traces",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "source",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 8,
+  "table_name": "traces",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "payload",
+  "data_type": "jsonb",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 9,
+  "table_name": "traces",
+  "udt_name": "jsonb"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "created_at",
+  "data_type": "timestamp with time zone",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 10,
+  "table_name": "traces",
+  "udt_name": "timestamptz"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "provider_message_id",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "NO",
+  "ordinal_position": 1,
+  "table_name": "whatsapp_inbound_claims",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "channel",
+  "data_type": "text",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 2,
+  "table_name": "whatsapp_inbound_claims",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "status",
+  "data_type": "text",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 3,
+  "table_name": "whatsapp_inbound_claims",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "lead_id",
+  "data_type": "uuid",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 4,
+  "table_name": "whatsapp_inbound_claims",
+  "udt_name": "uuid"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "claimed_at",
+  "data_type": "timestamp with time zone",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 5,
+  "table_name": "whatsapp_inbound_claims",
+  "udt_name": "timestamptz"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "completed_at",
+  "data_type": "timestamp with time zone",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 6,
+  "table_name": "whatsapp_inbound_claims",
+  "udt_name": "timestamptz"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "reply_sent_at",
+  "data_type": "timestamp with time zone",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 7,
+  "table_name": "whatsapp_inbound_claims",
+  "udt_name": "timestamptz"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "request_id",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 8,
+  "table_name": "whatsapp_inbound_claims",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "id",
+  "data_type": "uuid",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 1,
+  "table_name": "whatsapp_manual_sends",
+  "udt_name": "uuid"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "lead_id",
+  "data_type": "uuid",
+  "has_default": false,
+  "is_nullable": "NO",
+  "ordinal_position": 2,
+  "table_name": "whatsapp_manual_sends",
+  "udt_name": "uuid"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "actor_email",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "NO",
+  "ordinal_position": 3,
+  "table_name": "whatsapp_manual_sends",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "client_request_id",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "NO",
+  "ordinal_position": 4,
+  "table_name": "whatsapp_manual_sends",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "channel",
+  "data_type": "text",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 5,
+  "table_name": "whatsapp_manual_sends",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "recipient",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "NO",
+  "ordinal_position": 6,
+  "table_name": "whatsapp_manual_sends",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "body",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "NO",
+  "ordinal_position": 7,
+  "table_name": "whatsapp_manual_sends",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "body_hash",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "NO",
+  "ordinal_position": 8,
+  "table_name": "whatsapp_manual_sends",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "status",
+  "data_type": "text",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 9,
+  "table_name": "whatsapp_manual_sends",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "provider_message_id",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 10,
+  "table_name": "whatsapp_manual_sends",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "provider_response_code",
+  "data_type": "integer",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 11,
+  "table_name": "whatsapp_manual_sends",
+  "udt_name": "int4"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "failure_reason",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 12,
+  "table_name": "whatsapp_manual_sends",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "conversation_id",
+  "data_type": "uuid",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 13,
+  "table_name": "whatsapp_manual_sends",
+  "udt_name": "uuid"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "conversation_recorded_at",
+  "data_type": "timestamp with time zone",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 14,
+  "table_name": "whatsapp_manual_sends",
+  "udt_name": "timestamptz"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "resolved_by",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 15,
+  "table_name": "whatsapp_manual_sends",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "resolved_at",
+  "data_type": "timestamp with time zone",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 16,
+  "table_name": "whatsapp_manual_sends",
+  "udt_name": "timestamptz"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "resolution_note",
+  "data_type": "text",
+  "has_default": false,
+  "is_nullable": "YES",
+  "ordinal_position": 17,
+  "table_name": "whatsapp_manual_sends",
+  "udt_name": "text"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "created_at",
+  "data_type": "timestamp with time zone",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 18,
+  "table_name": "whatsapp_manual_sends",
+  "udt_name": "timestamptz"
+ },
+ {
+  "character_maximum_length": null,
+  "column_name": "updated_at",
+  "data_type": "timestamp with time zone",
+  "has_default": true,
+  "is_nullable": "NO",
+  "ordinal_position": 19,
+  "table_name": "whatsapp_manual_sends",
+  "udt_name": "timestamptz"
+ }
+]
