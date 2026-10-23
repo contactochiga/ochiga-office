@@ -87,7 +87,7 @@ async function partA() {
   const preRollbackRows = (await admin.query(SNAP)).rows.filter((r) => !r.key.startsWith("t."));
   await admin.query(sql(DOWN));
   const gone = (await admin.query("select (select count(*) from pg_class where relname='office_runtime_setting_history') h, (select count(*) from pg_proc where proname like 'office_runtime_setting%') f, (select count(*) from information_schema.columns where table_name='office_runtime_settings' and column_name='version') v")).rows[0];
-  assert.deepEqual({ h: Number(gone.h), f: Number(gone.f), v: Number(gone.v) }, { h: 0, f: 0, v: 0 }, "rollback removes history, functions and the version column");
+  assert.deepEqual({ h: Number(gone.h), f: Number(gone.f), v: Number(gone.v) }, { h: 1, f: 1, v: 1 }, "R10: rollback removes the write/attempt functions but KEEPS the append-only history (evidence), its immutability function and the version column (it used to drop them, silently erasing who changed MFA enforcement)");
   assert.deepEqual((await admin.query(SNAP)).rows.filter((r) => !r.key.startsWith("t.")), preRollbackRows, "rollback leaves existing keys and values exactly as they were");
   await admin.query(sql(DOWN)); // idempotent
   await admin.query(sql(MIG)); assert.equal(Number((await admin.query("select count(*) c from office_runtime_settings where version = 1")).rows[0].c) >= 2, true, "migration re-applies cleanly after rollback");
