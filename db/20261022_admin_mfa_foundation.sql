@@ -28,7 +28,14 @@ create table if not exists admin_mfa_credentials (
   check ((type = 'totp' and secret_ciphertext is not null and secret_nonce is not null and secret_key_id is not null)
       or (type = 'webauthn' and webauthn_credential_id is not null and webauthn_public_key is not null))
 );
-create unique index if not exists admin_mfa_one_totp_per_user on admin_mfa_credentials (admin_user_id) where type = 'totp' and status in ('pending', 'active');
+-- R10: this index is SUPERSEDED by 20261024 (one ACTIVE and one PENDING TOTP per account may coexist while a factor is replaced). Re-applying this file after 20261024 must neither fail on legitimate
+-- data nor reinstate the stricter index, so it is created only when the superseding index does not exist yet.
+do $$
+begin
+  if not exists (select 1 from pg_indexes where schemaname = current_schema() and indexname = 'admin_mfa_one_active_totp_per_user') then
+    create unique index if not exists admin_mfa_one_totp_per_user on admin_mfa_credentials (admin_user_id) where type = 'totp' and status in ('pending', 'active');
+  end if;
+end $$;
 create index if not exists admin_mfa_credentials_user on admin_mfa_credentials (admin_user_id);
 
 create table if not exists admin_mfa_recovery_codes (
@@ -80,6 +87,10 @@ create or replace function office_mfa_consume_recovery_code(p_user_id uuid, p_co
 $f$;
 
 -- Replaces the account's UNUSED codes with a new batch in one transaction (used codes stay as history). A per-account advisory lock serialises concurrent replacements.
+-- R10: the 3-argument form is superseded by 20261023 (which drops it and defines the 4-argument form); re-applying this file later must not reinstate it.
+do $guard$ begin
+  if to_regprocedure('office_mfa_replace_recovery_codes(uuid, uuid, text[], text)') is null then
+    execute $def$
 create or replace function office_mfa_replace_recovery_codes(p_user_id uuid, p_batch_id uuid, p_hmacs text[]) returns integer language plpgsql as $f$
 declare inserted integer;
 begin
@@ -89,6 +100,9 @@ begin
   get diagnostics inserted = row_count;
   return inserted;
 end $f$;
+    $def$;
+  end if;
+end $guard$;
 
 create or replace function office_mfa_create_challenge(p_user_id uuid, p_purpose text, p_challenge_b64 text, p_ttl_seconds integer)
 returns table (id uuid, expires_at timestamptz) language sql as $f$
@@ -155,6 +169,7 @@ begin
     'office_mfa_replace_recovery_codes(uuid, uuid, text[])', 'office_mfa_create_challenge(uuid, text, text, integer)', 'office_mfa_consume_challenge(uuid, uuid, text)',
     'office_mfa_record_failure(uuid)', 'office_mfa_clear_failures(uuid)', 'office_mfa_reset(uuid, text)', 'office_mfa_prune_challenges(interval)'])
   loop
+    if to_regprocedure(f) is null then continue; end if;   -- R10: a superseded signature that no longer exists is skipped
     execute format('revoke all on function %s from public', f);
     if exists (select 1 from pg_roles where rolname = 'anon') then execute format('revoke all on function %s from anon', f); end if;
     if exists (select 1 from pg_roles where rolname = 'authenticated') then execute format('revoke all on function %s from authenticated', f); end if;

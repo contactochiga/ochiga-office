@@ -1,6 +1,15 @@
 -- Rollback of S7.5.1 MFA data foundation. NON-DESTRUCTIVE BY DEFAULT: only the functions are removed. Tables, columns and every row are KEPT on purpose:
 -- dropping credentials or recovery codes would silently downgrade protected accounts. The feature itself is switched off with LEAD_AGENTS_MFA=off (the default).
--- functions of later slices that depend on these tables (S7.5.4), if present
+-- objects of later slices that depend on these tables, if present (R10: so rolling THIS migration back first never leaves a half-configured MFA function behind; the newer rollbacks remain the
+-- preferred, newest-first order). The mailbox attempt TABLE and the mfa_active_count COLUMN are kept (no credential evidence is lost).
+drop trigger if exists admin_mfa_credentials_active_count on admin_mfa_credentials;
+drop function if exists office_mfa_active_count_trigger();
+drop function if exists office_mfa_sync_active_count(uuid);
+drop function if exists office_mfa_evidence_version();
+drop function if exists office_mfa_mailbox_attempt(uuid, text, timestamptz, integer);
+drop function if exists office_mfa_mailbox_version();
+drop function if exists office_mfa_webauthn_record_use(uuid, uuid, bigint);
+drop function if exists office_mfa_webauthn_version();
 drop function if exists office_mfa_consume_recovery_code_revoking(uuid, text, text);
 drop function if exists office_mfa_revoke_credential(uuid, uuid, text, text, boolean);
 drop function if exists office_mfa_activate_credential(uuid, uuid, text, uuid, bigint, text[], text);

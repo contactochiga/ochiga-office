@@ -16,6 +16,10 @@ create or replace function office_mfa_management_version() returns integer langu
 
 -- One transaction: (optionally) revoke the credential being replaced, activate the pending one, record the used TOTP step, store the first recovery batch, bump the session generation.
 -- Returns no row when the pending credential is not the account's pending credential; raises (rolling everything back) when a replacement target is not the active credential.
+-- R10: this definition is superseded by 20261025 (WebAuthn-aware); re-applying this file later must not revert it.
+do $guard$ begin
+  if to_regprocedure('office_mfa_webauthn_version()') is null or to_regprocedure('office_mfa_activate_credential(uuid, uuid, text, uuid, bigint, text[], text)') is null then
+    execute $def$
 create or replace function office_mfa_activate_credential(
   p_user_id uuid, p_credential_id uuid, p_actor text, p_replace_credential_id uuid default null, p_totp_step bigint default null,
   p_recovery_hmacs text[] default null, p_key_id text default null)
@@ -44,6 +48,9 @@ begin
    where admin_users.id = p_user_id returning admin_users.session_generation into new_generation;
   return query select new_generation, did_replace, codes;
 end $f$;
+    $def$;
+  end if;
+end $guard$;
 
 -- One transaction: revoke a pending/active credential; refuse (roll back) when it is the last active factor and the caller wants one kept; delete the unused recovery codes when no
 -- active factor remains; bump the generation when an ACTIVE factor was removed. Returns no row when the credential is not revocable.

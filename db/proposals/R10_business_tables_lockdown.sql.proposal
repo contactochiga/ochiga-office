@@ -1,0 +1,77 @@
+-- PROPOSAL ONLY -- NOT part of the migration chain, NOT applied anywhere. Stored with a non-.sql extension so no tool picks it up. See docs/settings-domain/53_S7_R10_PRODUCTION_BOUNDARY.md section C.
+-- Scope: the 50 ordinary tables of schema public that have no row level security in the bootstrap schema (list generated from a disposable fixture with every migration through 20261031).
+-- Effect per table: ENABLE ROW LEVEL SECURITY (no policy => deny by default for every role that does not bypass RLS), REVOKE ALL from PUBLIC / anon / authenticated, and nothing for service_role
+-- (it bypasses RLS and keeps the privileges it already has). Additive and reversible: no row, column or constraint is touched. NOT FORCEd, so direct owner connections still work.
+-- PRECONDITIONS (all must be verified by the owner before this is ever run, staging first):
+--   1. scripts/sql/production-business-tables-audit.sql was run on production and the table list below matches it (this script skips absent tables and NOTICEs unknown ones).
+--   2. NOTHING other than the Office server uses the anon/authenticated roles on these tables. Other applications that share the Supabase project (Facility, consumer app, dashboards, SQL editor
+--      reports, BI tools, Edge Functions) must be inventoried. The Office repo contains no anon-key client, but this repo cannot see other repositories.
+--   3. A backup/restore point exists. 4. The statements are run in one transaction in a maintenance window.
+do $$
+declare
+  listed text[] := array[
+    'conversations',
+    'crm_activities',
+    'crm_contacts',
+    'crm_opportunities',
+    'crm_organizations',
+    'crm_tasks',
+    'demos',
+    'deployment_projects',
+    'facility_workspaces',
+    'inbound_events',
+    'lead_channel_states',
+    'lead_memories',
+    'leads',
+    'notifications',
+    'ochiga_workflow_links',
+    'office_analytics',
+    'office_buildings',
+    'office_content_items',
+    'office_development_projects',
+    'office_devices',
+    'office_document_folders',
+    'office_documents',
+    'office_estates',
+    'office_files',
+    'office_handoffs',
+    'office_homes',
+    'office_letterhead_config',
+    'office_meetings',
+    'office_packages',
+    'office_partnership_relationships',
+    'office_portfolio_entries',
+    'office_private_relationships',
+    'office_projects',
+    'office_reports',
+    'office_staff_capabilities',
+    'office_staff_profiles',
+    'office_support_cases',
+    'office_support_mappings',
+    'office_wallets',
+    'onboarding_emails',
+    'partners',
+    'proposals',
+    'staff_conversation_participants',
+    'staff_conversations',
+    'staff_message_attachments',
+    'staff_message_reactions',
+    'staff_message_reads',
+    'staff_messages',
+    'timeline_events',
+    'traces'];
+  t text; unknown text;
+begin
+  foreach t in array listed loop
+    if to_regclass('public.' || t) is null then raise notice 'skipping absent table %', t; continue; end if;
+    execute format('alter table public.%I enable row level security', t);
+    execute format('revoke all on public.%I from public', t);
+    if exists (select 1 from pg_roles where rolname = 'anon') then execute format('revoke all on public.%I from anon', t); end if;
+    if exists (select 1 from pg_roles where rolname = 'authenticated') then execute format('revoke all on public.%I from authenticated', t); end if;
+  end loop;
+  -- tables that are in public, ordinary, without RLS and NOT in the list: reported, never changed
+  for unknown in select c.relname from pg_class c where c.relnamespace = 'public'::regnamespace and c.relkind in ('r', 'p') and not c.relrowsecurity and c.relname <> all(listed) loop
+    raise notice 'table % has no row level security and is not in the reviewed list: left untouched', unknown;
+  end loop;
+end $$;
+-- ROLLBACK (manual, deliberately): alter table public.<t> disable row level security; grant <privileges> on public.<t> to anon, authenticated;   -- restores the exposure; do it only knowingly.

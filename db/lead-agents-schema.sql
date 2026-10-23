@@ -441,7 +441,8 @@ create table if not exists facility_workspaces (
 -- are for email personalization and staff visibility only -- never sent
 -- to Backend; the owner types their own profile during their own
 -- activation wizard (every user owns their own credentials/profile).
-alter table facility_workspaces add column if not exists portfolio_id text references office_portfolio_entries(id) on delete set null;
+-- R10: the foreign key to office_portfolio_entries is added further down, after that table exists (this file now applies to an EMPTY database in one pass).
+alter table facility_workspaces add column if not exists portfolio_id text;
 alter table facility_workspaces add column if not exists facility_admin_full_name text;
 alter table facility_workspaces add column if not exists facility_admin_phone text;
 
@@ -964,6 +965,15 @@ create table if not exists office_portfolio_entries (
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
+
+-- R10: the foreign key facility_workspaces.portfolio_id -> office_portfolio_entries(id) that used to be declared before this table existed. Idempotent: databases that already have the
+-- constraint (the column was created with it) are left untouched.
+do $$
+begin
+  if not exists (select 1 from pg_constraint where conrelid = 'facility_workspaces'::regclass and contype = 'f' and confrelid = 'office_portfolio_entries'::regclass) then
+    alter table facility_workspaces add constraint facility_workspaces_portfolio_id_fkey foreign key (portfolio_id) references office_portfolio_entries(id) on delete set null;
+  end if;
+end $$;
 
 create table if not exists office_support_cases (
   id text primary key,

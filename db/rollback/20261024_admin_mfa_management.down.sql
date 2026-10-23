@@ -10,4 +10,11 @@ update admin_mfa_credentials p set status = 'revoked', revoked_at = now(), revok
  where p.type = 'totp' and p.status = 'pending' and exists (select 1 from admin_mfa_credentials a where a.admin_user_id = p.admin_user_id and a.type = 'totp' and a.status = 'active');
 drop index if exists admin_mfa_one_pending_totp_per_user;
 drop index if exists admin_mfa_one_active_totp_per_user;
-create unique index if not exists admin_mfa_one_totp_per_user on admin_mfa_credentials (admin_user_id) where type = 'totp' and status in ('pending', 'active');
+do $$
+begin   -- R10: the stricter pre-S7.5.4 index is restored only when current data satisfies it (an account mid-replacement has an active AND a pending TOTP); otherwise it is skipped, never an error
+  if exists (select 1 from admin_mfa_credentials where type = 'totp' and status in ('pending', 'active') group by admin_user_id having count(*) > 1) then
+    raise notice 'admin_mfa_one_totp_per_user not restored: an account has more than one pending/active TOTP';
+  else
+    create unique index if not exists admin_mfa_one_totp_per_user on admin_mfa_credentials (admin_user_id) where type = 'totp' and status in ('pending', 'active');
+  end if;
+end $$;
