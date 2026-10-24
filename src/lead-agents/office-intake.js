@@ -182,7 +182,17 @@ function leadInputFromIntake(envelope) {
   };
 }
 
+// Every intake (first or repeat, from any contact) records its idempotency key in the metadata of its "office_intake_received" timeline
+// event, so that is where a retried submission is recognised first. The original Lead.notes scan stays as the fallback (it only ever
+// matched a contact's FIRST submission, which is why a retried repeat enquiry used to be filed twice).
 async function findExistingIntakeLead(store, idempotencyKey) {
+  if (typeof store.findIntakeTimelineEvent === "function") {
+    const event = await store.findIntakeTimelineEvent(idempotencyKey);
+    if (event && event.lead_id) {
+      const lead = await store.getLead(event.lead_id);
+      if (lead) return lead;
+    }
+  }
   const leads = await store.listLeads();
   return leads.find((lead) => String(lead.notes || "").includes(`"idempotency_key":"${idempotencyKey}"`)) || null;
 }

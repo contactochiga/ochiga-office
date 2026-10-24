@@ -1950,6 +1950,15 @@ async function bootstrapAdminUser(store, config) {
   });
 }
 
+// The ONLY routes a scoped integration key may call, per scope (method + exact path). Everything else answers 403 before any handler runs.
+const SCOPED_ROUTES = Object.freeze({
+  "intake.submit": [{ method: "POST", path: "/api/office/intake" }],
+});
+
+function scopedRouteAllowed(authContext, method, pathname) {
+  return (authContext.scopes || []).some((scope) => (SCOPED_ROUTES[scope] || []).some((route) => route.method === method && route.path === pathname));
+}
+
 async function enrichAuthContext(authContext, store) {
   if (!authContext || authContext.type !== "session") {
     return authContext;
@@ -2237,6 +2246,11 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
         !isBackendBridgePath
       ) {
         authContext = tryEdgeAuth(req, config) || enforceAuth(req, config);
+        if (authContext && authContext.type === "scoped_api_key" && !scopedRouteAllowed(authContext, req.method, pathname)) {
+          log("warn", "scoped_api_key.route_denied", { client: authContext.client, method: req.method, path: pathname, request_id: ctx.requestId });
+          json(res, 403, { error: "forbidden" }, { "x-request-id": ctx.requestId });
+          return;
+        }
         authContext = await enrichAuthContext(authContext, store);
         const rateLimitState = officeInternalRateLimiter.check(req);
         res.setHeader("x-ratelimit-remaining", String(rateLimitState.remaining));
@@ -3945,10 +3959,19 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           methodNotAllowed(res, "POST");
           return;
         }
-        authorizePermission(authContext, "manage_leads");
+        // A scoped website key may submit intake and nothing else; staff sessions and full keys keep the manage_leads check.
+        const scopedIntake = authContext?.type === "scoped_api_key" && (authContext.scopes || []).includes("intake.submit");
+        if (!scopedIntake) authorizePermission(authContext, "manage_leads");
         const body = await readJsonBody(req, 64 * 1024);
         const envelope = normalizeOfficeIntakeEnvelope(body);
+        // keys from a scoped client live in that client's namespace, so one website can never collide with (or probe) another's
+        if (scopedIntake) envelope.idempotency_key = `${authContext.client}:${envelope.idempotency_key}`;
         const existing = await findExistingIntakeLead(store, envelope.idempotency_key);
+        if (existing && scopedIntake) {
+          // a scoped client learns only that its own submission was already filed -- never the stored Lead record
+          json(res, 200, { ok: true, duplicate: true, request_id: envelope.request_id, idempotency_key: envelope.idempotency_key, lead_id: existing.id }, { "x-request-id": ctx.requestId });
+          return;
+        }
         if (existing) {
           const continuation = createFormContinuationContext(envelope, existing);
           json(res, 200, {
@@ -4026,6 +4049,17 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           });
         }
 
+        if (scopedIntake) {
+          json(res, 201, {
+            ok: true,
+            duplicate: false,
+            request_id: envelope.request_id,
+            idempotency_key: envelope.idempotency_key,
+            lead_id: lead.id,
+            crm_synced: Boolean(crm),
+          }, { "x-request-id": ctx.requestId });
+          return;
+        }
         json(res, 201, {
           ok: true,
           duplicate: false,

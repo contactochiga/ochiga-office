@@ -1301,6 +1301,15 @@ class SupabaseLeadAgentsStore {
     return response.data[0];
   }
 
+  // The first intake timeline event that carries this idempotency key (any lead). Read-only; no schema change is needed.
+  async findIntakeTimelineEvent(idempotencyKey) {
+    const response = await this.client.get(
+      `/timeline_events?event_type=eq.office_intake_received&metadata->>idempotency_key=eq.${encodeURIComponent(String(idempotencyKey || ""))}&order=created_at.asc&limit=1`
+    );
+    if (!Array.isArray(response.data)) throw new Error("timeline_events_response_malformed");
+    return response.data[0] || null;
+  }
+
   async listTimelineForLead(leadId, limit = 200) {
     const response = await this.client.get(
       `/timeline_events?lead_id=eq.${leadId}&order=created_at.asc&limit=${limit}`

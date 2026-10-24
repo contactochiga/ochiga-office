@@ -1444,6 +1444,13 @@ class FileLeadAgentsStore {
     return value;
   }
 
+  async findIntakeTimelineEvent(idempotencyKey) {
+    const key = String(idempotencyKey || "");
+    return this.state.timeline_events
+      .filter((item) => item.event_type === "office_intake_received" && item.metadata && item.metadata.idempotency_key === key)
+      .sort((a, b) => String(a.created_at).localeCompare(String(b.created_at)))[0] || null;
+  }
+
   async listTimelineForLead(leadId, limit = 200) {
     return this.state.timeline_events
       .filter((item) => item.lead_id === leadId)

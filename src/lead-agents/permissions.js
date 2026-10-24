@@ -316,6 +316,8 @@ function permissionsForRole(role, extraScopes) {
 function hasPermission(session, permission) {
   if (!session) return false;
   if (session.type === "api_key") return true;
+  // a scoped integration key holds no role permission at all (not even guest's); its routes are allow-listed in server.js
+  if (session.type === "scoped_api_key") return false;
   const requested = canonicalPermission(permission);
   return permissionsForRole(session.role, session.permissionScopes).some(
     (item) => item === permission || canonicalPermission(item) === requested

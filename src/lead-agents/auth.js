@@ -161,6 +161,18 @@ function authorizePermission(session, permission) {
   throw error;
 }
 
+function matchScopedApiKey(config, apiKey) {
+  const entries = Array.isArray(config.scopedApiKeys) ? config.scopedApiKeys : [];
+  if (!apiKey || entries.length === 0) return null;
+  const digest = crypto.createHash("sha256").update(String(apiKey)).digest("hex");
+  // every entry is compared (no early exit) so the time taken does not depend on which entry matched
+  let match = null;
+  for (const entry of entries) {
+    if (secureEqual(entry.keySha256, digest) && !match) match = entry;
+  }
+  return match;
+}
+
 function enforceAuth(req, config) {
   if (config.authMode === "off") {
     return;
@@ -179,6 +191,12 @@ function enforceAuth(req, config) {
   }
 
   const apiKey = getApiKey(req);
+  // A scoped integration key is checked FIRST and resolves to a principal with no role and no permission: it can only pass the
+  // per-route allow-list in server.js (SCOPED_ROUTES). It is never an admin, whatever LEAD_AGENTS_API_KEYS contains.
+  const scoped = matchScopedApiKey(config, apiKey);
+  if (scoped) {
+    return { type: "scoped_api_key", client: scoped.client, scopes: scoped.scopes.slice(), role: null, permissions: [] };
+  }
   if (config.authMode === "required_api_key") {
     const allowed = config.apiKeys.some((candidate) => secureEqual(candidate, apiKey));
     if (!allowed) {
@@ -213,6 +231,7 @@ function enforceAuth(req, config) {
 module.exports = {
   authorizeRole,
   authorizePermission,
+  matchScopedApiKey,
   clearSessionCookie,
   createAdminSessionToken,
   createSessionCookie,

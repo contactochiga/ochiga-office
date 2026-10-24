@@ -12,6 +12,23 @@ function stringListFromEnv(value) {
     .filter(Boolean);
 }
 
+const KNOWN_API_KEY_SCOPES = new Set(["intake.submit"]);
+
+// Malformed entries are dropped (never widened): an entry needs a client name, a 64-hex SHA-256 digest and at least one known scope.
+function scopedApiKeysFromEnv(value) {
+  if (!value) return [];
+  let parsed;
+  try { parsed = JSON.parse(value); } catch { return []; }
+  if (!Array.isArray(parsed)) return [];
+  return parsed
+    .map((entry) => ({
+      client: String(entry && entry.client || "").trim(),
+      keySha256: String(entry && entry.key_sha256 || "").trim().toLowerCase(),
+      scopes: Array.isArray(entry && entry.scopes) ? entry.scopes.map(String).filter((scope) => KNOWN_API_KEY_SCOPES.has(scope)) : [],
+    }))
+    .filter((entry) => /^[a-z0-9_-]{1,40}$/.test(entry.client) && /^[0-9a-f]{64}$/.test(entry.keySha256) && entry.scopes.length > 0);
+}
+
 function booleanFromEnv(value, fallback = false) {
   if (value === undefined || value === null || value === "") return fallback;
   return ["1", "true", "yes", "on"].includes(String(value).toLowerCase());
@@ -73,6 +90,9 @@ function createConfig() {
     supabaseServiceRoleKey: process.env.SUPABASE_SERVICE_ROLE_KEY || "",
     authMode: process.env.LEAD_AGENTS_AUTH_MODE || "optional_api_key",
     apiKeys: stringListFromEnv(process.env.LEAD_AGENTS_API_KEYS),
+    // Narrow integration credentials (e.g. the GetOyi website). JSON list of { "client", "key_sha256", "scopes" }; only the SHA-256
+    // digest of each key is configured here. A scoped key never becomes an admin principal (see auth.js / SCOPED_ROUTES in server.js).
+    scopedApiKeys: scopedApiKeysFromEnv(process.env.LEAD_AGENTS_SCOPED_API_KEYS),
     edgeAgentTokens: stringListFromEnv(
       process.env.OYI_EDGE_AGENT_TOKENS || process.env.OYI_EDGE_AGENT_TOKEN
     ),
