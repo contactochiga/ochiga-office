@@ -112,12 +112,14 @@ async function main() {
     const R = crypto.randomUUID();
     const lost = envelope(R, "lost@example.com", "Submitted while Office was down");
     const code = recoveryCode(SITE_KEY, lost);
-    const view = await call(base, "GET", `/api/lead-agents/admin/intake/recover?code=${encodeURIComponent(code)}`, { cookie });
-    ok(view.status === 200 && /File this website enquiry in Office\?/.test(view.text) && /lost@example\.com/.test(view.text) && /<form method="post">/.test(view.text), "a staff member sees what the code will file, with a confirm button", view.status);
+    const landing = await call(base, "GET", "/api/lead-agents/admin/intake/recover", { cookie });
+    ok(landing.status === 200 && /location\.hash/.test(landing.text) && /name="action" value="preview"/.test(landing.text), "the link's landing page reads the code from the URL fragment (never sent to a server) into a preview POST", landing.status);
+    const view = await call(base, "POST", "/api/lead-agents/admin/intake/recover", { cookie, form: { action: "preview", code } });
+    ok(view.status === 200 && /File this website enquiry in Office\?/.test(view.text) && /lost@example\.com/.test(view.text) && /name="action" value="file"/.test(view.text), "a staff member sees what the code will file, with a confirm button", view.status);
     ok(state().leads.every((l) => l.email !== "lost@example.com"), "…and viewing alone files nothing");
-    const filed = await call(base, "POST", "/api/lead-agents/admin/intake/recover", { cookie, form: { code } });
+    const filed = await call(base, "POST", "/api/lead-agents/admin/intake/recover", { cookie, form: { action: "file", code } });
     ok(filed.status === 200 && /The enquiry is now in Office\./.test(filed.text), "confirming files the enquiry", filed.text.slice(0, 200));
-    const again = await call(base, "POST", "/api/lead-agents/admin/intake/recover", { cookie, form: { code } });
+    const again = await call(base, "POST", "/api/lead-agents/admin/intake/recover", { cookie, form: { action: "file", code } });
     ok(/already in Office/.test(again.text), "redeeming the same code again files nothing new");
     const viaSite = await call(base, "POST", "/api/office/intake", { key: SITE_KEY, body: lost });
     ok(viaSite.status === 200 && viaSite.json.duplicate === true, "…and the website's own late retry of that submission is a duplicate (same namespace)", viaSite.json);
@@ -126,22 +128,24 @@ async function main() {
     ok((s2.audit_events || []).some((a) => a.action === "intake_recovered"), "recovery is audited");
 
     const forged = recoveryCode(`not-the-site-key-${crypto.randomBytes(8).toString("hex")}`, envelope(crypto.randomUUID(), "forged@example.com"));
-    const f = await call(base, "POST", "/api/lead-agents/admin/intake/recover", { cookie, form: { code: forged } });
+    const f = await call(base, "POST", "/api/lead-agents/admin/intake/recover", { cookie, form: { action: "file", code: forged } });
     ok(f.status === 400 && /cannot be used/.test(f.text) && state().leads.every((l) => l.email !== "forged@example.com"), "a code not signed by a known website is refused and files nothing", f.status);
     const tampered = code.replace(/\.([A-Za-z0-9_-]+)\./, (m, b) => `.${b.slice(0, -2)}AA.`);
-    ok((await call(base, "POST", "/api/lead-agents/admin/intake/recover", { cookie, form: { code: tampered } })).status === 400, "a tampered code is refused");
+    ok((await call(base, "POST", "/api/lead-agents/admin/intake/recover", { cookie, form: { action: "file", code: tampered } })).status === 400, "a tampered code is refused");
     const old = recoveryCode(SITE_KEY, envelope(crypto.randomUUID(), "old@example.com"), new Date(Date.now() - 31 * 24 * 3600 * 1000).toISOString());
-    ok(/older than 30 days/.test((await call(base, "POST", "/api/lead-agents/admin/intake/recover", { cookie, form: { code: old } })).text), "a code older than 30 days is refused");
+    ok(/older than 30 days/.test((await call(base, "POST", "/api/lead-agents/admin/intake/recover", { cookie, form: { action: "file", code: old } })).text), "a code older than 30 days is refused");
     const otherCode = recoveryCode(OTHER_KEY, envelope(R, "lost@example.com", "Submitted while Office was down"));
-    await call(base, "POST", "/api/lead-agents/admin/intake/recover", { cookie, form: { code: otherCode } });
+    await call(base, "POST", "/api/lead-agents/admin/intake/recover", { cookie, form: { action: "file", code: otherCode } });
     ok(state().office_intake_receipts[`ochiga_website:${R}`], "a code from another website is filed in THAT website's namespace");
 
     // credentials that must not redeem codes
-    const byFull = await call(base, "POST", "/api/lead-agents/admin/intake/recover", { key: FULL_KEY, form: { code } });
+    const byFull = await call(base, "POST", "/api/lead-agents/admin/intake/recover", { key: FULL_KEY, form: { action: "file", code } });
     ok(byFull.status === 403, "a full API key cannot redeem a recovery code (staff session only)", byFull.status);
-    const bySite = await call(base, "POST", "/api/lead-agents/admin/intake/recover", { key: SITE_KEY, form: { code } });
+    const bySite = await call(base, "POST", "/api/lead-agents/admin/intake/recover", { key: SITE_KEY, form: { action: "file", code } });
     ok(bySite.status === 403, "the website's scoped key cannot redeem one either", bySite.status);
-    const anon = await call(base, "POST", "/api/lead-agents/admin/intake/recover", { form: { code } });
+    const anon = await call(base, "POST", "/api/lead-agents/admin/intake/recover", { form: { action: "file", code } });
+    const previewFiles = await call(base, "POST", "/api/lead-agents/admin/intake/recover", { cookie, form: { action: "preview", code: recoveryCode(SITE_KEY, envelope(crypto.randomUUID(), "preview-only@example.com")) } });
+    ok(previewFiles.status === 200 && state().leads.every((l) => l.email !== "preview-only@example.com"), "previewing a code files nothing");
     ok(anon.status === 401, "no credential: 401", anon.status);
 
     // nothing secret in the server log

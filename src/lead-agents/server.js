@@ -4028,42 +4028,47 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
       }
 
       // Recovery of a website submission that could not reach Office (code emailed to staff by the website). Staff session only: an API key,
-      // scoped or full, can never redeem a code. GET shows what will be filed; POST (same-origin form; the session cookie is SameSite=Lax)
-      // files it through exactly the same idempotent path, in the website's own key namespace, so a code redeemed twice -- or one whose
-      // submission later got through on its own -- is filed once.
+      // scoped or full, can never redeem a code. The e-mailed link carries the code in the URL FRAGMENT (never sent to a server, so it never
+      // lands in an access log): GET serves a page that moves it into a POST "preview"; a second, explicit POST "file" files it through
+      // exactly the same idempotent path, in the website's own key namespace -- a code used twice, or one whose submission later got through
+      // on its own, is filed once. Same-origin forms only: the session cookie is SameSite=Lax.
       if (pathname === "/api/lead-agents/admin/intake/recover") {
         if (authContext?.type !== "session") {
           json(res, 403, { error: "staff_session_required" }, { "x-request-id": ctx.requestId });
           return;
         }
         authorizePermission(authContext, "manage_leads");
-        let code = "";
+        const page = (status, title, message, extra = "") => {
+          res.writeHead(status, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store", "x-content-type-options": "nosniff", "referrer-policy": "no-referrer", "x-frame-options": "DENY", "x-request-id": ctx.requestId });
+          res.end(`<!doctype html><html><head><meta charset="utf-8"><meta name="robots" content="noindex"><title>${escapeHtmlText(title)}</title></head><body style="font-family:sans-serif;max-width:640px;margin:40px auto;padding:0 16px"><h1 style="font-size:22px">${escapeHtmlText(title)}</h1><p>${escapeHtmlText(message)}</p>${extra}</body></html>`);
+        };
         if (req.method === "GET") {
-          code = new URL(req.url, "http://localhost").searchParams.get("code") || "";
-        } else if (req.method === "POST") {
-          const raw = (await readRawBodyBuffer(req, 64 * 1024)).toString("utf8");
-          code = String(req.headers["content-type"] || "").includes("application/json") ? String((JSON.parse(raw || "{}") || {}).code || "") : new URLSearchParams(raw).get("code") || "";
-        } else {
+          page(200, "Recover a website enquiry", "Reading the recovery code from the link…",
+            `<form method="post" id="recover"><input type="hidden" name="action" value="preview"><label>Recovery code<br><textarea name="code" rows="6" style="width:100%"></textarea></label><p><button type="submit">Continue</button></p></form>` +
+            `<script>(function(){var m=/[#&]code=([^&]+)/.exec(location.hash||"");if(!m)return;var f=document.getElementById("recover");f.code.value=decodeURIComponent(m[1]);history.replaceState(null,"",location.pathname);f.submit();})();</script>`);
+          return;
+        }
+        if (req.method !== "POST") {
           methodNotAllowed(res, "GET,POST");
           return;
         }
+        const raw = (await readRawBodyBuffer(req, 64 * 1024)).toString("utf8");
+        const fields = String(req.headers["content-type"] || "").includes("application/json") ? (() => { try { return JSON.parse(raw || "{}") || {}; } catch { return {}; } })() : Object.fromEntries(new URLSearchParams(raw));
+        const code = String(fields.code || "").trim();
+        const action = fields.action === "file" ? "file" : "preview";
         const verified = verifyRecoveryCode(code, config.scopedApiKeys);
-        const page = (title, message, extra = "") => {
-          res.writeHead(verified.ok || req.method === "GET" ? 200 : 400, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store", "x-content-type-options": "nosniff", "x-request-id": ctx.requestId });
-          res.end(`<!doctype html><html><head><meta charset="utf-8"><meta name="robots" content="noindex"><title>${escapeHtmlText(title)}</title></head><body style="font-family:sans-serif;max-width:640px;margin:40px auto;padding:0 16px"><h1 style="font-size:22px">${escapeHtmlText(title)}</h1><p>${escapeHtmlText(message)}</p>${extra}</body></html>`);
-        };
         if (!verified.ok) {
           await appendAudit(store, authContext, "intake_recovery_rejected", "intake_receipt", "", { reason: verified.reason, request_id: ctx.requestId });
-          page("This recovery code cannot be used", verified.reason === "expired" ? "The code is older than 30 days or not yet valid. File the enquiry manually from the email." : "The code is incomplete or was not issued by a known website. File the enquiry manually from the email.");
+          page(400, "This recovery code cannot be used", verified.reason === "expired" ? "The code is older than 30 days or not yet valid. File the enquiry manually from the email." : "The code is incomplete or was not issued by a known website. File the enquiry manually from the email.");
           return;
         }
         let envelope;
-        try { envelope = normalizeOfficeIntakeEnvelope(verified.envelope); } catch { page("This recovery code cannot be used", "The enquiry in the code is incomplete. File it manually from the email."); return; }
+        try { envelope = normalizeOfficeIntakeEnvelope(verified.envelope); } catch { page(400, "This recovery code cannot be used", "The enquiry in the code is incomplete. File it manually from the email."); return; }
         envelope.idempotency_key = `${verified.client}:${envelope.idempotency_key}`;
-        if (req.method === "GET") {
+        if (action === "preview") {
           const summary = `${envelope.contact.name || "(no name)"} <${envelope.contact.email || "no e-mail"}> — ${envelope.inquiry_type} from ${envelope.source_site}${envelope.source_page ? ` (${envelope.source_page})` : ""}`;
-          page("File this website enquiry in Office?", summary,
-            `<form method="post"><input type="hidden" name="code" value="${escapeHtmlText(code)}"><button type="submit" style="padding:10px 18px">File enquiry</button></form><p style="color:#64748b;font-size:13px">Filing is safe to repeat: an enquiry that is already in Office is not filed twice.</p>`);
+          page(200, "File this website enquiry in Office?", summary,
+            `<form method="post"><input type="hidden" name="action" value="file"><input type="hidden" name="code" value="${escapeHtmlText(code)}"><button type="submit" style="padding:10px 18px">File enquiry</button></form><p style="color:#64748b;font-size:13px">Filing is safe to repeat: an enquiry that is already in Office is not filed twice.</p>`);
           return;
         }
         const result = await fileIntakeSubmission(store, envelope, { client: verified.client, actor: authContext.email, log, timelineMetadata: (lead) => ({ public_context_ref: createFormContinuationContext(envelope, lead).public_context_ref, recovered_by: authContext.email }) });
@@ -4072,12 +4077,12 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
         const messages = {
           filed: "The enquiry is now in Office.",
           duplicate: "This enquiry was already in Office. Nothing new was filed.",
-          in_progress: "This enquiry is being filed right now by another request. Reload in a minute.",
+          in_progress: "This enquiry is being filed right now by another request. Try again in a minute.",
           crm_failed: "The lead was filed but the CRM records could not be completed. Use the same link again shortly to finish.",
           conflict: "A different enquiry was already filed under this code's key. File this one manually from the email.",
           unavailable: "Office could not file the enquiry right now. Try the same link again shortly.",
         };
-        page(result.outcome === "filed" || result.outcome === "duplicate" ? "Done" : "Not finished", messages[result.outcome] || messages.unavailable);
+        page(200, result.outcome === "filed" || result.outcome === "duplicate" ? "Done" : "Not finished", messages[result.outcome] || messages.unavailable);
         return;
       }
 
