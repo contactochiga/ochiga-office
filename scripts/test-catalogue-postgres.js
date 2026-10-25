@@ -221,6 +221,7 @@ async function main() {
     check("MC4", "new draft preserves published version", call('save',4,'writer').status===0 && one('select published_version from catalogue_merchandising')==='1');
     check("MC5", "stale database save refused", /state_changed/.test(call('save',4,'writer').err));
     check("MC6", "withdraw clears public version", call('withdraw',5,'publisher').status===0 && one('select published_version is null from catalogue_merchandising')==='t');
+    check("MC7", "withdraw audit identifies live v1 and current draft v2", one("select concat(version,',',previous_published_version,',',current_version) from catalogue_merchandising_events where action='withdraw' order by id desc limit 1")==='1,1,2');
   }
 
   // ------------------------------------------------------------------------------------------------ AT-03 append-only, for every role

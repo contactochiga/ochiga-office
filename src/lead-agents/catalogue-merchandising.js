@@ -26,11 +26,16 @@ function refs(v) {
 }
 function time(v) {
   if (v === null || v === "" || v === undefined) return null;
-  if (
-    typeof v !== "string" ||
-    !/^\d{4}-\d\d-\d\dT/.test(v) ||
-    !Number.isFinite(Date.parse(v))
-  )
+  const parts = typeof v === "string" && /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,3}))?(Z|[+-]\d{2}:\d{2})$/.exec(v);
+  if (!parts) throw httpError(400, "invalid_campaign_schedule");
+  const [year, month, day, hour, minute, second] = parts.slice(1, 7).map(Number);
+  const date = new Date(0);
+  date.setUTCFullYear(year, month - 1, day);
+  date.setUTCHours(hour, minute, second, 0);
+  const zone = parts[8];
+  const offsetHour = zone === "Z" ? 0 : Number(zone.slice(1, 3));
+  const offsetMinute = zone === "Z" ? 0 : Number(zone.slice(4, 6));
+  if (date.getUTCFullYear() !== year || date.getUTCMonth() !== month - 1 || date.getUTCDate() !== day || hour > 23 || minute > 59 || second > 59 || offsetHour > 14 || offsetMinute > 59 || (offsetHour === 14 && offsetMinute !== 0) || !Number.isFinite(Date.parse(v)))
     throw httpError(400, "invalid_campaign_schedule");
   return new Date(v).toISOString();
 }
@@ -225,7 +230,9 @@ function transition(state, { action, expected, content, actor, note = "" }) {
   s.row_version++;
   s.events.push({
     action,
-    version: s.current_version,
+    version: action === "withdraw" ? state.published_version : s.current_version,
+    current_version: s.current_version,
+    previous_published_version: state.published_version,
     actor,
     note,
     created_at: at,

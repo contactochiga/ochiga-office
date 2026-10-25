@@ -86,6 +86,10 @@ ok("schedule end before start rejected", () =>
     "invalid_campaign_schedule",
   ),
 );
+for (const startsAt of ["2026-02-30T10:00:00Z", "2025-02-29T10:00:00Z", "2026-10-25T10:00:00", "2026-10-25T24:00:00Z", "2026-10-25T10:60:00Z", "2026-10-25T10:00:00+14:30"]) {
+  ok("reject impossible or ambiguous schedule " + startsAt, () => fail(() => M.normalize({...content, slides:[{...content.slides[0], startsAt}]}), "invalid_campaign_schedule"));
+}
+ok("leap date and explicit offset normalize correctly", () => assert.equal(M.normalize({...content, slides:[{...content.slides[0], startsAt:"2024-02-29T12:00:00+01:00"}]}).slides[0].startsAt,"2024-02-29T11:00:00.000Z"));
 ok("unreleased products rejected on publish", () =>
   fail(() => M.assertEligible(content, []), "campaign_product_not_public"),
 );
@@ -183,6 +187,11 @@ go("withdraw", "publisher");
 ok("withdraw clears live pointer", () =>
   assert.equal(s.published_version, null),
 );
+ok("withdrawal records the live version and current draft separately", () => {
+  let x=M.initial();const step=action=>{x=M.transition(x,{action,expected:x.row_version,content,actor:action==="approve"?"independent":"author"})};
+  ["save","submit","approve","publish","save","withdraw"].forEach(step);
+  assert.deepEqual([x.events.at(-1).version,x.events.at(-1).previous_published_version,x.events.at(-1).current_version],[1,1,2]);
+});
 async function main() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "phase3-merch-"));
   const secret = crypto.randomBytes(24).toString("hex"),

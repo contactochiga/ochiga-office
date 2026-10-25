@@ -180,7 +180,7 @@ async function handleCatalogueRequest({ req, res, ctx, pathname, authContext, st
         M.assertEligible(draft,await publicViews(cat,await cat.listPublicListings()));
       }
       const updated=await M.mutate(cat,{action:body.action,expected:body.expected_row_version,content,actor,note:String(body.note||"").slice(0,500)});
-      await audit(`catalogue_merchandising_${body.action}`,"catalogue_merchandising","1",{version:updated.current_version,row_version:updated.row_version});
+      await audit(`catalogue_merchandising_${body.action}`,"catalogue_merchandising","1",{version:body.action === "withdraw" ? before.published_version : updated.current_version,current_version:updated.current_version,previous_published_version:before.published_version,published_version:updated.published_version,row_version:updated.row_version});
       await notifyRecipients(store,eventBus,{recipientEmails:await reviewerEmails(store,actor),actorEmail:actor,type:"catalogue_merchandising_changed",summary:`Hardware merchandising: ${body.action}, version ${updated.current_version}`,relatedType:"catalogue_merchandising",relatedId:"1"});
       return send(200,{merchandising:await M.read(cat)}),true;
     }

@@ -279,7 +279,7 @@ export async function renderMerchandising(host, token, ui) {
       .querySelector("[data-history]")
       .appendChild(
         el(
-          `<li>${esc(event.created_at)} · v${event.version} · ${esc(event.action)} · ${esc(event.actor)}</li>`,
+          `<li>${esc(event.created_at)} · v${event.version} · ${esc(event.action)}${event.action === "withdraw" ? ` (withdrawn live v${event.previous_published_version ?? event.version}; draft v${event.current_version ?? "unknown"})` : ""} · ${esc(event.actor)}</li>`,
         ),
       );
 }

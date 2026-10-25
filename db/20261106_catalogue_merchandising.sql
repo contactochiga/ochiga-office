@@ -20,7 +20,7 @@ create table if not exists catalogue_merchandising_versions (
 );
 create table if not exists catalogue_merchandising_events (
  id bigint generated always as identity primary key, action text not null,
- version integer not null, actor text not null check(length(actor) between 1 and 320),
+ version integer not null, current_version integer not null, previous_published_version integer, actor text not null check(length(actor) between 1 and 320),
  note text not null default '' check(length(note)<=500), created_at timestamptz not null default now()
 );
 alter table catalogue_merchandising enable row level security;
@@ -37,12 +37,13 @@ create trigger merchandising_events_immutable before update or delete on catalog
 
 create or replace function catalogue_merchandising_transition(p_action text,p_expected integer,p_content jsonb,p_actor text,p_note text default '')
 returns jsonb language plpgsql security invoker set search_path=public,pg_temp as $$
-declare s catalogue_merchandising%rowtype; v_authors text[];
+declare s catalogue_merchandising%rowtype; v_authors text[]; v_previous_published integer;
 begin
  if p_actor is null or length(trim(p_actor))=0 or length(p_actor)>320 then raise exception using errcode='PT400',message='invalid_actor'; end if;
  p_actor:=lower(trim(p_actor));
  select * into s from catalogue_merchandising where id=1 for update;
  if not found or p_expected is null or s.row_version<>p_expected then raise exception using errcode='PT409',message='state_changed'; end if;
+ v_previous_published:=s.published_version;
  if p_action='save' then
    if p_content is null or not (p_content ?& array['slides','featured','new_arrivals','collections']) then raise exception using errcode='PT400',message='invalid_merchandising'; end if;
    select array_agg(distinct a) into v_authors from unnest(case when s.workflow='published' then array[p_actor] else array_append(s.authors,p_actor) end) as a;
@@ -57,7 +58,7 @@ begin
  else raise exception using errcode='PT409',message='invalid_campaign_transition'; end if;
  s.row_version:=s.row_version+1;
  update catalogue_merchandising set row_version=s.row_version,current_version=s.current_version,published_version=s.published_version,workflow=s.workflow,authors=s.authors where id=1;
- insert into catalogue_merchandising_events(action,version,actor,note) values(p_action,s.current_version,p_actor,coalesce(p_note,''));
+ insert into catalogue_merchandising_events(action,version,current_version,previous_published_version,actor,note) values(p_action,case when p_action='withdraw' then v_previous_published else s.current_version end,s.current_version,v_previous_published,p_actor,coalesce(p_note,''));
  return to_jsonb(s);
 end $$;
 revoke all on function catalogue_merchandising_transition(text,integer,jsonb,text,text) from public,anon,authenticated;
