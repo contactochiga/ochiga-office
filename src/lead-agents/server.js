@@ -21,6 +21,7 @@ const {
   permissionsForRole,
   readAdminSession,
   verifyPassword,
+  matchScopedApiKey,
 } = require("./auth");
 const { MemoryRateLimiter } = require("./rate-limit");
 const { issuePublicSession, publicRequestIdentity } = require("./public-session-authority");
@@ -2162,6 +2163,13 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
   );
 
   let communicationOutboxWorkerHandle = null;
+  // Credential separation: a scoped (public website) key must never also be a full API key or the Backend bridge key. A scoped match always
+  // wins (the key stays restricted) and bridge routes refuse scoped keys, but the overlap is reported so the operator fixes the configuration.
+  {
+    const overlaps = [...(config.apiKeys || []), config.officeBackendApiKey].filter(Boolean).filter((key) => matchScopedApiKey(config, key)).length;
+    if (overlaps) log("error", "scoped_api_key.overlaps_privileged_credential", { count: overlaps });
+  }
+
   // Website intake: file once (receipts), publish the Backend material event only for a newly filed submission, answer per caller type.
   async function publishIntakeMaterialEvent(envelope, result, requestId) {
     const materialEvent = buildMaterialCrmEvent({ lead: result.lead, envelope, timelineEvent: result.timelineEvent, requestId, opportunity: result.crm?.opportunity || null });
@@ -2482,7 +2490,8 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
         const providedKey = String(
           req.headers["x-api-key"] || req.headers["x-office-api-key"] || ""
         ).trim();
-        if (!expectedKey || !providedKey || !secureCompare(providedKey, expectedKey)) {
+        // a public website credential is never a bridge credential, even if an operator configured the same value for both
+        if (!expectedKey || !providedKey || !secureCompare(providedKey, expectedKey) || matchScopedApiKey(config, providedKey)) {
           json(res, 401, { error: "unauthorized" }, { "x-request-id": ctx.requestId });
           return;
         }

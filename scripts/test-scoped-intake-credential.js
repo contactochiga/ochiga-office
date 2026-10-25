@@ -134,6 +134,24 @@ async function main() {
     ok(r.status === 401, "an entry naming unknown scopes is dropped (no scope can be invented through configuration)", r.status);
   } finally { await srv3.stop(); }
 
+  // ---- misconfiguration: the website key ALSO listed as a full key and as the Backend bridge key -> it stays restricted everywhere
+  const srv4 = await startServer({
+    LEAD_AGENTS_API_KEYS: `${FULL_KEY},${SITE_KEY}`, OFFICE_BACKEND_API_KEY: SITE_KEY,
+    LEAD_AGENTS_SCOPED_API_KEYS: JSON.stringify([{ client: "getoyi", key_sha256: sha(SITE_KEY), scopes: ["intake.submit"] }]),
+  });
+  try {
+    const admin = await call(srv4.url, "GET", "/api/lead-agents/admin/users", { key: SITE_KEY });
+    ok(admin.status === 403, "a website key that is also (wrongly) a full key is still refused on admin routes", admin.status);
+    for (const p of ["/api/lead-agents/admin/communications/whatsapp/send", "/api/lead-agents/admin/recipients/resolve", "/api/lead-agents/admin/communications/create-task"]) {
+      const r = await call(srv4.url, "POST", p, { key: SITE_KEY, body: {} });
+      ok(r.status === 401, `…and refused on the Backend bridge route ${p} even though it equals the bridge key`, r.status);
+    }
+    const intakeOk = await call(srv4.url, "POST", "/api/office/intake", { key: SITE_KEY, body: envelope(crypto.randomUUID(), "mis@example.com") });
+    ok(intakeOk.status === 201 && intakeOk.json.lead === undefined, "…while intake keeps working with the minimal answer", intakeOk.status);
+    const logText = srv4.logs.join("");
+    ok(/scoped_api_key\.overlaps_privileged_credential/.test(logText) && !logText.includes(SITE_KEY), "the overlap is reported at startup (count only, never the key)");
+  } finally { await srv4.stop(); }
+
   console.log(`scoped intake credential: ${checks} checks passed`);
 }
 
