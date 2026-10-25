@@ -51,7 +51,7 @@ async function main() {
   const allLogs = [srv.logs];
   let result;
   try {
-    result = await runCatalogueScenarios({ base: srv.url, users, fullKey: FULL_KEY, scopedKey: SITE_KEY, check });
+    result = await runCatalogueScenarios({ base: srv.url, users, fullKey: FULL_KEY, scopedKey: SITE_KEY, check, storageDir: path.join(dir, "storage") });
   } finally {
     await srv.stop();
   }

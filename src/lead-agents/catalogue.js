@@ -2,8 +2,9 @@
 
 // Office-managed product catalogue: domain rules (pure functions, no I/O).
 // Phase 1 scope (03_CATALOGUE_SPECIFICATION.md stages C1-C3, C5): taxonomy, products with immutable versions, review/publishing
-// transitions, NGN prices with approval, inventory, suppliers and internal costs. NOT in scope: media (gallery of 5-12 images, Phase 2),
-// public projection/API, storefront, refresh, checkout. "Publish" here only moves the internal publication state; nothing is public.
+// transitions, NGN prices with approval, inventory, suppliers and internal costs. Phase 2 stage 3 adds the product gallery (content.media:
+// references to private, processed uploads, see catalogue-media.js and db/20261104). NOT in scope: public projection/API, storefront,
+// refresh, checkout. "Publish" here only moves the internal publication state; nothing is public.
 
 const { hasPermission } = require("./permissions");
 
@@ -22,8 +23,8 @@ const CATALOGUE_PERMISSIONS = Object.freeze({
 const LIMITS = Object.freeze({
   name: 160, model: 80, summary: 400, description: 10000, specs: 100, specKey: 80, specValue: 400, specUnit: 20,
   variants: 50, variantName: 120, options: 10, optionKey: 40, optionValue: 80, compatibilityNotes: 1000, note: 2000,
-  // reserved for Phase 2 (gallery of 5-12 images): Phase 1 accepts no media or documents at all
-  galleryMin: 5, galleryMax: 12,
+  // gallery: 5 visible positions, up to 12 images; documents are not accepted yet
+  galleryVisible: 5, galleryMax: 12, mediaAlt: 250, mediaCaption: 300,
 });
 const SLUG = /^[a-z0-9]+(-[a-z0-9]+)*$/;
 const SKU = /^[A-Z0-9][A-Z0-9._-]{1,63}$/;
@@ -132,9 +133,33 @@ function validateContent(input = {}) {
     });
   }
 
-  // Media and documents arrive with the Phase 2 pipeline (existing /admin/storage + office_files; gallery of 5-12 images).
-  if (Array.isArray(input.media) && input.media.length) errors.push("media is not available yet (Phase 2)");
-  if (Array.isArray(input.documents) && input.documents.length) errors.push("documents are not available yet (Phase 2)");
+  // Gallery: ordered references to this product's uploaded images (existence, ownership and status are checked by the store / database).
+  // An incomplete gallery is a valid draft; the only structural rule is exactly one cover once there is any image.
+  const media = input.media == null ? [] : Array.isArray(input.media) ? input.media : null;
+  if (!media) errors.push("media must be a list");
+  else if (media.length > LIMITS.galleryMax) errors.push(`at most ${LIMITS.galleryMax} images`);
+  else {
+    const seen = new Set();
+    const skus = new Set(content.variants.map((v) => v.sku));
+    let covers = 0;
+    media.forEach((item, index) => {
+      const mediaId = str(item && item.media_id).toLowerCase();
+      if (!isUuid(mediaId)) errors.push(`media[${index}].media_id must be an image id`);
+      else if (seen.has(mediaId)) errors.push(`image ${mediaId} appears twice in the gallery`);
+      seen.add(mediaId);
+      const cover = Boolean(item && item.cover === true);
+      if (cover) covers += 1;
+      const alt = bounded(errors, `media[${index}].alt`, item && item.alt, LIMITS.mediaAlt);
+      const caption = bounded(errors, `media[${index}].caption`, item && item.caption, LIMITS.mediaCaption);
+      const rawSkus = item && item.variant_skus != null ? item.variant_skus : [];
+      if (!Array.isArray(rawSkus)) errors.push(`media[${index}].variant_skus must be a list`);
+      const variantSkus = [...new Set((Array.isArray(rawSkus) ? rawSkus : []).map((sku) => str(sku).toUpperCase()))];
+      variantSkus.filter((sku) => !skus.has(sku)).forEach((sku) => errors.push(`media[${index}] is linked to ${sku || "an empty SKU"}, which is not a variant of this product`));
+      content.media.push({ media_id: mediaId, cover, alt, caption, variant_skus: variantSkus });
+    });
+    if (media.length && covers !== 1) errors.push("exactly one image must be the cover");
+  }
+  if (Array.isArray(input.documents) && input.documents.length) errors.push("documents are not available yet");
 
   if (errors.length) throw badRequest("invalid product content", errors);
   return content;
@@ -175,7 +200,7 @@ function diffContent(before = {}, after = {}) {
   keyed("specifications", (spec) => spec.key.toLowerCase());
   keyed("variants", (variant) => variant.sku);
   if (!same(before.compatibility, after.compatibility)) changes.push({ field: "compatibility", before: before.compatibility ?? null, after: after.compatibility ?? null });
-  if (!same(before.media, after.media)) changes.push({ field: "media", before: before.media ?? [], after: after.media ?? [] });
+  keyed("media", (item) => item.media_id);
   if (!same(before.documents, after.documents)) changes.push({ field: "documents", before: before.documents ?? [], after: after.documents ?? [] });
   return changes;
 }
@@ -202,6 +227,30 @@ function variantAvailability(variant) {
   return "available_to_order";
 }
 
+function coverOf(content = {}) {
+  const cover = (content.media || []).find((item) => item.cover);
+  return cover ? cover.media_id : null;
+}
+
+// What public publishing (stage 4) will require of a version's gallery: a cover, and alternative text on every image. Drafts may be
+// incomplete; this is reported, not enforced, until the public projection exists.
+function galleryReadiness(content = {}) {
+  const media = content.media || [];
+  const issues = [];
+  if (!media.length) issues.push("no_images");
+  else if (!coverOf(content)) issues.push("no_cover");
+  const missingAlt = media.filter((item) => !item.alt).length;
+  if (missingAlt) issues.push("alt_text_missing");
+  return {
+    images: media.length,
+    cover_media_id: coverOf(content),
+    missing_alt: missingAlt,
+    below_recommended: media.length < LIMITS.galleryVisible,
+    ready_for_public: issues.length === 0,
+    issues,
+  };
+}
+
 // Summary row for the catalogue table: everything the list, filters, sorting and statistics need, computed from real records.
 function productCard(product, content = {}, variants = []) {
   const active = variants.filter((v) => v.status === "active");
@@ -216,6 +265,8 @@ function productCard(product, content = {}, variants = []) {
     summary: content.summary || "",
     category_id: product.category_id,
     brand_id: product.brand_id || null,
+    cover_media_id: coverOf(content),
+    image_count: (content.media || []).length,
     sku: listedSkus[0] || (variants[0] && variants[0].sku) || "",
     sku_count: listedSkus.length,
     skus: listedSkus,
@@ -407,6 +458,8 @@ module.exports = {
   browseCards,
   diffContent,
   displayStatus,
+  galleryReadiness,
+  coverOf,
   productCard,
   variantAvailability,
   DISPLAY_STATUSES,

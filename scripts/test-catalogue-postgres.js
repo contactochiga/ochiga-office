@@ -47,8 +47,10 @@ function jwt(role) {
   return `${head}.${body}.${crypto.createHmac("sha256", JWT_SECRET).update(`${head}.${body}`).digest("base64url")}`;
 }
 
-const TABLES = ["office_suppliers", "catalogue_categories", "catalogue_brands", "catalogue_products", "catalogue_product_versions", "catalogue_reviews", "catalogue_publication_events", "catalogue_variants", "catalogue_price_changes", "catalogue_price_decisions", "catalogue_inventory_changes", "catalogue_variant_costs"];
-const APPEND_ONLY = ["catalogue_product_versions", "catalogue_reviews", "catalogue_publication_events", "catalogue_price_changes", "catalogue_price_decisions", "catalogue_inventory_changes", "catalogue_variant_costs"];
+const TABLES = ["office_suppliers", "catalogue_categories", "catalogue_brands", "catalogue_products", "catalogue_product_versions", "catalogue_reviews", "catalogue_publication_events", "catalogue_variants", "catalogue_price_changes", "catalogue_price_decisions", "catalogue_inventory_changes", "catalogue_variant_costs", "catalogue_media", "catalogue_media_derivatives"];
+// catalogue_media allows exactly one update (active -> removed, unreferenced only), tested separately in DBM1; everything else refused
+const APPEND_ONLY = ["catalogue_product_versions", "catalogue_reviews", "catalogue_publication_events", "catalogue_price_changes", "catalogue_price_decisions", "catalogue_inventory_changes", "catalogue_variant_costs", "catalogue_media", "catalogue_media_derivatives"];
+const MEDIA_ROLLBACK = path.join(ROOT, "db", "rollback", "20261104_catalogue_media.down.sql");
 const inList = (list) => list.map((t) => `'${t}'`).join(",");
 
 async function setup() {
@@ -87,8 +89,26 @@ async function setup() {
   const restUrl = `http://127.0.0.1:${restPort}`;
   for (let i = 0; i < 200; i += 1) { const x = await fetch(restUrl + "/", { headers: { authorization: `Bearer ${jwt("service_role")}` } }).catch(() => null); if (x && x.status === 200) break; await sleep(300); }
   const gwPort = await freePort();
+  // Supabase Storage stand-in (object upload / download / delete on a private bucket, service-role key required), so the media pipeline
+  // runs through Office's real "supabase" storage driver as in production. Not-found mimics the live API (400 wrapping a 404).
+  const storageDir = fs.mkdtempSync(path.join(os.tmpdir(), "catalogue-pg-storage-"));
+  const typeDir = fs.mkdtempSync(path.join(os.tmpdir(), "catalogue-pg-storage-types-"));
   const gw = http.createServer(async (req, res) => {
     const chunks = []; for await (const c of req) chunks.push(c);
+    const so = req.url.match(/^\/storage\/v1\/object\/([^/]+)\/([^/?]+)$/);
+    if (so) {
+      const [h, b, sig] = String(req.headers.authorization || "").replace(/^Bearer /, "").split(".");
+      const validService = sig && crypto.createHmac("sha256", JWT_SECRET).update(`${h}.${b}`).digest("base64url") === sig && JSON.parse(Buffer.from(b, "base64url").toString()).role === "service_role";
+      if (!validService) { res.writeHead(403, { "content-type": "application/json" }); res.end('{"statusCode":"403","error":"Unauthorized"}'); return; }
+      const name = path.basename(decodeURIComponent(so[2]));
+      const file = path.join(storageDir, name), typeFile = path.join(typeDir, name);
+      const missing = () => { res.writeHead(400, { "content-type": "application/json" }); res.end('{"statusCode":"404","error":"not_found","message":"Object not found"}'); };
+      if (req.method === "POST") { fs.writeFileSync(file, Buffer.concat(chunks)); fs.writeFileSync(typeFile, String(req.headers["content-type"] || "")); res.writeHead(200, { "content-type": "application/json" }); res.end(JSON.stringify({ Key: `${so[1]}/${so[2]}` })); return; }
+      if (!fs.existsSync(file)) return missing();
+      if (req.method === "GET") { res.writeHead(200, { "content-type": fs.readFileSync(typeFile, "utf8") || "application/octet-stream" }); res.end(fs.readFileSync(file)); return; }
+      if (req.method === "DELETE") { fs.unlinkSync(file); fs.rmSync(typeFile, { force: true }); res.writeHead(200, { "content-type": "application/json" }); res.end("[]"); return; }
+      res.writeHead(405); res.end(); return;
+    }
     const target = restUrl + req.url.replace(/^\/rest\/v1/, "");
     const headers = Object.fromEntries(Object.entries(req.headers).filter(([k]) => !["host", "connection", "content-length"].includes(k)));
     try {
@@ -98,7 +118,7 @@ async function setup() {
     } catch { res.writeHead(502); res.end(); }
   });
   await new Promise((r2) => gw.listen(gwPort, "127.0.0.1", r2)); cleanup.unshift(() => gw.close());
-  return { restUrl, gatewayUrl: `http://127.0.0.1:${gwPort}` };
+  return { restUrl, gatewayUrl: `http://127.0.0.1:${gwPort}`, storageDir };
 }
 
 async function rest(restUrl, role, method, p, body) {
@@ -128,8 +148,10 @@ async function startApp(gatewayUrl) {
   proc.stdout.on("data", (d) => logs.push(String(d))); proc.stderr.on("data", (d) => logs.push(String(d)));
   const url = `http://127.0.0.1:${port}`;
   for (let i = 0; i < 300; i += 1) { if (await fetch(url + "/healthz").catch(() => null)) break; await sleep(100); }
-  const app = { url, logs, stop: () => new Promise((r) => { if (proc.exitCode !== null) return r(); proc.once("exit", r); proc.kill("SIGTERM"); }) };
+  const app = { url, dir, logs, stop: () => new Promise((r) => { if (proc.exitCode !== null) return r(); proc.once("exit", r); proc.kill("SIGTERM"); }) };
   cleanup.unshift(() => app.stop());
+  // CATALOGUE_TEST_DEBUG=1 prints the application's error log lines at the end (never set in CI; the AT80 secret check still runs)
+  if (process.env.CATALOGUE_TEST_DEBUG) cleanup.unshift(() => console.error(logs.join("").split("\n").filter((l) => /"level":"(error|warn)"/.test(l)).slice(-15).join("\n")));
   return app;
 }
 
@@ -140,7 +162,7 @@ function concurrentSql(statements, user = "postgres") {
 }
 
 async function main() {
-  const { restUrl, gatewayUrl } = await setup();
+  const { restUrl, gatewayUrl, storageDir } = await setup();
 
   // ------------------------------------------------------------------------------------------------ migration
   const m1 = applyFile(MIGRATION);
@@ -162,13 +184,13 @@ async function main() {
   const fnRows = JSON.parse(one(`select coalesce(json_agg(json_build_object('fn', p.oid::regprocedure::text, 'secdef', p.prosecdef, 'config', p.proconfig,
       'anon', has_function_privilege('anon',p.oid,'EXECUTE'), 'authenticated', has_function_privilege('authenticated',p.oid,'EXECUTE'), 'service', has_function_privilege('service_role',p.oid,'EXECUTE'),
       'public', exists (select 1 from aclexplode(coalesce(p.proacl, acldefault('f',p.proowner))) a where a.grantee=0))), '[]') from pg_proc p where p.pronamespace='public'::regnamespace and p.proname like 'catalogue\\_%'`));
-  check("AT02b", "11 catalogue functions: all SECURITY INVOKER, search_path pinned to public, pg_temp, EXECUTE for service_role only (no PUBLIC/anon/authenticated)",
-    fnRows.length === 11 && fnRows.every((f) => !f.secdef && JSON.stringify(f.config) === JSON.stringify(["search_path=public, pg_temp"]) && !f.anon && !f.authenticated && !f.public && f.service), fnRows.filter((f) => f.secdef || f.anon || f.authenticated || f.public || !f.service || JSON.stringify(f.config) !== JSON.stringify(["search_path=public, pg_temp"])));
+  check("AT02b", "16 catalogue functions (11 foundation + 5 media): all SECURITY INVOKER, search_path pinned to public, pg_temp, EXECUTE for service_role only (no PUBLIC/anon/authenticated)",
+    fnRows.length === 16 && fnRows.every((f) => !f.secdef && JSON.stringify(f.config) === JSON.stringify(["search_path=public, pg_temp"]) && !f.anon && !f.authenticated && !f.public && f.service), fnRows.filter((f) => f.secdef || f.anon || f.authenticated || f.public || !f.service || JSON.stringify(f.config) !== JSON.stringify(["search_path=public, pg_temp"])));
   const rls = one(`select count(*) filter (where relrowsecurity) || '/' || count(*) from pg_class where relnamespace='public'::regnamespace and relname in (${tl})`);
   const policies = one(`select count(*) from pg_policy p join pg_class c on c.oid=p.polrelid where c.relname in (${tl})`);
-  check("AT02c", "RLS enabled on all 12 tables, no policy (deny by default); schema USAGE still closed to anon/authenticated", rls === "12/12" && policies === "0" && one("select has_schema_privilege('anon','public','USAGE') or has_schema_privilege('authenticated','public','USAGE')") === "f", { rls, policies });
+  check("AT02c", "RLS enabled on all 14 tables, no policy (deny by default); schema USAGE still closed to anon/authenticated", rls === "14/14" && policies === "0" && one("select has_schema_privilege('anon','public','USAGE') or has_schema_privilege('authenticated','public','USAGE')") === "f", { rls, policies });
   const svc = JSON.parse(one(`select json_object_agg(c.relname, json_build_object('s', has_table_privilege('service_role',c.oid,'SELECT'), 'i', has_table_privilege('service_role',c.oid,'INSERT'), 'u', has_table_privilege('service_role',c.oid,'UPDATE'), 'd', has_table_privilege('service_role',c.oid,'DELETE'), 't', has_table_privilege('service_role',c.oid,'TRUNCATE'))) from pg_class c where c.relnamespace='public'::regnamespace and c.relname in (${tl})`));
-  check("AT02d", "service_role keeps SELECT/INSERT/UPDATE/DELETE on every catalogue table (gate B6) and has TRUNCATE on none (production default privileges overridden)", Object.values(svc).length === 12 && Object.values(svc).every((x) => x.s && x.i && x.u && x.d && !x.t), svc);
+  check("AT02d", "service_role keeps SELECT/INSERT/UPDATE/DELETE on every catalogue table (gate B6) and has TRUNCATE on none (production default privileges overridden)", Object.values(svc).length === 14 && Object.values(svc).every((x) => x.s && x.i && x.u && x.d && !x.t), svc);
   const costRefs = one(`select count(*) from pg_proc p where p.pronamespace='public'::regnamespace and p.prosrc ilike '%catalogue_variant_costs%'`);
   check("AT02e", "no function references catalogue_variant_costs; no view in public", costRefs === "0" && one("select count(*) from pg_class where relnamespace='public'::regnamespace and relkind in ('v','m')") === "0", costRefs);
 
@@ -180,7 +202,7 @@ async function main() {
   const app = await startApp(gatewayUrl);
 
   // ------------------------------------------------------------------------------------------------ the shared acceptance scenarios, on Postgres
-  const { productId } = await runCatalogueScenarios({ base: app.url, users, fullKey: FULL_KEY, scopedKey: SITE_KEY, check, label: "PG-" });
+  const { productId } = await runCatalogueScenarios({ base: app.url, users, fullKey: FULL_KEY, scopedKey: SITE_KEY, check, label: "PG-", storageDir });
 
   // ------------------------------------------------------------------------------------------------ AT-03 append-only, for every role
   {
@@ -188,7 +210,7 @@ async function main() {
     for (const t of APPEND_ONLY) {
       for (const role of ["service_role", "postgres"]) {
         const prefix = role === "postgres" ? "" : "set role service_role; ";
-        const col = t === "catalogue_product_versions" ? "version" : "id";
+        const col = t === "catalogue_product_versions" ? "version" : t === "catalogue_media_derivatives" ? "kind" : "id";
         const upd = psql(`${prefix}update ${t} set ${col} = ${col};`);
         const del = psql(`${prefix}delete from ${t};`);
         results.push({ t, role, upd: /append_only/.test(upd.err), del: /append_only/.test(del.err) });
@@ -197,7 +219,7 @@ async function main() {
       const svcTrunc = psql(`set role service_role; truncate ${t};`);
       results.push({ t, role: "truncate", upd: /append_only/.test(trunc.err), del: /permission denied|append_only/.test(svcTrunc.err) });
     }
-    check("AT03a", "the 7 history tables refuse UPDATE and DELETE for service_role AND the owner (postgres), and TRUNCATE (owner: trigger, service_role: no privilege)", results.every((r) => r.upd && r.del), results.filter((r) => !r.upd || !r.del));
+    check("AT03a", "the 9 history tables (incl. media and renditions) refuse UPDATE and DELETE for service_role AND the owner (postgres), and TRUNCATE (owner: trigger, service_role: no privilege)", results.every((r) => r.upd && r.del), results.filter((r) => !r.upd || !r.del));
     const versionsBefore = one(`select count(*) from catalogue_product_versions where product_id = '${productId}'`);
     const viaRest = await rest(restUrl, "service_role", "PATCH", `/catalogue_product_versions?product_id=eq.${productId}&version=eq.1`, { content: { name: "tampered" } });
     const viaRestDel = await rest(restUrl, "service_role", "DELETE", `/catalogue_reviews?product_id=eq.${productId}`);
@@ -252,6 +274,110 @@ async function main() {
     check("AT32e", "10 concurrent inventory edits with the same row_version: exactly one applies; one change row", inv.filter((r) => r.code === 0).length === 1 && one(`select count(*) from catalogue_inventory_changes where variant_id='${vid}'`) === "1", inv.map((r) => r.code));
   }
 
+  // ------------------------------------------------------------------------------------------------ gallery media rules in the database itself (application bypassed)
+  {
+    const c = (sql) => psql(`set role service_role; ${sql}`);
+    const hex = (n) => crypto.createHash("sha256").update(`${RUN}-${n}`).digest("hex");
+    let fileSeq = 0;
+    const files = (n) => Array.from({ length: n }, () => `product_image_dbm_${RUN}_${(fileSeq += 1)}`);
+    const insertFiles = (ids) => psql(ids.map((f) => `insert into office_files (id, storage_key, filename, mime_type, size, purpose, resource_type) values ('${f}', '${f}.webp', '${f}.webp', 'image/webp', 10, 'product_image', 'catalogue_media');`).join("\n"));
+    const registerSql = (productId, sha, [orig, ...ds]) => `select catalogue_register_media('${productId}', '${orig}', '${sha}', 'jpeg', 800, 600, 1000, 'x.jpg', '${JSON.stringify(["thumb", "w480", "w960", "w1600"].map((kind, i) => ({ kind, office_file_id: ds[i], width: 320, height: 240, bytes: 10, sha256: hex(`${sha}-${kind}`) })))}'::jsonb, 'w@x')`;
+    const register = (productId, sha) => { const f = files(5); insertFiles(f); return JSON.parse(c(`${registerSql(productId, sha, f)};`).out.split("\n").pop()); };
+    const cat = one("select id from catalogue_categories where slug='sensors-monitoring'");
+    const mk = (slug, sku) => c(`select (catalogue_create_product('${slug}', '${cat}', null, '{"name":"M","variants":[{"sku":"${sku}","name":"x"}]}'::jsonb, 'author@x'))->>'id';`).out.split("\n").pop();
+    const pa = mk(`dbm-a-${RUN}`, `DBMA-${RUN.toUpperCase()}`), pb = mk(`dbm-b-${RUN}`, `DBMB-${RUN.toUpperCase()}`);
+    const save = (productId, media, sku) => {
+      const row = one(`select row_version || '|' || slug from catalogue_products where id='${productId}'`).split("|");
+      return { rv: row[0], sql: `select catalogue_save_version('${productId}', ${row[0]}, '${row[1]}', '${cat}', null, '${JSON.stringify({ name: "M", variants: [{ sku, name: "x" }], media })}'::jsonb, 'initial', 'author@x')` };
+    };
+    const skuA = `DBMA-${RUN.toUpperCase()}`;
+    const x = register(pa, hex("x")), y = register(pa, hex("y")), z = register(pa, hex("z")), foreign = register(pb, hex("f"));
+    const dup = register(pa, hex("x"));
+    check("DBM0", "catalogue_register_media stores an image with 4 renditions; the same bytes again return the existing row (deduplicated)", x.id && !x.deduplicated && dup.deduplicated === true && dup.id === x.id && one(`select count(*) from catalogue_media_derivatives where media_id='${x.id}'`) === "4");
+
+    // gallery trigger on version insert
+    const ref = (m, cover = false, extra = {}) => ({ media_id: m.id, cover, alt: "", caption: "", variant_skus: [], ...extra });
+    const tooMany = c(`${save(pa, Array.from({ length: 13 }, (_, i) => ({ media_id: crypto.randomUUID(), cover: i === 0 })), skuA).sql};`);
+    const twoCovers = c(`${save(pa, [ref(x, true), ref(y, true)], skuA).sql};`);
+    const noCover = c(`${save(pa, [ref(x), ref(y)], skuA).sql};`);
+    const dupRef = c(`${save(pa, [ref(x, true), ref(x)], skuA).sql};`);
+    const foreignRef = c(`${save(pa, [ref(foreign, true)], skuA).sql};`);
+    const badSku = c(`${save(pa, [ref(x, true, { variant_skus: ["NOPE-1"] })], skuA).sql};`);
+    const good = c(`${save(pa, [ref(x, true), ref(y)], skuA).sql};`);
+    check("DBM1", "version insert trigger (any caller): > 12 images, two covers, no cover, a duplicate, another product's image and an unknown variant are refused; a valid gallery is stored",
+      /gallery_too_large/.test(tooMany.err) && /gallery_cover_required/.test(twoCovers.err) && /gallery_cover_required/.test(noCover.err) && /gallery_duplicate_image/.test(dupRef.err)
+        && /media_not_available/.test(foreignRef.err) && /gallery_unknown_variant/.test(badSku.err) && good.status === 0,
+      { tooMany: tooMany.err.slice(0, 90), twoCovers: twoCovers.err.slice(0, 90), noCover: noCover.err.slice(0, 90), dupRef: dupRef.err.slice(0, 90), foreignRef: foreignRef.err.slice(0, 90), badSku: badSku.err.slice(0, 90), good: good.err.slice(0, 200) });
+
+    // tampering: referenced removal, any other update, delete, truncate, office_files delete; also through PostgREST
+    const refRemove = c(`select catalogue_remove_media('${x.id}', 'rm@x');`);
+    const directRemove = c(`update catalogue_media set status='removed', removed_by='rm@x', removed_at=now() where id='${x.id}';`);
+    const shaEdit = c(`update catalogue_media set sha256='${hex("evil")}' where id='${z.id}';`);
+    const del = c(`delete from catalogue_media where id='${z.id}';`);
+    const ownerDel = psql(`delete from catalogue_media where id='${z.id}';`);
+    const fileDel = psql(`delete from office_files where id='${x.office_file_id}';`);
+    const restDel = await rest(restUrl, "service_role", "DELETE", `/catalogue_media?id=eq.${z.id}`);
+    const restFileDel = await rest(restUrl, "service_role", "DELETE", `/office_files?id=eq.${x.office_file_id}`);
+    const restDeriv = await rest(restUrl, "service_role", "PATCH", `/catalogue_media_derivatives?media_id=eq.${x.id}`, { bytes: 1 });
+    check("DBM2", "referenced media cannot be removed (function or direct UPDATE: media_referenced); no other change, no DELETE (service_role or owner), and its office_files rows cannot be deleted (FK RESTRICT), also via PostgREST",
+      /media_referenced/.test(refRemove.err) && /media_referenced/.test(directRemove.err) && /append_only/.test(shaEdit.err) && /append_only/.test(del.err) && /append_only/.test(ownerDel.err) && /foreign key/.test(fileDel.err)
+        && restDel.status >= 400 && restFileDel.status >= 400 && restDeriv.status >= 400 && one(`select count(*) from catalogue_media where id in ('${x.id}','${z.id}') and status='active'`) === "2",
+      { refRemove: refRemove.err.slice(0, 90), directRemove: directRemove.err.slice(0, 90), shaEdit: shaEdit.err.slice(0, 90), del: del.err.slice(0, 90), fileDel: fileDel.err.slice(0, 90), restDel: restDel.status, restFileDel: restFileDel.status, restDeriv: restDeriv.status });
+    const freeRemove = c(`select catalogue_remove_media('${z.id}', 'rm@x');`);
+    const again = c(`select catalogue_remove_media('${z.id}', 'rm@x');`);
+    const reuse = c(`${save(pa, [ref(x, true), ref(z)], skuA).sql};`);
+    check("DBM3", "an unreferenced image can be removed once (then media_already_removed) and can never be referenced again", freeRemove.status === 0 && /media_already_removed/.test(again.err) && /media_not_available/.test(reuse.err), { freeRemove: freeRemove.err.slice(0, 90), again: again.err.slice(0, 90), reuse: reuse.err.slice(0, 90) });
+
+    // races between removal and a version that references the same image, both orders
+    const w1 = register(pa, hex("w1"));
+    const s1 = save(pa, [ref(x, true), ref(w1)], skuA);
+    const raceA = await concurrentSql([
+      `set role service_role; begin; ${s1.sql}; select pg_sleep(1.5); commit;`,
+      `select pg_sleep(0.5); set role service_role; select catalogue_remove_media('${w1.id}', 'rm@x');`,
+    ]);
+    const w2 = register(pa, hex("w2"));
+    const s2 = save(pa, [ref(x, true), ref(w2)], skuA);
+    const raceB = await concurrentSql([
+      `set role service_role; begin; select catalogue_remove_media('${w2.id}', 'rm@x'); select pg_sleep(1.5); commit;`,
+      `select pg_sleep(0.5); set role service_role; ${s2.sql};`,
+    ]);
+    const orphanRefs = one(`select count(*) from catalogue_product_versions v, jsonb_array_elements(coalesce(v.content->'media','[]'::jsonb)) e join catalogue_media m on m.id = (e->>'media_id')::uuid where m.status = 'removed'`);
+    check("DBM4", "race, version first: the removal waits for the version and is then refused (media_referenced); race, removal first: the version waits and is then refused (media_not_available); no version ever references a removed image",
+      raceA[0].code === 0 && /media_referenced/.test(raceA[1].err) && raceB[0].code === 0 && /media_not_available/.test(raceB[1].err) && orphanRefs === "0",
+      { raceA: raceA.map((r) => [r.code, r.err.slice(0, 90)]), raceB: raceB.map((r) => [r.code, r.err.slice(0, 90)]), orphanRefs });
+
+    // concurrent registration of the same new bytes
+    const sha = hex("same");
+    const fileSets = Array.from({ length: 8 }, () => files(5));
+    fileSets.forEach(insertFiles);
+    const regs = await concurrentSql(fileSets.map((f) => `set role service_role; select (${registerSql(pa, sha, f)})->>'deduplicated';`));
+    check("DBM5", "8 concurrent registrations of the same bytes: one image row; exactly one reports deduplicated=false, the rest true",
+      regs.every((r) => r.code === 0) && regs.filter((r) => r.out.endsWith("false")).length === 1 && one(`select count(*) from catalogue_media where product_id='${pa}' and sha256='${sha}'`) === "1", regs.map((r) => [r.code, r.out.slice(-6), r.err.slice(0, 80)]));
+    const archived = mk(`dbm-arch-${RUN}`, `DBMC-${RUN.toUpperCase()}`);
+    c(`select catalogue_transition('${archived}', 1, 'archive', 'admin@x', '', '');`);
+    const archFiles = files(5); insertFiles(archFiles);
+    const archReg = c(`${registerSql(archived, hex("arch"), archFiles)};`);
+    check("DBM6", "an archived product accepts no media (product_archived)", /product_archived/.test(archReg.err), archReg.err.slice(0, 120));
+
+    // media rollback: functions and the version check go, tables/rows/guards stay; Office reports media unavailable; re-apply restores
+    const mediaRows = one("select count(*) from catalogue_media");
+    const rb = applyFile(MEDIA_ROLLBACK);
+    await reloadSchema(restUrl);
+    const login = await fetch(`${app.url}/api/lead-agents/admin/session/login`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ email: users.writerA.email, password: users.writerA.password }) });
+    const cookie = ((login.headers.getSetCookie ? login.headers.getSetCookie() : []).find((h) => /^lead_agents_admin=/.test(h)) || "").split(";")[0];
+    await sleep(61_000); // the application re-probes media availability at most once a minute
+    const up = await fetch(`${app.url}/api/lead-agents/admin/catalogue/products/${pa}/media`, { method: "POST", headers: { cookie, origin: app.url, "content-type": "image/jpeg" }, body: Buffer.from([0xff, 0xd8, 0xff]) });
+    const read = await fetch(`${app.url}/api/lead-agents/admin/catalogue/products/${pa}`, { headers: { cookie } });
+    const readJson = await read.json();
+    const stillGuarded = c(`delete from catalogue_media where id='${x.id}';`);
+    check("M40", "media rollback: applies; uploads answer 503 media_unavailable; products still read (library reported unavailable); media rows kept and still undeletable",
+      rb.status === 0 && up.status === 503 && read.status === 200 && readJson.media_library.available === false && one("select count(*) from catalogue_media") === mediaRows && /append_only/.test(stillGuarded.err),
+      { rb: rb.err.slice(0, 200), up: up.status, read: read.status, lib: readJson.media_library, rows: one("select count(*) from catalogue_media") });
+    const reMedia = applyFile(path.join(ROOT, "db", "20261104_catalogue_media.sql"));
+    await reloadSchema(restUrl);
+    check("M41", "re-applying 20261104 restores the media functions and the version check with every row intact", reMedia.status === 0 && one("select count(*) from pg_proc where pronamespace='public'::regnamespace and proname like 'catalogue\\_%'") === "16" && one("select count(*) from pg_trigger where tgname='catalogue_product_versions_media_check'") === "1" && one("select count(*) from catalogue_media") === mediaRows, reMedia.err.slice(0, 200));
+  }
+
   // ------------------------------------------------------------------------------------------------ rollback and re-apply
   {
     const before = one("select count(*) from catalogue_product_versions");
@@ -263,11 +389,11 @@ async function main() {
     const write = await fetch(`${app.url}/api/lead-agents/admin/catalogue/products`, { method: "POST", headers: { cookie, "content-type": "application/json", origin: app.url }, body: JSON.stringify({ slug: `after-rollback-${RUN}`, content: { category_id: one("select id from catalogue_categories limit 1"), name: "x", variants: [{ sku: `RB-${RUN.toUpperCase()}`, name: "x" }] } }) });
     const health = await fetch(`${app.url}/healthz`);
     check("M30", "rollback (functions only): applies; catalogue writes answer 503 catalogue_unavailable; the rest of Office is unaffected (healthz 200)", rb.status === 0 && write.status === 503 && health.status === 200, { rb: rb.err.slice(0, 200), write: write.status, health: health.status });
-    check("M31", "…and keeps every table and row (non-destructive)", one("select count(*) from catalogue_product_versions") === before && one(`select count(*) from pg_class where relnamespace='public'::regnamespace and relname in (${tl})`) === "12", { before, after: one("select count(*) from catalogue_product_versions") });
+    check("M31", "…and keeps every table and row (non-destructive)", one("select count(*) from catalogue_product_versions") === before && one(`select count(*) from pg_class where relnamespace='public'::regnamespace and relname in (${tl})`) === "14", { before, after: one("select count(*) from catalogue_product_versions") });
     const re = applyFile(MIGRATION);
     CATALOGUE_FOLLOWUPS.forEach((f) => applyFile(path.join(ROOT, "db", f)));
     await reloadSchema(restUrl);
-    check("M32", "re-applying the migration restores the functions with the data intact (seed not duplicated)", re.status === 0 && one("select count(*) from pg_proc where pronamespace='public'::regnamespace and proname like 'catalogue\\_%'") === "11" && one("select count(*) from catalogue_categories where created_by='migration'") === "6", re.err.slice(0, 200));
+    check("M32", "re-applying the migration restores the functions with the data intact (seed not duplicated)", re.status === 0 && one("select count(*) from pg_proc where pronamespace='public'::regnamespace and proname like 'catalogue\\_%'") === "16" && one("select count(*) from catalogue_categories where created_by='migration'") === "6", re.err.slice(0, 200));
   }
 
   const logs = app.logs.join("");

@@ -58,7 +58,13 @@ class SupabaseCatalogueStore {
     const response = error && error.response;
     if (!response) throw error;
     const data = response.data || {};
-    if (data.code === "PGRST202" || data.code === "42883" || data.code === "42P01" || data.code === "PGRST205") {
+    if (data.code === "PGRST202" || data.code === "42883" || data.code === "42P01" || data.code === "PGRST205" || data.code === "PGRST200") {
+      // a missing media object (20261104 not installed or rolled back) disables media only, never the rest of the catalogue
+      if (/catalogue_(media|register_media|remove_media)/.test(JSON.stringify(data))) {
+        this.mediaCapability = false;
+        this.mediaCheckedAt = Date.now();
+        throw httpError(503, "media_unavailable");
+      }
       this.capability = false;
       throw httpError(503, "catalogue_unavailable");
     }
@@ -201,6 +207,41 @@ class SupabaseCatalogueStore {
   listCosts(variantId) { return this.get(`/catalogue_variant_costs?variant_id=eq.${encodeURIComponent(variantId)}&order=valid_from.desc,created_at.desc`); }
   recordCost(row) { return this.insert("catalogue_variant_costs", row); }
 
+  // ---- gallery media (20261104; reported unavailable until that migration is installed)
+  // re-probed at most once a minute either way, so installing or rolling back 20261104 takes effect without a restart
+  async mediaAvailable() {
+    if (this.mediaCapability !== undefined && Date.now() - (this.mediaCheckedAt || 0) < 60_000) return this.mediaCapability;
+    this.mediaCheckedAt = Date.now();
+    try {
+      const response = await this.client.post("/rpc/catalogue_media_schema_version", {});
+      this.mediaCapability = Number(response.data) >= 1;
+    } catch {
+      this.mediaCapability = false;
+    }
+    return this.mediaCapability;
+  }
+  listMedia(productId) {
+    return this.get(`/catalogue_media?product_id=eq.${encodeURIComponent(productId)}&order=created_at.asc&select=*,derivatives:catalogue_media_derivatives(kind,office_file_id,width,height,bytes)`);
+  }
+  async getMedia(id) {
+    return (await this.get(`/catalogue_media?id=eq.${encodeURIComponent(id)}&select=*,derivatives:catalogue_media_derivatives(kind,office_file_id,width,height,bytes)`))[0] || null;
+  }
+  async getMediaFile(mediaId, kind) {
+    const row = (await this.get(`/catalogue_media_derivatives?media_id=eq.${encodeURIComponent(mediaId)}&kind=eq.${encodeURIComponent(kind)}&select=kind,width,height,bytes,file:office_files(filename),media:catalogue_media(status,product_id)`))[0];
+    return row && row.file && row.media ? { kind: row.kind, filename: row.file.filename, status: row.media.status, product_id: row.media.product_id } : null;
+  }
+  // media ids referenced by ANY version of the product (history included)
+  async mediaReferences(productId) {
+    const rows = await this.get(`/catalogue_product_versions?product_id=eq.${encodeURIComponent(productId)}&select=version,media:content->media`);
+    const refs = new Map();
+    rows.forEach((row) => (Array.isArray(row.media) ? row.media : []).forEach((item) => { if (!refs.has(item.media_id)) refs.set(item.media_id, []); refs.get(item.media_id).push(row.version); }));
+    return refs;
+  }
+  registerMedia({ productId, officeFileId, sha256, format, width, height, bytes, originalName, derivatives, actor }) {
+    return this.rpc("catalogue_register_media", { p_product_id: productId, p_office_file_id: officeFileId, p_sha256: sha256, p_format: format, p_width: width, p_height: height, p_bytes: bytes, p_original_name: originalName, p_derivatives: derivatives, p_actor: actor });
+  }
+  removeMedia({ mediaId, actor }) { return this.rpc("catalogue_remove_media", { p_media_id: mediaId, p_actor: actor }); }
+
   listSuppliers() { return this.get("/office_suppliers?order=name.asc"); }
   async getSupplier(id) { return (await this.get(`/office_suppliers?id=eq.${encodeURIComponent(id)}`))[0] || null; }
   createSupplier(input, actor) { return this.insert("office_suppliers", normalizeCorporateRecord("suppliers", input, { actorEmail: actor })); }
@@ -237,6 +278,24 @@ class FileCatalogueStore {
 
   persist() { return this.store.persist(); }
   async available() { return true; }
+  async mediaAvailable() { return true; }
+  get media() { if (!this.s.media) { this.s.media = []; this.s.media_derivatives = []; } return this.s.media; }
+  get derivatives() { this.media; return this.s.media_derivatives; }
+
+  // mirror of catalogue_version_media_check (20261104): runs synchronously right before a version is appended
+  checkGallery(productId, content) {
+    const media = (content && content.media) || [];
+    if (!media.length) return;
+    if (media.length > 12) throw httpError(400, "gallery_too_large");
+    if (new Set(media.map((m) => m.media_id)).size !== media.length) throw httpError(400, "gallery_duplicate_image");
+    if (media.filter((m) => m.cover === true).length !== 1) throw httpError(400, "gallery_cover_required");
+    const skus = new Set((content.variants || []).map((v) => v.sku));
+    if (media.some((m) => (m.variant_skus || []).some((sku) => !skus.has(sku)))) throw httpError(400, "gallery_unknown_variant");
+    if (!media.every((m) => this.media.some((x) => x.id === m.media_id && x.product_id === productId && x.status === "active"))) throw httpError(409, "media_not_available");
+  }
+  referencedMedia(productId, mediaId) {
+    return this.s.versions.some((v) => v.product_id === productId && (v.content.media || []).some((m) => m.media_id === mediaId));
+  }
 
   stateChanged(product) {
     if (!product) throw httpError(404, "product_not_found");
@@ -307,6 +366,7 @@ class FileCatalogueStore {
     if (this.s.products.some((p) => p.slug === slug)) throw httpError(409, "slug_taken");
     for (const v of content.variants || []) { const owner = this.s.variants.find((x) => x.sku === v.sku); if (owner) throw httpError(409, "sku_taken", { current: { sku: v.sku } }); }
     const at = nowIso();
+    if ((content.media || []).length) throw httpError(409, "media_not_available");
     const product = { id: crypto.randomUUID(), slug, category_id: categoryId, brand_id: brandId || null, workflow_status: "draft", publication_status: "never_published", row_version: 1, current_version: 1, review_version: null, approved_version: null, published_version: null, published_at: null, first_published_at: null, archived_at: null, last_publish_error: null, created_by: actor, updated_by: actor, created_at: at, updated_at: at };
     this.s.products.push(product);
     this.s.versions.push({ product_id: product.id, version: 1, content: clone(content), materiality: "initial", author: actor, created_at: at });
@@ -325,6 +385,7 @@ class FileCatalogueStore {
     if (p.slug !== slug && p.first_published_at) throw httpError(409, "slug_locked");
     if (p.slug !== slug && this.s.products.some((x) => x.slug === slug && x.id !== id)) throw httpError(409, "slug_taken");
     for (const v of content.variants || []) { const owner = this.s.variants.find((x) => x.sku === v.sku); if (owner && owner.product_id !== id) throw httpError(409, "sku_taken", { current: { sku: v.sku } }); }
+    this.checkGallery(id, content);
     const at = nowIso();
     Object.assign(p, { row_version: p.row_version + 1, current_version: p.current_version + 1, workflow_status: "draft", review_version: null, approved_version: null, slug, category_id: categoryId, brand_id: brandId || null, updated_by: actor, updated_at: at });
     this.s.versions.push({ product_id: id, version: p.current_version, content: clone(content), materiality, author: actor, created_at: at });
@@ -451,6 +512,50 @@ class FileCatalogueStore {
     await this.persist();
     return clone(cost);
   }
+
+  // ---- gallery media (same rules as 20261104)
+  withDerivatives(m) { return m ? { ...m, derivatives: this.derivatives.filter((d) => d.media_id === m.id).map(({ kind, office_file_id, width, height, bytes }) => ({ kind, office_file_id, width, height, bytes })) } : null; }
+  async listMedia(productId) { return clone(this.media.filter((m) => m.product_id === productId).sort((a, b) => String(a.created_at).localeCompare(String(b.created_at))).map((m) => this.withDerivatives(m))); }
+  async getMedia(id) { return clone(this.withDerivatives(this.media.find((m) => m.id === id))); }
+  async getMediaFile(mediaId, kind) {
+    const d = this.derivatives.find((x) => x.media_id === mediaId && x.kind === kind);
+    const m = d && this.media.find((x) => x.id === mediaId);
+    const file = d && (this.store.state.office_files || []).find((f) => f.id === d.office_file_id);
+    return d && m && file ? { kind, filename: file.filename, status: m.status, product_id: m.product_id } : null;
+  }
+  async mediaReferences(productId) {
+    const refs = new Map();
+    this.s.versions.filter((v) => v.product_id === productId).forEach((v) => (v.content.media || []).forEach((item) => { if (!refs.has(item.media_id)) refs.set(item.media_id, []); refs.get(item.media_id).push(v.version); }));
+    return refs;
+  }
+  async registerMedia({ productId, officeFileId, sha256, format, width, height, bytes, originalName, derivatives, actor }) {
+    const p = this.s.products.find((x) => x.id === productId);
+    if (!p) throw httpError(404, "product_not_found");
+    if (p.publication_status === "archived") throw httpError(409, "product_archived");
+    const existing = this.media.find((m) => m.product_id === productId && m.sha256 === sha256 && m.status === "active");
+    if (existing) return { ...clone(existing), deduplicated: true };
+    if (this.media.filter((m) => m.product_id === productId && m.status === "active").length >= 60) throw httpError(409, "media_limit");
+    if (!Array.isArray(derivatives) || derivatives.length !== 4) throw httpError(400, "invalid_derivatives");
+    const files = this.store.state.office_files || [];
+    if (![officeFileId, ...derivatives.map((d) => d.office_file_id)].every((fid) => files.some((f) => f.id === fid))) throw httpError(409, "conflict");
+    const at = nowIso();
+    const m = { id: crypto.randomUUID(), product_id: productId, office_file_id: officeFileId, sha256, format, width, height, bytes, original_name: String(originalName || "").slice(0, 200), status: "active", uploaded_by: actor, created_at: at, removed_by: null, removed_at: null };
+    this.media.push(m);
+    derivatives.forEach((d) => this.derivatives.push({ media_id: m.id, kind: d.kind, office_file_id: d.office_file_id, format: "webp", width: d.width, height: d.height, bytes: d.bytes, sha256: d.sha256, created_at: at }));
+    await this.persist();
+    return { ...clone(m), deduplicated: false };
+  }
+  async removeMedia({ mediaId, actor }) {
+    const m = this.media.find((x) => x.id === mediaId);
+    if (!m) throw httpError(404, "media_not_found");
+    if (m.status !== "active") throw httpError(409, "media_already_removed");
+    if (this.referencedMedia(m.product_id, m.id)) throw httpError(409, "media_referenced");
+    Object.assign(m, { status: "removed", removed_by: actor, removed_at: nowIso() });
+    await this.persist();
+    return clone(m);
+  }
+  // mirror of office_files ... ON DELETE RESTRICT from the media tables
+  officeFileInUse(fileId) { return this.media.some((m) => m.office_file_id === fileId) || this.derivatives.some((d) => d.office_file_id === fileId); }
 
   // ---- suppliers (CORPORATE_COLLECTIONS.suppliers -> state.office_suppliers)
   get suppliers() {

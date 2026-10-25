@@ -5,12 +5,13 @@
 // and every state change conditional on the caller's expected row_version (409 state_changed with the current state otherwise).
 // No public route lives here: the public projection, previews and checkout are later stages.
 
-const { json, readJsonBody } = require("./http");
+const { json, readJsonBody, readRawBodyBuffer } = require("./http");
 const { appendAuditRecord } = require("./audit");
 const { canonicalRole, hasPermission } = require("./permissions");
 const { notifyRecipients } = require("./office-operating-system");
 const { catalogueStoreFor } = require("./catalogue-store");
 const C = require("./catalogue");
+const M = require("./catalogue-media");
 
 const P = C.CATALOGUE_PERMISSIONS;
 const PREFIX = "/api/lead-agents/admin/catalogue";
@@ -33,18 +34,39 @@ async function reviewerEmails(store, excluding) {
     .map((user) => user.email);
 }
 
+const MEDIA_URL = (mediaId, kind) => `${PREFIX}/media/${mediaId}/${kind}`;
+
+// The product's image library: every upload with its renditions' URLs (authenticated Office URLs; nothing is public) and the versions
+// that reference it (referenced images cannot be removed).
+async function mediaLibrary(cat, productId) {
+  if (!(await cat.mediaAvailable())) return { available: false, items: [] };
+  const [rows, refs] = await Promise.all([cat.listMedia(productId), cat.mediaReferences(productId)]);
+  return {
+    available: true,
+    items: rows.map((m) => ({
+      id: m.id, status: m.status, format: m.format, width: m.width, height: m.height, bytes: m.bytes, original_name: m.original_name,
+      uploaded_by: m.uploaded_by, created_at: m.created_at, removed_at: m.removed_at || null,
+      referenced_by_versions: refs.get(m.id) || [],
+      urls: m.status === "active" ? Object.fromEntries((m.derivatives || []).map((d) => [d.kind, MEDIA_URL(m.id, d.kind)])) : {},
+    })),
+  };
+}
+
 async function productDetail(cat, product, authContext) {
-  const [version, versions, reviews, events, variants] = await Promise.all([
+  const [version, versions, reviews, events, variants, media] = await Promise.all([
     cat.getVersion(product.id, product.current_version),
     cat.listVersions(product.id),
     cat.listReviews(product.id),
     cat.listPublicationEvents(product.id),
     cat.listVariants(product.id),
+    mediaLibrary(cat, product.id),
   ]);
   return {
     product,
     status: C.displayStatus(product),
     content: version ? version.content : null,
+    media_library: media,
+    gallery_readiness: C.galleryReadiness(version ? version.content : {}),
     current_materiality: version ? version.materiality : null,
     versions,
     reviews,
@@ -61,7 +83,20 @@ async function referencesExist(cat, content) {
 }
 
 // Handles a catalogue request; returns false when the path is not a catalogue path.
-async function handleCatalogueRequest({ req, res, ctx, pathname, authContext, store, eventBus, log = () => {} }) {
+// Deletes stored objects that are no longer (or never were) registered as catalogue media; best effort, never throws.
+async function discardObjects(storageService, store, files) {
+  for (const file of files) {
+    try { await storageService.deleteObject(file.filename); } catch { /* left for manual cleanup; the audit names the media id */ }
+    if (file.id && typeof store.deleteOfficeFile === "function") await Promise.resolve(store.deleteOfficeFile(file.id)).catch(() => null);
+  }
+}
+
+async function storeUpload(storageService, store, input) {
+  const raw = await storageService.putBuffer(input);
+  return typeof store.createOfficeFile === "function" ? (await store.createOfficeFile(raw)) || raw : raw;
+}
+
+async function handleCatalogueRequest({ req, res, ctx, pathname, authContext, store, eventBus, storageService, log = () => {} }) {
   if (pathname !== PREFIX && !pathname.startsWith(`${PREFIX}/`)) return false;
   const headers = { "x-request-id": ctx.requestId };
   const send = (status, payload) => json(res, status, payload, headers);
@@ -75,9 +110,117 @@ async function handleCatalogueRequest({ req, res, ctx, pathname, authContext, st
     const cat = catalogueStoreFor(store);
     if (!(await cat.available())) return send(503, { error: "catalogue_unavailable", message: "The catalogue database objects are not installed." }), true;
     const actor = actorOf(authContext);
+    let m;
+
+    // ------------------------------------------------------------------------------------------------ gallery media
+    // upload: the raw image bytes as the request body (no JSON, no data URL); everything about the file is learned from its content
+    if ((m = sub.match(/^\/products\/([^/]+)\/media$/)) && method === "POST") {
+      need(P.write);
+      if (!storageService) throw C.httpError(503, "media_unavailable");
+      if (!(await cat.mediaAvailable())) throw C.httpError(503, "media_unavailable");
+      const product = C.isUuid(m[1]) ? await cat.getProduct(m[1]) : null;
+      if (!product) return send(404, { error: "product_not_found" }), true;
+      if (product.publication_status === "archived") throw C.httpError(409, "product_archived");
+      const declared = Number(req.headers["content-length"] || 0);
+      const url = new URL(req.url, "http://localhost");
+      const originalName = M.safeOriginalName(url.searchParams.get("name"));
+      let processed, bytes;
+      try {
+        if (declared > M.MEDIA_LIMITS.maxBytes) throw C.httpError(413, "image_too_large");
+        bytes = await readRawBodyBuffer(req, M.MEDIA_LIMITS.maxBytes).catch((error) => { throw error && error.statusCode === 413 ? C.httpError(413, "image_too_large") : error; });
+        // a retry of bytes this product already has: answer from the library without decoding or storing anything
+        const digest = M.sha256(bytes);
+        const known = (await cat.listMedia(product.id)).find((item) => item.status === "active" && item.sha256 === digest);
+        if (known) {
+          await audit("catalogue_media_uploaded", "catalogue_product", product.id, { media_id: known.id, sha256: digest, format: known.format, width: known.width, height: known.height, bytes: known.bytes, deduplicated: true });
+          const library = await mediaLibrary(cat, product.id);
+          return send(200, { media: library.items.find((item) => item.id === known.id), deduplicated: true }), true;
+        }
+        processed = await M.processProductImage(bytes);
+      } catch (error) {
+        const status = Number(error && error.statusCode) || 500;
+        if (status < 500 || error.code === "media_busy") {
+          await audit("catalogue_media_rejected", "catalogue_product", product.id, { reason: error.code || "rejected", declared_bytes: declared || null });
+        }
+        if (error && error.code === "media_busy") res.setHeader("retry-after", "5");
+        throw error;
+      }
+      const stored = [];
+      let media;
+      try {
+        const original = await storeUpload(storageService, store, { buffer: bytes, purpose: "product_image", mime_type: processed.mime_type, extension: processed.extension, resource_type: "catalogue_media", resource_id: product.id, metadata: { product_id: product.id, role: "original", sha256: processed.sha256 } });
+        stored.push(original);
+        const derivatives = [];
+        for (const d of processed.derivatives) {
+          const file = await storeUpload(storageService, store, { buffer: d.buffer, purpose: "product_image", mime_type: "image/webp", extension: ".webp", resource_type: "catalogue_media", resource_id: product.id, metadata: { product_id: product.id, role: d.kind, sha256: d.sha256 } });
+          stored.push(file);
+          derivatives.push({ kind: d.kind, office_file_id: file.id, width: d.width, height: d.height, bytes: d.bytes, sha256: d.sha256 });
+        }
+        media = await cat.registerMedia({ productId: product.id, officeFileId: original.id, sha256: processed.sha256, format: processed.format, width: processed.width, height: processed.height, bytes: processed.bytes, originalName, derivatives, actor });
+      } catch (error) {
+        await discardObjects(storageService, store, stored);
+        throw error;
+      }
+      if (media.deduplicated) await discardObjects(storageService, store, stored);
+      await audit("catalogue_media_uploaded", "catalogue_product", product.id, { media_id: media.id, sha256: media.sha256, format: media.format, width: media.width, height: media.height, bytes: media.bytes, deduplicated: Boolean(media.deduplicated) });
+      const library = await mediaLibrary(cat, product.id);
+      return send(media.deduplicated ? 200 : 201, { media: library.items.find((item) => item.id === media.id), deduplicated: Boolean(media.deduplicated) }), true;
+    }
+
     const body = method === "POST" || method === "PATCH" || method === "PUT" ? await readJsonBody(req, 256 * 1024) : {};
     if (body && (typeof body !== "object" || Array.isArray(body))) throw C.badRequest("body must be an object");
-    let m;
+
+    if ((m = sub.match(/^\/products\/([^/]+)\/media$/))) {
+      if (method !== "GET") return send(405, { error: "method_not_allowed" }), true;
+      const product = C.isUuid(m[1]) ? await cat.getProduct(m[1]) : null;
+      if (!product) return send(404, { error: "product_not_found" }), true;
+      return send(200, { media_library: await mediaLibrary(cat, product.id) }), true;
+    }
+    if ((m = sub.match(/^\/media\/([^/]+)\/remove$/))) {
+      if (method !== "POST") return send(405, { error: "method_not_allowed" }), true;
+      need(P.write);
+      if (!(await cat.mediaAvailable())) throw C.httpError(503, "media_unavailable");
+      const media = C.isUuid(m[1]) ? await cat.getMedia(m[1]) : null;
+      if (!media) return send(404, { error: "media_not_found" }), true;
+      try {
+        await cat.removeMedia({ mediaId: media.id, actor });
+      } catch (error) {
+        if (error && error.code === "media_referenced") await audit("catalogue_media_removal_refused", "catalogue_product", media.product_id, { media_id: media.id, reason: "media_referenced" });
+        throw error;
+      }
+      // never referenced by any version, so its bytes can go; the metadata rows stay (the database keeps them for the record)
+      if (storageService) {
+        const files = (typeof store.listOfficeFilesByResource === "function" ? await store.listOfficeFilesByResource("catalogue_media", media.product_id).catch(() => []) : [])
+          .filter((f) => f.id === media.office_file_id || (media.derivatives || []).some((d) => d.office_file_id === f.id));
+        for (const file of files) await storageService.deleteObject(file.filename).catch(() => null);
+      }
+      await audit("catalogue_media_removed", "catalogue_product", media.product_id, { media_id: media.id, sha256: media.sha256 });
+      return send(200, { media_library: await mediaLibrary(cat, media.product_id) }), true;
+    }
+    // serving: processed WebP renditions only, to staff with catalogue.read; the original upload has no route at all
+    if ((m = sub.match(/^\/media\/([^/]+)\/([a-z0-9]+)$/))) {
+      if (method !== "GET") return send(405, { error: "method_not_allowed" }), true;
+      if (!M.DERIVATIVE_KINDS.includes(m[2]) || !C.isUuid(m[1])) return send(404, { error: "not_found" }), true;
+      if (!storageService || !(await cat.mediaAvailable())) return send(404, { error: "not_found" }), true;
+      const file = await cat.getMediaFile(m[1], m[2]);
+      if (!file || file.status !== "active") return send(404, { error: "not_found" }), true;
+      const object = await storageService.getObject(file.filename);
+      if (!object) return send(404, { error: "not_found" }), true;
+      res.writeHead(200, {
+        "content-type": "image/webp",
+        "content-length": String(object.buffer.length),
+        // renditions never change (a new image is a new id); private: browser only, no shared cache
+        "cache-control": "private, max-age=86400, immutable",
+        "x-content-type-options": "nosniff",
+        "content-security-policy": "default-src 'none'; sandbox",
+        "cross-origin-resource-policy": "same-origin",
+        "content-disposition": "inline",
+        "referrer-policy": "no-referrer",
+        "x-request-id": ctx.requestId,
+      });
+      res.end(object.buffer);
+      return true;
+    }
 
     // ------------------------------------------------------------------------------------------------ taxonomy
     if ((m = sub.match(/^\/(categories|brands)$/))) {
@@ -125,6 +268,7 @@ async function handleCatalogueRequest({ req, res, ctx, pathname, authContext, st
         const slug = C.validSlug(body.slug);
         if (!slug) throw C.badRequest("slug must be lowercase letters, digits and single hyphens (max 80)");
         const content = C.validateContent(body.content);
+        if (content.media.length) throw C.badRequest("add images after the product is created");
         await referencesExist(cat, content);
         const product = await cat.createProduct({ slug, categoryId: content.category_id, brandId: content.brand_id, content, actor });
         await audit("catalogue_product_created", "catalogue_product", product.id, { slug, version: 1 });
@@ -145,10 +289,13 @@ async function handleCatalogueRequest({ req, res, ctx, pathname, authContext, st
         if (!slug) throw C.badRequest("slug must be lowercase letters, digits and single hyphens (max 80)");
         const content = C.validateContent(body.content);
         await referencesExist(cat, content);
+        if (content.media.length && !(await cat.mediaAvailable())) throw C.httpError(503, "media_unavailable");
         const published = product.published_version ? await cat.getVersion(id, product.published_version) : null;
         const materiality = C.materialityOf(published ? published.content : null, content);
         const updated = await cat.saveVersion({ id, expectedRowVersion: expected, slug, categoryId: content.category_id, brandId: content.brand_id, content, materiality, actor });
-        await audit("catalogue_product_edited", "catalogue_product", id, { version: updated.current_version, materiality });
+        const before = await cat.getVersion(id, product.current_version);
+        const galleryChanges = C.diffContent({ media: (before && before.content.media) || [] }, { media: content.media }).length;
+        await audit("catalogue_product_edited", "catalogue_product", id, { version: updated.current_version, materiality, ...(galleryChanges ? { gallery_changes: galleryChanges, images: content.media.length } : {}) });
         return send(200, await productDetail(cat, updated, authContext)), true;
       }
       return send(405, { error: "method_not_allowed" }), true;
@@ -169,7 +316,8 @@ async function handleCatalogueRequest({ req, res, ctx, pathname, authContext, st
         const skus = Array.isArray(body.skus) ? body.skus : null;
         // SKUs are globally unique: the copy needs its own (explicit list, or a suffix appended to every SKU)
         const variants = source.content.variants.map((v, index) => ({ ...v, sku: skus ? String(skus[index] || "") : `${v.sku}${variantSuffix}` }));
-        const content = C.validateContent({ ...source.content, variants, name: body.name || `${source.content.name} (copy)` });
+        // images belong to one product: the copy starts with an empty gallery
+        const content = C.validateContent({ ...source.content, variants, media: [], name: body.name || `${source.content.name} (copy)` });
         const copy = await cat.createProduct({ slug, categoryId: content.category_id, brandId: content.brand_id, content, actor });
         await audit("catalogue_product_duplicated", "catalogue_product", copy.id, { source_product_id: id, source_version: product.current_version, slug });
         return send(201, await productDetail(cat, copy, authContext)), true;

@@ -1870,6 +1870,13 @@ class FileLeadAgentsStore {
   async deleteOfficeFile(id) {
     const index = this.state.office_files.findIndex((file) => file.id === id);
     if (index === -1) return false;
+    // mirror of the database's ON DELETE RESTRICT from the catalogue media tables (db/20261104)
+    const catalogue = this.state.catalogue || {};
+    if ((catalogue.media || []).some((m) => m.office_file_id === id) || (catalogue.media_derivatives || []).some((d) => d.office_file_id === id)) {
+      const error = new Error("office file is referenced by catalogue media");
+      error.statusCode = 409;
+      throw error;
+    }
     this.state.office_files.splice(index, 1);
     await this.persist();
     return true;

@@ -2336,7 +2336,7 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
       }
 
       // Product catalogue (Office-managed GetOyi hardware): self-contained, staff-session-only module (catalogue-api.js)
-      if (await handleCatalogueRequest({ req, res, ctx, pathname, authContext, store, eventBus, log })) return;
+      if (await handleCatalogueRequest({ req, res, ctx, pathname, authContext, store, eventBus, storageService, log })) return;
 
       if (pathname === "/healthz") {
         if (req.method !== "GET") {
@@ -7062,6 +7062,11 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           development_cover_image: "development.manage",
         };
         authorizePermission(authContext, PURPOSE_PERMISSION[body.purpose] || "manage_storage");
+        // product gallery images are created only by the catalogue media route (content validation, processing, catalogue permission)
+        if (String(body.purpose || "").toLowerCase() === "product_image") {
+          json(res, 403, { error: "forbidden", message: "Product images are uploaded from Products." }, { "x-request-id": ctx.requestId });
+          return;
+        }
         const storedFile = await storageService.putDataUrl(body);
         const file =
           typeof store.createOfficeFile === "function"
@@ -8496,7 +8501,7 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           return;
         }
         const filename = path.basename(decodeURIComponent(rawFilename));
-        const shareObject = await storageService.getObject(filename);
+        const shareObject = filename.startsWith("product_image_") ? null : await storageService.getObject(filename);
         if (!shareObject) {
           notFound(res);
           return;
@@ -8513,6 +8518,11 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
         }
         authorizePermission(authContext, "view_storage");
         const filename = path.basename(decodeURIComponent(storageMatch[1]));
+        // product gallery originals stay private and renditions are served only by the catalogue media route (catalogue.read)
+        if (filename.startsWith("product_image_")) {
+          notFound(res);
+          return;
+        }
         const storedObject = await storageService.getObject(filename);
         if (!storedObject) {
           notFound(res);

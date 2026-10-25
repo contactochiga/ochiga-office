@@ -1,7 +1,9 @@
 // Real-browser acceptance test for the Office Products workspace (Phase 2 stage 1-2 UI: persistent catalogue table + product editor):
 // headless Google Chrome over the DevTools protocol against the real Office server (file store, fixture users and fixture products only).
 // Walks the catalogue workflow as different staff members and checks browsing (statistics, search, filters, sorting, pagination),
-// in-place selection, permissions and mobile layout. Skips (exit 0) when Chrome is not installed. Screenshots to OFFICE_CAT_SHOTS if set.
+// in-place selection, permissions and mobile layout; stage 3: the product gallery (multi-image drop upload with per-file progress, a
+// rejected file, an injected network failure and Retry, cover, reorder, alt/caption/variant details, save as a version, removal rules,
+// replacement through the file chooser, Overview summary, table thumbnail, read-only staff, mobile). Skips (exit 0) when Chrome is not installed. Screenshots to OFFICE_CAT_SHOTS if set.
 "use strict";
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
@@ -15,6 +17,7 @@ const { ToolExecutor } = require("../src/lead-agents/tools");
 const { WebhookDispatcher } = require("../src/lead-agents/webhooks");
 const { createTempStore } = require("../src/lead-agents/testing");
 const { hashPassword } = require("../src/lead-agents/auth");
+const sharp = require("sharp");
 
 const CHROME = ["/Applications/Google Chrome.app/Contents/MacOS/Google Chrome", "/usr/bin/google-chrome", "/usr/bin/chromium"].find((p) => fs.existsSync(p));
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -23,7 +26,8 @@ const PORT = 9300 + Math.floor(Math.random() * 80);
 
 async function main() {
   if (!CHROME) { console.log("SKIP: Chrome not installed"); return; }
-  const config = { ...createConfig(), authMode: "required_api_key", apiKeys: ["cat-browser-key"], allowedOrigins: [], officeBackendBaseUrl: "http://127.0.0.1:1", officeBackendApiKey: "cat-bridge" };
+  const storageDir = fs.mkdtempSync(path.join(os.tmpdir(), "cat-browser-storage-"));
+  const config = { ...createConfig(), officeStorageDriver: "local", officeStorageDir: storageDir, authMode: "required_api_key", apiKeys: ["cat-browser-key"], allowedOrigins: [], officeBackendBaseUrl: "http://127.0.0.1:1", officeBackendApiKey: "cat-bridge" };
   const { store } = await createTempStore();
   const people = {
     writer: { role: "ochiga_staff", scopes: ["catalogue.write"] },
@@ -179,6 +183,124 @@ async function main() {
     await shot("products-desktop.png");
     console.log("6. Row selection updates editor and address in place — PASS");
 
+    // 11. gallery (stage 3): fixture images are generated here and clearly labelled FIXTURE
+    const fixtureImage = (n, bg, w = 1200, h = 900) => sharp(Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}"><rect width="100%" height="100%" fill="#f4f2ee"/><rect x="${w * 0.3}" y="${h * 0.18}" width="${w * 0.4}" height="${h * 0.64}" rx="40" fill="${bg}"/><circle cx="${w / 2}" cy="${h * 0.42}" r="${h * 0.08}" fill="#ffffff" opacity=".85"/><text x="${w / 2}" y="${h * 0.93}" font-family="Helvetica, Arial" font-size="${h * 0.05}" text-anchor="middle" fill="#6b675f">FIXTURE IMAGE ${n}</text></svg>`)).jpeg({ quality: 82 }).toBuffer();
+    const fixtures = await Promise.all([["#1f2937"], ["#b3241b"], ["#e5e7eb"], ["#0f766e"], ["#4b5563"], ["#a16207"], ["#312e81"], ["#9d174d"]].map(([bg], i) => fixtureImage(i + 1, bg)));
+    const sensor = await apiAs("writer", "POST", "/products", { slug: "oyi-door-sensor", content: { category_id: cats[0].id, name: "Oyi Door Sensor", model: "DS-1", summary: "Contact sensor for doors and windows", variants: [{ sku: "DS-1-WHT", name: "White" }, { sku: "DS-1-BLK", name: "Black" }] } });
+    const sensorId = sensor.product.id;
+    const tileCount = `document.querySelectorAll('[data-media-tile]').length`;
+    // drop real files onto the gallery card, as a person dragging from the desktop would
+    const dropFiles = (files) => evalJs(`(() => { const dt = new DataTransfer(); ${files.map(([name, type, b64]) => `dt.items.add(new File([Uint8Array.from(atob(${JSON.stringify(b64)}), (c) => c.charCodeAt(0))], ${JSON.stringify(name)}, { type: ${JSON.stringify(type)} }));`).join(" ")}
+      const card = document.querySelector('[data-media-gallery]'); card.dispatchEvent(new DragEvent('dragover', { dataTransfer: dt, bubbles: true, cancelable: true })); card.dispatchEvent(new DragEvent('drop', { dataTransfer: dt, bubbles: true, cancelable: true })); return true; })()`);
+    const uploadStates = () => evalJs(`[...document.querySelectorAll('[data-upload]')].map((r) => r.className.replace('cat-upl ', '') + ':' + r.querySelector('.name').textContent + ':' + r.querySelector('.state').textContent.trim())`);
+    await as("writer", `catalogue/products/${sensorId}`);
+    await waitFor(`${edTitle} === 'Oyi Door Sensor'`, "sensor product");
+    assert.ok(await click(".cat-ed-tab", "Media"));
+    await waitFor(`!!document.querySelector('[data-media-gallery]') && document.querySelectorAll('.cat-mslot').length === 5 && ${tileCount} === 0`, "media tab: five visible empty positions");
+    // one request fails at the network level (injected), to exercise per-file Retry
+    await send("Fetch.enable", { patterns: [{ urlPattern: "*media?name=front-retry*", requestStage: "Request" }] });
+    let failedOnce = false;
+    const onPaused = (m) => { const d = JSON.parse(m.data); if (d.method === "Fetch.requestPaused") { if (!failedOnce) { failedOnce = true; send("Fetch.failRequest", { requestId: d.params.requestId, errorReason: "ConnectionReset" }); } else send("Fetch.continueRequest", { requestId: d.params.requestId }); } };
+    ws.addEventListener("message", onPaused);
+    const b64 = (buf) => buf.toString("base64");
+    await dropFiles([["front.jpg", "image/jpeg", b64(fixtures[0])], ["side.jpg", "image/jpeg", b64(fixtures[1])], ["back.jpg", "image/jpeg", b64(fixtures[2])], ["mounted.jpg", "image/jpeg", b64(fixtures[3])],
+      ["front-retry.jpg", "image/jpeg", b64(fixtures[4])], ["not-really.jpg", "image/jpeg", Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" onload="alert(1)"/>').toString("base64")]]);
+    await waitFor(`document.querySelectorAll('[data-upload].done').length === 4 && document.querySelectorAll('[data-upload].failed').length === 2`, "4 uploaded, the SVG refused and one network failure", 30000);
+    const states1 = await uploadStates();
+    assert.ok(states1.some((x) => /^failed:not-really\.jpg:Not a JPEG, PNG or WebP image/.test(x)), `the disguised SVG is refused by content with a clear message (${states1})`);
+    assert.ok(await evalJs(`!document.querySelector('[data-upload] .name[title="not-really.jpg"]').closest('[data-upload]').querySelector('[data-retry]')`), "no Retry for a file that can never pass");
+    assert.ok(states1.some((x) => /^failed:front-retry\.jpg:Connection lost/.test(x)), `network failure shown per file (${states1})`);
+    await evalJs(`document.querySelector('[data-upload] .name[title="front-retry.jpg"]').closest('[data-upload]').querySelector('[data-retry]').click()`);
+    await waitFor(`document.querySelectorAll('[data-upload].done').length === 5 && ${tileCount} === 5`, "retry succeeded; five images in the gallery", 20000);
+    ws.removeEventListener("message", onPaused); await send("Fetch.disable");
+    await waitFor(`[...document.querySelectorAll('[data-media-tile] img')].every((i) => i.complete && i.naturalWidth > 0)`, "thumbnails load from the authenticated media route", 15000);
+    assert.ok(await evalJs(`document.querySelector('[data-media-tile] .cat-badge-cover') !== null && document.querySelectorAll('.cat-badge-cover').length === 1 && document.querySelectorAll('.cat-mslot').length === 1`), "first image is the cover; a sixth position is offered");
+    console.log("11a. Drop 6 files -> per-file progress; SVG refused (no retry); network failure -> Retry -> 5 images — PASS");
+
+    // cover, reorder, details
+    const order = () => evalJs(`[...document.querySelectorAll('[data-media-tile]')].map((t) => t.dataset.mediaTile)`);
+    const before = await order();
+    await evalJs(`document.querySelectorAll('[data-media-tile]')[2].querySelector('[data-cover]').click()`);
+    await waitFor(`document.querySelectorAll('[data-media-tile]')[2].querySelector('.cat-badge-cover') !== null && document.querySelectorAll('.cat-badge-cover').length === 1`, "third image is now the cover");
+    await waitFor(`document.querySelector('[data-head-thumb] img')?.getAttribute('src').includes(${JSON.stringify(before[2])})`, "editor header shows the new cover");
+    await evalJs(`document.querySelectorAll('[data-media-tile]')[0].querySelector('[data-move="1"]').click()`);
+    const after = await order();
+    assert.deepEqual(after.slice(0, 2), [before[1], before[0]], "› moves the first image one position later");
+    await evalJs(`document.querySelectorAll('[data-media-tile]')[2].querySelector('[data-details]').click()`);
+    await waitFor(`!!document.querySelector('[data-media-detail] [data-alt]')`, "inline details (no dialog)");
+    assert.ok(!(await evalJs(`!!document.querySelector('.dialog-card')`)), "no modal for image details");
+    await evalJs(`(() => { const d = document.querySelector('[data-media-detail]'); const a = d.querySelector('[data-alt]'); a.value = 'Oyi Door Sensor, front view'; a.dispatchEvent(new Event('input')); const c = d.querySelector('[data-caption]'); c.value = 'Fixture photo'; c.dispatchEvent(new Event('input')); const v = d.querySelector('[data-vsku="DS-1-BLK"]'); v.checked = true; v.dispatchEvent(new Event('change')); return true; })()`);
+    await waitFor(`!document.querySelector('.cat-actionbar button.cat-btn-primary')?.disabled && /Save draft/.test(document.querySelector('.cat-actionbar').textContent)`, "save draft enabled");
+    await shot("gallery-desktop-media.png");
+    assert.ok(await click(".cat-actionbar button", "Save draft"));
+    await waitFor(`/v2/.test(document.querySelector('.cat-ed-title p')?.textContent || '') && ${tileCount} === 5`, "saved as v2", 15000);
+    const saved = await apiAs("writer", "GET", `/products/${sensorId}`);
+    const cover = saved.content.media.find((m) => m.cover);
+    assert.equal(saved.content.media.length, 5, "five images in v2");
+    assert.equal(cover.media_id, before[2], "cover persisted");
+    assert.deepEqual([cover.alt, cover.caption, cover.variant_skus], ["Oyi Door Sensor, front view", "Fixture photo", ["DS-1-BLK"]], "alt, caption and variant link persisted");
+    assert.deepEqual(saved.content.media.slice(0, 2).map((m) => m.media_id), [before[1], before[0]], "order persisted");
+    assert.equal(saved.gallery_readiness.missing_alt, 4, "readiness reports the four images still missing alt text");
+    console.log("11b. Cover, reorder, inline alt/caption/variant -> Save draft -> v2 with everything persisted — PASS");
+
+    // removal rules: an image used by a saved version stays in the library without Delete; a never-saved upload can be deleted
+    await evalJs(`document.querySelectorAll('[data-media-tile]')[4].querySelector('[data-remove]').click()`);
+    await waitFor(`${tileCount} === 4 && document.querySelectorAll('[data-library-item]').length === 1`, "removed from gallery -> shown in the library");
+    assert.ok(await evalJs(`!document.querySelector('[data-library-item] [data-lib-delete]') && /v2/.test(document.querySelector('[data-library-item]').textContent)`), "used by v2: no Delete");
+    await dropFiles([["extra.jpg", "image/jpeg", b64(fixtures[5])]]);
+    await waitFor(`${tileCount} === 5`, "extra upload joins the draft gallery", 15000);
+    const extraId = (await order())[4];
+    await evalJs(`document.querySelectorAll('[data-media-tile]')[4].querySelector('[data-remove]').click()`);
+    await waitFor(`!!document.querySelector('[data-library-item="${extraId}"] [data-lib-delete]')`, "never-saved upload offers Delete");
+    await evalJs(`window.confirm = () => true; document.querySelector('[data-library-item="${extraId}"] [data-lib-delete]').click()`);
+    await waitFor(`!document.querySelector('[data-library-item="${extraId}"]')`, "deleted from the library");
+    const gone = await fetch(`${base}/api/lead-agents/admin/catalogue/media/${extraId}/thumb`, { headers: { cookie: cookies.writer.join("=") } });
+    assert.equal(gone.status, 404, "a deleted image no longer serves");
+    assert.ok(await click(".cat-actionbar button", "Save draft"));
+    await waitFor(`/v3/.test(document.querySelector('.cat-ed-title p')?.textContent || '') && ${tileCount} === 4`, "saved as v3", 15000);
+    console.log("11c. Remove from gallery (kept for v2 history, no Delete) / delete a never-saved upload -> v3 — PASS");
+
+    // replacement through the real file chooser
+    await send("Page.setInterceptFileChooserDialog", { enabled: true });
+    const replaceFile = path.join(storageDir, "..", `replacement-${Date.now()}.jpg`);
+    fs.writeFileSync(replaceFile, fixtures[6]);
+    const chooser = new Promise((resolve) => { const h = (m) => { const d = JSON.parse(m.data); if (d.method === "Page.fileChooserOpened") { ws.removeEventListener("message", h); resolve(d.params); } }; ws.addEventListener("message", h); });
+    const replacedId = (await order())[0];
+    // a file chooser opens only from a user gesture
+    await send("Runtime.evaluate", { expression: `document.querySelectorAll('[data-media-tile]')[0].querySelector('[data-replace]').click()`, userGesture: true });
+    const opened = await Promise.race([chooser, sleep(10000).then(() => { throw new Error("file chooser did not open"); })]);
+    await send("DOM.setFileInputFiles", { files: [replaceFile], backendNodeId: opened.backendNodeId });
+    await waitFor(`(${JSON.stringify(replacedId)} !== document.querySelectorAll('[data-media-tile]')[0].dataset.mediaTile) && ${tileCount} === 4`, "first slot replaced", 15000);
+    await send("Page.setInterceptFileChooserDialog", { enabled: false });
+    assert.ok(await click(".cat-actionbar button", "Save draft"));
+    await waitFor(`/v4/.test(document.querySelector('.cat-ed-title p')?.textContent || '')`, "saved as v4", 15000);
+    const v3 = await apiAs("writer", "GET", `/products/${sensorId}/versions/3`);
+    assert.equal(v3.version.content.media[0].media_id, replacedId, "v3 still references the replaced image (history preserved)");
+    const oldServe = await fetch(`${base}/api/lead-agents/admin/catalogue/media/${replacedId}/thumb`, { headers: { cookie: cookies.writer.join("=") } });
+    assert.equal(oldServe.status, 200, "the replaced image keeps serving for history");
+    console.log("11d. Replace through the file chooser -> v4; v3 keeps the old image, which still serves — PASS");
+
+    // Overview summary and table thumbnail
+    assert.ok(await click(".cat-ed-tab", "Overview"));
+    await waitFor(`(document.querySelector('[data-gallery-summary]')?.textContent || '').includes('Media gallery (4/12)')`, "overview gallery summary");
+    await evalJs(`document.querySelector('[data-gallery-summary]').scrollIntoView()`);
+    await waitFor(`[...document.querySelectorAll('[data-gallery-summary] img')].length === 4 && [...document.querySelectorAll('[data-gallery-summary] img')].every((i) => i.complete && i.naturalWidth > 0)`, "overview gallery summary images loaded", 15000);
+    await waitFor(`[...document.querySelectorAll('.cat-tr[data-id]')].some((r) => r.dataset.id === ${JSON.stringify(sensorId)} && r.querySelector('.cat-thumb img')?.naturalWidth > 0)`, "table row shows the cover thumbnail", 15000);
+    await sleep(5500);
+    await shot("gallery-desktop-overview.png");
+    await evalJs(`document.querySelector('.cat-tr[data-id="${sensorId}"]').scrollIntoView({ block: "center" })`);
+    await sleep(300);
+    await shot("gallery-desktop-table.png");
+    console.log("11e. Overview gallery summary + table thumbnail from the cover — PASS");
+
+    // 12. read-only staff see the gallery without tools
+    await as("staff", `catalogue/products/${sensorId}`);
+    await waitFor(`${edTitle} === 'Oyi Door Sensor'`, "staff sensor");
+    assert.ok(await click(".cat-ed-tab", "Media"));
+    await waitFor(`${tileCount} === 4`, "staff gallery");
+    assert.ok(await evalJs(`!document.querySelector('.cat-mctl') && !document.querySelector('[data-add-images]') && !document.querySelector('button.cat-mslot')`), "no gallery tools for read-only staff");
+    console.log("12. Read-only staff: gallery visible, no tools — PASS");
+
     // 7. archive from the editor menu -> Archived is the primary status, read-only
     await as("publisher", `catalogue/products/${productId}`);
     await waitFor(`${edTitle} === 'Oyi Smart Lock'`, "publisher product");
@@ -223,11 +345,24 @@ async function main() {
     assert.ok(o1 <= 1 && o2 <= 1, `no horizontal overflow on mobile (list ${o1}px, editor ${o2}px)`);
     console.log("10. Mobile: list -> editor -> back, no overflow — PASS");
 
+    // 13. mobile gallery
+    await as("writer", `catalogue/products/${sensorId}`);
+    await waitFor(`${edTitle} === 'Oyi Door Sensor'`, "mobile sensor", 15000);
+    assert.ok(await click(".cat-ed-tab", "Media"));
+    await waitFor(`${tileCount} === 4 && [...document.querySelectorAll('[data-media-tile] img')].every((i) => i.complete && i.naturalWidth > 0)`, "mobile gallery", 15000);
+    await evalJs(`document.querySelectorAll('[data-media-tile]')[0].querySelector('[data-details]').click()`);
+    await waitFor(`!!document.querySelector('[data-media-detail]')`, "mobile details");
+    const o3 = await evalJs(`document.documentElement.scrollWidth - window.innerWidth`);
+    assert.ok(o3 <= 1, `no horizontal overflow on the mobile gallery (${o3}px)`);
+    await evalJs(`document.querySelector('[data-media-gallery]').scrollIntoView()`);
+    await shot("gallery-mobile-media.png");
+    console.log("13. Mobile gallery: tiles + inline details, no overflow — PASS");
+
     assert.deepEqual(errors, [], `no uncaught page errors (${errors.join(" | ").slice(0, 300)})`);
     console.log(JSON.stringify({ status: "PASS", suite: "catalogue-browser", proportion: `${ratio}/${100 - ratio}` }));
   } finally {
     try { ws && ws.close(); } catch { /* closed */ }
-    chrome.kill(); server.closeAllConnections?.(); await new Promise((r) => server.close(r)); try { fs.rmSync(userDir, { recursive: true, force: true, maxRetries: 5 }); } catch { /* profile flushing */ }
+    chrome.kill(); server.closeAllConnections?.(); try { fs.rmSync(storageDir, { recursive: true, force: true }); } catch { /* temp */ } await new Promise((r) => server.close(r)); try { fs.rmSync(userDir, { recursive: true, force: true, maxRetries: 5 }); } catch { /* profile flushing */ }
   }
 }
 main().catch((error) => { console.error(error); process.exit(1); });

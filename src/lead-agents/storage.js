@@ -15,6 +15,8 @@ const STORAGE_PURPOSES = Object.freeze([
   "camera_snapshot",
   "digital_twin_file",
   "content_featured_image",
+  // catalogue gallery (catalogue-api.js only; refused by the generic /admin/storage routes)
+  "product_image",
 ]);
 
 function parseDataUrl(value) {

@@ -2,7 +2,8 @@
 // rendered with office.js's own primitives (passed in as `ui`), so it looks and behaves like every other Office workspace.
 // Routes: #/catalogue (products) · #/catalogue/products/:id · #/catalogue/prices · #/catalogue/taxonomy · #/catalogue/suppliers
 // Every action maps to one internal API call under /api/lead-agents/admin/catalogue; the server is the authority for permissions and
-// state (a stale screen gets 409 state_changed and is reloaded). Nothing here is public: there is no storefront in Phase 1.
+// state (a stale screen gets 409 state_changed and is reloaded). Nothing here is public: there is no storefront yet. Product images
+// (Phase 2 stage 3) are served by authenticated Office URLs only.
 
 const API = "/api/lead-agents/admin/catalogue";
 
@@ -148,6 +149,53 @@ function ensureStyles() {
     .cat-gallery { display: grid; grid-template-columns: 2fr 1fr 1fr 1fr; grid-template-rows: 1fr 1fr; gap: 8px; height: 190px; }
     .cat-slot { border: 1px dashed var(--line-strong); border-radius: 10px; display: grid; place-items: center; color: var(--text-tertiary); font-size: 11.5px; text-align: center; padding: 6px; background: rgba(255,255,255,.015); }
     .cat-slot.cover { grid-row: 1 / 3; }
+    .cat-thumb img { width: 100%; height: 100%; object-fit: contain; background: #fff; display: block; }
+    .cat-slot.img { padding: 0; overflow: hidden; border-style: solid; background: #fff; position: relative; }
+    .cat-slot.img img { width: 100%; height: 100%; object-fit: contain; display: block; }
+    .cat-badge-cover { position: absolute; left: 6px; top: 6px; background: var(--red); color: #fff; font-size: 10.5px; font-weight: 700; padding: 2px 6px; border-radius: 6px; letter-spacing: .02em; }
+    .cat-readiness { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; font-size: 12px; }
+    .cat-readiness span { padding: 2px 8px; border-radius: 999px; background: rgba(255,255,255,.06); color: var(--text-secondary); }
+    .cat-readiness span.ok { color: #7fd9a0; background: rgba(63,143,95,.14); }
+    .cat-readiness span.warn { color: #e3a54b; background: rgba(201,134,43,.14); }
+    .cat-mgrid { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 8px; }
+    .cat-mtile { position: relative; aspect-ratio: 1 / 1; border: 1px solid var(--line-strong); border-radius: 10px; overflow: hidden; background: #fff; }
+    .cat-mtile.selected { outline: 2px solid var(--red); outline-offset: 1px; }
+    .cat-mtile.dragging { opacity: .4; }
+    .cat-mtile.over { outline: 2px dashed var(--red-bright); }
+    .cat-mtile > img { width: 100%; height: 100%; object-fit: contain; display: block; cursor: pointer; }
+    .cat-mtile .cat-mpos { position: absolute; right: 6px; top: 6px; background: rgba(0,0,0,.6); color: #fff; font-size: 10.5px; padding: 1px 6px; border-radius: 6px; }
+    .cat-mtile .cat-mflag { position: absolute; left: 6px; bottom: 6px; background: rgba(201,134,43,.92); color: #111; font-size: 10px; font-weight: 700; padding: 1px 5px; border-radius: 5px; }
+    .cat-gallery.summary { grid-template-columns: 2fr 1fr 1fr; }
+    .cat-slot .cat-more { position: absolute; inset: 0; display: grid; place-items: center; background: rgba(14,14,12,.6); color: #fff; font-weight: 700; font-size: 15px; }
+    .cat-mtile .cat-mctl { opacity: 0; transition: opacity .12s; }
+    .cat-mtile:hover .cat-mctl, .cat-mtile:focus-within .cat-mctl, .cat-mtile.selected .cat-mctl { opacity: 1; }
+    @media (hover: none) { .cat-mtile .cat-mctl { opacity: 1; } }
+    .cat-mctl { position: absolute; left: 0; right: 0; bottom: 0; display: flex; justify-content: space-between; gap: 2px; padding: 3px; background: rgba(14,14,12,.82); }
+    .cat-mctl button { flex: 1; min-width: 0; height: 24px; border: 0; border-radius: 5px; background: transparent; color: #fff; cursor: pointer; font-size: 12px; padding: 0; }
+    .cat-mctl button:hover:not(:disabled) { background: rgba(255,255,255,.14); }
+    .cat-mctl button:disabled { opacity: .35; cursor: default; }
+    .cat-mslot { aspect-ratio: 1 / 1; border: 1px dashed var(--line-strong); border-radius: 10px; display: grid; place-items: center; color: var(--text-tertiary); font-size: 11.5px; text-align: center; padding: 6px; background: rgba(255,255,255,.015); }
+    button.cat-mslot { cursor: pointer; font: inherit; font-size: 11.5px; color: var(--text-secondary); }
+    button.cat-mslot:hover { border-color: var(--red); color: var(--text-primary); }
+    .cat-drop.over { outline: 2px dashed var(--red); outline-offset: 4px; border-radius: 10px; }
+    .cat-mdetail { margin-top: 12px; display: grid; grid-template-columns: 96px minmax(0, 1fr); gap: 12px; padding-top: 12px; border-top: 1px solid var(--line); }
+    .cat-mdetail > img { width: 96px; height: 96px; object-fit: contain; background: #fff; border-radius: 8px; }
+    .cat-mdetail .cat-fields { grid-template-columns: 1fr; gap: 8px; }
+    .cat-mvariants { display: flex; flex-wrap: wrap; gap: 6px 14px; font-size: 12.5px; color: var(--text-secondary); }
+    .cat-mvariants label { display: inline-flex; gap: 6px; align-items: center; }
+    .cat-mvariants input { width: auto; }
+    .cat-uploads { margin-top: 12px; display: grid; gap: 6px; }
+    .cat-upl { display: grid; grid-template-columns: minmax(0, 1fr) 120px auto; gap: 10px; align-items: center; font-size: 12.5px; padding: 6px 8px; border: 1px solid var(--line); border-radius: 8px; }
+    .cat-upl .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .cat-upl .bar { height: 6px; border-radius: 3px; background: rgba(255,255,255,.08); overflow: hidden; }
+    .cat-upl .bar i { display: block; height: 100%; width: 0; background: var(--red); transition: width .15s; }
+    .cat-upl.done .bar i { background: #3f8f5f; }
+    .cat-upl.failed { border-color: rgba(179,36,27,.5); }
+    .cat-upl .state { color: var(--text-tertiary); white-space: nowrap; display: flex; gap: 6px; align-items: center; }
+    .cat-upl.failed .state { color: var(--red-bright); }
+    .cat-lib { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 8px; }
+    .cat-lib .cat-mtile .cat-mctl button { font-size: 11px; }
+    .cat-sm { height: 30px; padding: 0 10px; font-weight: 500; }
     .cat-actionbar { display: flex; gap: 10px; justify-content: space-between; align-items: center; padding: 12px; border: 1px solid var(--line); border-radius: var(--cat-radius); background: var(--cat-panel); margin-top: 6px; flex-wrap: wrap; }
     .cat-actionbar .grow { flex: 1; }
     .cat-note { color: var(--text-tertiary); font-size: 12px; }
@@ -171,6 +219,10 @@ function ensureStyles() {
       .cat-head .cat-sub { display: block; margin: 4px 0 0; }
       .cat-gallery { grid-template-columns: 1fr 1fr; grid-template-rows: none; height: auto; }
       .cat-slot { min-height: 90px; } .cat-slot.cover { grid-row: auto; grid-column: 1 / -1; min-height: 140px; }
+      .cat-mgrid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+      .cat-lib { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+      .cat-upl { grid-template-columns: minmax(0, 1fr) 70px; } .cat-upl .state { grid-column: 1 / -1; }
+      .cat-mdetail { grid-template-columns: 1fr; } .cat-mdetail > img { width: 100%; height: 160px; }
     }`;
   document.head.appendChild(style);
 }
@@ -183,6 +235,7 @@ const ICONS = {
   search: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="11" cy="11" r="6.5"/><path d="m20 20-4-4"/></svg>',
   plus: '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>',
   edit: '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20h4L19 9l-4-4L4 16z"/></svg>',
+  image: '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="3.5" y="4.5" width="17" height="15" rx="2"/><circle cx="9" cy="10" r="1.6"/><path d="m4 18 5-5 4 4 2.5-2.5L20 19"/></svg>',
   eye: '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12z"/><circle cx="12" cy="12" r="2.8"/></svg>',
 };
 
@@ -203,6 +256,43 @@ function shortDate(value) {
   if (!value) return "—";
   const d = new Date(value);
   return Number.isNaN(d.getTime()) ? "—" : d.toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" });
+}
+
+// Gallery images are authenticated Office URLs (catalogue.read session); nothing is public.
+const mediaUrl = (mediaId, kind = "thumb") => `${API}/media/${encodeURIComponent(mediaId)}/${kind}`;
+const thumbHtml = (ui, mediaId, alt = "") => (mediaId ? `<img src="${ui.escapeHtml(mediaUrl(mediaId))}" alt="${ui.escapeHtml(alt)}" loading="lazy" decoding="async" />` : ICONS.box);
+
+const MEDIA_MAX = 12;
+const MEDIA_VISIBLE = 5;
+const UPLOAD_MAX_BYTES = 15 * 1024 * 1024;
+const UPLOAD_ERRORS = {
+  unsupported_image_type: "Not a JPEG, PNG or WebP image",
+  image_too_large: "Larger than 15 MB",
+  image_unreadable: "Damaged file, or not a real image",
+  image_format_mismatch: "The file content does not match its image format",
+  image_animated: "Animated images are not supported",
+  image_dimensions_too_small: "Too small (at least 200 px per side)",
+  image_dimensions_too_large: "Too large (at most 8000 px per side)",
+  image_too_many_pixels: "Too many pixels (at most 40 megapixels)",
+  image_empty: "Empty file",
+  product_archived: "The product is archived",
+  media_limit: "This product already stores 60 images",
+  media_unavailable: "Image storage is not available in this environment",
+  forbidden: "You do not have permission to upload images",
+};
+
+// Raw-bytes upload with progress (fetch has no upload progress). The server learns everything about the file from its content.
+function uploadImage(productId, file, onProgress) {
+  return new Promise((resolve) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", `${API}/products/${encodeURIComponent(productId)}/media?name=${encodeURIComponent(file.name || "image")}`);
+    xhr.withCredentials = true;
+    xhr.setRequestHeader("content-type", file.type || "application/octet-stream");
+    xhr.upload.onprogress = (e) => { if (e.lengthComputable) onProgress(e.loaded / e.total); };
+    xhr.onload = () => { let json = null; try { json = JSON.parse(xhr.responseText); } catch { /* not json */ } resolve({ status: xhr.status, json }); };
+    xhr.onerror = () => resolve({ status: 0, json: null });
+    xhr.send(file);
+  });
 }
 
 // Browsing state survives re-renders within the session (route changes rebuild the DOM).
@@ -332,7 +422,7 @@ async function renderProductsWorkspace(host, headActions, selectedId, token, ui)
     table.appendChild(el(`<div class="cat-tr head" role="row">${sortHead("name", "Product", false)}${sortHead("sku", "SKU")}<span class="cat-cell opt">Category</span>${sortHead("stock", "Stock")}${sortHead("price", "Price")}${sortHead("status", "Status", false)}${sortHead("updated", "Updated")}<span></span></div>`));
     data.products.forEach((card) => {
       const row = el(`<div class="cat-tr ${card.id === selected ? "selected" : ""}" role="row" data-id="${escapeHtml(card.id)}" tabindex="0">
-        <div class="cat-prod"><div class="cat-thumb">${ICONS.box}</div><div class="cat-prod-text"><b>${escapeHtml(card.name)}</b><span>${escapeHtml(card.summary || card.model || card.slug)}</span></div></div>
+        <div class="cat-prod"><div class="cat-thumb">${thumbHtml(ui, card.cover_media_id)}</div><div class="cat-prod-text"><b>${escapeHtml(card.name)}</b><span>${escapeHtml(card.summary || card.model || card.slug)}</span></div></div>
         <span class="cat-cell opt">${escapeHtml(card.sku || "—")}${card.sku_count > 1 ? ` <span class="cat-muted">+${card.sku_count - 1}</span>` : ""}</span>
         <span class="cat-cell opt">${escapeHtml(categoryName[card.category_id] || "—")}</span>
         <span class="cat-cell opt">${card.stock_available}</span>
@@ -473,7 +563,7 @@ async function renderEditor(right, id, ui, ctx) {
   right.appendChild(back);
   const updatedBy = product.updated_by || product.created_by || "";
   const head = el(`<div class="cat-ed-head">
-    <div class="cat-thumb">${ICONS.box}</div>
+    <div class="cat-thumb" data-head-thumb>${thumbHtml(ui, ((content.media || []).find((m) => m.cover) || {}).media_id, content.name)}</div>
     <div class="cat-ed-title"><h2>${escapeHtml(content.name)}</h2>${pill(ui, status)}
       <p>v${product.current_version}${product.published_version ? ` · live v${product.published_version}` : ""} · Last updated ${escapeHtml(ui.fmtDateTime(product.updated_at))}${updatedBy ? ` by ${escapeHtml(updatedBy)}` : ""}</p></div>
     <button type="button" class="cat-btn cat-btn-icon" aria-label="More product actions" data-more>⋯</button></div>`);
@@ -507,9 +597,241 @@ async function renderEditor(right, id, ui, ctx) {
   const dis = () => (editing ? "" : "disabled");
   const markDirty = () => { dirty = true; drawBar(); };
 
-  function galleryCard() {
-    return `<div class="cat-card"><div class="cat-card-head"><h3>Media gallery (0/12)</h3><span class="cat-note">Product images arrive in the next stage</span></div>
-      <div class="cat-gallery"><div class="cat-slot cover">Cover image</div><div class="cat-slot">Image 2</div><div class="cat-slot">Image 3</div><div class="cat-slot">Image 4</div><div class="cat-slot">Image 5</div><div class="cat-slot">+ more<br/>(up to 12)</div></div></div>`;
+  // ---- gallery (Phase 2 stage 3). draft.media = [{media_id, cover, alt, caption, variant_skus}], array order = gallery order.
+  // Uploads go to the product's image library at once; arranging the gallery is a content change saved (and reviewed) as a new version.
+  const library = { available: Boolean(detail.media_library && detail.media_library.available), items: (detail.media_library && detail.media_library.items) || [] };
+  const uploads = [];
+  let uploadSeq = 0;
+  let selectedMedia = null;
+  let showAllSlots = false;
+  if (!Array.isArray(draft.media)) draft.media = [];
+  const canArrange = () => canEdit && library.available;
+  const libraryItem = (mediaId) => library.items.find((m) => m.id === mediaId);
+  const uploading = () => uploads.some((u) => u.state === "queued" || u.state === "uploading" || u.state === "processing");
+  const changeGallery = () => {
+    editing = true; markDirty(); drawBody();
+    const cover = draft.media.find((m) => m.cover);
+    const headThumb = right.querySelector("[data-head-thumb]");
+    if (headThumb) headThumb.innerHTML = thumbHtml(ui, cover && cover.media_id, draft.name);
+  };
+  const ensureCover = () => { if (draft.media.length && !draft.media.some((m) => m.cover)) draft.media[0].cover = true; };
+  const readinessHtml = () => {
+    const missingAlt = draft.media.filter((m) => !String(m.alt || "").trim()).length;
+    const cover = draft.media.some((m) => m.cover);
+    return `<div class="cat-readiness" data-readiness>
+      <span class="${cover ? "ok" : "warn"}">${cover ? "Cover chosen" : "No cover image"}</span>
+      <span class="${draft.media.length && !missingAlt ? "ok" : "warn"}">${draft.media.length ? (missingAlt ? `${missingAlt} without alt text` : "Alt text on every image") : "No images"}</span>
+      ${draft.media.length < MEDIA_VISIBLE ? `<span>${MEDIA_VISIBLE} images recommended</span>` : ""}
+      <span>Public publishing (next stage) needs a cover and alt text on every image</span></div>`;
+  };
+
+  // Overview: a compact summary (cover + the next four), full tools live in the Media tab
+  function gallerySummary() {
+    const items = draft.media;
+    const slot = (item, index) => {
+      const cls = index === 0 ? "cat-slot cover" : "cat-slot";
+      if (!item) return `<div class="${cls}">${index === 0 ? "Cover image" : `Image ${index + 1}`}</div>`;
+      return `<div class="${cls} img"><img src="${escapeHtml(mediaUrl(item.media_id, index === 0 ? "w480" : "thumb"))}" alt="${escapeHtml(item.alt || "")}" loading="lazy" />${item.cover ? `<span class="cat-badge-cover">Cover</span>` : ""}${index === 4 ? extra : ""}</div>`;
+    };
+    const ordered = [...items].sort((a, b) => Number(b.cover) - Number(a.cover));
+    const extra = items.length > MEDIA_VISIBLE ? `<span class="cat-more">+${items.length - MEDIA_VISIBLE}</span>` : "";
+    const card = el(`<div class="cat-card" data-gallery-summary><div class="cat-card-head"><h3>Media gallery (${items.length}/${MEDIA_MAX})</h3><button type="button" class="cat-btn cat-sm" data-manage-media>${ICONS.image} ${canArrange() ? "Manage images" : "View images"}</button></div>
+      <div class="cat-gallery summary">${[0, 1, 2, 3, 4].map((i) => slot(ordered[i], i)).join("")}</div>${readinessHtml()}</div>`);
+    card.querySelector("[data-manage-media]").addEventListener("click", () => { browse.tab = "media"; tabBar.querySelectorAll(".cat-ed-tab").forEach((t) => t.classList.toggle("active", t.dataset.edtab === "media")); drawBody(); });
+    return card;
+  }
+
+  function startUploads(files, { replaceIndex = null } = {}) {
+    [...files].forEach((file) => {
+      const job = { key: `u${(uploadSeq += 1)}`, file, name: file.name || "image", progress: 0, state: "queued", message: "", replaceIndex, busyRetries: 0 };
+      if (file.size > UPLOAD_MAX_BYTES) Object.assign(job, { state: "failed", message: UPLOAD_ERRORS.image_too_large, final: true });
+      uploads.push(job);
+    });
+    drawUploads();
+    pumpUploads();
+  }
+  function pumpUploads() {
+    // two at a time: the server processes one image at a time and queues a few
+    while (uploads.filter((u) => u.state === "uploading" || u.state === "processing").length < 2) {
+      const next = uploads.find((u) => u.state === "queued");
+      if (!next) break;
+      runUpload(next);
+    }
+    drawBar();
+  }
+  async function runUpload(job) {
+    job.state = "uploading"; job.progress = 0; job.message = ""; drawUpload(job);
+    const result = await uploadImage(id, job.file, (fraction) => { job.progress = fraction; if (fraction >= 1) job.state = "processing"; drawUpload(job); });
+    if ((result.status === 201 || result.status === 200) && result.json && result.json.media) {
+      const media = result.json.media;
+      if (!libraryItem(media.id)) library.items.push(media);
+      job.state = "done"; job.progress = 1;
+      job.message = result.json.deduplicated ? "Already uploaded — reused" : "Uploaded";
+      placeUploaded(job, media);
+    } else if (result.status === 503 && result.json && result.json.error === "media_busy" && job.busyRetries < 3) {
+      job.busyRetries += 1; job.state = "queued"; job.message = "Server busy — retrying";
+      setTimeout(pumpUploads, 3000);
+    } else {
+      const code = result.json && result.json.error;
+      job.state = "failed";
+      job.final = Boolean(code && UPLOAD_ERRORS[code] && code !== "media_unavailable");
+      job.message = (code && UPLOAD_ERRORS[code]) || (result.status === 0 ? "Connection lost" : `Upload failed (${result.status})`);
+    }
+    drawUpload(job);
+    pumpUploads();
+  }
+  // a finished upload joins the gallery (or replaces its slot) in the draft; it becomes part of the product only when the draft is saved
+  function placeUploaded(job, media) {
+    if (!canArrange()) return;
+    if (job.replaceIndex != null && draft.media[job.replaceIndex]) {
+      const slotItem = draft.media[job.replaceIndex];
+      if (slotItem.media_id !== media.id && !draft.media.some((m) => m.media_id === media.id)) {
+        draft.media[job.replaceIndex] = { ...slotItem, media_id: media.id };
+        selectedMedia = media.id;
+      }
+    } else if (!draft.media.some((m) => m.media_id === media.id) && draft.media.length < MEDIA_MAX) {
+      draft.media.push({ media_id: media.id, cover: draft.media.length === 0, alt: "", caption: "", variant_skus: [] });
+    } else if (draft.media.length >= MEDIA_MAX) {
+      job.message = "Uploaded — gallery is full (12); kept in the library";
+    }
+    changeGallery();
+  }
+  function uploadRowHtml(job) {
+    const state = { queued: job.message || "Waiting", uploading: `${Math.round(job.progress * 100)}%`, processing: "Processing…", done: job.message, failed: job.message }[job.state];
+    return `<div class="cat-upl ${job.state}" data-upload="${job.key}"><span class="name" title="${escapeHtml(job.name)}">${escapeHtml(job.name)}</span>
+      <span class="bar"><i style="width:${Math.round((job.state === "done" ? 1 : job.progress) * 100)}%"></i></span>
+      <span class="state">${escapeHtml(state || "")}${job.state === "failed" && !job.final ? ` <button type="button" class="cat-btn cat-sm" data-retry="${job.key}">Retry</button>` : ""}${job.state === "failed" || job.state === "done" ? ` <button type="button" class="cat-rowmenu" data-dismiss="${job.key}" aria-label="Dismiss">✕</button>` : ""}</span></div>`;
+  }
+  function wireUploadRow(node) {
+    node.querySelectorAll("[data-retry]").forEach((b) => b.addEventListener("click", () => { const job = uploads.find((u) => u.key === b.dataset.retry); if (job) { job.state = "queued"; job.busyRetries = 0; drawUpload(job); pumpUploads(); } }));
+    node.querySelectorAll("[data-dismiss]").forEach((b) => b.addEventListener("click", () => { const i = uploads.findIndex((u) => u.key === b.dataset.dismiss); if (i >= 0) uploads.splice(i, 1); drawUploads(); }));
+  }
+  function drawUpload(job) {
+    const node = body.querySelector(`[data-upload="${job.key}"]`);
+    if (!node) return;
+    const fresh = el(uploadRowHtml(job));
+    node.replaceWith(fresh);
+    wireUploadRow(fresh);
+  }
+  function drawUploads() {
+    const host = body.querySelector("[data-uploads]");
+    if (!host) return;
+    host.innerHTML = "";
+    uploads.forEach((job) => { const row = el(uploadRowHtml(job)); wireUploadRow(row); host.appendChild(row); });
+  }
+  const pickFiles = ({ multiple = true, onPick }) => {
+    const input = document.createElement("input");
+    input.type = "file"; input.multiple = multiple; input.accept = "image/jpeg,image/png,image/webp";
+    input.addEventListener("change", () => { if (input.files && input.files.length) onPick(input.files); });
+    input.click();
+  };
+
+  function mediaWorkspace() {
+    const wrap = el(`<div></div>`);
+    if (!library.available) {
+      wrap.appendChild(el(`<div class="cat-card"><div class="cat-card-head"><h3>Media gallery</h3></div><p class="cat-note" style="margin:0;">Image storage is not installed in this environment yet.</p></div>`));
+      return wrap;
+    }
+    const arrange = canArrange();
+    const count = draft.media.length;
+    const slots = Math.min(MEDIA_MAX, showAllSlots || count >= MEDIA_VISIBLE ? Math.max(MEDIA_VISIBLE, count + (arrange && count < MEDIA_MAX ? 1 : 0)) : MEDIA_VISIBLE);
+    const card = el(`<div class="cat-card cat-drop" data-media-gallery><div class="cat-card-head"><h3>Gallery (${count}/${MEDIA_MAX})</h3>
+      <div style="display:flex;gap:8px;">${arrange ? `<button type="button" class="cat-btn cat-sm" data-add-images>${ICONS.plus} Add images</button>` : ""}</div></div>
+      <div class="cat-mgrid" data-mgrid></div>
+      ${slots < MEDIA_MAX && count < MEDIA_MAX && arrange ? `<button type="button" class="cat-clear" style="margin-top:8px;" data-more-slots>Show all ${MEDIA_MAX} positions</button>` : ""}
+      ${readinessHtml()}
+      <p class="cat-note" style="margin:8px 0 0;">${arrange ? "JPEG, PNG or WebP, up to 15 MB each. Drag images here or use Add images. Drag tiles (or use ‹ ›) to reorder; ★ sets the cover. Changes are saved as a new draft version and reviewed like any other content." : "Read-only."}</p>
+      <div class="cat-uploads" data-uploads></div><div data-mdetail></div></div>`);
+    const grid = card.querySelector("[data-mgrid]");
+    let dragFrom = null;
+    draft.media.forEach((item, index) => {
+      const lib = libraryItem(item.media_id);
+      const tile = el(`<div class="cat-mtile ${selectedMedia === item.media_id ? "selected" : ""}" data-media-tile="${escapeHtml(item.media_id)}" ${arrange ? 'draggable="true"' : ""}>
+        <img src="${escapeHtml(mediaUrl(item.media_id))}" alt="${escapeHtml(item.alt || "")}" loading="lazy" title="${escapeHtml(lib ? `${lib.width}×${lib.height} ${lib.format.toUpperCase()}` : "")}" />
+        ${item.cover ? `<span class="cat-badge-cover">Cover</span>` : ""}<span class="cat-mpos">${index + 1}</span>
+        ${!String(item.alt || "").trim() ? `<span class="cat-mflag">No alt</span>` : ""}
+        ${arrange ? `<div class="cat-mctl"><button type="button" data-move="-1" aria-label="Move earlier" ${index === 0 ? "disabled" : ""}>‹</button><button type="button" data-cover aria-label="Set as cover" ${item.cover ? "disabled" : ""}>★</button><button type="button" data-details aria-label="Edit details">✎</button><button type="button" data-replace aria-label="Replace image">⇄</button><button type="button" data-remove aria-label="Remove from gallery">✕</button><button type="button" data-move="1" aria-label="Move later" ${index === count - 1 ? "disabled" : ""}>›</button></div>` : ""}</div>`);
+      tile.querySelector("img").addEventListener("click", () => { selectedMedia = selectedMedia === item.media_id ? null : item.media_id; drawBody(); });
+      if (arrange) {
+        tile.querySelectorAll("[data-move]").forEach((b) => b.addEventListener("click", () => { const to = index + Number(b.dataset.move); [draft.media[index], draft.media[to]] = [draft.media[to], draft.media[index]]; changeGallery(); }));
+        tile.querySelector("[data-cover]").addEventListener("click", () => { draft.media.forEach((m) => { m.cover = m === item; }); changeGallery(); });
+        tile.querySelector("[data-details]").addEventListener("click", () => { selectedMedia = item.media_id; drawBody(); });
+        tile.querySelector("[data-replace]").addEventListener("click", () => pickFiles({ multiple: false, onPick: (files) => startUploads(files, { replaceIndex: index }) }));
+        tile.querySelector("[data-remove]").addEventListener("click", () => { draft.media.splice(index, 1); ensureCover(); if (selectedMedia === item.media_id) selectedMedia = null; changeGallery(); });
+        tile.addEventListener("dragstart", (e) => { dragFrom = index; tile.classList.add("dragging"); e.dataTransfer.effectAllowed = "move"; e.dataTransfer.setData("text/plain", String(index)); });
+        tile.addEventListener("dragend", () => tile.classList.remove("dragging"));
+        tile.addEventListener("dragover", (e) => { if (dragFrom !== null) { e.preventDefault(); tile.classList.add("over"); } });
+        tile.addEventListener("dragleave", () => tile.classList.remove("over"));
+        tile.addEventListener("drop", (e) => { if (dragFrom === null) return; e.preventDefault(); e.stopPropagation(); const [moved] = draft.media.splice(dragFrom, 1); draft.media.splice(index, 0, moved); dragFrom = null; changeGallery(); });
+      }
+      grid.appendChild(tile);
+    });
+    for (let i = count; i < slots; i += 1) {
+      const label = i === 0 ? "Cover image" : `Image ${i + 1}`;
+      const slot = arrange ? el(`<button type="button" class="cat-mslot" data-empty-slot>${ICONS.plus}<br/>${label}</button>`) : el(`<div class="cat-mslot">${label}</div>`);
+      if (arrange) slot.addEventListener("click", () => pickFiles({ onPick: (files) => startUploads(files) }));
+      grid.appendChild(slot);
+    }
+    if (arrange) {
+      card.querySelector("[data-add-images]").addEventListener("click", () => pickFiles({ onPick: (files) => startUploads(files) }));
+      const more = card.querySelector("[data-more-slots]");
+      if (more) more.addEventListener("click", () => { showAllSlots = true; drawBody(); });
+      card.addEventListener("dragover", (e) => { if (dragFrom === null && e.dataTransfer && [...e.dataTransfer.types].includes("Files")) { e.preventDefault(); card.classList.add("over"); } });
+      card.addEventListener("dragleave", (e) => { if (e.target === card) card.classList.remove("over"); });
+      card.addEventListener("drop", (e) => { if (dragFrom !== null || !e.dataTransfer || !e.dataTransfer.files.length) return; e.preventDefault(); card.classList.remove("over"); startUploads(e.dataTransfer.files); });
+    }
+
+    // inline details of the selected image: alt text, caption, variant links (no dialog)
+    const selected = draft.media.find((m) => m.media_id === selectedMedia);
+    if (selected) {
+      const lib = libraryItem(selected.media_id);
+      const dis2 = arrange ? "" : "disabled";
+      const panel = el(`<div class="cat-mdetail" data-media-detail><img src="${escapeHtml(mediaUrl(selected.media_id, "w480"))}" alt="${escapeHtml(selected.alt || "")}" />
+        <div class="cat-fields">
+          <label class="cat-field">Alt text (describes the image for screen readers and search; required before public publishing)<input data-alt maxlength="250" value="${escapeHtml(selected.alt || "")}" ${dis2} /></label>
+          <label class="cat-field">Caption<input data-caption maxlength="300" value="${escapeHtml(selected.caption || "")}" ${dis2} /></label>
+          <div class="cat-field">Shown for variants (none = all variants)<div class="cat-mvariants">${draft.variants.map((v) => `<label><input type="checkbox" data-vsku="${escapeHtml(v.sku)}" ${(selected.variant_skus || []).includes(v.sku) ? "checked" : ""} ${dis2} /> ${escapeHtml(v.sku)} · ${escapeHtml(v.name)}</label>`).join("")}</div></div>
+          <span class="cat-note">${lib ? `${lib.width}×${lib.height} ${escapeHtml(lib.format.toUpperCase())} · ${(lib.bytes / 1024 / 1024).toFixed(1)} MB · uploaded by ${escapeHtml(lib.uploaded_by)}` : ""}</span>
+        </div></div>`);
+      if (arrange) {
+        panel.querySelector("[data-alt]").addEventListener("input", (e) => { selected.alt = e.target.value; editing = true; markDirty(); const r = card.querySelector("[data-readiness]"); if (r) r.outerHTML = readinessHtml(); });
+        panel.querySelector("[data-caption]").addEventListener("input", (e) => { selected.caption = e.target.value; editing = true; markDirty(); });
+        panel.querySelectorAll("[data-vsku]").forEach((c) => c.addEventListener("change", () => { selected.variant_skus = [...panel.querySelectorAll("[data-vsku]:checked")].map((x) => x.dataset.vsku); editing = true; markDirty(); }));
+        panel.querySelector("[data-alt]").addEventListener("change", () => drawBody());
+      }
+      card.querySelector("[data-mdetail]").appendChild(panel);
+    }
+    wrap.appendChild(card);
+
+    // the library: uploaded images not in this draft's gallery. Never-used ones can be deleted; used ones stay for the version history.
+    const spare = library.items.filter((m) => m.status === "active" && !draft.media.some((g) => g.media_id === m.id));
+    if (spare.length) {
+      const libCard = el(`<div class="cat-card" data-media-library><div class="cat-card-head"><h3>Image library</h3><span class="cat-note">${spare.length} not in the gallery</span></div><div class="cat-lib"></div>
+        <p class="cat-note" style="margin:8px 0 0;">Images used by any saved version stay available for that version's history and cannot be deleted.</p></div>`);
+      const libGrid = libCard.querySelector(".cat-lib");
+      spare.forEach((m) => {
+        const used = (m.referenced_by_versions || []).length > 0;
+        const tile = el(`<div class="cat-mtile" data-library-item="${escapeHtml(m.id)}"><img src="${escapeHtml(m.urls.thumb || mediaUrl(m.id))}" alt="" loading="lazy" title="${escapeHtml(m.original_name || "")}" />
+          ${used ? `<span class="cat-mpos" title="Used by saved versions">v${escapeHtml(m.referenced_by_versions.join(", v"))}</span>` : ""}
+          ${arrange ? `<div class="cat-mctl"><button type="button" data-lib-add ${draft.media.length >= MEDIA_MAX ? "disabled" : ""}>Add</button>${used ? "" : `<button type="button" data-lib-delete>Delete</button>`}</div>` : ""}</div>`);
+        if (arrange) {
+          tile.querySelector("[data-lib-add]").addEventListener("click", () => { draft.media.push({ media_id: m.id, cover: draft.media.length === 0, alt: "", caption: "", variant_skus: [] }); changeGallery(); });
+          const del = tile.querySelector("[data-lib-delete]");
+          if (del) del.addEventListener("click", async () => {
+            if (!window.confirm("Delete this image permanently? It is not used by any saved version.")) return;
+            try {
+              const result = await ui.api(`${API}/media/${m.id}/remove`, { method: "POST", body: {} });
+              library.items = result.media_library.items;
+              ui.toast("Image deleted.", "success");
+            } catch (error) { ui.toast(error.data && error.data.error === "media_referenced" ? "This image is used by a saved version and cannot be deleted." : conflictMessage(error), "error"); }
+            drawBody();
+          });
+        }
+        libGrid.appendChild(tile);
+      });
+      wrap.appendChild(libCard);
+    }
+    return wrap;
   }
 
   function drawBody() {
@@ -534,10 +856,10 @@ async function renderEditor(right, id, ui, ctx) {
       }
       card.querySelectorAll("[name]").forEach((input) => input.addEventListener("input", () => { draft[input.name] = input.name === "brand_id" ? input.value || null : input.value; markDirty(); }));
       body.appendChild(card);
-      body.appendChild(el(galleryCard()));
+      body.appendChild(gallerySummary());
     } else if (tab === "media") {
-      body.appendChild(el(galleryCard()));
-      body.appendChild(el(`<p class="cat-note">Five visible slots, expandable to twelve, with cover selection, ordering, captions, alt text and per-variant images — built on Office's existing file storage in the next stage. Every gallery change will need review like any other content change.</p>`));
+      body.appendChild(mediaWorkspace());
+      drawUploads();
     } else if (tab === "specifications") {
       const card = el(`<div class="cat-card"><div class="cat-card-head"><h3>Specifications</h3></div><div class="cat-rows" data-specs></div></div>`);
       const host = card.querySelector("[data-specs]");
@@ -628,8 +950,9 @@ async function renderEditor(right, id, ui, ctx) {
     button(`${ICONS.eye} Preview`, "", null, `disabled title="Authenticated previews arrive with publishing (stage 4)"`);
     bar.appendChild(el(`<span class="grow"></span>`));
     if (editing) {
-      button("Cancel", "", () => { editing = false; dirty = false; Object.assign(draft, JSON.parse(JSON.stringify(content))); drawBody(); drawBar(); });
-      button("Save draft", "cat-btn-primary", save, dirty ? "" : "disabled");
+      button("Cancel", "", () => { editing = false; dirty = false; selectedMedia = null; Object.assign(draft, JSON.parse(JSON.stringify(content))); if (!Array.isArray(draft.media)) draft.media = []; drawBody(); drawBar(); });
+      if (uploading()) bar.appendChild(el(`<span class="cat-note">Waiting for uploads…</span>`));
+      button("Save draft", "cat-btn-primary", save, dirty && !uploading() ? "" : "disabled");
       return;
     }
     if (archived) { bar.appendChild(el(`<span class="cat-note">Archived — read-only</span>`)); return; }

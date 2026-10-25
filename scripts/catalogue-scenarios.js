@@ -27,7 +27,7 @@ function testUsers(tag = crypto.randomBytes(3).toString("hex")) {
   return Object.fromEntries(Object.entries(CATALOGUE_TEST_USERS).map(([name, u]) => [name, { ...u, email: `${name.toLowerCase()}.${tag}@fixture.test`, password: `Cat!${crypto.randomBytes(8).toString("hex")}Aa1` }]));
 }
 
-async function runCatalogueScenarios({ base, users, fullKey, scopedKey, check, label = "" }) {
+async function runCatalogueScenarios({ base, users, fullKey, scopedKey, check, label = "", storageDir = null }) {
   const cookies = {};
   async function login(name) {
     const u = users[name];
@@ -371,14 +371,178 @@ async function runCatalogueScenarios({ base, users, fullKey, scopedKey, check, l
     check(id("BR3"), "cards view keeps the catalogue boundary (no session -> 401) and never includes supplier links or costs", anon.status === 401 && !JSON.stringify(all.json).includes("supplier_id") && !JSON.stringify(all.json).includes("landed"), anon.status);
   }
 
+  // ------------------------------------------------------------------------------------------------ Phase 2 stage 3: gallery media
+  {
+    const fs = require("fs");
+    const path = require("path");
+    const sharp = require("sharp");
+    const img = (bg, w = 1200, h = 900) => sharp({ create: { width: w, height: h, channels: 3, background: bg } }).withExif({ IFD0: { Copyright: "fixture-owner-exif" } }).jpeg({ quality: 85 }).toBuffer();
+    const upload = async (who, productId, buf, name = "photo.jpg", type = "image/jpeg") => {
+      const headers = { "content-type": type, origin: base };
+      if (who && cookies[who]) headers.cookie = cookies[who];
+      if (who && who.startsWith("key:")) headers["x-api-key"] = who.slice(4);
+      const r = await fetch(`${base}/api/lead-agents/admin/catalogue/products/${productId}/media?name=${encodeURIComponent(name)}`, { method: "POST", headers, body: buf });
+      const text = await r.text(); let json = null; try { json = JSON.parse(text); } catch { /* not json */ }
+      return { status: r.status, json };
+    };
+    const fetchImage = async (who, url) => {
+      const headers = {};
+      if (who && cookies[who]) headers.cookie = cookies[who];
+      const r = await fetch(`${base}${url}`, { headers });
+      return { status: r.status, headers: r.headers, body: Buffer.from(await r.arrayBuffer()) };
+    };
+    const storedFiles = () => (storageDir && fs.existsSync(storageDir) ? fs.readdirSync(storageDir).filter((f) => f.startsWith("product_image_")) : []);
+    const variants = [{ sku: `GAL-${tag}-WHT`, name: "White", options: { colour: "white" } }, { sku: `GAL-${tag}-BLK`, name: "Black", options: { colour: "black" } }];
+    const gal = await A.writerA.post("/products", { slug: `gallery-hub-${slugTag}`, content: content({ name: "Gallery Hub", model: `GH-${tag}`, variants }) });
+    const gid = gal.json.product.id;
+    const other = await A.writerA.post("/products", { slug: `gallery-other-${slugTag}`, content: content({ name: "Other", model: `GO-${tag}`, variants: [{ sku: `GO-${tag}-1`, name: "One" }] }) });
+    const oid = other.json.product.id;
+
+    // G1 permissions
+    const jpg = await img("#c8102e");
+    const asStaff = await upload("staff", gid, jpg);
+    const asOutsider = await upload("outsider", gid, jpg);
+    const asNobody = await upload(null, gid, jpg);
+    const asFullKey = await upload(`key:${fullKey}`, gid, jpg);
+    const asReviewer = await upload("reviewer", gid, jpg);
+    const first = await upload("writerA", gid, jpg, "front.jpg");
+    check(id("G1"), "upload needs a staff session with catalogue.write: read-only staff / reviewer / estate admin 403, no credential 401, FULL API key 403; writer 201",
+      asStaff.status === 403 && asReviewer.status === 403 && asOutsider.status === 403 && asNobody.status === 401 && asFullKey.status === 403 && first.status === 201 && first.json.media && first.json.media.urls.thumb && first.json.media.format === "jpeg",
+      { asStaff: asStaff.status, asReviewer: asReviewer.status, asOutsider: asOutsider.status, asNobody: asNobody.status, asFullKey: asFullKey.status, first });
+    const m1 = first.json.media;
+
+    // G2 content validation over HTTP (declared type ignored)
+    const svg = await upload("writerA", gid, Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" onload="alert(1)"><rect width="900" height="900"/></svg>'), "x.jpg", "image/jpeg");
+    const poly = await upload("writerA", gid, Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), Buffer.from("<script>alert(1)</script>".padEnd(500, " "))]), "x.jpg");
+    const empty = await upload("writerA", gid, Buffer.alloc(0));
+    const big = await upload("writerA", gid, Buffer.concat([jpg, Buffer.alloc(16 * 1024 * 1024)]));
+    const pngAsJpeg = await upload("writerA", gid, await sharp({ create: { width: 800, height: 800, channels: 3, background: "#123456" } }).png().toBuffer(), "really-a-png.jpg", "image/jpeg");
+    check(id("G2"), "content is validated, not the declared type: SVG 415, JPEG-signature polyglot 422, empty 400, > 15 MB 413; a PNG declared as image/jpeg is stored as PNG",
+      svg.status === 415 && poly.status === 422 && empty.status === 400 && big.status === 413 && pngAsJpeg.status === 201 && pngAsJpeg.json.media.format === "png",
+      { svg: svg.status, poly: poly.status, empty: empty.status, big: big.status, pngAsJpeg: pngAsJpeg.status });
+
+    // G3 retry / de-duplication
+    const before = storedFiles().length;
+    const again = await upload("writerA", gid, jpg, "front-retry.jpg");
+    check(id("G3"), "retrying the same bytes returns the existing image (200 deduplicated, same id) and leaves no extra stored object",
+      again.status === 200 && again.json.deduplicated === true && again.json.media.id === m1.id && (!storageDir || storedFiles().length === before), { again: again.status, before, after: storedFiles().length });
+
+    // G4 concurrency
+    const colours = ["#0f766e", "#7c3aed", "#ea580c", "#0369a1"];
+    const parallel = await Promise.all(colours.map(async (c) => upload("writerA", gid, await img(c), `${c}.jpg`)));
+    const twin = await img("#be185d");
+    const twins = await Promise.all([upload("writerA", gid, twin), upload("writerB", gid, twin)]);
+    check(id("G4"), "concurrent uploads: four different images all stored; the same new image uploaded twice at once yields ONE image (one 201, one 200 deduplicated)",
+      parallel.every((r) => r.status === 201) && new Set(parallel.map((r) => r.json.media.id)).size === 4
+        && twins.map((r) => r.status).sort().join() === "200,201" && twins[0].json.media.id === twins[1].json.media.id,
+      { parallel: parallel.map((r) => r.status), twins: twins.map((r) => r.status) });
+    const ids = [m1.id, pngAsJpeg.json.media.id, ...parallel.map((r) => r.json.media.id), twins[0].json.media.id];
+
+    // G5 serving
+    const thumb = await fetchImage("staff", m1.urls.thumb);
+    const anonThumb = await fetchImage(null, m1.urls.thumb);
+    const outsiderThumb = await fetchImage("outsider", m1.urls.thumb);
+    const original = await fetchImage("writerA", m1.urls.thumb.replace(/\/thumb$/, "/original"));
+    const unknown = await fetchImage("writerA", `/api/lead-agents/admin/catalogue/media/${crypto.randomUUID()}/thumb`);
+    const meta = thumb.status === 200 ? await sharp(thumb.body).metadata() : {};
+    check(id("G5"), "renditions are served to catalogue readers only (no credential 401, estate admin 403) as image/webp with nosniff, private cache and a sandbox CSP; there is no route to the original",
+      thumb.status === 200 && thumb.headers.get("content-type") === "image/webp" && thumb.headers.get("x-content-type-options") === "nosniff" && /^private/.test(thumb.headers.get("cache-control") || "")
+        && /sandbox/.test(thumb.headers.get("content-security-policy") || "") && anonThumb.status === 401 && outsiderThumb.status === 403 && original.status === 404 && unknown.status === 404,
+      { thumb: thumb.status, type: thumb.headers.get("content-type"), anon: anonThumb.status, outsider: outsiderThumb.status, original: original.status, unknown: unknown.status });
+    check(id("G5b"), "the served rendition is a re-encoded WebP with no EXIF (the upload's EXIF text is absent)", meta.format === "webp" && !meta.exif && !thumb.body.includes(Buffer.from("fixture-owner-exif")), { format: meta.format, exif: Boolean(meta.exif) });
+
+    // G6 originals private: generic storage routes refuse product images even with a key that passes view/manage_storage
+    const files = storedFiles();
+    const generic = await Promise.all(files.slice(0, 6).map((f) => fetch(`${base}/api/lead-agents/admin/storage/${f}`, { headers: { "x-api-key": fullKey } }).then((r) => r.status)));
+    const genericUpload = await fetch(`${base}/api/lead-agents/admin/storage`, { method: "POST", headers: { "content-type": "application/json", "x-api-key": fullKey }, body: JSON.stringify({ purpose: "product_image", data_url: `data:image/jpeg;base64,${jpg.toString("base64")}` }) }).then((r) => r.status);
+    check(id("G6"), "originals stay private: the generic storage route returns 404 for product image objects and refuses product_image uploads (403)",
+      (!storageDir || (files.length >= 6 && generic.every((st) => st === 404))) && genericUpload === 403, { files: files.length, generic, genericUpload });
+
+    // G7 gallery save + validation
+    const detail0 = (await A.writerA.get(`/products/${gid}`)).json;
+    const gallery = ids.slice(0, 5).map((mid, i) => ({ media_id: mid, cover: i === 1, alt: i === 4 ? "" : `View ${i + 1}`, caption: i === 0 ? "Front" : "", variant_skus: i === 2 ? [variants[0].sku] : [] }));
+    const saved = await A.writerA.patch(`/products/${gid}`, { expected_row_version: detail0.product.row_version, content: { ...detail0.content, media: gallery } });
+    const rv = saved.json && saved.json.product.row_version;
+    const badVariant = await A.writerA.patch(`/products/${gid}`, { expected_row_version: rv, content: { ...detail0.content, media: [{ media_id: ids[0], cover: true, variant_skus: [`GO-${tag}-1`] }] } });
+    const twoCovers = await A.writerA.patch(`/products/${gid}`, { expected_row_version: rv, content: { ...detail0.content, media: [{ media_id: ids[0], cover: true }, { media_id: ids[1], cover: true }] } });
+    const foreignUp = await upload("writerA", oid, await img("#365314"));
+    const foreign = await A.writerA.patch(`/products/${gid}`, { expected_row_version: rv, content: { ...detail0.content, media: [{ media_id: foreignUp.json.media.id, cover: true }] } });
+    const made = await A.writerA.post("/products", { slug: `gallery-new-${slugTag}`, content: content({ name: "New", model: `GN-${tag}`, variants: [{ sku: `GN-${tag}-1`, name: "One" }], media: [{ media_id: ids[0], cover: true }] }) });
+    check(id("G7"), "a 5-image gallery (cover, alt, caption, variant link) saves as a new version; unknown variant / two covers 400; another product's image 409 media_not_available; no images on create",
+      saved.status === 200 && saved.json.product.current_version === 2 && saved.json.content.media.length === 5 && saved.json.content.media[1].cover === true && saved.json.gallery_readiness.missing_alt === 1 && !saved.json.gallery_readiness.ready_for_public
+        && badVariant.status === 400 && twoCovers.status === 400 && foreign.status === 409 && foreign.json.error === "media_not_available" && made.status === 400,
+      { saved: saved.status, badVariant: badVariant.status, twoCovers: twoCovers.status, foreign: foreign.json, made: made.status });
+    const card = (await A.staff.get(`/products?view=cards&q=${encodeURIComponent(`GH-${tag}`)}`)).json.products[0];
+    check(id("G7b"), "the catalogue table card shows the cover image and the image count", card && card.cover_media_id === ids[1] && card.image_count === 5, card);
+
+    // G8 deletion protection
+    const lib = (await A.writerA.get(`/products/${gid}/media`)).json.media_library;
+    const refRemove = await A.writerA.post(`/media/${ids[0]}/remove`);
+    const staffRemove = await A.staff.post(`/media/${ids[6]}/remove`);
+    const filesBefore = storedFiles().length;
+    const freeRemove = await A.writerA.post(`/media/${ids[6]}/remove`);
+    const twiceRemove = await A.writerA.post(`/media/${ids[6]}/remove`);
+    const goneThumb = await fetchImage("writerA", `/api/lead-agents/admin/catalogue/media/${ids[6]}/thumb`);
+    check(id("G8"), "an image referenced by a version cannot be removed (409 media_referenced); an unreferenced one can (writer only), its renditions stop serving and its stored objects are deleted",
+      lib.available && lib.items.find((x) => x.id === ids[0]).referenced_by_versions.includes(2) && refRemove.status === 409 && refRemove.json.error === "media_referenced"
+        && staffRemove.status === 403 && freeRemove.status === 200 && twiceRemove.status === 409 && twiceRemove.json.error === "media_already_removed" && goneThumb.status === 404 && (!storageDir || storedFiles().length === filesBefore - 5),
+      { refRemove: refRemove.json, staffRemove: staffRemove.status, freeRemove: freeRemove.status, twice: twiceRemove.json, goneThumb: goneThumb.status, filesBefore, after: storedFiles().length });
+    const removedRef = await A.writerA.patch(`/products/${gid}`, { expected_row_version: rv, content: { ...saved.json.content, media: [...saved.json.content.media, { media_id: ids[6], cover: false }] } });
+    check(id("G8b"), "a removed image cannot be put back into a gallery (409 media_not_available)", removedRef.status === 409 && removedRef.json.error === "media_not_available", removedRef.json);
+
+    // G9 replacement keeps history
+    const replacement = await upload("writerA", gid, await img("#facc15"), "front-v2.jpg");
+    const replaced = saved.json.content.media.map((item, i) => (i === 0 ? { ...item, media_id: replacement.json.media.id } : item));
+    const v3 = await A.writerA.patch(`/products/${gid}`, { expected_row_version: rv, content: { ...saved.json.content, media: replaced } });
+    const v2 = await A.writerA.get(`/products/${gid}/versions/2`);
+    const d23 = await A.writerA.get(`/products/${gid}/versions/3?diff_to=2`);
+    const oldThumb = await fetchImage("staff", m1.urls.thumb);
+    const oldRemove = await A.writerA.post(`/media/${ids[0]}/remove`);
+    check(id("G9"), "replacing an image creates a new version; the previous version still references the old image, which keeps serving and stays undeletable",
+      replacement.status === 201 && v3.status === 200 && v3.json.product.current_version === 3 && v2.json.version.content.media[0].media_id === ids[0] && oldThumb.status === 200 && oldRemove.status === 409
+        && d23.json.diff.some((d) => d.field === `media[${ids[0]}]` && d.after === null) && d23.json.diff.some((d) => d.field === `media[${replacement.json.media.id}]` && d.before === null),
+      { replacement: replacement.status, v3: v3.status, old: oldThumb.status, oldRemove: oldRemove.status, diff: d23.json && d23.json.diff.map((d) => d.field) });
+
+    // G10 concurrent gallery edits: one wins, the other gets 409 state_changed
+    const rv3 = v3.json.product.row_version;
+    const reorder = (list) => [...list].reverse();
+    const race = await Promise.all([
+      A.writerA.patch(`/products/${gid}`, { expected_row_version: rv3, content: { ...v3.json.content, media: reorder(v3.json.content.media) } }),
+      A.writerB.patch(`/products/${gid}`, { expected_row_version: rv3, content: { ...v3.json.content, media: v3.json.content.media.slice(0, 3).map((x, i) => ({ ...x, cover: i === 0 })) } }),
+    ]);
+    check(id("G10"), "two concurrent gallery saves on the same row_version: exactly one succeeds, the other is 409 state_changed", race.map((r) => r.status).sort().join() === "200,409", race.map((r) => r.status));
+
+    // G11 workflow: after publication a gallery change is material and needs review again
+    let cur = (await A.writerA.get(`/products/${gid}`)).json;
+    const submit = await A.writerB.post(`/products/${gid}/submit`, { expected_row_version: cur.product.row_version });
+    const approve = await A.reviewer.post(`/products/${gid}/approve`, { expected_row_version: submit.json.product.row_version });
+    const publish = await A.publisher.post(`/products/${gid}/publish`, { expected_row_version: approve.json.product.row_version });
+    cur = publish.json;
+    const altEdit = await A.writerA.patch(`/products/${gid}`, { expected_row_version: cur.product.row_version, content: { ...cur.content, media: cur.content.media.map((x) => ({ ...x, alt: x.alt || "Rear view" })) } });
+    check(id("G11"), "after publication, editing alt text is a MATERIAL version back in draft; the published version and its gallery are unchanged",
+      publish.status === 200 && altEdit.status === 200 && altEdit.json.current_materiality === "material" && altEdit.json.product.workflow_status === "draft" && altEdit.json.product.published_version === publish.json.product.published_version && altEdit.json.gallery_readiness.missing_alt === 0,
+      { submit: submit.status, approve: approve.status, publish: publish.status, altEdit: altEdit.status, mat: altEdit.json && altEdit.json.current_materiality });
+
+    // G12 archived product + duplicate
+    const archivedUp = await upload("writerA", pid, await img("#64748b"));
+    const dup = await A.writerA.post(`/products/${gid}/duplicate`, { slug: `gallery-copy-${slugTag}`, sku_suffix: "-C" });
+    check(id("G12"), "an archived product accepts no uploads (409 product_archived); a duplicated product starts with an empty gallery",
+      archivedUp.status === 409 && archivedUp.json.error === "product_archived" && dup.status === 201 && dup.json.content.media.length === 0, { archivedUp: archivedUp.json, dup: dup.status });
+
+    // G13 media library visibility for read-only staff, no cost leakage
+    const staffLib = await A.staff.get(`/products/${gid}/media`);
+    check(id("G13"), "read-only staff see the image library (urls only, no storage keys or file names of stored objects)",
+      staffLib.status === 200 && staffLib.json.media_library.items.length >= 8 && !JSON.stringify(staffLib.json).includes("product_image_") && !JSON.stringify(staffLib.json).includes("storage_key"), { status: staffLib.status });
+  }
+
   // ------------------------------------------------------------------------------------------------ audit evidence
   {
     const events = await audit();
     const actions = new Set(events.map((e) => e.action));
-    const wanted = ["catalogue_product_created", "catalogue_product_edited", "catalogue_product_submitted", "catalogue_product_approved", "catalogue_product_changes_requested", "catalogue_product_published", "catalogue_product_published_override", "catalogue_product_unpublished", "catalogue_product_archived", "catalogue_product_duplicated", "catalogue_category_created", "catalogue_category_updated", "catalogue_brand_created", "catalogue_price_change_requested", "catalogue_price_change_approved", "catalogue_price_change_published", "catalogue_inventory_changed", "catalogue_supplier_created", "catalogue_cost_recorded"];
+    const wanted = ["catalogue_product_created", "catalogue_product_edited", "catalogue_product_submitted", "catalogue_product_approved", "catalogue_product_changes_requested", "catalogue_product_published", "catalogue_product_published_override", "catalogue_product_unpublished", "catalogue_product_archived", "catalogue_product_duplicated", "catalogue_category_created", "catalogue_category_updated", "catalogue_brand_created", "catalogue_price_change_requested", "catalogue_price_change_approved", "catalogue_price_change_published", "catalogue_inventory_changed", "catalogue_supplier_created", "catalogue_cost_recorded", "catalogue_media_uploaded", "catalogue_media_rejected", "catalogue_media_removed", "catalogue_media_removal_refused"];
     const missing = wanted.filter((w) => !actions.has(w));
     const costAudit = events.find((e) => e.action === "catalogue_cost_recorded");
-    check(id("AUD1"), "every catalogue write is audited (19 action types present)", missing.length === 0, missing);
+    check(id("AUD1"), "every catalogue write is audited (23 action types present, incl. media upload / rejection / removal / refused removal)", missing.length === 0, missing);
     check(id("AUD2"), "the cost audit record carries no amounts (audit readers may lack catalogue.cost.read)", costAudit && !/9000000|11000000/.test(JSON.stringify(costAudit)), costAudit);
   }
   return { productId: pid };
