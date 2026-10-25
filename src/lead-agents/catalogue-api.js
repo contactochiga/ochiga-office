@@ -43,6 +43,7 @@ async function productDetail(cat, product, authContext) {
   ]);
   return {
     product,
+    status: C.displayStatus(product),
     content: version ? version.content : null,
     current_materiality: version ? version.materiality : null,
     versions,
@@ -108,6 +109,13 @@ async function handleCatalogueRequest({ req, res, ctx, pathname, authContext, st
     if (sub === "/products") {
       if (method === "GET") {
         const url = new URL(req.url, "http://localhost");
+        // browse mode (catalogue table): statistics over the whole catalogue, then filter, sort and paginate on the server
+        if (url.searchParams.get("view") === "cards") {
+          const { products, contents, variants, truncated } = await cat.listProductCards();
+          const cards = products.map((p) => C.productCard(p, contents.get(p.id) || {}, variants.get(p.id) || []));
+          const query = Object.fromEntries(["q", "category_id", "brand_id", "status", "availability", "sort", "dir", "page", "page_size"].map((k) => [k, url.searchParams.get(k) || undefined]));
+          return send(200, { ...C.browseCards(cards, query), truncated }), true;
+        }
         const products = await cat.listProducts({ workflowStatus: url.searchParams.get("workflow_status") || undefined, publicationStatus: url.searchParams.get("publication_status") || undefined });
         const q = String(url.searchParams.get("q") || "").trim().toLowerCase();
         return send(200, { products: q ? products.filter((p) => `${p.name} ${p.model} ${p.slug}`.toLowerCase().includes(q)) : products }), true;

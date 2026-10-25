@@ -357,6 +357,20 @@ async function runCatalogueScenarios({ base, users, fullKey, scopedKey, check, l
     check(id("AT32d"), "linking a supplier needs cost visibility too; the supplier link is hidden from staff without catalogue.cost.read; costs never appear in product reads", linkByOps.status === 403 && !("supplier_id" in writerView) && !JSON.stringify(writerView).includes("landed") && !JSON.stringify((await A.writerA.get(`/products/${p2.json.product.id}`)).json).includes("11000000"), { linkByOps: linkByOps.status, writerView });
   }
 
+  // ------------------------------------------------------------------------------------------------ Phase 2: browse API (cards view)
+  {
+    const all = await A.staff.get("/products?view=cards&page_size=100");
+    const lock = all.json.products.find((c) => c.id === pid);
+    const gateway = all.json.products.find((c) => c.slug === `gateway-${slugTag}`);
+    check(id("BR1"), "cards view (read-only staff): statistics + rows; archived product shows 'archived'; price and stock come from real variant records", all.status === 200 && all.json.stats && typeof all.json.stats.total === "number" && lock && lock.status === "archived" && gateway && gateway.price_min_kobo === 17500000 && gateway.stock_available === 10 && gateway.availability === "in_stock", { stats: all.json.stats, lock: lock && lock.status, gateway });
+    const search = await A.staff.get(`/products?view=cards&q=${encodeURIComponent(`EG-${tag}`)}`);
+    const filtered = await A.staff.get("/products?view=cards&status=archived&page_size=100");
+    const paged = await A.staff.get("/products?view=cards&page_size=2&page=2&sort=name&dir=asc");
+    check(id("BR2"), "server-side search by SKU, status filter, sorting and pagination", search.json.total === 1 && search.json.products[0].slug === `gateway-${slugTag}` && filtered.json.products.every((c) => c.status === "archived") && paged.json.page === 2 && paged.json.products.length <= 2 && paged.json.page_size === 2, { search: search.json.total, filtered: filtered.json.total, paged: [paged.json.page, paged.json.products.length] });
+    const anon = await call(null, "GET", "/products?view=cards");
+    check(id("BR3"), "cards view keeps the catalogue boundary (no session -> 401) and never includes supplier links or costs", anon.status === 401 && !JSON.stringify(all.json).includes("supplier_id") && !JSON.stringify(all.json).includes("landed"), anon.status);
+  }
+
   // ------------------------------------------------------------------------------------------------ audit evidence
   {
     const events = await audit();

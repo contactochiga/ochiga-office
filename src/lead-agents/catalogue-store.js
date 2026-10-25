@@ -145,6 +145,19 @@ class SupabaseCatalogueStore {
     return products.map((p) => { const v = byKey.get(`${p.id}:${p.current_version}`) || {}; return { ...p, name: v.name || "", model: v.model || "" }; });
   }
   async getProduct(id) { return (await this.get(`/catalogue_products?id=eq.${encodeURIComponent(id)}`))[0] || null; }
+  // Every product with its current content and variants, for the catalogue table (chunked id lists keep URLs short).
+  async listProductCards() {
+    const products = await this.get("/catalogue_products?order=updated_at.desc&limit=5000");
+    const contents = new Map(), variants = new Map();
+    for (let i = 0; i < products.length; i += 100) {
+      const ids = products.slice(i, i + 100).map((p) => p.id).join(",");
+      const versions = await this.get(`/catalogue_product_versions?product_id=in.(${ids})&select=product_id,version,content`);
+      const wanted = new Map(products.slice(i, i + 100).map((p) => [p.id, p.current_version]));
+      versions.filter((v) => wanted.get(v.product_id) === v.version).forEach((v) => contents.set(v.product_id, v.content));
+      (await this.get(`/catalogue_variants?product_id=in.(${ids})&order=sku.asc`)).forEach((v) => { if (!variants.has(v.product_id)) variants.set(v.product_id, []); variants.get(v.product_id).push(v); });
+    }
+    return { products, contents, variants, truncated: products.length >= 5000 };
+  }
   async getVersion(id, version) { return (await this.get(`/catalogue_product_versions?product_id=eq.${encodeURIComponent(id)}&version=eq.${Number(version)}`))[0] || null; }
   listVersions(id) { return this.get(`/catalogue_product_versions?product_id=eq.${encodeURIComponent(id)}&select=version,materiality,author,created_at&order=version.asc`); }
   listReviews(id) { return this.get(`/catalogue_reviews?product_id=eq.${encodeURIComponent(id)}&order=created_at.asc`); }
@@ -264,6 +277,12 @@ class FileCatalogueStore {
       .map((p) => { const v = this.s.versions.find((x) => x.product_id === p.id && x.version === p.current_version) || { content: {} }; return { ...p, name: v.content.name || "", model: v.content.model || "" }; }));
   }
   async getProduct(id) { return clone(this.s.products.find((p) => p.id === id) || null); }
+  async listProductCards() {
+    const products = clone([...this.s.products].sort((a, b) => String(b.updated_at).localeCompare(String(a.updated_at))));
+    const contents = new Map(products.map((p) => [p.id, clone((this.s.versions.find((v) => v.product_id === p.id && v.version === p.current_version) || {}).content || {})]));
+    const variants = new Map(products.map((p) => [p.id, clone(this.s.variants.filter((v) => v.product_id === p.id).sort((a, b) => a.sku.localeCompare(b.sku)))]));
+    return { products, contents, variants, truncated: false };
+  }
   async getVersion(id, version) { return clone(this.s.versions.find((v) => v.product_id === id && v.version === Number(version)) || null); }
   async listVersions(id) { return clone(this.s.versions.filter((v) => v.product_id === id).sort((a, b) => a.version - b.version).map(({ version, materiality, author, created_at }) => ({ version, materiality, author, created_at }))); }
   async listReviews(id) { return clone(this.s.reviews.filter((r) => r.product_id === id)); }

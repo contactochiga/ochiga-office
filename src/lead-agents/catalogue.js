@@ -180,6 +180,97 @@ function diffContent(before = {}, after = {}) {
   return changes;
 }
 
+// One lifecycle label per product for lists and headers. Archived is the primary status whatever review state it was left in (the earlier
+// review states stay in the history). "Published · changes pending" = a live version plus a newer, not yet published one.
+function displayStatus(product) {
+  if (!product) return "draft";
+  if (product.publication_status === "archived") return "archived";
+  const pending = product.published_version != null && product.current_version > product.published_version;
+  if (product.publication_status === "published") return pending ? "published_changes_pending" : "published";
+  if (product.workflow_status === "in_review") return "in_review";
+  if (product.workflow_status === "changes_requested") return "changes_requested";
+  if (product.workflow_status === "approved") return product.publication_status === "unpublished" ? "unpublished" : "approved";
+  return product.publication_status === "unpublished" ? "unpublished" : "draft";
+}
+
+const DISPLAY_STATUSES = Object.freeze(["draft", "in_review", "changes_requested", "approved", "published", "published_changes_pending", "unpublished", "archived"]);
+
+// Availability of one variant (staff see the numbers; a future public projection shows only this label).
+function variantAvailability(variant) {
+  if (!variant || variant.status === "inactive" || variant.sourcing === "discontinued") return "unavailable";
+  if (variant.sourcing === "in_stock" && variant.stock_on_hand - variant.stock_reserved > 0) return "in_stock";
+  return "available_to_order";
+}
+
+// Summary row for the catalogue table: everything the list, filters, sorting and statistics need, computed from real records.
+function productCard(product, content = {}, variants = []) {
+  const active = variants.filter((v) => v.status === "active");
+  const prices = active.map((v) => v.price_ngn_kobo).filter((p) => Number.isSafeInteger(p));
+  const availabilities = new Set(active.map(variantAvailability));
+  const listedSkus = (content.variants || []).map((v) => v.sku);
+  return {
+    id: product.id,
+    slug: product.slug,
+    name: content.name || product.slug,
+    model: content.model || "",
+    summary: content.summary || "",
+    category_id: product.category_id,
+    brand_id: product.brand_id || null,
+    sku: listedSkus[0] || (variants[0] && variants[0].sku) || "",
+    sku_count: listedSkus.length,
+    skus: listedSkus,
+    stock_available: active.reduce((sum, v) => sum + Math.max(0, (v.stock_on_hand || 0) - (v.stock_reserved || 0)), 0),
+    price_min_kobo: prices.length ? Math.min(...prices) : null,
+    price_max_kobo: prices.length ? Math.max(...prices) : null,
+    availability: availabilities.has("in_stock") ? "in_stock" : availabilities.has("available_to_order") ? "available_to_order" : "unavailable",
+    status: displayStatus(product),
+    workflow_status: product.workflow_status,
+    publication_status: product.publication_status,
+    row_version: product.row_version,
+    current_version: product.current_version,
+    published_version: product.published_version,
+    updated_at: product.updated_at,
+    updated_by: product.updated_by,
+  };
+}
+
+const CARD_SORTS = Object.freeze({
+  updated: (a, b) => String(a.updated_at).localeCompare(String(b.updated_at)),
+  name: (a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" }),
+  sku: (a, b) => a.sku.localeCompare(b.sku),
+  price: (a, b) => (a.price_min_kobo ?? Number.MAX_SAFE_INTEGER) - (b.price_min_kobo ?? Number.MAX_SAFE_INTEGER),
+  stock: (a, b) => a.stock_available - b.stock_available,
+  status: (a, b) => DISPLAY_STATUSES.indexOf(a.status) - DISPLAY_STATUSES.indexOf(b.status),
+});
+
+// Statistics over the WHOLE catalogue (not the current page or filter), then filter -> sort -> paginate.
+function browseCards(cards, query = {}) {
+  const stats = {
+    total: cards.filter((c) => c.status !== "archived").length,
+    draft: cards.filter((c) => c.status === "draft" || c.status === "changes_requested").length,
+    in_review: cards.filter((c) => c.status === "in_review").length,
+    approved: cards.filter((c) => c.status === "approved").length,
+    published: cards.filter((c) => c.status === "published" || c.status === "published_changes_pending").length,
+    archived: cards.filter((c) => c.status === "archived").length,
+  };
+  const q = String(query.q || "").trim().toLowerCase();
+  const statusMatch = (c) => !query.status || (query.status === "active" ? c.status !== "archived" : query.status === "published" ? c.status === "published" || c.status === "published_changes_pending" : query.status === "draft" ? c.status === "draft" || c.status === "changes_requested" : c.status === query.status);
+  let rows = cards.filter((c) =>
+    (!q || [c.name, c.model, c.slug, c.summary, ...c.skus].some((t) => String(t || "").toLowerCase().includes(q)))
+    && (!query.category_id || c.category_id === query.category_id)
+    && (!query.brand_id || c.brand_id === query.brand_id)
+    && statusMatch(c)
+    && (!query.availability || c.availability === query.availability));
+  const sortKey = CARD_SORTS[query.sort] ? query.sort : "updated";
+  const dir = query.dir === "asc" || (!query.dir && sortKey !== "updated") ? 1 : -1;
+  rows = [...rows].sort((a, b) => dir * CARD_SORTS[sortKey](a, b) || a.name.localeCompare(b.name));
+  const total = rows.length;
+  const pageSize = Math.min(100, Math.max(1, Number.parseInt(query.page_size, 10) || 12));
+  const pages = Math.max(1, Math.ceil(total / pageSize));
+  const page = Math.min(pages, Math.max(1, Number.parseInt(query.page, 10) || 1));
+  return { stats, total, page, pages, page_size: pageSize, sort: sortKey, dir: dir === 1 ? "asc" : "desc", products: rows.slice((page - 1) * pageSize, page * pageSize) };
+}
+
 function validatePriceRequest(body = {}) {
   const errors = [];
   const price = body.price_ngn_kobo;
@@ -313,7 +404,12 @@ module.exports = {
   VAT_TREATMENTS,
   badRequest,
   canSeeCosts,
+  browseCards,
   diffContent,
+  displayStatus,
+  productCard,
+  variantAvailability,
+  DISPLAY_STATUSES,
   httpError,
   internalVariant,
   isUuid,

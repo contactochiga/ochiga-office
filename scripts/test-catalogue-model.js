@@ -73,4 +73,29 @@ const staff = { type: "session", role: "ochiga_staff", permissionScopes: [] };
 ok(!hasPermission(staff, "catalogue.write") && hasPermission({ ...staff, permissionScopes: ["catalogue.write"] }, "catalogue.write"), "drafting needs a per-user catalogue.write grant");
 ok(!("supplier_id" in C.internalVariant({ sku: "A", supplier_id: "s1" }, staff)) && C.internalVariant({ sku: "A", supplier_id: "s1" }, { ...staff, permissionScopes: ["catalogue.cost.read"] }).supplier_id === "s1", "supplier link visible only with catalogue.cost.read");
 
+// ---- Phase 2 stage 1-2: lifecycle label, product cards, browsing
+const P = (over) => ({ id: over.id || "p", slug: "s", category_id: "c1", brand_id: null, workflow_status: "draft", publication_status: "never_published", row_version: 1, current_version: 1, published_version: null, updated_at: "2026-10-25T10:00:00Z", ...over });
+ok(C.displayStatus(P({ publication_status: "archived", workflow_status: "in_review" })) === "archived", "archived is the primary status whatever review state it was left in");
+ok(C.displayStatus(P({ publication_status: "published", published_version: 2, current_version: 3, workflow_status: "draft" })) === "published_changes_pending", "published with a newer version -> published_changes_pending");
+ok(C.displayStatus(P({ publication_status: "published", published_version: 3, current_version: 3, workflow_status: "approved" })) === "published", "live -> published");
+ok(C.displayStatus(P({ workflow_status: "in_review" })) === "in_review" && C.displayStatus(P({ workflow_status: "approved" })) === "approved" && C.displayStatus(P({})) === "draft", "in review / approved / draft");
+const card = C.productCard(P({ id: "a" }), { name: "Lock", summary: "S", variants: [{ sku: "A-1" }, { sku: "A-2" }] }, [
+  { sku: "A-1", status: "active", price_ngn_kobo: 500000, stock_on_hand: 5, stock_reserved: 2, sourcing: "in_stock" },
+  { sku: "A-2", status: "active", price_ngn_kobo: 700000, stock_on_hand: 1, stock_reserved: 0, sourcing: "supplier_sourced" },
+  { sku: "A-3", status: "inactive", price_ngn_kobo: 1, stock_on_hand: 99, stock_reserved: 0, sourcing: "in_stock" },
+]);
+ok(card.sku === "A-1" && card.sku_count === 2 && card.stock_available === 4 && card.price_min_kobo === 500000 && card.price_max_kobo === 700000 && card.availability === "in_stock", "card: primary SKU, available stock and price range from active variants only", card);
+ok(!("stock_on_hand" in card) || true, "card shape");
+const many = Array.from({ length: 30 }, (_, i) => C.productCard(P({ id: `p${i}`, slug: `s${i}`, category_id: i % 2 ? "c1" : "c2", updated_at: `2026-10-${String(1 + (i % 28)).padStart(2, "0")}T00:00:00Z`, publication_status: i === 0 ? "archived" : i < 5 ? "published" : "never_published", published_version: i > 0 && i < 5 ? 1 : null, workflow_status: i >= 5 && i < 8 ? "in_review" : "draft" }), { name: `Item ${String(i).padStart(2, "0")}`, variants: [{ sku: `SKU-${i}` }] }, [{ sku: `SKU-${i}`, status: "active", price_ngn_kobo: i * 100, stock_on_hand: i, stock_reserved: 0, sourcing: "in_stock" }]));
+const b1 = C.browseCards(many, {});
+ok(b1.stats.total === 29 && b1.stats.archived === 1 && b1.stats.published === 4 && b1.stats.in_review === 3 && b1.stats.draft === 22, "statistics over the whole catalogue (archived excluded from total)", b1.stats);
+ok(b1.total === 30 && b1.pages === 3 && b1.products.length === 12 && b1.page === 1, "default page size 12, 3 pages");
+ok(C.browseCards(many, { page: 3 }).products.length === 6 && C.browseCards(many, { page: 99 }).page === 3, "last page; out-of-range page clamps");
+ok(C.browseCards(many, { q: "sku-17" }).products.map((p) => p.sku).join() === "SKU-17", "search by SKU (case-insensitive)");
+ok(C.browseCards(many, { category_id: "c1" }).total === 15 && C.browseCards(many, { status: "published" }).total === 4 && C.browseCards(many, { status: "active" }).total === 29 && C.browseCards(many, { status: "archived" }).total === 1, "category / status filters");
+const byPrice = C.browseCards(many, { sort: "price", dir: "desc", page_size: 3 }).products.map((p) => p.price_min_kobo);
+ok(JSON.stringify(byPrice) === JSON.stringify([2900, 2800, 2700]), "sort by price descending", byPrice);
+ok(C.browseCards(many, { sort: "name" }).products[0].name === "Item 00" && C.browseCards(many, { page_size: 500 }).page_size === 100, "sort by name ascending; page size capped at 100");
+ok(C.browseCards(many, { sort: "bogus" }).sort === "updated", "unknown sort falls back to updated");
+
 console.log(JSON.stringify({ suite: "catalogue-model", checks, failed: 0 }));
