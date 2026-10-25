@@ -27,6 +27,7 @@ async function main() {
   const people = {
     writer: { role: "ochiga_staff", scopes: ["catalogue.write"] },
     staff: { role: "ochiga_staff", scopes: [] },
+    editor: { role: "ochiga_staff", scopes: ["catalogue.write", "catalogue.review"] },
     reviewer: { role: "ochiga_staff", scopes: ["catalogue.review"] },
     publisher: { role: "ochiga_staff", scopes: ["catalogue.publish"] },
     pricer: { role: "ochiga_staff", scopes: ["catalogue.price.approve"] },
@@ -139,6 +140,18 @@ async function main() {
     await fillDialog({ name: "Lagos Locks Ltd", country: "NG" });
     await waitFor(`/Lagos Locks Ltd/.test(document.querySelector('.catalogue-host')?.textContent || '')`, "supplier listed");
     console.log("5. Finance: suppliers tab visible, supplier recorded — PASS");
+
+    // 5a. an author who also holds review sees no Approve on their own submitted change (the database refuses it anyway)
+    await as("editor", "catalogue");
+    await waitFor(`[...document.querySelectorAll('button')].some((b) => b.textContent.trim() === 'New product')`, "editor list");
+    assert.ok(await clickButton("New product"));
+    await waitFor(`!!document.querySelector('.dialog-card [name="slug"]')`, "editor new product dialog");
+    await fillDialog({ name: "Editor Own Product", slug: "editor-own-product", model: "EO-1", sku: "EO-1", variant_name: "Standard" });
+    await waitFor(`document.querySelector('.view-heading h1')?.textContent === 'Editor Own Product'`, "editor product page");
+    assert.ok(await clickButton("Submit for review"));
+    await waitFor(`/In Review/i.test(document.querySelector('.view-heading')?.textContent || '') && !!document.querySelector('.catalogue-own-change')`, "own-change note");
+    assert.ok(!(await buttons()).includes("Approve") && !(await buttons()).includes("Request changes"), "no review actions on one's own change");
+    console.log("5a. Author holding review: no Approve/Request changes on own change, explanatory note shown — PASS");
 
     // 5b. least privilege: a general staff member sees the catalogue read-only (no create, no workflow actions, no price/inventory buttons)
     await as("staff", "catalogue");

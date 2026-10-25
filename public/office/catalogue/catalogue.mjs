@@ -219,9 +219,14 @@ async function renderProduct(host, id, token, ui) {
   const button = (label, tone, handler) => { const b = el(`<button type="button" class="btn btn-sm ${tone}">${escapeHtml(label)}</button>`); b.addEventListener("click", handler); actions.appendChild(b); };
   if (!archived) {
     if (permissions.write && ["draft", "changes_requested"].includes(product.workflow_status)) button("Submit for review", "btn-primary", () => act("submit", {}, "Submitted for review. Reviewers were notified."));
-    if (permissions.review && product.workflow_status === "in_review") {
+    // second-person rule (also enforced by the database): an author of any version in the pending change set is not offered review actions
+    const me = String((ui.state.admin && ui.state.admin.email) || "").toLowerCase();
+    const changeAuthors = new Set(versions.filter((v) => v.version > (product.published_version || 0) && v.version <= product.current_version).map((v) => String(v.author || "").toLowerCase()));
+    if (permissions.review && product.workflow_status === "in_review" && !changeAuthors.has(me)) {
       button("Approve", "btn-primary", () => act("approve", {}, "Approved."));
       button("Request changes", "btn-ghost", () => ui.openDialog("Request changes", [{ name: "note", label: "What needs to change?", type: "textarea" }], (data) => act("request-changes", { note: data.note }, "Changes requested; the authors were notified.")));
+    } else if (permissions.review && product.workflow_status === "in_review") {
+      actions.appendChild(el(`<span class="muted catalogue-own-change">You authored this change — another reviewer must approve it.</span>`));
     }
     const live = product.publication_status === "published" && product.published_version === product.current_version;
     // every change is reviewed: publication is offered only for an approved current version (no minor/typo path)

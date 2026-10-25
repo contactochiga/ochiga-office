@@ -273,6 +273,17 @@ async function runCatalogueScenarios({ base, users, fullKey, scopedKey, check, l
     check(id("AT10e"), "a never-published product's slug can still change", slugLocked.status === 200 && slugLocked.json.product.slug === `copy-renamed-${slugTag}`, slugLocked.json);
   }
 
+  // ------------------------------------------------------------------------------------------------ archived products receive no review decision (20261103)
+  {
+    const a = await A.writerA.post("/products", { slug: `archived-review-${slugTag}`, content: content({ name: "Archived review probe", variants: [{ sku: `ARV-${tag}`, name: "x" }] }) });
+    const s1 = await A.writerA.post(`/products/${a.json.product.id}/submit`, { expected_row_version: a.json.product.row_version });
+    const ar = await A.publisher.post(`/products/${a.json.product.id}/archive`, { expected_row_version: s1.json.product.row_version });
+    const appr = await A.reviewer.post(`/products/${a.json.product.id}/approve`, { expected_row_version: ar.json.product.row_version });
+    const chg = await A.reviewer.post(`/products/${a.json.product.id}/request-changes`, { expected_row_version: ar.json.product.row_version, note: "x" });
+    const pub = await A.superAdmin.post(`/products/${a.json.product.id}/publish`, { expected_row_version: ar.json.product.row_version, override_reason: "Override attempt on an archived product" });
+    check(id("ARC1"), "an archived product (left in review) cannot be approved, sent back for changes, or published (also not by override)", ar.json.product.publication_status === "archived" && ar.json.product.workflow_status === "in_review" && appr.status === 409 && chg.status === 409 && pub.status === 409, { appr: [appr.status, appr.json && appr.json.error], chg: chg.status, pub: [pub.status, pub.json && pub.json.error] });
+  }
+
   // ------------------------------------------------------------------------------------------------ AT-30 / AT-31 prices
   const p2 = await A.writerA.post("/products", { slug: `gateway-${slugTag}`, content: content({ name: "Oyi Edge Gateway", model: `EG-${tag}`, category_id: cat2Id, variants: [{ sku: `EG-${tag}`, name: "Standard", options: {} }] }) });
   const variant = p2.json.variants[0];

@@ -25,6 +25,8 @@ const SITE_KEY = `oyi_${crypto.randomBytes(24).toString("hex")}`, FULL_KEY = `fu
 const SESSION_SECRET = crypto.randomBytes(24).toString("hex");
 const MIGRATION = path.join(ROOT, "db", "20261102_catalogue_foundation.sql");
 const ROLLBACK = path.join(ROOT, "db", "rollback", "20261102_catalogue_foundation.down.sql");
+// follow-up catalogue migrations, applied (in order) right after 20261102
+const CATALOGUE_FOLLOWUPS = fs.readdirSync(path.join(ROOT, "db")).filter((f) => /^202611(0[3-9]|[1-9]\d)_catalogue_.*\.sql$/.test(f)).sort();
 const sha = (v) => crypto.createHash("sha256").update(v).digest("hex");
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 let checks = 0, failures = 0;
@@ -61,7 +63,7 @@ async function setup() {
   psql(fs.readFileSync(path.join(ROOT, "db", "lead-agents-schema.sql"), "utf8"), { stop: false });
   const second = psql(fs.readFileSync(path.join(ROOT, "db", "lead-agents-schema.sql"), "utf8"), { stop: false });
   check("M00", "bootstrap schema: second pass is clean", !/ERROR/.test(second.err), second.err.slice(0, 300));
-  const dated = fs.readdirSync(path.join(ROOT, "db")).filter((f) => /^2026\d+.*\.sql$/.test(f) && f !== path.basename(MIGRATION)).sort();
+  const dated = fs.readdirSync(path.join(ROOT, "db")).filter((f) => /^2026\d+.*\.sql$/.test(f) && f !== path.basename(MIGRATION) && !CATALOGUE_FOLLOWUPS.includes(f)).sort();
   const failed = dated.map((f) => ({ f, r: applyFile(path.join(ROOT, "db", f)) })).filter((x) => x.r.status !== 0);
   check("M01", "every earlier dated migration (incl. 20261101 intake receipts) applies", failed.length === 0, failed.map((x) => x.f + ": " + x.r.err.slice(0, 200)));
   // the production hardening state measured in R11 (RLS everywhere, nothing for PUBLIC/anon/authenticated, schema USAGE closed)
@@ -143,7 +145,10 @@ async function main() {
   // ------------------------------------------------------------------------------------------------ migration
   const m1 = applyFile(MIGRATION);
   check("M10", "catalogue migration applies on top of every shipped migration and the hardened schema", m1.status === 0, m1.err.slice(0, 400));
+  const followups = CATALOGUE_FOLLOWUPS.map((f) => ({ f, r: applyFile(path.join(ROOT, "db", f)) }));
+  check("M10b", `catalogue follow-up migrations apply after 20261102 (${CATALOGUE_FOLLOWUPS.join(", ") || "none"})`, followups.every((x) => x.r.status === 0), followups.map((x) => x.f + ": " + x.r.err.slice(0, 200)));
   const m2 = applyFile(MIGRATION);
+  CATALOGUE_FOLLOWUPS.forEach((f) => applyFile(path.join(ROOT, "db", f)));
   check("M11", "…and is idempotent (second apply clean, seed not duplicated)", m2.status === 0 && one("select count(*) from catalogue_categories") === "6", { err: m2.err.slice(0, 300), categories: one("select count(*) from catalogue_categories") });
 
   // ------------------------------------------------------------------------------------------------ privilege boundary
@@ -225,6 +230,12 @@ async function main() {
     const neverPub = one("select id || '|' || row_version || '|' || slug || '|' || category_id from catalogue_products where published_version is null and publication_status <> 'archived' limit 1").split("|");
     const fakeMaterial = c(`select catalogue_save_version('${neverPub[0]}', ${neverPub[1]}, '${neverPub[2]}', '${neverPub[3]}', null, '{"name":"x","variants":[]}'::jsonb, 'material', 'tamper@x');`);
     check("DB02", "the database knows no 'minor' class at all (refused even when the application asks), 'initial' is refused after publication and 'material' before it", /invalid_materiality/.test(fakeMinor.err) && /initial_not_allowed/.test(fakeInitial.err) && /material_not_allowed/.test(fakeMaterial.err) && one("select count(*) from catalogue_product_versions where materiality not in ('initial','material')") === "0", { fakeMinor: fakeMinor.err.slice(0, 160), fakeInitial: fakeInitial.err.slice(0, 160), fakeMaterial: fakeMaterial.err.slice(0, 160) });
+    const arch = c(`select (catalogue_create_product('db-archived-${RUN}', '${cat}', null, '{"name":"Archived","variants":[{"sku":"DBA-${RUN.toUpperCase()}","name":"x"}]}'::jsonb, 'author2@x'))->>'id';`).out.split("\n").pop();
+    c(`select catalogue_transition('${arch}', 1, 'submit', 'author2@x', '', '');`);
+    c(`select catalogue_transition('${arch}', 2, 'archive', 'admin@x', '', '');`);
+    const archApprove = c(`select catalogue_transition('${arch}', 3, 'approve', 'reviewer9@x', '', '');`);
+    const archChanges = c(`select catalogue_transition('${arch}', 3, 'request_changes', 'reviewer9@x', '', '');`);
+    check("DB03", "in the database: an archived product cannot be approved or sent back for changes by another reviewer (20261103)", /state_changed/.test(archApprove.err) && /state_changed/.test(archChanges.err) && one(`select workflow_status || '/' || publication_status from catalogue_products where id='${arch}'`) === "in_review/archived", { archApprove: archApprove.err.slice(0, 120), archChanges: archChanges.err.slice(0, 120) });
     check("DB01", "in the database itself: the author cannot approve (own_change) and an override reason < 20 chars is refused", /own_change/.test(selfApprove.err) && /override_reason_too_short/.test(shortOverride.err), { selfApprove: selfApprove.err.slice(0, 160), shortOverride: shortOverride.err.slice(0, 160) });
     // 20 concurrent approve transactions, each in its own session
     const res = await concurrentSql(Array.from({ length: 20 }, (_, i) => `set role service_role; select (catalogue_transition('${pid}', 2, 'approve', 'reviewer${i}@x', '', ''))->>'workflow_status';`));
@@ -254,6 +265,7 @@ async function main() {
     check("M30", "rollback (functions only): applies; catalogue writes answer 503 catalogue_unavailable; the rest of Office is unaffected (healthz 200)", rb.status === 0 && write.status === 503 && health.status === 200, { rb: rb.err.slice(0, 200), write: write.status, health: health.status });
     check("M31", "…and keeps every table and row (non-destructive)", one("select count(*) from catalogue_product_versions") === before && one(`select count(*) from pg_class where relnamespace='public'::regnamespace and relname in (${tl})`) === "12", { before, after: one("select count(*) from catalogue_product_versions") });
     const re = applyFile(MIGRATION);
+    CATALOGUE_FOLLOWUPS.forEach((f) => applyFile(path.join(ROOT, "db", f)));
     await reloadSchema(restUrl);
     check("M32", "re-applying the migration restores the functions with the data intact (seed not duplicated)", re.status === 0 && one("select count(*) from pg_proc where pronamespace='public'::regnamespace and proname like 'catalogue\\_%'") === "11" && one("select count(*) from catalogue_categories where created_by='migration'") === "6", re.err.slice(0, 200));
   }

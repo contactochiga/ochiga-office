@@ -331,7 +331,8 @@ class FileCatalogueStore {
     } else if (action === "approve" || action === "request_changes") {
       const ownChange = matches && p.workflow_status === "in_review" && this.s.versions.some((v) => v.product_id === id && v.version > (p.published_version || 0) && v.version <= p.review_version && v.author === actor);
       if (ownChange) throw httpError(403, "own_change");
-      if (!matches || p.workflow_status !== "in_review" || p.review_version !== p.current_version) this.stateChanged(p);
+      // 20261103: an archived product receives no review decision
+      if (!matches || p.workflow_status !== "in_review" || p.review_version !== p.current_version || p.publication_status === "archived") this.stateChanged(p);
       const approve = action === "approve";
       bump({ workflow_status: approve ? "approved" : "changes_requested", approved_version: approve ? p.review_version : null });
       review(p.review_version, approve ? "approved" : "changes_requested", note);
