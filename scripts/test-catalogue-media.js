@@ -124,6 +124,14 @@ async function main() {
   check("MG09", "catalogue table card carries the cover image id and image count", card.cover_media_id === ids[1] && card.image_count === 2);
   check("MG10", "documents are still refused", errs({ ...base, documents: [{ x: 1 }] }).some((e) => /documents/.test(e)));
 
+  // deployment limits may only tighten the reviewed defaults
+  const { execFileSync } = require("child_process");
+  const limitsWith = (env) => JSON.parse(execFileSync(process.execPath, ["-e", "console.log(JSON.stringify(require('./src/lead-agents/catalogue-media').MEDIA_LIMITS))"], { cwd: require("path").resolve(__dirname, ".."), env: { ...process.env, ...env } }).toString());
+  const tight = limitsWith({ CATALOGUE_MEDIA_MAX_BYTES: "5242880", CATALOGUE_MEDIA_MAX_PIXELS: "12000000", CATALOGUE_MEDIA_QUEUE: "0", CATALOGUE_MEDIA_TIMEOUT_SECONDS: "60" });
+  const loose = limitsWith({ CATALOGUE_MEDIA_MAX_BYTES: "99999999999", CATALOGUE_MEDIA_MAX_PIXELS: "90000000", CATALOGUE_MEDIA_QUEUE: "50", CATALOGUE_MEDIA_TIMEOUT_SECONDS: "999" });
+  check("MD15", "deployment settings can tighten size / pixels / queue (and raise the timeout to ≤ 120 s) but never loosen the reviewed defaults",
+    tight.maxBytes === 5242880 && tight.maxPixels === 12000000 && tight.queue === 0 && tight.timeoutSeconds === 60
+      && loose.maxBytes === 15728640 && loose.maxPixels === 40000000 && loose.queue === 6 && loose.timeoutSeconds === 30, { tight, loose });
   console.log(`\n${checks - failures}/${checks} passed`);
   process.exit(failures ? 1 : 0);
 }

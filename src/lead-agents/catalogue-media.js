@@ -16,17 +16,27 @@ const { httpError } = require("./catalogue");
 sharp.concurrency(1);
 sharp.cache(false);
 
+// Server-enforced limits. Deployment settings may only TIGHTEN the reviewed defaults (a value outside [min, default] is ignored), e.g.
+// on a small instance: CATALOGUE_MEDIA_MAX_BYTES=5242880 CATALOGUE_MEDIA_MAX_PIXELS=12000000 CATALOGUE_MEDIA_QUEUE=0 (one upload at a
+// time, nothing waiting). The timeout may be raised (slow CPUs) up to 120 s.
+function tightened(name, fallback, min, max = fallback) {
+  const raw = process.env[name];
+  if (raw === undefined || raw === "") return fallback;
+  const value = Number(raw);
+  return Number.isInteger(value) && value >= min && value <= max ? value : fallback;
+}
+
 const MEDIA_LIMITS = Object.freeze({
-  maxBytes: 15 * 1024 * 1024,
-  maxPixels: 40_000_000,
+  maxBytes: tightened("CATALOGUE_MEDIA_MAX_BYTES", 15 * 1024 * 1024, 1024 * 1024),
+  maxPixels: tightened("CATALOGUE_MEDIA_MAX_PIXELS", 40_000_000, 1_000_000),
   maxSide: 8000,
   minSide: 200,
   gallery: 12,
   galleryVisible: 5,
   alt: 250,
   caption: 300,
-  queue: 6,
-  timeoutSeconds: 30,
+  queue: tightened("CATALOGUE_MEDIA_QUEUE", 6, 0),
+  timeoutSeconds: tightened("CATALOGUE_MEDIA_TIMEOUT_SECONDS", 30, 10, 120),
 });
 
 const DERIVATIVES = Object.freeze([
@@ -97,6 +107,7 @@ async function processProductImage(buffer) {
     const width = swap ? meta.height : meta.width;
     const height = swap ? meta.width : meta.height;
     if (!width || !height) throw rejected(422, "image_unreadable");
+    if (width * height > MEDIA_LIMITS.maxPixels) throw rejected(422, "image_too_many_pixels", { details: [`at most ${MEDIA_LIMITS.maxPixels} pixels`] });
     if (width > MEDIA_LIMITS.maxSide || height > MEDIA_LIMITS.maxSide) throw rejected(422, "image_dimensions_too_large", { details: [`at most ${MEDIA_LIMITS.maxSide} px per side`] });
     if (width < MEDIA_LIMITS.minSide || height < MEDIA_LIMITS.minSide) throw rejected(422, "image_dimensions_too_small", { details: [`at least ${MEDIA_LIMITS.minSide} px per side`] });
     const derivatives = [];

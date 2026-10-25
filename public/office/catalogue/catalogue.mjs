@@ -282,16 +282,16 @@ const thumbHtml = (ui, mediaId, alt = "") => (mediaId ? `<img src="${ui.escapeHt
 
 const MEDIA_MAX = 12;
 const MEDIA_VISIBLE = 5;
-const UPLOAD_MAX_BYTES = 15 * 1024 * 1024;
+const UPLOAD_MAX_BYTES = 15 * 1024 * 1024; // fallback; the server's own limits (media_library.limits) take precedence
 const UPLOAD_ERRORS = {
   unsupported_image_type: "Not a JPEG, PNG or WebP image",
-  image_too_large: "Larger than 15 MB",
+  image_too_large: "Larger than the upload limit",
   image_unreadable: "Damaged file, or not a real image",
   image_format_mismatch: "The file content does not match its image format",
   image_animated: "Animated images are not supported",
   image_dimensions_too_small: "Too small (at least 200 px per side)",
   image_dimensions_too_large: "Too large (at most 8000 px per side)",
-  image_too_many_pixels: "Too many pixels (at most 40 megapixels)",
+  image_too_many_pixels: "Too many pixels for this server (see the limit above)",
   image_empty: "Empty file",
   product_archived: "The product is archived",
   media_limit: "This product already stores 60 images",
@@ -618,6 +618,8 @@ async function renderEditor(right, id, ui, ctx) {
   // ---- gallery (Phase 2 stage 3). draft.media = [{media_id, cover, alt, caption, variant_skus}], array order = gallery order.
   // Uploads go to the product's image library at once; arranging the gallery is a content change saved (and reviewed) as a new version.
   const library = { available: Boolean(detail.media_library && detail.media_library.available), items: (detail.media_library && detail.media_library.items) || [] };
+  const limits = (detail.media_library && detail.media_library.limits) || { max_bytes: UPLOAD_MAX_BYTES, max_pixels: 40_000_000, parallel_uploads: 2 };
+  const limitText = `JPEG, PNG or WebP, up to ${Math.round(limits.max_bytes / 1048576)} MB and ${Math.round(limits.max_pixels / 1_000_000)} megapixels each${limits.parallel_uploads === 1 ? ", processed one at a time" : ""}.`;
   const uploads = [];
   let uploadSeq = 0;
   let selectedMedia = null;
@@ -662,7 +664,7 @@ async function renderEditor(right, id, ui, ctx) {
   function startUploads(files, { replaceIndex = null } = {}) {
     [...files].forEach((file) => {
       const job = { key: `u${(uploadSeq += 1)}`, file, name: file.name || "image", progress: 0, state: "queued", message: "", replaceIndex, busyRetries: 0 };
-      if (file.size > UPLOAD_MAX_BYTES) Object.assign(job, { state: "failed", message: UPLOAD_ERRORS.image_too_large, final: true });
+      if (file.size > limits.max_bytes) Object.assign(job, { state: "failed", message: `Larger than ${Math.round(limits.max_bytes / 1048576)} MB`, final: true });
       uploads.push(job);
     });
     drawUploads();
@@ -670,7 +672,7 @@ async function renderEditor(right, id, ui, ctx) {
   }
   function pumpUploads() {
     // two at a time: the server processes one image at a time and queues a few
-    while (uploads.filter((u) => u.state === "uploading" || u.state === "processing").length < 2) {
+    while (uploads.filter((u) => u.state === "uploading" || u.state === "processing").length < (limits.parallel_uploads || 1)) {
       const next = uploads.find((u) => u.state === "queued");
       if (!next) break;
       runUpload(next);
@@ -758,7 +760,7 @@ async function renderEditor(right, id, ui, ctx) {
       <div class="cat-mgrid" data-mgrid></div>
       ${slots < MEDIA_MAX && count < MEDIA_MAX && arrange ? `<button type="button" class="cat-clear" style="margin-top:8px;" data-more-slots>Show all ${MEDIA_MAX} positions</button>` : ""}
       ${readinessHtml()}
-      <p class="cat-note" style="margin:8px 0 0;">${arrange ? "JPEG, PNG or WebP, up to 15 MB each. Drag images here or use Add images. Drag tiles (or use ‹ ›) to reorder; ★ sets the cover. Changes are saved as a new draft version and reviewed like any other content." : "Read-only."}</p>
+      <p class="cat-note" style="margin:8px 0 0;" data-upload-limits>${arrange ? `${limitText} Drag images here or use Add images. Drag tiles (or use ‹ ›) to reorder; ★ sets the cover. Changes are saved as a new draft version and reviewed like any other content.` : "Read-only."}</p>
       <div class="cat-uploads" data-uploads></div><div data-mdetail></div></div>`);
     const grid = card.querySelector("[data-mgrid]");
     let dragFrom = null;

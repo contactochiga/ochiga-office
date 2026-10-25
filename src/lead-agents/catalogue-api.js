@@ -45,6 +45,8 @@ async function mediaLibrary(cat, productId) {
   const [rows, refs] = await Promise.all([cat.listMedia(productId), cat.mediaReferences(productId)]);
   return {
     available: true,
+    // the server's actual limits, so the Products screen refuses and paces uploads the same way the server does
+    limits: { max_bytes: M.MEDIA_LIMITS.maxBytes, max_pixels: M.MEDIA_LIMITS.maxPixels, min_side: M.MEDIA_LIMITS.minSide, max_side: M.MEDIA_LIMITS.maxSide, parallel_uploads: M.MEDIA_LIMITS.queue === 0 ? 1 : 2 },
     items: rows.map((m) => ({
       id: m.id, status: m.status, format: m.format, width: m.width, height: m.height, bytes: m.bytes, original_name: m.original_name,
       uploaded_by: m.uploaded_by, created_at: m.created_at, removed_at: m.removed_at || null,
