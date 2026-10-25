@@ -506,8 +506,14 @@ function errorCategory(error) {
  * "unavailable" (nothing could be filed -- retryable).
  * Without the receipts migration the Phase 0 behaviour is kept (timeline-based recognition, no atomic claim), reported as receipts:false.
  */
-async function fileIntakeSubmission(store, envelope, { client = "", actor, log = () => {}, timelineMetadata = () => ({}) } = {}) {
+// The receipt key column holds at most 200 characters; a longer caller-supplied key is represented by its SHA-256 (the timeline keeps the original).
+function receiptKeyFor(key) {
+  return key.length <= 190 ? key : `sha256:${crypto.createHash("sha256").update(key).digest("hex")}`;
+}
+
+async function fileIntakeSubmission(store, envelope, { client = "", actor, log = () => {}, timelineMetadata = () => ({}), leaseSeconds = INTAKE_LEASE_SECONDS } = {}) {
   const key = envelope.idempotency_key;
+  const receiptKey = receiptKeyFor(key);
   const digest = intakeDigest(envelope);
   let receipts = false;
   try {
@@ -518,14 +524,22 @@ async function fileIntakeSubmission(store, envelope, { client = "", actor, log =
   }
 
   let attempt = 0;
+  let claim = null;
   if (receipts) {
-    let claim;
     try {
-      claim = await store.claimIntakeReceipt({ key, client, requestId: envelope.request_id, digest, leaseSeconds: INTAKE_LEASE_SECONDS });
+      claim = await store.claimIntakeReceipt({ key: receiptKey, client, requestId: envelope.request_id, digest, leaseSeconds });
     } catch (error) {
-      log("warn", "office_intake.claim_failed", { reason: errorCategory(error) });
-      return { outcome: "unavailable", receipts, error: "receipt_claim_failed" };
+      if (error && error.code === "intake_receipts_unavailable") {
+        // the receipts functions were removed under this process (rollback): continue on the Phase 0 path instead of failing
+        log("warn", "office_intake.receipts_disappeared", {});
+        receipts = false;
+      } else {
+        log("warn", "office_intake.claim_failed", { reason: errorCategory(error) });
+        return { outcome: "unavailable", receipts, error: "receipt_claim_failed" };
+      }
     }
+  }
+  if (receipts) {
     if (claim.outcome === "conflict") return { outcome: "conflict", receipts };
     if (claim.outcome === "in_progress") return { outcome: "in_progress", receipts };
     if (claim.outcome === "duplicate") {
@@ -537,7 +551,7 @@ async function fileIntakeSubmission(store, envelope, { client = "", actor, log =
       // submissions filed before receipts existed: recognise them once and record them as completed
       const legacy = await findExistingIntakeLead(store, key);
       if (legacy) {
-        await store.completeIntakeReceipt({ key, attempt, leadId: legacy.id });
+        await store.completeIntakeReceipt({ key: receiptKey, attempt, leadId: legacy.id }).catch(() => false);
         return { outcome: "duplicate", receipts, lead: legacy, leadId: legacy.id, legacy: true };
       }
     }
@@ -550,7 +564,7 @@ async function fileIntakeSubmission(store, envelope, { client = "", actor, log =
     const category = `${stage}:${errorCategory(error)}`;
     log("warn", "office_intake.write_failed", { stage, reason: category, attempt });
     if (receipts) {
-      try { await store.failIntakeReceipt({ key, attempt, leadId: leadId || null, error: category }); } catch { /* the lease expires on its own; the key stays retryable */ }
+      try { await store.failIntakeReceipt({ key: receiptKey, attempt, leadId: leadId || null, error: category }); } catch { /* the lease expires on its own; the key stays retryable */ }
     }
     return category;
   };
@@ -601,7 +615,7 @@ async function fileIntakeSubmission(store, envelope, { client = "", actor, log =
   }
 
   if (receipts) {
-    const completed = await store.completeIntakeReceipt({ key, attempt, leadId: lead.id }).catch(() => false);
+    const completed = await store.completeIntakeReceipt({ key: receiptKey, attempt, leadId: lead.id }).catch(() => false);
     // a false here means a newer attempt took the key over after this one's lease expired; the work above is idempotent, so both are consistent
     if (!completed) log("warn", "office_intake.complete_superseded", { attempt });
   }

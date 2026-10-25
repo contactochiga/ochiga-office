@@ -2180,10 +2180,16 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
     return backendEventResult;
   }
 
+  // A receipt lease must outlive the longest request this server lets run (LEAD_AGENTS_REQUEST_TIMEOUT_MS), otherwise a slow attempt could be
+  // re-claimed while it is still writing. Bounded by the database function's 5..600 s range.
+  const intakeLeaseSeconds = Math.min(600, Math.max(60, Math.ceil((Number(config.requestTimeoutMs) || 120000) / 1000) + 30));
+  const scopedClientPrefixes = (config.scopedApiKeys || []).map((entry) => `${entry.client}:`);
+
   async function respondToIntake({ res, ctx, envelope, client, minimal }) {
     const result = await fileIntakeSubmission(store, envelope, {
       client,
       log,
+      leaseSeconds: intakeLeaseSeconds,
       timelineMetadata: (lead) => ({ public_context_ref: createFormContinuationContext(envelope, lead).public_context_ref }),
     });
     const backendEventResult = result.outcome === "filed" ? await publishIntakeMaterialEvent(envelope, result, ctx.requestId) : null;
@@ -4032,6 +4038,11 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
         const envelope = normalizeOfficeIntakeEnvelope(body);
         // keys from a scoped client live in that client's namespace, so one website can never collide with (or probe) another's
         if (scopedIntake) envelope.idempotency_key = `${authContext.client}:${envelope.idempotency_key}`;
+        else if (scopedClientPrefixes.some((prefix) => envelope.idempotency_key.startsWith(prefix))) {
+          // a scoped client's namespace is reserved: a staff/full-key caller cannot collide with (or probe) a website's submissions
+          json(res, 400, { ok: false, error: "idempotency_key_reserved", retryable: false }, { "x-request-id": ctx.requestId });
+          return;
+        }
         await respondToIntake({ res, ctx, envelope, client: scopedIntake ? authContext.client : "", minimal: scopedIntake });
         return;
       }
@@ -4061,6 +4072,17 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           methodNotAllowed(res, "GET,POST");
           return;
         }
+        // same-origin only: SameSite=Lax still sends the staff cookie on a POST from a SIBLING site of the same registrable domain, so the
+        // Origin must name this host (directly, or as forwarded by the Office front end). A form POST cannot forge either header.
+        const origin = String(req.headers.origin || "");
+        const hosts = [String(req.headers.host || ""), String(req.headers["x-forwarded-host"] || "").split(",")[0].trim()].filter(Boolean);
+        let originHost = "";
+        try { originHost = new URL(origin).host; } catch { originHost = ""; }
+        if (!originHost || !hosts.includes(originHost)) {
+          await appendAudit(store, authContext, "intake_recovery_rejected", "intake_receipt", "", { reason: "cross_origin", request_id: ctx.requestId });
+          json(res, 403, { error: "same_origin_required" }, { "x-request-id": ctx.requestId });
+          return;
+        }
         const raw = (await readRawBodyBuffer(req, 64 * 1024)).toString("utf8");
         const fields = String(req.headers["content-type"] || "").includes("application/json") ? (() => { try { return JSON.parse(raw || "{}") || {}; } catch { return {}; } })() : Object.fromEntries(new URLSearchParams(raw));
         const code = String(fields.code || "").trim();
@@ -4080,7 +4102,7 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
             `<form method="post"><input type="hidden" name="action" value="file"><input type="hidden" name="code" value="${escapeHtmlText(code)}"><button type="submit" style="padding:10px 18px">File enquiry</button></form><p style="color:#64748b;font-size:13px">Filing is safe to repeat: an enquiry that is already in Office is not filed twice.</p>`);
           return;
         }
-        const result = await fileIntakeSubmission(store, envelope, { client: verified.client, actor: authContext.email, log, timelineMetadata: (lead) => ({ public_context_ref: createFormContinuationContext(envelope, lead).public_context_ref, recovered_by: authContext.email }) });
+        const result = await fileIntakeSubmission(store, envelope, { client: verified.client, actor: authContext.email, log, leaseSeconds: intakeLeaseSeconds, timelineMetadata: (lead) => ({ public_context_ref: createFormContinuationContext(envelope, lead).public_context_ref, recovered_by: authContext.email }) });
         await appendAudit(store, authContext, "intake_recovered", "intake_receipt", envelope.idempotency_key, { outcome: result.outcome, client: verified.client, lead_id: result.lead?.id || result.leadId || null, request_id: ctx.requestId });
         if (result.outcome === "filed") await publishIntakeMaterialEvent(envelope, result, ctx.requestId);
         const messages = {

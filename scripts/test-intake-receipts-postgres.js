@@ -25,7 +25,7 @@ const ROLLBACK = path.join(ROOT, "db", "rollback", "20261101_office_intake_recei
 const sha = (v) => crypto.createHash("sha256").update(v).digest("hex");
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 let checks = 0, failures = 0;
-const check = (id, text, cond, detail) => { checks += 1; if (!cond) failures += 1; console.log(`${cond ? "PASS" : "FAIL"} ${id} ${text}${cond ? "" : " :: " + JSON.stringify(detail).slice(0, 500)}`); };
+const check = (id, text, cond, detail) => { checks += 1; if (!cond) failures += 1; console.log(`${cond ? "PASS" : "FAIL"} ${id} ${text}${cond ? "" : " :: " + String(JSON.stringify(detail === undefined ? null : detail)).slice(0, 500)}`); };
 const sh = (cmd, args, opts = {}) => spawnSync(cmd, args, { encoding: "utf8", maxBuffer: 64 * 1024 * 1024, ...opts });
 const freePort = () => new Promise((r) => { const s = net.createServer(); s.listen(0, "127.0.0.1", () => { const { port } = s.address(); s.close(() => r(port)); }); });
 const cleanup = [];
@@ -185,6 +185,9 @@ async function main() {
   check("P30", "10 simultaneous identical submissions through Office: exactly one 201, the rest 200/409", st.filter((s) => s === 201).length === 1 && st.every((s) => [200, 201, 409].includes(s)), st);
   let c = counts("burst@example.com", key);
   check("P31", "…one lead, one opportunity, one CRM activity, one intake event, receipt completed after ONE attempt", c.leads === 1 && c.opportunities === 1 && c.activities === 1 && c.events === 1 && c.receipt && c.receipt.status === "completed" && c.receipt.attempts === 1, c);
+  const lease150 = one(`select outcome from office_intake_claim('lease-probe:${RUN}', 'getoyi', 'r', '${"c".repeat(64)}', 150)`);
+  const lease601 = psql(`select outcome from office_intake_claim('lease-probe2:${RUN}', 'getoyi', 'r', '${"c".repeat(64)}', 601)`);
+  check("P32", "the application's lease (150 s for the default 120 s request timeout) is within the claim function's bounds; out-of-range leases are refused", lease150 === "claimed" && lease601.status !== 0 && /invalid_lease/.test(lease601.err), { lease150, lease601: lease601.err.slice(0, 120) });
 
   // interrupted CRM write, mode 1: the activity insert fails with a raised exception -> PostgREST 400 -> createCorporateRecord would have SWALLOWED it
   psql(`create table if not exists test_fault (target text primary key);
@@ -232,9 +235,12 @@ async function main() {
   // ---------------- rollback: non-destructive; the application falls back to Phase 0 behaviour
   const rb = applyFile(ROLLBACK);
   check("P70", "rollback runs, keeps the receipts table and its rows, removes the functions", rb.status === 0 && one("select to_regclass('public.office_intake_receipts') is not null") === "t" && Number(one("select count(*) from office_intake_receipts")) > 0 && one("select count(*) from pg_proc where proname like 'office_intake%'") === "0");
-  await reloadSchema(restUrl); await app.stop(); app = await startApp(gatewayUrl);
+  await reloadSchema(restUrl);
+  const live = await intake(app, envelope(crypto.randomUUID(), "live-rollback@example.com", "rollback without restart"));
+  check("P71a", "rollback WITHOUT restarting Office: the very next intake still files (falls back in the same request, no 503 window)", live.status === 201, live);
+  await app.stop(); app = await startApp(gatewayUrl);
   const fb = await intake(app, envelope(crypto.randomUUID(), "fallback@example.com", "after rollback"));
-  check("P71", "after rollback the application still files intake (Phase 0 path)", fb.status === 201, fb);
+  check("P71", "after rollback and a restart the application still files intake (Phase 0 path)", fb.status === 201, fb);
   // negative control: without the atomic claim, simultaneous identical submissions are NOT guaranteed to be filed once
   const N = crypto.randomUUID(), nenv = envelope(N, "race@example.com", "race");
   const nb = await Promise.all(Array.from({ length: 10 }, () => intake(app, nenv)));

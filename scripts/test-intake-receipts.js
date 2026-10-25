@@ -42,8 +42,10 @@ async function startServer() {
   throw new Error("server did not start: " + logs.join("").slice(-800));
 }
 
-async function call(base, method, p, { key, body, cookie, form, accept } = {}) {
+async function call(base, method, p, { key, body, cookie, form, accept, origin } = {}) {
   const headers = {};
+  // a browser always sends Origin on a form POST; tests send the page's own origin unless they test the refusal
+  if (method === "POST" && p.includes("/intake/recover") && origin !== null) headers.origin = origin || base;
   if (key) headers["x-api-key"] = key;
   if (cookie) headers.cookie = cookie;
   if (accept) headers.accept = accept;
@@ -101,6 +103,14 @@ async function main() {
     ok(reuse.status === 409 && reuse.json.error === "idempotency_key_reused" && reuse.json.retryable === false, "the same key with different content is refused (409, not retryable), never merged", reuse.json);
     ok(minimalOnly(reuse.json), "…minimal answer", Object.keys(reuse.json || {}));
 
+    // ---- reserved namespaces and oversized keys
+    const reserved = await call(base, "POST", "/api/office/intake", { key: FULL_KEY, body: envelope(`getoyi:${K}`, "burst@example.com") });
+    ok(reserved.status === 400 && reserved.json.error === "idempotency_key_reserved", "a full-key caller cannot use a website's key namespace (no collision or probing)", reserved.json);
+    const longKey = `long-${"x".repeat(400)}`;
+    const long1 = await call(base, "POST", "/api/office/intake", { key: FULL_KEY, body: envelope(longKey, "long@example.com") });
+    const long2 = await call(base, "POST", "/api/office/intake", { key: FULL_KEY, body: envelope(longKey, "long@example.com") });
+    ok(long1.status === 201 && long2.status === 200 && long2.json.duplicate === true, "a caller key longer than the receipt column is filed once and recognised on retry (hashed receipt key)", [long1.status, long2.status]);
+
     // ---- full keys keep their existing response shape
     const full = await call(base, "POST", "/api/office/intake", { key: FULL_KEY, body: envelope(crypto.randomUUID(), "full@example.com") });
     ok(full.status === 201 && full.json.lead && full.json.crm && full.json.crm.activity_id && full.json.conversation_continuation, "full-key callers still get the full response (lead, crm ids, continuation)", Object.keys(full.json || {}));
@@ -144,6 +154,12 @@ async function main() {
     const bySite = await call(base, "POST", "/api/lead-agents/admin/intake/recover", { key: SITE_KEY, form: { action: "file", code } });
     ok(bySite.status === 403, "the website's scoped key cannot redeem one either", bySite.status);
     const anon = await call(base, "POST", "/api/lead-agents/admin/intake/recover", { form: { action: "file", code } });
+    const crossSite = await call(base, "POST", "/api/lead-agents/admin/intake/recover", { cookie, origin: "https://www.ochiga.com.ng", form: { action: "file", code: recoveryCode(SITE_KEY, envelope(crypto.randomUUID(), "csrf@example.com")) } });
+    ok(crossSite.status === 403 && state().leads.every((l) => l.email !== "csrf@example.com"), "a recovery POST from another origin (e.g. a sibling site sharing the cookie domain) is refused and files nothing", crossSite.status);
+    const noOrigin = await call(base, "POST", "/api/lead-agents/admin/intake/recover", { cookie, origin: null, form: { action: "file", code: recoveryCode(SITE_KEY, envelope(crypto.randomUUID(), "noorigin@example.com")) } });
+    ok(noOrigin.status === 403, "…and one without an Origin header too", noOrigin.status);
+    const forwarded = await fetch(base + "/api/lead-agents/admin/intake/recover", { method: "POST", headers: { cookie, origin: "https://office.ochiga.com.ng", "x-forwarded-host": "office.ochiga.com.ng", "content-type": "application/x-www-form-urlencoded" }, body: new URLSearchParams({ action: "preview", code }).toString() });
+    ok(forwarded.status === 200, "…while the Office front end's own origin (forwarded host through the Vercel proxy) is accepted", forwarded.status);
     const previewFiles = await call(base, "POST", "/api/lead-agents/admin/intake/recover", { cookie, form: { action: "preview", code: recoveryCode(SITE_KEY, envelope(crypto.randomUUID(), "preview-only@example.com")) } });
     ok(previewFiles.status === 200 && state().leads.every((l) => l.email !== "preview-only@example.com"), "previewing a code files nothing");
     ok(anon.status === 401, "no credential: 401", anon.status);

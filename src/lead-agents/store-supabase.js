@@ -1317,20 +1317,47 @@ class SupabaseLeadAgentsStore {
     return this.intakeReceipts;
   }
 
+  // The functions can disappear under a running process (rollback without restart): forget the capability and tell the caller to fall back.
+  receiptsGone(error) {
+    if (error?.response?.status === 404 || error?.response?.data?.code === "PGRST202") {
+      this.intakeReceipts = false;
+      this.intakeReceiptsCheckedAt = Date.now();
+      const gone = new Error("intake_receipts_unavailable");
+      gone.code = "intake_receipts_unavailable";
+      return gone;
+    }
+    return error;
+  }
+
   async claimIntakeReceipt({ key, client, requestId, digest, leaseSeconds }) {
-    const response = await this.client.post("/rpc/office_intake_claim", { p_key: key, p_client: client || "", p_request_id: requestId || "", p_digest: digest, p_lease_seconds: leaseSeconds });
+    let response;
+    try {
+      response = await this.client.post("/rpc/office_intake_claim", { p_key: key, p_client: client || "", p_request_id: requestId || "", p_digest: digest, p_lease_seconds: leaseSeconds });
+    } catch (error) {
+      throw this.receiptsGone(error);
+    }
     const row = Array.isArray(response.data) ? response.data[0] : null;
     if (!row || typeof row.outcome !== "string") throw new Error("intake_receipt_claim_malformed");
     return { outcome: row.outcome, status: row.status, attempts: row.attempts, leadId: row.lead_id || null };
   }
 
   async completeIntakeReceipt({ key, attempt, leadId }) {
-    const response = await this.client.post("/rpc/office_intake_complete", { p_key: key, p_attempt: attempt, p_lead_id: leadId || null });
+    let response;
+    try {
+      response = await this.client.post("/rpc/office_intake_complete", { p_key: key, p_attempt: attempt, p_lead_id: leadId || null });
+    } catch (error) {
+      throw this.receiptsGone(error);
+    }
     return response.data === true;
   }
 
   async failIntakeReceipt({ key, attempt, leadId, error }) {
-    const response = await this.client.post("/rpc/office_intake_fail", { p_key: key, p_attempt: attempt, p_lead_id: leadId || null, p_error: String(error || "unknown").slice(0, 120) });
+    let response;
+    try {
+      response = await this.client.post("/rpc/office_intake_fail", { p_key: key, p_attempt: attempt, p_lead_id: leadId || null, p_error: String(error || "unknown").slice(0, 120) });
+    } catch (error) {
+      throw this.receiptsGone(error);
+    }
     return response.data === true;
   }
 
