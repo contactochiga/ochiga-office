@@ -159,6 +159,31 @@ async function handleCatalogueRequest({ req, res, ctx, pathname, authContext, st
     const cat = catalogueStoreFor(store);
     if (!(await cat.available())) return send(503, { error: "catalogue_unavailable", message: "The catalogue database objects are not installed." }), true;
     const actor = actorOf(authContext);
+    if (sub === "/merchandising" || sub === "/merchandising/options") {
+      const M = require("./catalogue-merchandising");
+      const { publicViews } = require("./catalogue-public-api");
+      if (sub.endsWith("/options")) {
+        if(method !== "GET") return send(405,{error:"method_not_allowed"}), true;
+        return send(200,{products:await publicViews(cat,await cat.listPublicListings())}),true;
+      }
+      if(method === "GET") return send(200,{merchandising:await M.read(cat)}),true;
+      if(method !== "POST") return send(405,{error:"method_not_allowed"}),true;
+      const body=await readJsonBody(req,64*1024);
+      const grants={save:"catalogue.write",submit:"catalogue.write",approve:"catalogue.review",reject:"catalogue.review",publish:"catalogue.public.publish",withdraw:"catalogue.public.publish"};
+      if(!Object.hasOwn(grants,body.action)) throw C.httpError(400,"invalid_campaign_action");
+      need(grants[body.action]);
+      const before=await M.read(cat);
+      const content=body.action === "save" ? M.normalize(body.content) : undefined;
+      if(body.action === "publish") {
+        const draft=before.versions.find(v=>v.version===before.current_version)?.content;
+        if(!draft) throw C.httpError(409,"invalid_campaign_transition");
+        M.assertEligible(draft,await publicViews(cat,await cat.listPublicListings()));
+      }
+      const updated=await M.mutate(cat,{action:body.action,expected:body.expected_row_version,content,actor,note:String(body.note||"").slice(0,500)});
+      await audit(`catalogue_merchandising_${body.action}`,"catalogue_merchandising","1",{version:updated.current_version,row_version:updated.row_version});
+      await notifyRecipients(store,eventBus,{recipientEmails:await reviewerEmails(store,actor),actorEmail:actor,type:"catalogue_merchandising_changed",summary:`Hardware merchandising: ${body.action}, version ${updated.current_version}`,relatedType:"catalogue_merchandising",relatedId:"1"});
+      return send(200,{merchandising:await M.read(cat)}),true;
+    }
     let m;
 
     // ------------------------------------------------------------------------------------------------ gallery media

@@ -17,6 +17,7 @@ const { appendAuditRecord } = require("./audit");
 const { hasPermission } = require("./permissions");
 const { catalogueStoreFor } = require("./catalogue-store");
 const PUB = require("./catalogue-public");
+const MERCH = require("./catalogue-merchandising");
 
 const PREFIX = "/api/public/catalogue";
 const PUBLIC_SCOPE = "catalogue.public.read";
@@ -104,6 +105,12 @@ async function handlePublicCatalogueRequest({ req, res, ctx, pathname, authConte
     const sub = pathname.slice(PREFIX.length) || "/";
     const url = new URL(req.url, "http://localhost");
     let m;
+
+    if (sub === "/merchandising") {
+      const state = await MERCH.read(cat);
+      const content = state.versions.find(v => v.version === state.published_version)?.content || MERCH.EMPTY;
+      return send(200, MERCH.project(content, await publicViews(cat, await cat.listPublicListings()))), true;
+    }
 
     if (sub === "/categories") {
       const views = await publicViews(cat, await cat.listPublicListings());

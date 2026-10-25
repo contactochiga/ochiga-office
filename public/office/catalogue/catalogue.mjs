@@ -346,6 +346,7 @@ export async function renderCatalogueRoute(outlet, rest, token, ui) {
   const [section, id] = rest;
   const tabs = [
     { key: "", label: "Products", permission: "catalogue.read" },
+    { key: "merchandising", label: "Hardware campaigns", permission: "catalogue.read" },
     { key: "prices", label: "Price approvals", permission: "catalogue.read" },
     { key: "taxonomy", label: "Categories & brands", permission: "catalogue.read" },
     { key: "suppliers", label: "Suppliers", permission: "catalogue.cost.read" },
@@ -369,7 +370,8 @@ export async function renderCatalogueRoute(outlet, rest, token, ui) {
   root.appendChild(host);
   host.appendChild(ui.skeletonPanel(4));
   try {
-    if (section === "prices") await renderPriceQueue(host, token, ui);
+    if (section === "merchandising") { const { renderMerchandising } = await import("./merchandising.mjs"); await renderMerchandising(host, token, ui); }
+    else if (section === "prices") await renderPriceQueue(host, token, ui);
     else if (section === "taxonomy") await renderTaxonomy(host, token, ui);
     else if (section === "suppliers") await renderSuppliers(host, token, ui);
     else await renderProductsWorkspace(host, headActions, section === "products" ? id : null, token, ui);

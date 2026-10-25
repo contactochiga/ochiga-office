@@ -48,12 +48,12 @@ function jwt(role) {
   return `${head}.${body}.${crypto.createHmac("sha256", JWT_SECRET).update(`${head}.${body}`).digest("base64url")}`;
 }
 
-const TABLES = ["office_suppliers", "catalogue_categories", "catalogue_brands", "catalogue_products", "catalogue_product_versions", "catalogue_reviews", "catalogue_publication_events", "catalogue_variants", "catalogue_price_changes", "catalogue_price_decisions", "catalogue_inventory_changes", "catalogue_variant_costs", "catalogue_media", "catalogue_media_derivatives", "catalogue_public_listings", "catalogue_public_events", "catalogue_slug_redirects", "catalogue_preview_grants"];
+const TABLES = ["catalogue_merchandising", "catalogue_merchandising_versions", "catalogue_merchandising_events", "office_suppliers", "catalogue_categories", "catalogue_brands", "catalogue_products", "catalogue_product_versions", "catalogue_reviews", "catalogue_publication_events", "catalogue_variants", "catalogue_price_changes", "catalogue_price_decisions", "catalogue_inventory_changes", "catalogue_variant_costs", "catalogue_media", "catalogue_media_derivatives", "catalogue_public_listings", "catalogue_public_events", "catalogue_slug_redirects", "catalogue_preview_grants"];
 // catalogue_media allows exactly one update (active -> removed, unreferenced only), tested separately in DBM1; everything else refused
-const APPEND_ONLY = ["catalogue_product_versions", "catalogue_reviews", "catalogue_publication_events", "catalogue_price_changes", "catalogue_price_decisions", "catalogue_inventory_changes", "catalogue_variant_costs", "catalogue_media", "catalogue_media_derivatives", "catalogue_public_events", "catalogue_slug_redirects"];
+const APPEND_ONLY = ["catalogue_merchandising_versions", "catalogue_merchandising_events", "catalogue_product_versions", "catalogue_reviews", "catalogue_publication_events", "catalogue_price_changes", "catalogue_price_decisions", "catalogue_inventory_changes", "catalogue_variant_costs", "catalogue_media", "catalogue_media_derivatives", "catalogue_public_events", "catalogue_slug_redirects"];
 const MEDIA_ROLLBACK = path.join(ROOT, "db", "rollback", "20261104_catalogue_media.down.sql");
 const PUBLIC_ROLLBACK = path.join(ROOT, "db", "rollback", "20261105_catalogue_public_release.down.sql");
-const FN_TOTAL = "28"; // 11 foundation + 5 media + 12 public release
+const FN_TOTAL = "29"; // 11 foundation + 5 media + 12 public release + 1 merchandising
 const inList = (list) => list.map((t) => `'${t}'`).join(",");
 
 async function setup() {
@@ -188,13 +188,13 @@ async function main() {
   const fnRows = JSON.parse(one(`select coalesce(json_agg(json_build_object('fn', p.oid::regprocedure::text, 'secdef', p.prosecdef, 'config', p.proconfig,
       'anon', has_function_privilege('anon',p.oid,'EXECUTE'), 'authenticated', has_function_privilege('authenticated',p.oid,'EXECUTE'), 'service', has_function_privilege('service_role',p.oid,'EXECUTE'),
       'public', exists (select 1 from aclexplode(coalesce(p.proacl, acldefault('f',p.proowner))) a where a.grantee=0))), '[]') from pg_proc p where p.pronamespace='public'::regnamespace and p.proname like 'catalogue\\_%'`));
-  check("AT02b", "28 catalogue functions (11 foundation + 5 media + 12 public release): all SECURITY INVOKER, search_path pinned to public, pg_temp, EXECUTE for service_role only (no PUBLIC/anon/authenticated)",
+  check("AT02b", "29 catalogue functions including merchandising: all SECURITY INVOKER, search_path pinned to public, pg_temp, EXECUTE for service_role only (no PUBLIC/anon/authenticated)",
     fnRows.length === Number(FN_TOTAL) && fnRows.every((f) => !f.secdef && JSON.stringify(f.config) === JSON.stringify(["search_path=public, pg_temp"]) && !f.anon && !f.authenticated && !f.public && f.service), fnRows.filter((f) => f.secdef || f.anon || f.authenticated || f.public || !f.service || JSON.stringify(f.config) !== JSON.stringify(["search_path=public, pg_temp"])));
   const rls = one(`select count(*) filter (where relrowsecurity) || '/' || count(*) from pg_class where relnamespace='public'::regnamespace and relname in (${tl})`);
   const policies = one(`select count(*) from pg_policy p join pg_class c on c.oid=p.polrelid where c.relname in (${tl})`);
-  check("AT02c", "RLS enabled on all 18 tables, no policy (deny by default); schema USAGE still closed to anon/authenticated", rls === "18/18" && policies === "0" && one("select has_schema_privilege('anon','public','USAGE') or has_schema_privilege('authenticated','public','USAGE')") === "f", { rls, policies });
+  check("AT02c", "RLS enabled on all catalogue tables, no policy (deny by default); schema USAGE still closed to anon/authenticated", rls === `${TABLES.length}/${TABLES.length}` && policies === "0" && one("select has_schema_privilege('anon','public','USAGE') or has_schema_privilege('authenticated','public','USAGE')") === "f", { rls, policies });
   const svc = JSON.parse(one(`select json_object_agg(c.relname, json_build_object('s', has_table_privilege('service_role',c.oid,'SELECT'), 'i', has_table_privilege('service_role',c.oid,'INSERT'), 'u', has_table_privilege('service_role',c.oid,'UPDATE'), 'd', has_table_privilege('service_role',c.oid,'DELETE'), 't', has_table_privilege('service_role',c.oid,'TRUNCATE'))) from pg_class c where c.relnamespace='public'::regnamespace and c.relname in (${tl})`));
-  check("AT02d", "service_role keeps SELECT/INSERT/UPDATE/DELETE on every catalogue table (gate B6) and has TRUNCATE on none (production default privileges overridden)", Object.values(svc).length === 18 && Object.values(svc).every((x) => x.s && x.i && x.u && x.d && !x.t), svc);
+  check("AT02d", "existing table privileges retained; merchandising uses stricter grants; no TRUNCATE", Object.keys(svc).length === TABLES.length && Object.entries(svc).every(([t,x]) => t.startsWith("catalogue_merchandising") ? x.s && x.i && !x.d && !x.t && (t === "catalogue_merchandising" ? x.u : !x.u) : x.s && x.i && x.u && x.d && !x.t), svc);
   const costRefs = one(`select count(*) from pg_proc p where p.pronamespace='public'::regnamespace and p.prosrc ilike '%catalogue_variant_costs%'`);
   check("AT02e", "no function references catalogue_variant_costs; no view in public", costRefs === "0" && one("select count(*) from pg_class where relnamespace='public'::regnamespace and relkind in ('v','m')") === "0", costRefs);
 
@@ -211,16 +211,28 @@ async function main() {
   // ------------------------------------------------------------------------------------------------ the shared acceptance scenarios, on Postgres
   const { productId } = await runCatalogueScenarios({ base: app.url, users, fullKey: FULL_KEY, scopedKey: SITE_KEY, check, label: "PG-", storageDir, catalogueKey: CATALOGUE_KEY, revalidator });
 
+  // Phase 3: execute real database workflow; no production connection is used.
+  {
+    const content = JSON.stringify({slides:[],featured:[],new_arrivals:[],collections:[]});
+    const call = (action, expected, actor) => psql(`set role service_role; select catalogue_merchandising_transition('${action}',${expected},'${content}'::jsonb,'${actor}','');`);
+    check("MC1", "merchandising draft and submit are atomic", call('save',0,'writer').status===0 && call('submit',1,'writer').status===0);
+    check("MC2", "self-approval refused inside DB even with case variation", /self_review_forbidden/.test(call('approve',2,'WRITER').err));
+    check("MC3", "independent approval and release succeed", call('approve',2,'reviewer').status===0 && call('publish',3,'publisher').status===0);
+    check("MC4", "new draft preserves published version", call('save',4,'writer').status===0 && one('select published_version from catalogue_merchandising')==='1');
+    check("MC5", "stale database save refused", /state_changed/.test(call('save',4,'writer').err));
+    check("MC6", "withdraw clears public version", call('withdraw',5,'publisher').status===0 && one('select published_version is null from catalogue_merchandising')==='t');
+  }
+
   // ------------------------------------------------------------------------------------------------ AT-03 append-only, for every role
   {
     const results = [];
     for (const t of APPEND_ONLY) {
       for (const role of ["service_role", "postgres"]) {
         const prefix = role === "postgres" ? "" : "set role service_role; ";
-        const col = t === "catalogue_product_versions" ? "version" : t === "catalogue_media_derivatives" ? "kind" : t === "catalogue_slug_redirects" ? "old_slug" : "id";
+        const col = t === "catalogue_merchandising_events" ? "action" : ["catalogue_product_versions","catalogue_merchandising_versions"].includes(t) ? "version" : t === "catalogue_media_derivatives" ? "kind" : t === "catalogue_slug_redirects" ? "old_slug" : "id";
         const upd = psql(`${prefix}update ${t} set ${col} = ${col};`);
         const del = psql(`${prefix}delete from ${t};`);
-        results.push({ t, role, upd: /append_only/.test(upd.err), del: /append_only/.test(del.err) });
+        results.push({ t, role, upd: (t.startsWith("catalogue_merchandising") && role === "service_role" ? /permission denied|append_only/ : /append_only/).test(upd.err), del: (t.startsWith("catalogue_merchandising") && role === "service_role" ? /permission denied|append_only/ : /append_only/).test(del.err) });
       }
       const trunc = psql(`truncate ${t} cascade;`);
       const svcTrunc = psql(`set role service_role; truncate ${t};`);
@@ -495,7 +507,7 @@ async function main() {
     const write = await fetch(`${app.url}/api/lead-agents/admin/catalogue/products`, { method: "POST", headers: { cookie, "content-type": "application/json", origin: app.url }, body: JSON.stringify({ slug: `after-rollback-${RUN}`, content: { category_id: one("select id from catalogue_categories limit 1"), name: "x", variants: [{ sku: `RB-${RUN.toUpperCase()}`, name: "x" }] } }) });
     const health = await fetch(`${app.url}/healthz`);
     check("M30", "rollback (functions only): applies; catalogue writes answer 503 catalogue_unavailable; the rest of Office is unaffected (healthz 200)", rb.status === 0 && write.status === 503 && health.status === 200, { rb: rb.err.slice(0, 200), write: write.status, health: health.status });
-    check("M31", "…and keeps every table and row (non-destructive)", one("select count(*) from catalogue_product_versions") === before && one(`select count(*) from pg_class where relnamespace='public'::regnamespace and relname in (${tl})`) === "18", { before, after: one("select count(*) from catalogue_product_versions") });
+    check("M31", "…and keeps every table and row (non-destructive)", one("select count(*) from catalogue_product_versions") === before && one(`select count(*) from pg_class where relnamespace='public'::regnamespace and relname in (${tl})`) === String(TABLES.length), { before, after: one("select count(*) from catalogue_product_versions") });
     const re = applyFile(MIGRATION);
     CATALOGUE_FOLLOWUPS.forEach((f) => applyFile(path.join(ROOT, "db", f)));
     await reloadSchema(restUrl);
