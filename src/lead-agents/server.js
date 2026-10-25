@@ -30,6 +30,8 @@ const {
   findOrUpsertLead,
   normalizeOfficeIntakeEnvelope,
   runOfficeIntakeCrm,
+  fileIntakeSubmission,
+  verifyRecoveryCode,
 } = require("./office-intake");
 const {
   buildMaterialCrmEvent,
@@ -1950,6 +1952,40 @@ async function bootstrapAdminUser(store, config) {
   });
 }
 
+// Maps an intake filing result to the HTTP answer. Full keys and staff keep the existing response shape; scoped (website) callers receive only
+// the outcome and the lead id. crm_failed answers 202: the lead IS filed, but the receipt stays retryable and the caller should send the same
+// key again (it is never reported as a completed duplicate).
+async function respondToIntakeResult({ res, ctx, config, envelope, result, minimal, backendEventResult }) {
+  const headers = { "x-request-id": ctx.requestId };
+  const base = { request_id: envelope.request_id, idempotency_key: envelope.idempotency_key };
+  if (result.outcome === "in_progress") return json(res, 409, { ok: false, error: "intake_in_progress", retryable: true, ...base }, headers);
+  if (result.outcome === "conflict") return json(res, 409, { ok: false, error: "idempotency_key_reused", retryable: false, ...base }, headers);
+  if (result.outcome === "unavailable") return json(res, 503, { ok: false, error: "intake_unavailable", retryable: true, ...base }, headers);
+  const lead = result.lead || null;
+  const leadId = (lead && lead.id) || result.leadId || null;
+  if (result.outcome === "duplicate") {
+    if (minimal) return json(res, 200, { ok: true, duplicate: true, ...base, lead_id: leadId }, headers);
+    return json(res, 200, { ok: true, duplicate: true, ...base, lead, conversation_continuation: lead ? createFormContinuationContext(envelope, lead) : null }, headers);
+  }
+  const crmFailed = result.outcome === "crm_failed";
+  if (minimal) return json(res, crmFailed ? 202 : 201, { ok: true, duplicate: false, ...base, lead_id: leadId, crm_synced: !crmFailed, ...(crmFailed ? { retryable: true } : {}) }, headers);
+  const crm = result.crm;
+  return json(res, crmFailed ? 202 : 201, {
+    ok: true,
+    duplicate: false,
+    lead_created: Boolean(result.leadCreated),
+    ...base,
+    lead,
+    crm: !crmFailed && crm
+      ? { contact_id: crm.contact?.id || null, organization_id: crm.organization?.id || null, opportunity_id: crm.opportunity?.id || null, relationship_type: crm.relationship_collection, relationship_id: crm.relationship?.id || null, activity_id: crm.activity?.id || null }
+      : { sync_status: "failed_retryable", retryable: true },
+    conversation_continuation: lead ? createFormContinuationContext(envelope, lead) : null,
+    backend_event: backendEventResult
+      ? { enabled: Boolean(config.officeBackendEventsEnabled), sent: Boolean(backendEventResult.ok), skipped: Boolean(backendEventResult.skipped), reason: backendEventResult.reason || null }
+      : { enabled: Boolean(config.officeBackendEventsEnabled), sent: false, skipped: true, reason: "not_filed_yet" },
+  }, headers);
+}
+
 // The ONLY routes a scoped integration key may call, per scope (method + exact path). Everything else answers 403 before any handler runs.
 const SCOPED_ROUTES = Object.freeze({
   "intake.submit": [{ method: "POST", path: "/api/office/intake" }],
@@ -2126,6 +2162,27 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
   );
 
   let communicationOutboxWorkerHandle = null;
+  // Website intake: file once (receipts), publish the Backend material event only for a newly filed submission, answer per caller type.
+  async function publishIntakeMaterialEvent(envelope, result, requestId) {
+    const materialEvent = buildMaterialCrmEvent({ lead: result.lead, envelope, timelineEvent: result.timelineEvent, requestId, opportunity: result.crm?.opportunity || null });
+    const backendEventResult = await publishBackendMaterialEvent(config, materialEvent);
+    if (!backendEventResult.ok && !backendEventResult.skipped) {
+      log("warn", "office_backend_material_event_publish_failed", { reason: backendEventResult.reason, status: backendEventResult.status, event_type: materialEvent.event_type, lead_id: result.lead?.id, request_id: requestId });
+    }
+    return backendEventResult;
+  }
+
+  async function respondToIntake({ res, ctx, envelope, client, minimal }) {
+    const result = await fileIntakeSubmission(store, envelope, {
+      client,
+      log,
+      timelineMetadata: (lead) => ({ public_context_ref: createFormContinuationContext(envelope, lead).public_context_ref }),
+    });
+    const backendEventResult = result.outcome === "filed" ? await publishIntakeMaterialEvent(envelope, result, ctx.requestId) : null;
+    if (result.outcome === "crm_failed") log("warn", "office_intake_crm_write_failed", { reason: result.error, lead_id: result.lead?.id, request_id: ctx.requestId });
+    return respondToIntakeResult({ res, ctx, config, envelope, result, minimal, backendEventResult });
+  }
+
   const server = http.createServer(async (req, res) => {
     const ctx = createRequestContext(req);
     const pathname = getPathname(req);
@@ -3966,125 +4023,61 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
         const envelope = normalizeOfficeIntakeEnvelope(body);
         // keys from a scoped client live in that client's namespace, so one website can never collide with (or probe) another's
         if (scopedIntake) envelope.idempotency_key = `${authContext.client}:${envelope.idempotency_key}`;
-        const existing = await findExistingIntakeLead(store, envelope.idempotency_key);
-        if (existing && scopedIntake) {
-          // a scoped client learns only that its own submission was already filed -- never the stored Lead record
-          json(res, 200, { ok: true, duplicate: true, request_id: envelope.request_id, idempotency_key: envelope.idempotency_key, lead_id: existing.id }, { "x-request-id": ctx.requestId });
+        await respondToIntake({ res, ctx, envelope, client: scopedIntake ? authContext.client : "", minimal: scopedIntake });
+        return;
+      }
+
+      // Recovery of a website submission that could not reach Office (code emailed to staff by the website). Staff session only: an API key,
+      // scoped or full, can never redeem a code. GET shows what will be filed; POST (same-origin form; the session cookie is SameSite=Lax)
+      // files it through exactly the same idempotent path, in the website's own key namespace, so a code redeemed twice -- or one whose
+      // submission later got through on its own -- is filed once.
+      if (pathname === "/api/lead-agents/admin/intake/recover") {
+        if (authContext?.type !== "session") {
+          json(res, 403, { error: "staff_session_required" }, { "x-request-id": ctx.requestId });
           return;
         }
-        if (existing) {
-          const continuation = createFormContinuationContext(envelope, existing);
-          json(res, 200, {
-            ok: true,
-            duplicate: true,
-            request_id: envelope.request_id,
-            idempotency_key: envelope.idempotency_key,
-            lead: existing,
-            conversation_continuation: continuation,
-          }, { "x-request-id": ctx.requestId });
+        authorizePermission(authContext, "manage_leads");
+        let code = "";
+        if (req.method === "GET") {
+          code = new URL(req.url, "http://localhost").searchParams.get("code") || "";
+        } else if (req.method === "POST") {
+          const raw = (await readRawBodyBuffer(req, 64 * 1024)).toString("utf8");
+          code = String(req.headers["content-type"] || "").includes("application/json") ? String((JSON.parse(raw || "{}") || {}).code || "") : new URLSearchParams(raw).get("code") || "";
+        } else {
+          methodNotAllowed(res, "GET,POST");
           return;
         }
-
-        // Lead identity is deduped by email/phone (findOrUpsertLead) rather
-        // than always creating a new row — a repeat enquiry from the same
-        // person folds into their existing Lead as a sparse update plus a
-        // fresh timeline/activity entry, so Office never accumulates an
-        // uncontrolled number of duplicate records for one visitor.
-        const { lead, created: leadCreated } = await findOrUpsertLead(store, envelope);
-        const continuation = createFormContinuationContext(envelope, lead);
-
-        // The canonical-CRM write (Contact/Organization/Opportunity/
-        // Private or Partnership relationship/Activity) is additive
-        // enrichment on top of the legacy Lead record above, not a
-        // dependency of it — a transient failure here must not stop the
-        // visitor's submission from being acknowledged and filed as a
-        // Lead, since that's the record Office already relies on today.
-        let crm = null;
-        try {
-          crm = await runOfficeIntakeCrm(store, envelope, lead, { actorEmail: envelope.source_site });
-        } catch (error) {
-          log("warn", "office_intake_crm_write_failed", {
-            reason: error?.message || String(error),
-            lead_id: lead.id,
-            request_id: ctx.requestId,
-          });
-        }
-
-        const timelineEvent = await store.appendTimelineEvent({
-          lead_id: lead.id,
-          event_type: "office_intake_received",
-          actor: envelope.source_site,
-          title: leadCreated ? "Office intake received" : "Repeat office intake received",
-          body: `${envelope.business_unit} ${envelope.inquiry_type} intake received from ${envelope.source_site}.`,
-          metadata: {
-            request_id: envelope.request_id,
-            idempotency_key: envelope.idempotency_key,
-            source_channel: envelope.source_channel,
-            source_site: envelope.source_site,
-            source_page: envelope.source_page,
-            source_form: envelope.source_form,
-            business_unit: envelope.business_unit,
-            inquiry_type: envelope.inquiry_type,
-            campaign: envelope.campaign,
-            consent: envelope.consent,
-            public_context_ref: continuation.public_context_ref,
-            crm_contact_id: crm?.contact?.id || null,
-          },
-        });
-        const materialEvent = buildMaterialCrmEvent({
-          lead,
-          envelope,
-          timelineEvent,
-          requestId: ctx.requestId,
-          opportunity: crm?.opportunity || null,
-        });
-        const backendEventResult = await publishBackendMaterialEvent(config, materialEvent);
-        if (!backendEventResult.ok && !backendEventResult.skipped) {
-          log("warn", "office_backend_material_event_publish_failed", {
-            reason: backendEventResult.reason,
-            status: backendEventResult.status,
-            event_type: materialEvent.event_type,
-            lead_id: lead.id,
-            request_id: ctx.requestId,
-          });
-        }
-
-        if (scopedIntake) {
-          json(res, 201, {
-            ok: true,
-            duplicate: false,
-            request_id: envelope.request_id,
-            idempotency_key: envelope.idempotency_key,
-            lead_id: lead.id,
-            crm_synced: Boolean(crm),
-          }, { "x-request-id": ctx.requestId });
+        const verified = verifyRecoveryCode(code, config.scopedApiKeys);
+        const page = (title, message, extra = "") => {
+          res.writeHead(verified.ok || req.method === "GET" ? 200 : 400, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store", "x-content-type-options": "nosniff", "x-request-id": ctx.requestId });
+          res.end(`<!doctype html><html><head><meta charset="utf-8"><meta name="robots" content="noindex"><title>${escapeHtmlText(title)}</title></head><body style="font-family:sans-serif;max-width:640px;margin:40px auto;padding:0 16px"><h1 style="font-size:22px">${escapeHtmlText(title)}</h1><p>${escapeHtmlText(message)}</p>${extra}</body></html>`);
+        };
+        if (!verified.ok) {
+          await appendAudit(store, authContext, "intake_recovery_rejected", "intake_receipt", "", { reason: verified.reason, request_id: ctx.requestId });
+          page("This recovery code cannot be used", verified.reason === "expired" ? "The code is older than 30 days or not yet valid. File the enquiry manually from the email." : "The code is incomplete or was not issued by a known website. File the enquiry manually from the email.");
           return;
         }
-        json(res, 201, {
-          ok: true,
-          duplicate: false,
-          lead_created: leadCreated,
-          request_id: envelope.request_id,
-          idempotency_key: envelope.idempotency_key,
-          lead,
-          crm: crm
-            ? {
-                contact_id: crm.contact?.id || null,
-                organization_id: crm.organization?.id || null,
-                opportunity_id: crm.opportunity?.id || null,
-                relationship_type: crm.relationship_collection,
-                relationship_id: crm.relationship?.id || null,
-                activity_id: crm.activity?.id || null,
-              }
-            : { sync_status: "failed_see_server_logs" },
-          conversation_continuation: continuation,
-          backend_event: {
-            enabled: Boolean(config.officeBackendEventsEnabled),
-            sent: Boolean(backendEventResult.ok),
-            skipped: Boolean(backendEventResult.skipped),
-            reason: backendEventResult.reason || null,
-          },
-        }, { "x-request-id": ctx.requestId });
+        let envelope;
+        try { envelope = normalizeOfficeIntakeEnvelope(verified.envelope); } catch { page("This recovery code cannot be used", "The enquiry in the code is incomplete. File it manually from the email."); return; }
+        envelope.idempotency_key = `${verified.client}:${envelope.idempotency_key}`;
+        if (req.method === "GET") {
+          const summary = `${envelope.contact.name || "(no name)"} <${envelope.contact.email || "no e-mail"}> — ${envelope.inquiry_type} from ${envelope.source_site}${envelope.source_page ? ` (${envelope.source_page})` : ""}`;
+          page("File this website enquiry in Office?", summary,
+            `<form method="post"><input type="hidden" name="code" value="${escapeHtmlText(code)}"><button type="submit" style="padding:10px 18px">File enquiry</button></form><p style="color:#64748b;font-size:13px">Filing is safe to repeat: an enquiry that is already in Office is not filed twice.</p>`);
+          return;
+        }
+        const result = await fileIntakeSubmission(store, envelope, { client: verified.client, actor: authContext.email, log, timelineMetadata: (lead) => ({ public_context_ref: createFormContinuationContext(envelope, lead).public_context_ref, recovered_by: authContext.email }) });
+        await appendAudit(store, authContext, "intake_recovered", "intake_receipt", envelope.idempotency_key, { outcome: result.outcome, client: verified.client, lead_id: result.lead?.id || result.leadId || null, request_id: ctx.requestId });
+        if (result.outcome === "filed") await publishIntakeMaterialEvent(envelope, result, ctx.requestId);
+        const messages = {
+          filed: "The enquiry is now in Office.",
+          duplicate: "This enquiry was already in Office. Nothing new was filed.",
+          in_progress: "This enquiry is being filed right now by another request. Reload in a minute.",
+          crm_failed: "The lead was filed but the CRM records could not be completed. Use the same link again shortly to finish.",
+          conflict: "A different enquiry was already filed under this code's key. File this one manually from the email.",
+          unavailable: "Office could not file the enquiry right now. Try the same link again shortly.",
+        };
+        page(result.outcome === "filed" || result.outcome === "duplicate" ? "Done" : "Not finished", messages[result.outcome] || messages.unavailable);
         return;
       }
 

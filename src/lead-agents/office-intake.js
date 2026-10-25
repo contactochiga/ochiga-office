@@ -338,8 +338,31 @@ function buildOpportunityDevelopmentEvidence(envelope) {
 // already recorded; the two are independent, deliberately overlapping
 // views over the same intake so both "CRM -> Leads" and "CRM -> Contacts"
 // style Office UI surfaces have something real to show.
-async function runOfficeIntakeCrm(store, envelope, lead, context) {
+// A CRM write the store could not persist comes back flagged instead of throwing (createCorporateRecord answers HTTP 400/404/406 with
+// sync_status "schema_pending"). For intake that is a FAILED write: it must stay retryable, never count as filed.
+function assertPersisted(record, collection) {
+  if (!record || record.sync_status === "schema_pending") {
+    const error = new Error(`crm_write_not_persisted:${collection}`);
+    error.code = "crm_write_not_persisted";
+    throw error;
+  }
+  return record;
+}
+
+// Creates a CRM record at most once per intake key and step. The marker travels inside the record's own metadata (written by the same
+// insert), so a retry after a partial failure finds what the earlier attempt already created instead of creating it again.
+async function createOnceForIntake(store, collection, step, input, context, intakeKey) {
+  if (!intakeKey) return assertPersisted(await createCorporateRecord(store, collection, input, context), collection);
+  const rows = await listCorporateRecords(store, collection);
+  const existing = rows.find((row) => row && row.metadata && row.metadata.intake_key === intakeKey && row.metadata.intake_step === step);
+  if (existing) return existing;
+  const metadata = { ...(input.metadata || {}), intake_key: intakeKey, intake_step: step };
+  return assertPersisted(await createCorporateRecord(store, collection, { ...input, metadata }, context), collection);
+}
+
+async function runOfficeIntakeCrm(store, envelope, lead, context, { intakeKey } = {}) {
   const organization = await resolveOrganization(store, envelope, context);
+  if (organization) assertPersisted(organization, "organizations");
 
   const contact = await upsertContactIdentity(
     store,
@@ -354,12 +377,14 @@ async function runOfficeIntakeCrm(store, envelope, lead, context) {
     }),
     context
   );
+  assertPersisted(contact, "contacts");
 
   let opportunity = null;
   if (shouldCreateOpportunity(envelope)) {
-    opportunity = await createCorporateRecord(
+    opportunity = await createOnceForIntake(
       store,
       "opportunities",
+      "opportunity",
       sparseNonEmpty({
         contact_id: contact.id,
         organization_id: organization ? organization.id : undefined,
@@ -376,7 +401,8 @@ async function runOfficeIntakeCrm(store, envelope, lead, context) {
           ? { development: buildOpportunityDevelopmentEvidence(envelope) }
           : undefined,
       }),
-      context
+      context,
+      intakeKey
     );
   }
 
@@ -384,9 +410,10 @@ async function runOfficeIntakeCrm(store, envelope, lead, context) {
   let relationshipCollection = null;
   if (envelope.business_unit === "private") {
     relationshipCollection = "private";
-    relationship = await createCorporateRecord(
+    relationship = await createOnceForIntake(
       store,
       "private",
+      "private_relationship",
       sparseNonEmpty({
         contact_id: contact.id,
         organization_id: organization ? organization.id : undefined,
@@ -395,13 +422,15 @@ async function runOfficeIntakeCrm(store, envelope, lead, context) {
         relationship_type: "membership",
         notes: intakeSummaryText(envelope),
       }),
-      context
+      context,
+      intakeKey
     );
   } else if (envelope.business_unit === "partnerships") {
     relationshipCollection = "partnerships";
-    relationship = await createCorporateRecord(
+    relationship = await createOnceForIntake(
       store,
       "partnerships",
+      "partnership_relationship",
       sparseNonEmpty({
         contact_id: contact.id,
         organization_id: organization ? organization.id : undefined,
@@ -410,7 +439,8 @@ async function runOfficeIntakeCrm(store, envelope, lead, context) {
         relationship_type: partnershipRelationshipType(envelope.inquiry_type),
         notes: intakeSummaryText(envelope),
       }),
-      context
+      context,
+      intakeKey
     );
   }
 
@@ -420,9 +450,10 @@ async function runOfficeIntakeCrm(store, envelope, lead, context) {
     opportunity ? "opportunity" : "contact";
   const relatedId = relationship ? relationship.id : opportunity ? opportunity.id : contact.id;
 
-  const activity = await createCorporateRecord(
+  const activity = await createOnceForIntake(
     store,
     "activities",
+    "activity",
     {
       contact_id: contact.id,
       organization_id: organization ? organization.id : null,
@@ -437,14 +468,176 @@ async function runOfficeIntakeCrm(store, envelope, lead, context) {
       source: envelope.source_site,
       actor: envelope.source_site,
     },
-    context
+    context,
+    intakeKey
   );
 
   return { contact, organization, opportunity, relationship, relationship_collection: relationshipCollection, activity };
 }
 
+// ---------------------------------------------------------------- intake receipts (exactly-once filing, retryable CRM failure)
+
+function canonicalJson(value) {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  if (value && typeof value === "object") return `{${Object.keys(value).sort().filter((k) => value[k] !== undefined).map((k) => `${JSON.stringify(k)}:${canonicalJson(value[k])}`).join(",")}}`;
+  return JSON.stringify(value === undefined ? null : value);
+}
+
+// What makes two requests "the same submission": the content the visitor sent, never the per-request id, timestamps or delivery metadata.
+function intakeDigest(envelope) {
+  const material = {
+    source_site: envelope.source_site, source_form: envelope.source_form, business_unit: envelope.business_unit, inquiry_type: envelope.inquiry_type,
+    contact: envelope.contact, organization: envelope.organization, payload: envelope.payload, consent: envelope.consent,
+  };
+  return crypto.createHash("sha256").update(canonicalJson(material)).digest("hex");
+}
+
+const INTAKE_LEASE_SECONDS = 60;
+
+function errorCategory(error) {
+  const text = String((error && (error.code || error.message)) || "unknown");
+  return text.replace(/[^a-z0-9_:.-]+/gi, "_").slice(0, 120);
+}
+
+/**
+ * Files one intake submission at most once per idempotency key.
+ * Outcomes: "filed" (lead + CRM + timeline written), "duplicate" (already filed), "in_progress" (another request holds the key),
+ * "conflict" (key re-used for different content), "crm_failed" (lead filed, CRM incomplete -- retryable, NOT recorded as filed),
+ * "unavailable" (nothing could be filed -- retryable).
+ * Without the receipts migration the Phase 0 behaviour is kept (timeline-based recognition, no atomic claim), reported as receipts:false.
+ */
+async function fileIntakeSubmission(store, envelope, { client = "", actor, log = () => {}, timelineMetadata = () => ({}) } = {}) {
+  const key = envelope.idempotency_key;
+  const digest = intakeDigest(envelope);
+  let receipts = false;
+  try {
+    receipts = typeof store.supportsIntakeReceipts === "function" && (await store.supportsIntakeReceipts()) === true;
+  } catch (error) {
+    log("warn", "office_intake.receipts_probe_failed", { reason: errorCategory(error) });
+    return { outcome: "unavailable", receipts: false, error: "receipts_store_error" };
+  }
+
+  let attempt = 0;
+  if (receipts) {
+    let claim;
+    try {
+      claim = await store.claimIntakeReceipt({ key, client, requestId: envelope.request_id, digest, leaseSeconds: INTAKE_LEASE_SECONDS });
+    } catch (error) {
+      log("warn", "office_intake.claim_failed", { reason: errorCategory(error) });
+      return { outcome: "unavailable", receipts, error: "receipt_claim_failed" };
+    }
+    if (claim.outcome === "conflict") return { outcome: "conflict", receipts };
+    if (claim.outcome === "in_progress") return { outcome: "in_progress", receipts };
+    if (claim.outcome === "duplicate") {
+      const lead = claim.leadId ? await store.getLead(claim.leadId) : null;
+      return { outcome: "duplicate", receipts, lead, leadId: claim.leadId };
+    }
+    attempt = claim.attempts;
+    if (claim.outcome === "claimed") {
+      // submissions filed before receipts existed: recognise them once and record them as completed
+      const legacy = await findExistingIntakeLead(store, key);
+      if (legacy) {
+        await store.completeIntakeReceipt({ key, attempt, leadId: legacy.id });
+        return { outcome: "duplicate", receipts, lead: legacy, leadId: legacy.id, legacy: true };
+      }
+    }
+  } else {
+    const legacy = await findExistingIntakeLead(store, key);
+    if (legacy) return { outcome: "duplicate", receipts, lead: legacy, leadId: legacy.id, legacy: true };
+  }
+
+  const fail = async (stage, error, leadId) => {
+    const category = `${stage}:${errorCategory(error)}`;
+    log("warn", "office_intake.write_failed", { stage, reason: category, attempt });
+    if (receipts) {
+      try { await store.failIntakeReceipt({ key, attempt, leadId: leadId || null, error: category }); } catch { /* the lease expires on its own; the key stays retryable */ }
+    }
+    return category;
+  };
+
+  let lead;
+  let leadCreated = false;
+  try {
+    ({ lead, created: leadCreated } = await findOrUpsertLead(store, envelope));
+  } catch (error) {
+    await fail("lead", error);
+    return { outcome: "unavailable", receipts, error: "lead_write_failed" };
+  }
+
+  let crm;
+  try {
+    crm = await runOfficeIntakeCrm(store, envelope, lead, { actorEmail: actor || envelope.source_site }, { intakeKey: key });
+  } catch (error) {
+    const category = await fail("crm", error, lead.id);
+    return { outcome: "crm_failed", receipts, lead, leadCreated, error: category };
+  }
+
+  let timelineEvent;
+  try {
+    timelineEvent = (typeof store.findIntakeTimelineEvent === "function" && (await store.findIntakeTimelineEvent(key))) || (await store.appendTimelineEvent({
+      lead_id: lead.id,
+      event_type: "office_intake_received",
+      actor: envelope.source_site,
+      title: leadCreated ? "Office intake received" : "Repeat office intake received",
+      body: `${envelope.business_unit} ${envelope.inquiry_type} intake received from ${envelope.source_site}.`,
+      metadata: {
+        request_id: envelope.request_id,
+        idempotency_key: key,
+        source_channel: envelope.source_channel,
+        source_site: envelope.source_site,
+        source_page: envelope.source_page,
+        source_form: envelope.source_form,
+        business_unit: envelope.business_unit,
+        inquiry_type: envelope.inquiry_type,
+        campaign: envelope.campaign,
+        consent: envelope.consent,
+        ...timelineMetadata(lead),
+        crm_contact_id: crm?.contact?.id || null,
+      },
+    }));
+  } catch (error) {
+    const category = await fail("timeline", error, lead.id);
+    return { outcome: "crm_failed", receipts, lead, leadCreated, crm, error: category };
+  }
+
+  if (receipts) {
+    const completed = await store.completeIntakeReceipt({ key, attempt, leadId: lead.id }).catch(() => false);
+    // a false here means a newer attempt took the key over after this one's lease expired; the work above is idempotent, so both are consistent
+    if (!completed) log("warn", "office_intake.complete_superseded", { attempt });
+  }
+  return { outcome: "filed", receipts, lead, leadCreated, crm, timelineEvent };
+}
+
+// ---------------------------------------------------------------- recovery codes (website could not reach Office)
+// A website that could not deliver a submission emails staff a code: "v1.<base64url JSON {envelope, issued_at}>.<base64url HMAC-SHA256>".
+// The HMAC key is the hex SHA-256 digest of that website's scoped API key -- the value Office already holds in LEAD_AGENTS_SCOPED_API_KEYS --
+// so no extra secret exists and the website never holds a privileged credential. Only a signed-in staff member can redeem a code.
+const RECOVERY_CODE_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
+
+function verifyRecoveryCode(code, scopedApiKeys = [], { now = Date.now() } = {}) {
+  const parts = String(code || "").trim().split(".");
+  if (parts.length !== 3 || parts[0] !== "v1" || parts[1].length > 24000) return { ok: false, reason: "malformed" };
+  const [, body, signature] = parts;
+  const entry = (scopedApiKeys || []).filter((item) => (item.scopes || []).includes("intake.submit")).find((item) => {
+    const expected = crypto.createHmac("sha256", item.keySha256).update(`v1.${body}`).digest("base64url");
+    const a = Buffer.from(expected);
+    const b = Buffer.from(signature);
+    return a.length === b.length && crypto.timingSafeEqual(a, b);
+  });
+  if (!entry) return { ok: false, reason: "bad_signature" };
+  let decoded;
+  try { decoded = JSON.parse(Buffer.from(body, "base64url").toString("utf8")); } catch { return { ok: false, reason: "malformed" }; }
+  const issuedAt = Date.parse(decoded && decoded.issued_at);
+  if (!Number.isFinite(issuedAt) || issuedAt > now + 5 * 60 * 1000 || now - issuedAt > RECOVERY_CODE_MAX_AGE_MS) return { ok: false, reason: "expired" };
+  if (!decoded.envelope || typeof decoded.envelope !== "object") return { ok: false, reason: "malformed" };
+  return { ok: true, client: entry.client, envelope: decoded.envelope, issuedAt: new Date(issuedAt).toISOString() };
+}
+
 module.exports = {
   BUSINESS_UNITS,
+  fileIntakeSubmission,
+  intakeDigest,
+  verifyRecoveryCode,
   findExistingIntakeLead,
   findOrUpsertLead,
   leadInputFromIntake,

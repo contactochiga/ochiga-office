@@ -1301,6 +1301,39 @@ class SupabaseLeadAgentsStore {
     return response.data[0];
   }
 
+  // Intake receipts (db/20261101_office_intake_receipts.sql). Until the migration is applied the capability is reported unavailable and
+  // intake keeps the timeline-based retry recognition; the probe is repeated at most once a minute so applying it needs no restart.
+  async supportsIntakeReceipts() {
+    if (this.intakeReceipts === true) return true;
+    if (this.intakeReceipts === false && Date.now() - (this.intakeReceiptsCheckedAt || 0) < 60000) return false;
+    try {
+      const response = await this.client.post("/rpc/office_intake_receipts_version", {});
+      this.intakeReceipts = response.data === 1;
+    } catch (error) {
+      if (error?.response?.status === 404 || error?.response?.data?.code === "PGRST202") this.intakeReceipts = false;
+      else throw new Error("intake_receipts_store_error");
+    }
+    this.intakeReceiptsCheckedAt = Date.now();
+    return this.intakeReceipts;
+  }
+
+  async claimIntakeReceipt({ key, client, requestId, digest, leaseSeconds }) {
+    const response = await this.client.post("/rpc/office_intake_claim", { p_key: key, p_client: client || "", p_request_id: requestId || "", p_digest: digest, p_lease_seconds: leaseSeconds });
+    const row = Array.isArray(response.data) ? response.data[0] : null;
+    if (!row || typeof row.outcome !== "string") throw new Error("intake_receipt_claim_malformed");
+    return { outcome: row.outcome, status: row.status, attempts: row.attempts, leadId: row.lead_id || null };
+  }
+
+  async completeIntakeReceipt({ key, attempt, leadId }) {
+    const response = await this.client.post("/rpc/office_intake_complete", { p_key: key, p_attempt: attempt, p_lead_id: leadId || null });
+    return response.data === true;
+  }
+
+  async failIntakeReceipt({ key, attempt, leadId, error }) {
+    const response = await this.client.post("/rpc/office_intake_fail", { p_key: key, p_attempt: attempt, p_lead_id: leadId || null, p_error: String(error || "unknown").slice(0, 120) });
+    return response.data === true;
+  }
+
   // The first intake timeline event that carries this idempotency key (any lead). Read-only; no schema change is needed.
   async findIntakeTimelineEvent(idempotencyKey) {
     const response = await this.client.get(

@@ -1444,6 +1444,53 @@ class FileLeadAgentsStore {
     return value;
   }
 
+  // Same semantics as the Postgres functions in db/20261101_office_intake_receipts.sql. Every check-and-write below runs synchronously
+  // (no await in between), so within this single-process store it is atomic.
+  async supportsIntakeReceipts() { return true; }
+
+  receiptsState() {
+    if (!this.state.office_intake_receipts) this.state.office_intake_receipts = {};
+    return this.state.office_intake_receipts;
+  }
+
+  async claimIntakeReceipt({ key, client, requestId, digest, leaseSeconds }) {
+    const receipts = this.receiptsState();
+    const now = Date.now();
+    const current = receipts[key];
+    let result;
+    if (!current) {
+      receipts[key] = { idempotency_key: key, client: client || "", request_id: requestId || "", payload_digest: digest, status: "processing", attempts: 1, lease_until: now + leaseSeconds * 1000, lead_id: null, last_error: null, created_at: new Date(now).toISOString(), updated_at: new Date(now).toISOString(), completed_at: null };
+      result = { outcome: "claimed", status: "processing", attempts: 1, leadId: null };
+    } else if (current.payload_digest !== digest) {
+      result = { outcome: "conflict", status: current.status, attempts: current.attempts, leadId: current.lead_id };
+    } else if (current.status === "completed") {
+      result = { outcome: "duplicate", status: current.status, attempts: current.attempts, leadId: current.lead_id };
+    } else if (current.status === "processing" && current.lease_until > now) {
+      result = { outcome: "in_progress", status: current.status, attempts: current.attempts, leadId: current.lead_id };
+    } else {
+      Object.assign(current, { status: "processing", attempts: current.attempts + 1, lease_until: now + leaseSeconds * 1000, request_id: requestId || "", updated_at: new Date(now).toISOString() });
+      result = { outcome: "reclaimed", status: "processing", attempts: current.attempts, leadId: current.lead_id };
+    }
+    await this.persist();
+    return result;
+  }
+
+  async completeIntakeReceipt({ key, attempt, leadId }) {
+    const current = this.receiptsState()[key];
+    if (!current || current.status !== "processing" || current.attempts !== attempt) return false;
+    Object.assign(current, { status: "completed", lead_id: leadId || current.lead_id, lease_until: null, last_error: null, completed_at: new Date().toISOString(), updated_at: new Date().toISOString() });
+    await this.persist();
+    return true;
+  }
+
+  async failIntakeReceipt({ key, attempt, leadId, error }) {
+    const current = this.receiptsState()[key];
+    if (!current || current.status !== "processing" || current.attempts !== attempt) return false;
+    Object.assign(current, { status: "crm_failed", lead_id: leadId || current.lead_id, lease_until: null, last_error: String(error || "unknown").slice(0, 120), updated_at: new Date().toISOString() });
+    await this.persist();
+    return true;
+  }
+
   async findIntakeTimelineEvent(idempotencyKey) {
     const key = String(idempotencyKey || "");
     return this.state.timeline_events
