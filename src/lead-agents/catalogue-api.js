@@ -5,7 +5,7 @@
 // and every state change conditional on the caller's expected row_version (409 state_changed with the current state otherwise).
 // No public route lives here: the public projection, previews and checkout are later stages.
 
-const { json, readJsonBody, readRawBodyBuffer } = require("./http");
+const { json, readJsonBody } = require("./http");
 const { appendAuditRecord } = require("./audit");
 const { canonicalRole, hasPermission } = require("./permissions");
 const { notifyRecipients } = require("./office-operating-system");
@@ -122,6 +122,22 @@ async function discardObjects(storageService, store, files) {
   }
 }
 
+// Reads an upload body to its end. Bytes past `max` are counted and discarded (never buffered), so every answer, refusals included, is
+// sent only after the client finished sending: answering a half-sent request makes the Vercel -> Render proxy in front of Office reply
+// 502 / reset instead of Office's own error (measured in the stage 4 preview test). Past `hardCap` the connection is cut; no browser
+// upload from the Products screen sends that much (the screen refuses files over 15 MB before sending).
+const UPLOAD_HARD_CAP = 64 * 1024 * 1024;
+async function readUpload(req, max) {
+  const chunks = [];
+  let size = 0;
+  for await (const chunk of req) {
+    size += chunk.length;
+    if (size <= max) chunks.push(chunk);
+    else if (size > UPLOAD_HARD_CAP) { req.destroy(); break; }
+  }
+  return size > max ? { tooLarge: true, size } : { buffer: Buffer.concat(chunks), size };
+}
+
 async function storeUpload(storageService, store, input) {
   const raw = await storageService.putBuffer(input);
   return typeof store.createOfficeFile === "function" ? (await store.createOfficeFile(raw)) || raw : raw;
@@ -146,19 +162,28 @@ async function handleCatalogueRequest({ req, res, ctx, pathname, authContext, st
     // ------------------------------------------------------------------------------------------------ gallery media
     // upload: the raw image bytes as the request body (no JSON, no data URL); everything about the file is learned from its content
     if ((m = sub.match(/^\/products\/([^/]+)\/media$/)) && method === "POST") {
-      need(P.write);
-      if (!storageService) throw C.httpError(503, "media_unavailable");
-      if (!(await cat.mediaAvailable())) throw C.httpError(503, "media_unavailable");
-      const product = C.isUuid(m[1]) ? await cat.getProduct(m[1]) : null;
-      if (!product) return send(404, { error: "product_not_found" }), true;
-      if (product.publication_status === "archived") throw C.httpError(409, "product_archived");
+      let product, refusal = null;
+      try {
+        need(P.write);
+        if (!storageService || !(await cat.mediaAvailable())) throw C.httpError(503, "media_unavailable");
+        product = C.isUuid(m[1]) ? await cat.getProduct(m[1]) : null;
+        if (!product) throw C.httpError(404, "product_not_found");
+        if (product.publication_status === "archived") throw C.httpError(409, "product_archived");
+      } catch (error) {
+        refusal = error;
+      }
+      if (refusal) {
+        await readUpload(req, 0).catch(() => null);
+        throw refusal;
+      }
       const declared = Number(req.headers["content-length"] || 0);
       const url = new URL(req.url, "http://localhost");
       const originalName = M.safeOriginalName(url.searchParams.get("name"));
       let processed, bytes;
       try {
-        if (declared > M.MEDIA_LIMITS.maxBytes) throw C.httpError(413, "image_too_large");
-        bytes = await readRawBodyBuffer(req, M.MEDIA_LIMITS.maxBytes).catch((error) => { throw error && error.statusCode === 413 ? C.httpError(413, "image_too_large") : error; });
+        const body = await readUpload(req, M.MEDIA_LIMITS.maxBytes);
+        if (body.tooLarge) throw C.httpError(413, "image_too_large");
+        bytes = body.buffer;
         // a retry of bytes this product already has: answer from the library without decoding or storing anything
         const digest = M.sha256(bytes);
         const known = (await cat.listMedia(product.id)).find((item) => item.status === "active" && item.sha256 === digest);

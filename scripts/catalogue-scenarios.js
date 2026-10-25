@@ -672,6 +672,13 @@ async function runCatalogueScenarios({ base, users, fullKey, scopedKey, check, l
       image.status === 200 && image.headers.get("content-type") === "image/webp" && /public, max-age=300/.test(image.headers.get("cache-control") || "") && image.headers.get("x-content-type-options") === "nosniff"
         && crypto2.createHash("sha256").update(image.buf).digest("hex") === coverSha.replace(/[^0-9a-f]/g, "") || false,
       { image: image.status, type: image.headers.get("content-type"), cache: image.headers.get("cache-control") });
+    // the original upload of a PUBLISHED cover, addressed by its own sha256 (the only identifier an outsider could compute), never resolves
+    // the stored original's real sha256, from Office's own upload audit record
+    const uploadEvent = (await audit()).find((e) => e.action === "catalogue_media_uploaded" && e.metadata && e.metadata.media_id === m1.id);
+    const originalBytesSha = uploadEvent ? uploadEvent.metadata.sha256 : "";
+    const origPublic = await pub(`/media/${originalBytesSha}.webp`);
+    const origNoExt = await pub(`/media/${originalBytesSha}`);
+    check(id("PB5c"), "the private original of a published cover is not reachable through the public API by its content hash (with or without extension)", originalBytesSha && origPublic.status === 404 && origNoExt.status === 404, { origPublic: origPublic.status, origNoExt: origNoExt.status });
     check(id("PB5b"), "…draft-only image 404, unknown hash 404, traversal refused", draftPublic.status === 404 && randomSha.status === 404 && sneaky.status >= 400, { draftPublic: draftPublic.status, randomSha: randomSha.status, sneaky: sneaky.status });
 
     // pinned public version
