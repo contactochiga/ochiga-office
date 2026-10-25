@@ -1,0 +1,595 @@
+{
+  "functions": [
+    {
+      "acl": [
+        [
+          "postgres",
+          "EXECUTE",
+          false
+        ],
+        [
+          "service_role",
+          "EXECUTE",
+          false
+        ]
+      ],
+      "owner": "postgres",
+      "signature": "catalogue_merchandising_transition(text,integer,jsonb,text,text)",
+      "definition": "CREATE OR REPLACE FUNCTION public.catalogue_merchandising_transition(p_action text, p_expected integer, p_content jsonb, p_actor text, p_note text DEFAULT ''::text)\n RETURNS jsonb\n LANGUAGE plpgsql\n SET search_path TO 'public', 'pg_temp'\nAS $function$\ndeclare s catalogue_merchandising%rowtype; v_authors text[]; v_previous_published integer;\nbegin\n if p_actor is null or length(trim(p_actor))=0 or length(p_actor)>320 then raise exception using errcode='PT400',message='invalid_actor'; end if;\n p_actor:=lower(trim(p_actor));\n select * into s from catalogue_merchandising where id=1 for update;\n if not found or p_expected is null or s.row_version<>p_expected then raise exception using errcode='PT409',message='state_changed'; end if;\n v_previous_published:=s.published_version;\n if p_action='save' then\n   if p_content is null or not (p_content ?& array['slides','featured','new_arrivals','collections']) then raise exception using errcode='PT400',message='invalid_merchandising'; end if;\n   select array_agg(distinct a) into v_authors from unnest(case when s.workflow='published' then array[p_actor] else array_append(s.authors,p_actor) end) as a;\n   s.current_version:=s.current_version+1; s.authors:=v_authors; s.workflow:='draft';\n   insert into catalogue_merchandising_versions(version,content,authors) values(s.current_version,p_content,s.authors);\n elsif p_action='submit' and s.current_version>0 and s.workflow='draft' then s.workflow:='in_review';\n elsif p_action in ('approve','reject') and s.workflow='in_review' then\n   if p_actor=any(s.authors) then raise exception using errcode='PT403',message='self_review_forbidden'; end if;\n   s.workflow:=case when p_action='approve' then 'approved' else 'draft' end;\n elsif p_action='publish' and s.workflow='approved' then s.published_version:=s.current_version; s.workflow:='published';\n elsif p_action='withdraw' and s.published_version is not null then s.published_version:=null;\n else raise exception using errcode='PT409',message='invalid_campaign_transition'; end if;\n s.row_version:=s.row_version+1;\n update catalogue_merchandising set row_version=s.row_version,current_version=s.current_version,published_version=s.published_version,workflow=s.workflow,authors=s.authors where id=1;\n insert into catalogue_merchandising_events(action,version,current_version,previous_published_version,actor,note) values(p_action,case when p_action='withdraw' then v_previous_published else s.current_version end,s.current_version,v_previous_published,p_actor,coalesce(p_note,''));\n return to_jsonb(s);\nend $function$\n"
+    },
+    {
+      "acl": [
+        [
+          "postgres",
+          "EXECUTE",
+          false
+        ],
+        [
+          "service_role",
+          "EXECUTE",
+          false
+        ]
+      ],
+      "owner": "postgres",
+      "signature": "catalogue_refuse_change()",
+      "definition": "CREATE OR REPLACE FUNCTION public.catalogue_refuse_change()\n RETURNS trigger\n LANGUAGE plpgsql\n SET search_path TO 'public', 'pg_temp'\nAS $function$\nbegin\n  raise exception 'append_only: % on % is not allowed', tg_op, tg_table_name using errcode = '42501';\nend $function$\n"
+    }
+  ],
+  "relations": [
+    {
+      "acl": [
+        [
+          "postgres",
+          "DELETE",
+          false
+        ],
+        [
+          "postgres",
+          "INSERT",
+          false
+        ],
+        [
+          "postgres",
+          "MAINTAIN",
+          false
+        ],
+        [
+          "postgres",
+          "REFERENCES",
+          false
+        ],
+        [
+          "postgres",
+          "SELECT",
+          false
+        ],
+        [
+          "postgres",
+          "TRIGGER",
+          false
+        ],
+        [
+          "postgres",
+          "TRUNCATE",
+          false
+        ],
+        [
+          "postgres",
+          "UPDATE",
+          false
+        ],
+        [
+          "service_role",
+          "INSERT",
+          false
+        ],
+        [
+          "service_role",
+          "SELECT",
+          false
+        ],
+        [
+          "service_role",
+          "UPDATE",
+          false
+        ]
+      ],
+      "rls": true,
+      "kind": "r",
+      "name": "catalogue_merchandising",
+      "owner": "postgres",
+      "columns": [
+        {
+          "acl": null,
+          "name": "id",
+          "type": "integer",
+          "default": null,
+          "identity": "",
+          "not_null": true,
+          "generated": ""
+        },
+        {
+          "acl": null,
+          "name": "row_version",
+          "type": "integer",
+          "default": "0",
+          "identity": "",
+          "not_null": true,
+          "generated": ""
+        },
+        {
+          "acl": null,
+          "name": "current_version",
+          "type": "integer",
+          "default": "0",
+          "identity": "",
+          "not_null": true,
+          "generated": ""
+        },
+        {
+          "acl": null,
+          "name": "published_version",
+          "type": "integer",
+          "default": null,
+          "identity": "",
+          "not_null": false,
+          "generated": ""
+        },
+        {
+          "acl": null,
+          "name": "workflow",
+          "type": "text",
+          "default": "'draft'::text",
+          "identity": "",
+          "not_null": true,
+          "generated": ""
+        },
+        {
+          "acl": null,
+          "name": "authors",
+          "type": "text[]",
+          "default": "'{}'::text[]",
+          "identity": "",
+          "not_null": true,
+          "generated": ""
+        }
+      ],
+      "policies": 0,
+      "triggers": [],
+      "force_rls": false,
+      "constraints": [
+        [
+          "catalogue_merchandising_check",
+          "CHECK (((row_version >= 0) AND (current_version >= 0)))",
+          true,
+          false,
+          false
+        ],
+        [
+          "catalogue_merchandising_check1",
+          "CHECK (((published_version IS NULL) OR ((published_version > 0) AND (published_version <= current_version))))",
+          true,
+          false,
+          false
+        ],
+        [
+          "catalogue_merchandising_id_check",
+          "CHECK ((id = 1))",
+          true,
+          false,
+          false
+        ],
+        [
+          "catalogue_merchandising_pkey",
+          "PRIMARY KEY (id)",
+          true,
+          false,
+          false
+        ],
+        [
+          "catalogue_merchandising_workflow_check",
+          "CHECK ((workflow = ANY (ARRAY['draft'::text, 'in_review'::text, 'approved'::text, 'published'::text])))",
+          true,
+          false,
+          false
+        ]
+      ]
+    },
+    {
+      "acl": [
+        [
+          "postgres",
+          "DELETE",
+          false
+        ],
+        [
+          "postgres",
+          "INSERT",
+          false
+        ],
+        [
+          "postgres",
+          "MAINTAIN",
+          false
+        ],
+        [
+          "postgres",
+          "REFERENCES",
+          false
+        ],
+        [
+          "postgres",
+          "SELECT",
+          false
+        ],
+        [
+          "postgres",
+          "TRIGGER",
+          false
+        ],
+        [
+          "postgres",
+          "TRUNCATE",
+          false
+        ],
+        [
+          "postgres",
+          "UPDATE",
+          false
+        ],
+        [
+          "service_role",
+          "INSERT",
+          false
+        ],
+        [
+          "service_role",
+          "SELECT",
+          false
+        ]
+      ],
+      "rls": true,
+      "kind": "r",
+      "name": "catalogue_merchandising_events",
+      "owner": "postgres",
+      "columns": [
+        {
+          "acl": null,
+          "name": "id",
+          "type": "bigint",
+          "default": null,
+          "identity": "a",
+          "not_null": true,
+          "generated": ""
+        },
+        {
+          "acl": null,
+          "name": "action",
+          "type": "text",
+          "default": null,
+          "identity": "",
+          "not_null": true,
+          "generated": ""
+        },
+        {
+          "acl": null,
+          "name": "version",
+          "type": "integer",
+          "default": null,
+          "identity": "",
+          "not_null": true,
+          "generated": ""
+        },
+        {
+          "acl": null,
+          "name": "current_version",
+          "type": "integer",
+          "default": null,
+          "identity": "",
+          "not_null": true,
+          "generated": ""
+        },
+        {
+          "acl": null,
+          "name": "previous_published_version",
+          "type": "integer",
+          "default": null,
+          "identity": "",
+          "not_null": false,
+          "generated": ""
+        },
+        {
+          "acl": null,
+          "name": "actor",
+          "type": "text",
+          "default": null,
+          "identity": "",
+          "not_null": true,
+          "generated": ""
+        },
+        {
+          "acl": null,
+          "name": "note",
+          "type": "text",
+          "default": "''::text",
+          "identity": "",
+          "not_null": true,
+          "generated": ""
+        },
+        {
+          "acl": null,
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "default": "now()",
+          "identity": "",
+          "not_null": true,
+          "generated": ""
+        }
+      ],
+      "policies": 0,
+      "triggers": [
+        [
+          "merchandising_events_immutable",
+          "CREATE TRIGGER merchandising_events_immutable BEFORE DELETE OR UPDATE ON public.catalogue_merchandising_events FOR EACH ROW EXECUTE FUNCTION catalogue_refuse_change()",
+          "O"
+        ],
+        [
+          "merchandising_events_no_truncate",
+          "CREATE TRIGGER merchandising_events_no_truncate BEFORE TRUNCATE ON public.catalogue_merchandising_events FOR EACH STATEMENT EXECUTE FUNCTION catalogue_refuse_change()",
+          "O"
+        ]
+      ],
+      "force_rls": false,
+      "constraints": [
+        [
+          "catalogue_merchandising_events_actor_check",
+          "CHECK (((length(actor) >= 1) AND (length(actor) <= 320)))",
+          true,
+          false,
+          false
+        ],
+        [
+          "catalogue_merchandising_events_note_check",
+          "CHECK ((length(note) <= 500))",
+          true,
+          false,
+          false
+        ],
+        [
+          "catalogue_merchandising_events_pkey",
+          "PRIMARY KEY (id)",
+          true,
+          false,
+          false
+        ]
+      ]
+    },
+    {
+      "acl": [
+        [
+          "postgres",
+          "SELECT",
+          false
+        ],
+        [
+          "postgres",
+          "UPDATE",
+          false
+        ],
+        [
+          "postgres",
+          "USAGE",
+          false
+        ],
+        [
+          "service_role",
+          "SELECT",
+          false
+        ],
+        [
+          "service_role",
+          "USAGE",
+          false
+        ]
+      ],
+      "rls": false,
+      "kind": "S",
+      "name": "catalogue_merchandising_events_id_seq",
+      "owner": "postgres",
+      "columns": [
+        {
+          "acl": null,
+          "name": "last_value",
+          "type": "bigint",
+          "default": null,
+          "identity": "",
+          "not_null": true,
+          "generated": ""
+        },
+        {
+          "acl": null,
+          "name": "log_cnt",
+          "type": "bigint",
+          "default": null,
+          "identity": "",
+          "not_null": true,
+          "generated": ""
+        },
+        {
+          "acl": null,
+          "name": "is_called",
+          "type": "boolean",
+          "default": null,
+          "identity": "",
+          "not_null": true,
+          "generated": ""
+        }
+      ],
+      "policies": 0,
+      "triggers": [],
+      "force_rls": false,
+      "constraints": []
+    },
+    {
+      "acl": [
+        [
+          "postgres",
+          "DELETE",
+          false
+        ],
+        [
+          "postgres",
+          "INSERT",
+          false
+        ],
+        [
+          "postgres",
+          "MAINTAIN",
+          false
+        ],
+        [
+          "postgres",
+          "REFERENCES",
+          false
+        ],
+        [
+          "postgres",
+          "SELECT",
+          false
+        ],
+        [
+          "postgres",
+          "TRIGGER",
+          false
+        ],
+        [
+          "postgres",
+          "TRUNCATE",
+          false
+        ],
+        [
+          "postgres",
+          "UPDATE",
+          false
+        ],
+        [
+          "service_role",
+          "INSERT",
+          false
+        ],
+        [
+          "service_role",
+          "SELECT",
+          false
+        ]
+      ],
+      "rls": true,
+      "kind": "r",
+      "name": "catalogue_merchandising_versions",
+      "owner": "postgres",
+      "columns": [
+        {
+          "acl": null,
+          "name": "version",
+          "type": "integer",
+          "default": null,
+          "identity": "",
+          "not_null": true,
+          "generated": ""
+        },
+        {
+          "acl": null,
+          "name": "content",
+          "type": "jsonb",
+          "default": null,
+          "identity": "",
+          "not_null": true,
+          "generated": ""
+        },
+        {
+          "acl": null,
+          "name": "authors",
+          "type": "text[]",
+          "default": null,
+          "identity": "",
+          "not_null": true,
+          "generated": ""
+        },
+        {
+          "acl": null,
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "default": "now()",
+          "identity": "",
+          "not_null": true,
+          "generated": ""
+        }
+      ],
+      "policies": 0,
+      "triggers": [
+        [
+          "merchandising_versions_immutable",
+          "CREATE TRIGGER merchandising_versions_immutable BEFORE DELETE OR UPDATE ON public.catalogue_merchandising_versions FOR EACH ROW EXECUTE FUNCTION catalogue_refuse_change()",
+          "O"
+        ],
+        [
+          "merchandising_versions_no_truncate",
+          "CREATE TRIGGER merchandising_versions_no_truncate BEFORE TRUNCATE ON public.catalogue_merchandising_versions FOR EACH STATEMENT EXECUTE FUNCTION catalogue_refuse_change()",
+          "O"
+        ]
+      ],
+      "force_rls": false,
+      "constraints": [
+        [
+          "catalogue_merchandising_versions_content_check",
+          "CHECK ((jsonb_typeof(content) = 'object'::text))",
+          true,
+          false,
+          false
+        ],
+        [
+          "catalogue_merchandising_versions_content_check1",
+          "CHECK (((jsonb_typeof((content -> 'slides'::text)) = 'array'::text) AND (jsonb_array_length((content -> 'slides'::text)) <= 8)))",
+          true,
+          false,
+          false
+        ],
+        [
+          "catalogue_merchandising_versions_content_check2",
+          "CHECK (((jsonb_typeof((content -> 'collections'::text)) = 'array'::text) AND (jsonb_array_length((content -> 'collections'::text)) <= 8)))",
+          true,
+          false,
+          false
+        ],
+        [
+          "catalogue_merchandising_versions_content_check3",
+          "CHECK (((jsonb_typeof((content -> 'featured'::text)) = 'array'::text) AND (jsonb_array_length((content -> 'featured'::text)) <= 24)))",
+          true,
+          false,
+          false
+        ],
+        [
+          "catalogue_merchandising_versions_content_check4",
+          "CHECK (((jsonb_typeof((content -> 'new_arrivals'::text)) = 'array'::text) AND (jsonb_array_length((content -> 'new_arrivals'::text)) <= 24)))",
+          true,
+          false,
+          false
+        ],
+        [
+          "catalogue_merchandising_versions_pkey",
+          "PRIMARY KEY (version)",
+          true,
+          false,
+          false
+        ],
+        [
+          "catalogue_merchandising_versions_version_check",
+          "CHECK ((version > 0))",
+          true,
+          false,
+          false
+        ]
+      ]
+    }
+  ]
+}

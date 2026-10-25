@@ -29,6 +29,8 @@ alter table catalogue_merchandising_events enable row level security;
 revoke all on catalogue_merchandising,catalogue_merchandising_versions,catalogue_merchandising_events from public,anon,authenticated,service_role;
 grant select,insert,update on catalogue_merchandising to service_role;
 grant select,insert on catalogue_merchandising_versions,catalogue_merchandising_events to service_role;
+-- Clear inherited default sequence grants: UPDATE would permit setval().
+revoke all on sequence catalogue_merchandising_events_id_seq from public,anon,authenticated,service_role;
 grant usage,select on sequence catalogue_merchandising_events_id_seq to service_role;
 drop trigger if exists merchandising_versions_immutable on catalogue_merchandising_versions;
 create trigger merchandising_versions_immutable before update or delete on catalogue_merchandising_versions for each row execute function catalogue_refuse_change();
