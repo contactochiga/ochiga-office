@@ -205,16 +205,21 @@ async function runCatalogueScenarios({ base, users, fullKey, scopedKey, check, l
     const tryPublish = await A.publisher.post(`/products/${pid}/publish`, { expected_row_version: product.row_version });
     const publishedNow = await A.writerA.get(`/products/${pid}/versions/${publishedVersion}`);
     check(id("AT22b"), "…cannot be published without review; the published version's content is untouched", tryPublish.status === 409 && tryPublish.json.error === "review_required" && publishedNow.json.version.content.model === `SW2-${tag}`, { tryPublish: tryPublish.json, model: publishedNow.json && publishedNow.json.version.content.model });
-    // revert to the published content, then a typo-class description edit
+    // release decision: NO minor/typo exception. Revert to the published content except a one-character description typo.
     const back = await A.writerB.patch(`/products/${pid}`, { expected_row_version: product.row_version, content: { ...cur.content, description: cur.content.description.replace("local control", "local contrl") } });
     product = back.json.product;
-    check(id("AT23a"), "a typo-class edit (<= 3 characters, description) is classified minor against the published content", back.status === 200 && back.json.current_materiality === "minor", back.json && back.json.current_materiality);
-    const minorPub = await A.publisher.post(`/products/${pid}/publish`, { expected_row_version: product.row_version });
-    product = minorPub.json.product;
-    const last = minorPub.json.publication_events[minorPub.json.publication_events.length - 1];
-    check(id("AT23b"), "minor change publishable by a publisher without second review; still versioned (own version) and recorded as published_minor", minorPub.status === 200 && product.published_version === product.current_version && last.action === "published_minor", { status: minorPub.status, last });
+    check(id("AT23a"), "even a one-character typo edit after publication is classified material (no minor exception)", back.status === 200 && back.json.current_materiality === "material", back.json && back.json.current_materiality);
+    const typoPub = await A.publisher.post(`/products/${pid}/publish`, { expected_row_version: product.row_version });
+    const superTypoPub = await A.superAdmin.post(`/products/${pid}/publish`, { expected_row_version: product.row_version });
+    check(id("AT23b"), "…and cannot be published without review, by a publisher or by super_admin without the audited override", typoPub.status === 409 && typoPub.json.error === "review_required" && superTypoPub.status === 409, { typoPub: typoPub.json, superTypoPub: superTypoPub.json });
+    const sub = await A.writerB.post(`/products/${pid}/submit`, { expected_row_version: product.row_version });
+    const appr = await A.reviewer.post(`/products/${pid}/approve`, { expected_row_version: sub.json.product.row_version });
+    const pub = await A.publisher.post(`/products/${pid}/publish`, { expected_row_version: appr.json.product.row_version });
+    product = pub.json.product;
+    const last = pub.json.publication_events[pub.json.publication_events.length - 1];
+    check(id("AT23c"), "the typo fix goes live only through the review workflow (submit -> second-person approval -> publish); no 'published_minor' event exists", pub.status === 200 && product.published_version === product.current_version && last.action === "published" && pub.json.publication_events.every((e) => e.action !== "published_minor"), { status: pub.status, last });
     const bigText = await A.writerB.patch(`/products/${pid}`, { expected_row_version: product.row_version, content: { ...cur.content, description: `${cur.content.description} Now with scene support.` } });
-    check(id("AT23c"), "a description edit beyond 3 characters is material", bigText.json && bigText.json.current_materiality === "material", bigText.json && bigText.json.current_materiality);
+    check(id("AT23d"), "a further description edit is a new material version awaiting review", bigText.json && bigText.json.current_materiality === "material" && bigText.json.product.workflow_status === "draft", bigText.json && bigText.json.current_materiality);
     product = bigText.json.product;
   }
 

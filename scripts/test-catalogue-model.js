@@ -26,49 +26,20 @@ ok(throwsCode(() => C.validateContent({ ...c, specifications: [{ key: "V", value
 ok(throwsCode(() => C.validateContent({ ...c, media: [{ id: 1 }] }), 400) && throwsCode(() => C.validateContent({ ...c, documents: [{ id: 1 }] }), 400), "media/documents refused in Phase 1");
 ok(throwsCode(() => C.validateContent({ ...c, description: "x".repeat(10001) }), 400), "description length bounded");
 
-// ---- materiality (D2), always against the PUBLISHED content
+// ---- materiality (D2, release decision: no minor/typo exception)
 ok(C.materialityOf(null, c) === "initial", "never published -> initial");
-ok(C.materialityOf(c, { ...c }) === "minor", "identical content -> minor (nothing material)");
-ok(C.materialityOf(c, { ...c, description: c.description.replace("local", "locl") }) === "minor", "1-character typo in description -> minor");
-ok(C.materialityOf(c, { ...c, summary: "Two-gang switc.", description: c.description.replace("local", "locl") }) === "minor", "typos in summary + description totalling 2 characters -> minor");
-ok(C.materialityOf(c, { ...c, description: c.description + " New." }) === "material", "more than 3 characters -> material");
-["name", "model", "category_id", "brand_id"].forEach((field) => ok(C.materialityOf(c, { ...c, [field]: field.endsWith("_id") ? "22222222-2222-4222-8222-222222222222" : "Changed" }) === "material", `${field} change -> material`));
-ok(C.materialityOf(c, { ...c, specifications: [{ key: "Voltage", value: "240", unit: "V" }] }) === "material", "specification value -> material");
-ok(C.materialityOf(c, { ...c, compatibility: { ...c.compatibility, edge: true } }) === "material", "compatibility -> material");
-ok(C.materialityOf(c, { ...c, variants: [...c.variants, { sku: "SW2-BLK", name: "Black", options: {} }] }) === "material", "variant added -> material");
-const withMedia = { ...c, media: [{ office_file_id: "a", alt: "front" }, { office_file_id: "b", alt: "side" }] };
-ok(C.materialityOf(withMedia, { ...withMedia, media: [{ office_file_id: "a", alt: "Front view" }, { office_file_id: "b", alt: "side" }] }) === "material", "any media change (even alt text) is material until Phase 2 decides otherwise");
-// typo exception audit (release review): commercially material details never pass as typos
-const prose = { ...c, summary: "Two-gang switch.", description: "Includes a 2-year warranty. Not compatible with Oyi Core. IP20 rated, 230 V, ₦5,000 installation extra." };
-const minorOf = (description) => C.materialityOf(prose, { ...prose, description });
-ok(minorOf(prose.description.replace("Includes", "Inclues")) === "material", "'Includes' is a protected inclusion term -> material even for 1 character");
-ok(minorOf(prose.description.replace("2-year", "5-year")) === "material", "warranty term digit change -> material");
-ok(minorOf(prose.description.replace("warranty", "warrenty")) === "material", "the word 'warranty' itself is protected -> material");
-ok(minorOf(prose.description.replace("Not compatible", "Now compatible")) === "material", "negation change ('Not' -> 'Now') -> material");
-ok(minorOf(prose.description.replace("IP20", "IP65")) === "material", "rating with digits -> material");
-ok(minorOf(prose.description.replace("230 V", "240 V")) === "material", "number/unit -> material");
-ok(minorOf(prose.description.replace("₦5,000", "₦4,000")) === "material", "currency amount -> material");
-ok(minorOf(prose.description.replace("Oyi Core.", "Oyi Core and Edge.")) === "material", "words added -> material");
-ok(minorOf(prose.description.replace(" rated,", ",")) === "material", "word removed -> material");
-ok(minorOf(prose.description.replace("Includes a", "a Includes")) === "material", "words reordered -> material");
-ok(minorOf(prose.description.replace("Core.", "Core!")) === "material", "punctuation change -> material");
-const typoBase = { ...c, description: "A neutral wire swich with locl control for modern homes." };
-const fixed = C.materialityOf(typoBase, { ...typoBase, description: "A neutral wire switch with local control for modern homes." });
-ok(fixed === "minor", "genuine spelling corrections (swich->switch, locl->local: 2 characters) -> minor", fixed);
-ok(C.materialityOf(typoBase, { ...typoBase, description: "A neutral wire switch with local control for modren homes." }) === "material", "corrections plus a third edit (transposition, 2 characters) exceed the 3-character budget -> material");
-ok(C.typoDistance("Smart lock", "Smart lock") === 0 && C.typoDistance("smrat lock", "smart lock") === 2 && C.typoDistance("lock", "lockk-2") === Infinity, "typoDistance: exact / letters-only / digits refused");
-ok(C.materialityOf(withMedia, { ...withMedia, media: [withMedia.media[1], withMedia.media[0]] }) === "material", "(Phase 2 rule, 4.6a) gallery reorder -> material");
-// regression: Postgres jsonb returns object keys in another order; equality must not depend on key order
+ok(C.materialityOf(c, { ...c }) === "material" && C.materialityOf(c, { ...c, description: c.description.replace("local", "locl") }) === "material", "after publication EVERY change (even an identical save or a one-character typo) is material");
+ok(!("typoDistance" in C) && !("editDistance" in C), "no typo-exception code remains");
+// regression: Postgres jsonb returns object keys in another order; equality (diff) must not depend on key order
 const reordered = Object.fromEntries(Object.entries(c).reverse());
 const deepReordered = { ...reordered, compatibility: Object.fromEntries(Object.entries(c.compatibility).reverse()), specifications: c.specifications.map((s) => ({ unit: s.unit, value: s.value, key: s.key })) };
-ok(C.materialityOf(deepReordered, c) === "minor" && C.diffContent(deepReordered, c).length === 0, "key order (jsonb round trip) never makes content 'material' or 'changed'");
+ok(C.diffContent(deepReordered, c).length === 0, "key order (jsonb round trip) never shows as a change");
 
 // ---- diff
 const d = C.diffContent(c, { ...c, name: "New", specifications: [...c.specifications, { key: "IP", value: "20", unit: "" }] });
 ok(d.length === 2 && d[0].field === "name" && d[1].field === "specifications[ip]" && d[1].before === null, "diff lists changed scalar and added spec", d);
 const d2 = C.diffContent({ ...c, specifications: [{ key: "A", value: "1", unit: "" }, { key: "B", value: "2", unit: "" }] }, { ...c, specifications: [{ key: "B", value: "2", unit: "" }, { key: "A", value: "1", unit: "" }] });
 ok(d2.length === 1 && d2[0].field === "specifications.order", "diff detects a pure reorder", d2);
-ok(C.editDistance("kitten", "sitting", 10) === 3 && C.editDistance("a".repeat(50), "b".repeat(50), 3) === 4, "bounded edit distance");
 
 // ---- prices / VAT (D7)
 ok(C.validatePriceRequest({ price_ngn_kobo: 18500000 }).vat_rate_bp === 750, "standard VAT defaults to 7.5 %");

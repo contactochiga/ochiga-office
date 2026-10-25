@@ -1451,6 +1451,8 @@ async function renderRoute() {
     outlet.appendChild(skeletonPanel(4));
     // loaded on demand (same pattern as shared/oyi-core) and drawn with this file's own primitives
     const { renderCatalogueRoute } = await import("/office/catalogue/catalogue.mjs");
+    // a newer navigation may have started while the module loaded: never let a stale render write to the outlet
+    if (token !== state.renderToken) return;
     await renderCatalogueRoute(outlet, rest, token, {
       api, el, escapeHtml, badge, toast, setTopbar, setSelectedObject, navigate, renderDataTable, KPIGroup, openDialog,
       errorPanel, emptyPanel, skeletonPanel, fmtDateTime, fmtRelative, titleCase, hasPermission, state,

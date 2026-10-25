@@ -22,12 +22,6 @@ const SEED_CATEGORIES = Object.freeze([
 ]);
 
 const nowIso = () => new Date().toISOString();
-// key-order-independent serialisation (the in-memory equivalent of jsonb equality)
-function canonicalJson(value) {
-  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
-  if (value && typeof value === "object") return `{${Object.keys(value).sort().filter((k) => value[k] !== undefined).map((k) => `${JSON.stringify(k)}:${canonicalJson(value[k])}`).join(",")}}`;
-  return JSON.stringify(value === undefined ? null : value);
-}
 const clone = (value) => (value == null ? value : JSON.parse(JSON.stringify(value)));
 
 function priceChangeState(decisions) {
@@ -305,13 +299,10 @@ class FileCatalogueStore {
   async saveVersion({ id, expectedRowVersion, slug, categoryId, brandId, content, materiality, actor }) {
     const p = this.s.products.find((x) => x.id === id);
     if (!p || p.row_version !== Number(expectedRowVersion) || p.publication_status === "archived") this.stateChanged(p);
-    // same guard as catalogue_save_version: "minor" differs from the published version in summary/description only
-    if (materiality === "minor") {
-      const published = this.s.versions.find((v) => v.product_id === id && v.version === p.published_version);
-      const rest = (c) => { const { summary, description, ...others } = c || {}; return canonicalJson(others); };
-      if (!published || rest(published.content) !== rest(content)) throw httpError(409, "minor_not_allowed");
-    }
+    // same rules as catalogue_save_version: no minor/typo exception; "initial" before the first publication, "material" after it
+    if (!["initial", "material"].includes(materiality)) throw httpError(400, "invalid_materiality");
     if (materiality === "initial" && p.published_version != null) throw httpError(409, "initial_not_allowed");
+    if (materiality === "material" && p.published_version == null) throw httpError(409, "material_not_allowed");
     if (p.slug !== slug && p.first_published_at) throw httpError(409, "slug_locked");
     if (p.slug !== slug && this.s.products.some((x) => x.slug === slug && x.id !== id)) throw httpError(409, "slug_taken");
     for (const v of content.variants || []) { const owner = this.s.variants.find((x) => x.sku === v.sku); if (owner && owner.product_id !== id) throw httpError(409, "sku_taken", { current: { sku: v.sku } }); }
@@ -347,14 +338,12 @@ class FileCatalogueStore {
     } else if (action === "publish") {
       if (reason && reason.length < 20) throw httpError(400, "override_reason_too_short");
       if (!matches || p.publication_status === "archived") this.stateChanged(p);
-      const current = this.s.versions.find((v) => v.product_id === id && v.version === p.current_version);
       const notLive = p.published_version !== p.current_version || p.publication_status !== "published";
       const normal = p.workflow_status === "approved" && p.approved_version === p.current_version && notLive;
-      const minor = p.publication_status === "published" && p.published_version != null && p.current_version > p.published_version && current.materiality === "minor";
       const override = reason.length >= 20 && notLive;
-      if (!normal && !minor && !override) throw httpError(409, "review_required");
+      if (!normal && !override) throw httpError(409, "review_required");
       const approvedReview = this.s.reviews.some((r) => r.product_id === id && r.version === p.current_version && r.decision === "approved");
-      const path = approvedReview ? "published" : current.materiality === "minor" && !reason ? "published_minor" : "published_override";
+      const path = approvedReview ? "published" : "published_override";
       bump({ publication_status: "published", published_version: p.current_version, published_at: at, first_published_at: p.first_published_at || at, workflow_status: "approved", approved_version: p.current_version, review_version: null, last_publish_error: null });
       if (path === "published_override") review(p.current_version, "override", reason);
       event(p.current_version, path, path === "published_override" ? { override: true, override_reason: reason } : {});

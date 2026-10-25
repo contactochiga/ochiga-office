@@ -32,7 +32,6 @@ const VAT_TREATMENTS = Object.freeze(["standard", "exempt", "zero_rated"]);
 const SOURCING = Object.freeze(["in_stock", "supplier_sourced", "made_to_order", "discontinued"]);
 const STANDARD_VAT_BP = 750; // Nigeria VAT 7.5 %
 const OVERRIDE_REASON_MIN = 20;
-const MINOR_TEXT_EDIT_MAX = 3;
 
 function badRequest(message, details) {
   const error = new Error(message);
@@ -142,24 +141,6 @@ function validateContent(input = {}) {
 }
 
 // Bounded edit distance (stops counting above `limit`), for the "typo-class edit" rule.
-function editDistance(a, b, limit) {
-  if (a === b) return 0;
-  if (Math.abs(a.length - b.length) > limit) return limit + 1;
-  let previous = Array.from({ length: b.length + 1 }, (_, i) => i);
-  for (let i = 1; i <= a.length; i += 1) {
-    const current = [i];
-    let rowMin = i;
-    for (let j = 1; j <= b.length; j += 1) {
-      current[j] = Math.min(previous[j] + 1, current[j - 1] + 1, previous[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
-      rowMin = Math.min(rowMin, current[j]);
-    }
-    if (rowMin > limit) return limit + 1;
-    previous = current;
-  }
-  return previous[b.length];
-}
-
-const MATERIAL_FIELDS = Object.freeze(["category_id", "brand_id", "name", "model", "specifications", "compatibility", "variants", "documents"]);
 // Key-order-independent equality: Postgres jsonb returns object keys in its own order, so content read back from the database must
 // compare equal to the same content built in JavaScript (array order still matters: it is meaningful for specs, variants, media).
 function canonical(value) {
@@ -169,59 +150,11 @@ function canonical(value) {
 }
 const same = (a, b) => canonical(a) === canonical(b);
 
-// Words whose change alters meaning or a commercial commitment even when only a letter or two differ ("not"->"now", "years"->"yeard"
-// is harmless but "warranty"/"guarantee" edits are not). A substitution touching any of these is never a typo.
-const PROTECTED_WORDS = new Set([
-  "not", "no", "non", "never", "none", "nor", "without", "cannot", "can", "will", "wont", "only", "all", "any", "every", "each", "both", "either", "neither",
-  "warranty", "warranties", "warranted", "guarantee", "guarantees", "guaranteed", "lifetime", "refund", "refunds", "return", "returns", "replacement", "replace",
-  "year", "years", "month", "months", "week", "weeks", "day", "days", "hour", "hours",
-  "included", "includes", "include", "including", "excluded", "excludes", "exclude", "excluding", "extra", "optional", "free", "paid", "price", "prices",
-  "vat", "cost", "costs", "fee", "fees", "delivery", "installation", "install", "installed", "shipping",
-  "compatible", "compatibility", "incompatible", "supports", "support", "supported", "unsupported", "requires", "required", "require", "requirement",
-  "certified", "certification", "approved", "rated", "rating", "waterproof", "weatherproof", "indoor", "outdoor",
-  "maximum", "minimum", "max", "min", "up", "over", "under", "plus", "pro", "lite", "mini", "single", "double", "dual", "stock", "available", "availability",
-]);
-const EDGE_PUNCTUATION = /^([("'“‘[]*)(.*?)([)"'”’\].,;:!?]*)$/u;
-
-// A summary/description change qualifies as a typo correction only when every changed word is a same-position substitution of a purely
-// alphabetic, unprotected word within 2 characters, with the surrounding punctuation unchanged (no word added, removed or reordered; no
-// digit, unit, currency or percentage touched). Returns the total character distance, or Infinity when the change is not a typo.
-function typoDistance(before = "", after = "") {
-  if (before === after) return 0;
-  const a = before.split(/\s+/).filter(Boolean);
-  const b = after.split(/\s+/).filter(Boolean);
-  if (a.length !== b.length) return Infinity;
-  let total = 0;
-  for (let i = 0; i < a.length; i += 1) {
-    if (a[i] === b[i]) continue;
-    const [, preA, coreA, postA] = EDGE_PUNCTUATION.exec(a[i]);
-    const [, preB, coreB, postB] = EDGE_PUNCTUATION.exec(b[i]);
-    if (preA !== preB || postA !== postB) return Infinity;
-    if (!/^\p{L}+$/u.test(coreA) || !/^\p{L}+$/u.test(coreB)) return Infinity;
-    if (PROTECTED_WORDS.has(coreA.toLowerCase()) || PROTECTED_WORDS.has(coreB.toLowerCase())) return Infinity;
-    const distance = editDistance(coreA, coreB, 2);
-    if (distance > 2) return Infinity;
-    total += distance;
-  }
-  return total;
-}
-
-// D2: relative to the PUBLISHED content (cumulative, so many small edits cannot add up to an unreviewed material change).
-// initial = never published; minor = ONLY typo corrections (typoDistance, <= 3 characters in total) in summary/description with every other
-// field identical; material = anything else -- specifications, compatibility, variants, name, model, category, brand, any media/document
-// change, any number, unit, negation, warranty/guarantee, inclusion or other protected term. Prices and inventory are never part of a
-// version: they have their own approval (price) and logging (inventory) and cannot be changed through this path at all.
-// The database re-checks the essential guarantee (a "minor" version differs from the published one in summary/description only).
-function materialityOf(publishedContent, nextContent) {
-  if (!publishedContent) return "initial";
-  if (MATERIAL_FIELDS.some((field) => !same(publishedContent[field], nextContent[field]))) return "material";
-  if (!same(publishedContent.media || [], nextContent.media || [])) return "material";
-  let total = 0;
-  for (const field of ["summary", "description"]) {
-    total += typoDistance(publishedContent[field] || "", nextContent[field] || "");
-    if (total > MINOR_TEXT_EDIT_MAX) return "material";
-  }
-  return "minor";
+// D2 as decided in the release review (2026-10-25): there is NO minor/typo exception. Before the first publication a version is
+// "initial"; after it, EVERY change to product content is "material" and follows the review workflow (second person approves, then a
+// publisher publishes). The database refuses any other classification.
+function materialityOf(publishedContent) {
+  return publishedContent ? "material" : "initial";
 }
 
 function diffContent(before = {}, after = {}) {
@@ -381,12 +314,10 @@ module.exports = {
   badRequest,
   canSeeCosts,
   diffContent,
-  editDistance,
   httpError,
   internalVariant,
   isUuid,
   materialityOf,
-  typoDistance,
   requireCataloguePermission,
   validSlug,
   validateContent,

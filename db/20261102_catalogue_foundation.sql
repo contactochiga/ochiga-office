@@ -100,8 +100,8 @@ create table if not exists catalogue_product_versions (
   product_id uuid not null references catalogue_products(id) on delete restrict,
   version integer not null check (version >= 1),
   content jsonb not null check (jsonb_typeof(content) = 'object'),
-  -- relative to the published version at the time of saving: initial (never published), material or minor (D2)
-  materiality text not null check (materiality in ('initial', 'material', 'minor')),
+  -- initial = saved before the first publication; material = every change after it (no minor/typo exception: release review 2026-10-25)
+  materiality text not null check (materiality in ('initial', 'material')),
   author text not null check (length(author) between 1 and 320),
   created_at timestamptz not null default now(),
   primary key (product_id, version)
@@ -123,7 +123,7 @@ create table if not exists catalogue_publication_events (
   id uuid primary key default gen_random_uuid(),
   product_id uuid not null references catalogue_products(id) on delete restrict,
   version integer,
-  action text not null check (action in ('published', 'published_minor', 'published_override', 'unpublished', 'archived')),
+  action text not null check (action in ('published', 'published_override', 'unpublished', 'archived')),
   actor text not null check (length(actor) between 1 and 320),
   override boolean not null default false,
   override_reason text not null default '' check (length(override_reason) <= 2000),
@@ -292,16 +292,13 @@ create or replace function catalogue_save_version(p_product_id uuid, p_expected_
 returns jsonb language plpgsql set search_path = public, pg_temp as $f$
 declare p catalogue_products%rowtype;
 begin
-  if p_materiality not in ('initial', 'material', 'minor') then raise exception 'invalid_materiality' using errcode = '22023'; end if;
-  -- the typo exception, enforced here as well: a "minor" version may differ from the PUBLISHED version in summary/description only
-  -- (the application additionally restricts those edits to typo corrections); "initial" exists only before the first publication
-  if p_materiality = 'minor' and not exists (
-       select 1 from catalogue_products c join catalogue_product_versions v on v.product_id = c.id and v.version = c.published_version
-        where c.id = p_product_id and (v.content - 'summary' - 'description') = (p_content - 'summary' - 'description')) then
-    raise exception 'minor_not_allowed' using errcode = 'PT409';
-  end if;
+  -- no minor/typo exception: "initial" only before the first publication, "material" after it (every change is reviewed)
+  if p_materiality not in ('initial', 'material') then raise exception 'invalid_materiality' using errcode = '22023'; end if;
   if p_materiality = 'initial' and exists (select 1 from catalogue_products where id = p_product_id and published_version is not null) then
     raise exception 'initial_not_allowed' using errcode = 'PT409';
+  end if;
+  if p_materiality = 'material' and exists (select 1 from catalogue_products where id = p_product_id and published_version is null) then
+    raise exception 'material_not_allowed' using errcode = 'PT409';
   end if;
   update catalogue_products
      set row_version = row_version + 1, current_version = current_version + 1, workflow_status = 'draft', review_version = null, approved_version = null,
@@ -324,8 +321,8 @@ exception when unique_violation then
 end $f$;
 
 -- submit | approve | request_changes | publish | unpublish | archive, each ONE conditional update on the expected row_version.
--- publish takes the normal path (approved current version), the minor path (current version is a minor change of the published one) or,
--- only when p_override_reason is given (the caller has checked catalogue.override), the audited override path.
+-- publish takes the normal path (approved current version) or, only when p_override_reason is given (the caller has checked
+-- catalogue.override and the super_admin role), the audited override path. There is no minor/typo path.
 create or replace function catalogue_transition(p_product_id uuid, p_expected_row_version integer, p_action text, p_actor text, p_note text, p_override_reason text)
 returns jsonb language plpgsql set search_path = public, pg_temp as $f$
 declare p catalogue_products%rowtype; path text; reason text := coalesce(p_override_reason, '');
@@ -364,8 +361,6 @@ begin
            row_version = row_version + 1, updated_by = p_actor, updated_at = now()
      where id = p_product_id and row_version = p_expected_row_version and publication_status <> 'archived'
        and (   (workflow_status = 'approved' and approved_version = current_version and (published_version is distinct from current_version or publication_status <> 'published'))
-            or (publication_status = 'published' and published_version is not null and current_version > published_version
-                and (select materiality from catalogue_product_versions v where v.product_id = c.id and v.version = c.current_version) = 'minor')
             or (length(reason) >= 20 and (published_version is distinct from current_version or publication_status <> 'published')))
     returning * into p;
     if not found then
@@ -374,10 +369,9 @@ begin
       end if;
       perform catalogue_state_changed(p_product_id);
     end if;
-    -- which path was taken, decided from the pre-update facts recorded on the versions/reviews
+    -- which path was taken: an approval of this exact version, otherwise the audited override
     path := case
       when exists (select 1 from catalogue_reviews r where r.product_id = p.id and r.version = p.current_version and r.decision = 'approved') then 'published'
-      when exists (select 1 from catalogue_product_versions v where v.product_id = p.id and v.version = p.current_version and v.materiality = 'minor') and length(reason) = 0 then 'published_minor'
       else 'published_override' end;
     if path = 'published_override' then
       insert into catalogue_reviews (product_id, version, decision, actor, note) values (p.id, p.current_version, 'override', p_actor, reason);

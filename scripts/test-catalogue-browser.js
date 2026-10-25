@@ -36,6 +36,8 @@ async function main() {
   const limiter = () => new MemoryRateLimiter({ windowMs: 60000, maxRequests: 5000 });
   const adapter = { verifyWebhook: () => null, verifySignature: () => ({ ok: true }), extractEvents: () => [], isConfigured: () => false, sendTextMessage: async () => ({ delivered: false }), sendTemplateMessage: async () => ({ delivered: false }), listApprovedTemplates: async () => [] };
   const server = buildServer({ config, store, rateLimiter: limiter(), publicRateLimiter: limiter(), officeRateLimiter: limiter(), loginRateLimiter: limiter(), whatsappAdapter: adapter, openaiClient: {}, toolExecutor: new ToolExecutor({ store, config, log: () => {}, webhooks: new WebhookDispatcher({ config }) }) });
+  const inflight = new Map(); let reqSeq = 0;
+  server.on("request", (req, res) => { const n = ++reqSeq; inflight.set(n, `${req.method} ${req.url.split("?")[0]}`); res.on("close", () => inflight.delete(n)); });
   const base = `http://127.0.0.1:${await listen(server)}`;
   const cookies = {};
   for (const name of Object.keys(people)) {
@@ -47,7 +49,7 @@ async function main() {
   assert.ok(/javascript/.test(moduleFile.headers.get("content-type") || ""), "served as JavaScript");
 
   const userDir = fs.mkdtempSync(path.join(os.tmpdir(), "cat-chrome-"));
-  const chrome = spawn(CHROME, ["--headless=new", `--remote-debugging-port=${PORT}`, `--user-data-dir=${userDir}`, "--no-first-run", "--disable-gpu", "--hide-scrollbars", "about:blank"], { stdio: "ignore" });
+  const chrome = spawn(CHROME, ["--headless=new", `--remote-debugging-port=${PORT}`, `--user-data-dir=${userDir}`, "--no-first-run", "--disable-gpu", "--hide-scrollbars", ...(process.env.CAT_KEEP_BFCACHE ? [] : ["--disable-features=BackForwardCache"]), "about:blank"], { stdio: "ignore" });
   let ws, id = 0; const pending = new Map();
   try {
     let targets;
@@ -58,7 +60,7 @@ async function main() {
     ws.onmessage = (m) => { const d = JSON.parse(m.data); if (d.id && pending.has(d.id)) { pending.get(d.id)(d); pending.delete(d.id); } };
     const send = (method, params = {}) => new Promise((resolve) => { const n = ++id; pending.set(n, resolve); ws.send(JSON.stringify({ id: n, method, params })); });
     const evalJs = async (expr) => { const r = await send("Runtime.evaluate", { expression: expr, awaitPromise: true, returnByValue: true }); if (r.result.exceptionDetails) throw new Error(JSON.stringify(r.result.exceptionDetails).slice(0, 400)); return r.result.result.value; };
-    const waitFor = async (expr, label, ms = 8000) => { const end = Date.now() + ms; while (Date.now() < end) { try { if (await evalJs(expr)) return true; } catch { /* navigating */ } await sleep(150); } throw new Error(`timeout waiting for: ${label}`); };
+    const waitFor = async (expr, label, ms = 8000) => { const end = Date.now() + ms; while (Date.now() < end) { try { if (await evalJs(expr)) return true; } catch { /* navigating */ } await sleep(150); } const sockets = await new Promise((res) => server.getConnections((e, n) => res(n))); throw new Error(`timeout waiting for: ${label} (server sockets open: ${sockets}; in-flight: ${[...inflight.values()].join(", ")})`); };
     const shot = async (name) => { if (!process.env.OFFICE_CAT_SHOTS) return; const r = await send("Page.captureScreenshot", { format: "png" }); fs.writeFileSync(path.join(process.env.OFFICE_CAT_SHOTS, name), Buffer.from(r.result.data, "base64")); };
     const as = async (name, hash) => { await send("Network.setCookie", { name: cookies[name][0], value: cookies[name][1], url: base }); await send("Page.navigate", { url: `${base}/office?u=${name}&t=${Date.now()}#/${hash}` }); await sleep(300); };
     const buttons = () => evalJs(`[...document.querySelectorAll('.catalogue-actions button')].map((b) => b.textContent.trim())`);
@@ -152,8 +154,16 @@ async function main() {
 
     // 6. mobile: the product page has no horizontal overflow
     await send("Emulation.setDeviceMetricsOverride", { width: 390, height: 800, deviceScaleFactor: 2, mobile: true });
-    await as("writer", `catalogue/products/${productId}`);
-    await waitFor(`document.querySelector('.view-heading h1')?.textContent === 'Oyi Smart Lock'`, "mobile product page", 15000);
+    // after a viewport change the first navigation is occasionally not processed by headless Chrome; retry once and record what was seen
+    let mobileLoaded = false; const mobileSeen = [];
+    for (let attempt = 0; attempt < 2 && !mobileLoaded; attempt += 1) {
+      await as("writer", `catalogue/products/${productId}`);
+      try { await waitFor(`document.querySelector('.view-heading h1')?.textContent === 'Oyi Smart Lock'`, "mobile product page", 10000); mobileLoaded = true; }
+      catch { mobileSeen.push(await evalJs(`(async () => { const t0 = performance.now(); const ctl = new AbortController(); setTimeout(() => ctl.abort(), 3000); const probe = await fetch('/healthz', { signal: ctl.signal }).then((r) => 'healthz ' + r.status + ' in ' + Math.round(performance.now() - t0) + 'ms', (e) => 'healthz ' + e.name); const apiProbe = await fetch('/api/lead-agents/admin/catalogue/categories', { signal: AbortSignal.timeout(3000) }).then((r) => 'api ' + r.status, (e) => 'api ' + e.name); return JSON.stringify({ probe, apiProbe,  href: location.href, ready: document.readyState, h1: document.querySelector('.view-heading h1')?.textContent || null, hostHtml: (document.querySelector('.catalogue-host')?.innerHTML || '').slice(0, 160), hosts: document.querySelectorAll('.catalogue-host').length, api: performance.getEntriesByType('resource').filter((e) => e.name.includes('/admin/catalogue/') || e.name.includes('catalogue.mjs') || e.name.includes('session/me')).map((e) => e.name.replace(location.origin, '') + '@' + Math.round(e.responseEnd)) }); })()`).catch((e) => String(e))); }
+    }
+    if (mobileSeen.length) console.log(`   mobile navigation retried; first attempt saw: ${mobileSeen.join(" | ")}`);
+    if (mobileSeen.length) { const t0 = Date.now(); const r = await fetch(`${base}/healthz`).catch((e) => ({ status: String(e) })); console.log(`   server answers the test process directly: ${r.status} in ${Date.now() - t0}ms; open sockets on the server: ${await new Promise((res) => server.getConnections((e, n) => res(n)))}; in-flight: ${[...inflight.values()].join(", ")}`); }
+    assert.ok(mobileLoaded, `mobile product page loaded (${mobileSeen.join(" | ")})`);
     await shot("catalogue-product-mobile.png");
     const overflow = await evalJs(`document.documentElement.scrollWidth - window.innerWidth`);
     console.log(`6. Mobile product page rendered (horizontal overflow ${overflow}px) — ${overflow <= 1 ? "PASS" : "NOTE"}`);

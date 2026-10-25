@@ -76,6 +76,8 @@ function ensureStyles() {
 
 export async function renderCatalogueRoute(outlet, rest, token, ui) {
   const { setTopbar, setSelectedObject, el } = ui;
+  // Office can start overlapping renders (load + hash change): only the newest one may touch the outlet
+  if (token !== ui.state.renderToken) return;
   ensureStyles();
   setSelectedObject(null);
   const [section, id] = rest;
@@ -222,8 +224,9 @@ async function renderProduct(host, id, token, ui) {
       button("Request changes", "btn-ghost", () => ui.openDialog("Request changes", [{ name: "note", label: "What needs to change?", type: "textarea" }], (data) => act("request-changes", { note: data.note }, "Changes requested; the authors were notified.")));
     }
     const live = product.publication_status === "published" && product.published_version === product.current_version;
-    if (permissions.publish && !live && (product.workflow_status === "approved" || detail.current_materiality === "minor")) {
-      button(product.workflow_status === "approved" ? "Publish (internal)" : "Publish minor change", "btn-primary", () => act("publish", {}, "Publication state updated."));
+    // every change is reviewed: publication is offered only for an approved current version (no minor/typo path)
+    if (permissions.publish && !live && product.workflow_status === "approved" && product.approved_version === product.current_version) {
+      button("Publish (internal)", "btn-primary", () => act("publish", {}, "Publication state updated."));
     }
     if (permissions.override && !live && !(product.workflow_status === "approved" && product.approved_version === product.current_version)) {
       button("Publish without review (override)", "btn-danger", () => ui.openDialog("Administrative override", [{ name: "override_reason", label: "Reason (at least 20 characters; recorded, reviewers are notified)", type: "textarea" }], (data) => act("publish", { override_reason: data.override_reason }, "Published by override; reviewers were notified.")));
@@ -388,7 +391,7 @@ function historyPanel(ui, product, versions, reviews, events) {
   const { el, escapeHtml, badge, titleCase } = ui;
   const panel = el(`<section class="panel"><div class="panel-head"><h2>History</h2></div><div data-items></div><div data-diff style="margin-top:12px;"></div></section>`);
   const items = [
-    ...versions.map((v) => ({ at: v.created_at, html: `<strong>v${v.version}</strong> saved by ${escapeHtml(v.author)} ${badge(v.materiality, v.materiality === "minor" ? "default" : "amber")}${v.version > 1 ? ` <button type="button" class="btn btn-ghost btn-sm" data-diff-version="${v.version}">Changes vs v${v.version - 1}</button>` : ""}` })),
+    ...versions.map((v) => ({ at: v.created_at, html: `<strong>v${v.version}</strong> saved by ${escapeHtml(v.author)} ${badge(v.materiality, "amber")}${v.version > 1 ? ` <button type="button" class="btn btn-ghost btn-sm" data-diff-version="${v.version}">Changes vs v${v.version - 1}</button>` : ""}` })),
     ...reviews.map((r) => ({ at: r.created_at, html: `${badge(titleCase(r.decision), r.decision === "approved" ? "green" : r.decision === "override" ? "red" : "default")} v${r.version} by ${escapeHtml(r.actor)}${r.note ? `<br/><span class="muted">${escapeHtml(r.note)}</span>` : ""}` })),
     ...events.map((e) => ({ at: e.created_at, html: `${badge(titleCase(e.action), e.override ? "red" : "green")}${e.version ? ` v${e.version}` : ""} by ${escapeHtml(e.actor)}${e.override_reason ? `<br/><span class="muted">Override: ${escapeHtml(e.override_reason)}</span>` : ""}` })),
   ].sort((a, b) => String(b.at).localeCompare(String(a.at)));
