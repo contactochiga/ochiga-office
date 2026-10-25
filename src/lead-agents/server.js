@@ -129,6 +129,7 @@ const { createOfficeSyncService } = require("./office-sync");
 const { appendAuditRecord } = require("./audit");
 const { PERMISSION_KEYS, ROLE_PERMISSIONS, hasPermission } = require("./permissions");
 const relationshipWorkspace = require("./relationship-workspace");
+const { handleCatalogueRequest } = require("./catalogue-api");
 const signatureStats = require("./webhook-signature-stats");
 const inboundVisibility = require("./whatsapp-inbound-visibility");
 const communicationOutbox = require("./communication-outbox");
@@ -2131,6 +2132,8 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
   const officeOyiCoreDockingPath = path.join(process.cwd(), "public", "office", "shared", "oyi-core", "docking.mjs");
   const officeOyiCorePresencePath = path.join(process.cwd(), "public", "office", "shared", "oyi-core", "presence.mjs");
   const officeOyiCoreResponseNormalizerPath = path.join(process.cwd(), "public", "office", "shared", "oyi-core", "responseNormalizer.mjs");
+  // product catalogue staff screens (static ES module; the data behind them is session-only)
+  const officeCatalogueScreensPath = path.join(process.cwd(), "public", "office", "catalogue", "catalogue.mjs");
   const digitalTwinIndexPath = path.join(
     process.cwd(),
     "public",
@@ -2257,6 +2260,7 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
         pathname === "/office/shared/oyi-core/docking.mjs" ||
         pathname === "/office/shared/oyi-core/presence.mjs" ||
         pathname === "/office/shared/oyi-core/responseNormalizer.mjs" ||
+        pathname === "/office/catalogue/catalogue.mjs" ||
         pathname === "/office/manifest.json" ||
         pathname === "/office/sw.js";
       const isPublicAdminSessionPath =
@@ -2330,6 +2334,9 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           new Date(rateLimitState.resetAt).toISOString()
         );
       }
+
+      // Product catalogue (Office-managed GetOyi hardware): self-contained, staff-session-only module (catalogue-api.js)
+      if (await handleCatalogueRequest({ req, res, ctx, pathname, authContext, store, eventBus, log })) return;
 
       if (pathname === "/healthz") {
         if (req.method !== "GET") {
@@ -3327,6 +3334,15 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           return;
         }
         await serveFile(res, officeOyiCoreResponseNormalizerPath);
+        return;
+      }
+
+      if (pathname === "/office/catalogue/catalogue.mjs") {
+        if (req.method !== "GET") {
+          methodNotAllowed(res, "GET");
+          return;
+        }
+        await serveFile(res, officeCatalogueScreensPath);
         return;
       }
 

@@ -85,14 +85,29 @@ const PERMISSION_KEYS = Object.freeze([
   // broadly granted to every ochiga_staff account; grant per-user via the
   // existing permission_scopes additive mechanism for staff who need it.
   "financial.read",
+  // Product catalogue (GetOyi hardware, Office-managed; 03_CATALOGUE_SPECIFICATION.md §2). Writer, reviewer, publisher, commercial price
+  // approver, cost reader/manager and inventory are deliberately separate grants; the catalogue routes accept staff sessions only, so
+  // no API key (full or scoped) ever passes them. catalogue.override is the audited administrative exception: super_admin only.
+  "catalogue.read",
+  "catalogue.write",
+  "catalogue.review",
+  "catalogue.publish",
+  "catalogue.price.approve",
+  "catalogue.cost.read",
+  "catalogue.cost.manage",
+  "inventory.manage",
+  "catalogue.override",
 ]);
+
+// Keys that only super_admin holds by role (never via ochiga_admin's otherwise-full grant).
+const SUPER_ADMIN_ONLY = Object.freeze(["team.manage", "catalogue.override"]);
 
 const ROLE_PERMISSIONS = Object.freeze({
   super_admin: PERMISSION_KEYS,
   // Every other key is unchanged from super_admin -- ochiga_admin stays
   // a fully-privileged operational admin. team.manage is the one
   // deliberate exception (Team governance/deletion lifecycle task).
-  ochiga_admin: PERMISSION_KEYS.filter((key) => key !== "team.manage"),
+  ochiga_admin: PERMISSION_KEYS.filter((key) => !SUPER_ADMIN_ONLY.includes(key)),
   ochiga_staff: [
     "office.read",
     "estates.read",
@@ -134,6 +149,9 @@ const ROLE_PERMISSIONS = Object.freeze({
     // per-user via permission_scopes, same additive pattern as
     // content.publish above.
     "reports.write",
+    // catalogue: read + draft/submit only; review, publish, price approval, costs and inventory are granted per user (permission_scopes)
+    "catalogue.read",
+    "catalogue.write",
   ],
   estate_admin: [
     "estates.read",

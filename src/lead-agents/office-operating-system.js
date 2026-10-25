@@ -37,6 +37,10 @@ const CORPORATE_COLLECTIONS = Object.freeze({
   // expected collection "documents" to resolve (RELATED_TYPES.document)
   // but it 404'd against the Supabase store before this entry existed.
   documents: { state: "office_documents", table: "office_documents", permission: "documents.generate", manage: "documents.generate" },
+  // Product catalogue suppliers (db/20261102_catalogue_foundation.sql). Commercially sensitive: read/write are the catalogue cost grants,
+  // and the collection is deliberately absent from every generic /admin/crm|office route regex -- it is served only by the
+  // session-only catalogue routes (catalogue-api.js), so a full API key cannot list suppliers.
+  suppliers: { state: "office_suppliers", table: "office_suppliers", permission: "catalogue.cost.read", manage: "catalogue.cost.manage" },
 });
 
 function text(value, fallback = "") {
@@ -236,6 +240,20 @@ function normalizeCorporateRecord(collection, input = {}, context = {}) {
       notes: text(input.notes),
       outcome: text(input.outcome),
       follow_up_task_id: text(input.follow_up_task_id) || null,
+    };
+  }
+  if (collection === "suppliers") {
+    return {
+      ...base,
+      business_unit: "technology",
+      status: input.status === "inactive" ? "inactive" : "active",
+      name: text(input.name, "Supplier"),
+      contact_name: text(input.contact_name),
+      email: normalizeEmail(input.email),
+      phone: text(input.phone),
+      country: text(input.country),
+      payment_terms: text(input.payment_terms),
+      notes: text(input.notes),
     };
   }
   return base;
@@ -671,6 +689,7 @@ module.exports = {
   attachPortfolioOperationalProjections,
   createCorporateRecord,
   listCorporateRecords,
+  normalizeCorporateRecord,
   upsertContactIdentity,
   validateCommercialDocumentDraft,
   notifyRecipients,

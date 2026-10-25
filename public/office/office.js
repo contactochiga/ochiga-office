@@ -619,6 +619,8 @@ const PRIMARY_NAV = [
   { key: "documents", label: "Documents", permission: "documents.generate", phase: null },
   { key: "content", label: "Content", permission: "content.write", phase: null },
   { key: "development-projects", label: "Development", permission: "development.manage", phase: null },
+  // Office-managed GetOyi product catalogue (internal only; screens in /office/catalogue/catalogue.mjs)
+  { key: "catalogue", label: "Products", permission: "catalogue.read", phase: null },
 ];
 
 const ADMIN_NAV = [
@@ -655,6 +657,7 @@ const NAV_ICONS = {
   content: '<path d="M3.5 12.5 3 14l1.5-.5 8-8-1-1z"/><path d="M10.5 3.5 12.5 5.5"/>',
   reports: '<rect x="4" y="2.5" width="8" height="11" rx="0.5"/><path d="M6 2.5V4h4V2.5M6 8l1.5 1.5L10 6.5"/>',
   "development-projects": '<path d="M3 13.5V6l5-2 5 2v7.5"/><path d="M3 13.5h10M6.5 13.5V9.5h3v4"/>',
+  catalogue: '<path d="M2.5 5 8 2.5 13.5 5v6L8 13.5 2.5 11z"/><path d="M2.5 5 8 7.5 13.5 5M8 7.5v6"/>',
   team: '<circle cx="5.5" cy="5.5" r="2"/><circle cx="11" cy="6" r="1.6"/><path d="M2 13c0-2.1 1.6-3.7 3.5-3.7S9 10.9 9 13"/><path d="M9.7 10c1.4.2 2.5 1.5 2.6 3"/>',
   settings: '<circle cx="8" cy="8" r="2.2"/><path d="M8 2.5v1.6M8 11.9v1.6M13.5 8h-1.6M4.1 8H2.5M11.8 4.2l-1.1 1.1M5.3 10.7l-1.1 1.1M11.8 11.8l-1.1-1.1M5.3 5.3 4.2 4.2"/>',
   audit: '<path d="M8 2 3 4v4c0 3.3 2.1 5.4 5 6 2.9-.6 5-2.7 5-6V4z"/><path d="M6 8l1.5 1.5L10.5 6"/>',
@@ -1443,6 +1446,15 @@ async function renderRoute() {
     outlet.innerHTML = "";
     outlet.appendChild(skeletonPanel(4));
     await renderDevelopmentProjectsRoute(outlet, rest, token);
+  } else if (topKey === "catalogue") {
+    outlet.innerHTML = "";
+    outlet.appendChild(skeletonPanel(4));
+    // loaded on demand (same pattern as shared/oyi-core) and drawn with this file's own primitives
+    const { renderCatalogueRoute } = await import("/office/catalogue/catalogue.mjs");
+    await renderCatalogueRoute(outlet, rest, token, {
+      api, el, escapeHtml, badge, toast, setTopbar, setSelectedObject, navigate, renderDataTable, KPIGroup, openDialog,
+      errorPanel, emptyPanel, skeletonPanel, fmtDateTime, fmtRelative, titleCase, hasPermission, state,
+    });
   } else if (topKey === "inbox") {
     // Old topbar-icon-only key — redirect to the real Messages
     // workspace, same "don't break existing links" pattern as Reports.

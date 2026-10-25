@@ -130,6 +130,9 @@ class FileLeadAgentsStore {
         whatsapp_manual_sends: Array.isArray(parsed.whatsapp_manual_sends) ? parsed.whatsapp_manual_sends : [],
         communication_delivery_outbox: Array.isArray(parsed.communication_delivery_outbox) ? parsed.communication_delivery_outbox : [],
         whatsapp_inbound_claims: parsed.whatsapp_inbound_claims && typeof parsed.whatsapp_inbound_claims === "object" && !Array.isArray(parsed.whatsapp_inbound_claims) ? parsed.whatsapp_inbound_claims : {},
+        // product catalogue (catalogue-store.js FileCatalogueStore) and its supplier registry (CORPORATE_COLLECTIONS.suppliers)
+        ...(parsed.catalogue && typeof parsed.catalogue === "object" && !Array.isArray(parsed.catalogue) ? { catalogue: parsed.catalogue } : {}),
+        office_suppliers: Array.isArray(parsed.office_suppliers) ? parsed.office_suppliers : [],
         office_support_mappings: Array.isArray(parsed.office_support_mappings)
           ? parsed.office_support_mappings
           : [],
