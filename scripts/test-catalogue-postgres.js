@@ -216,6 +216,13 @@ async function main() {
     c(`select catalogue_transition('${pid}', 1, 'submit', 'author@x', '', '');`);
     const selfApprove = c(`select catalogue_transition('${pid}', 2, 'approve', 'author@x', '', '');`);
     const shortOverride = c(`select catalogue_transition('${pid}', 2, 'publish', 'admin@x', '', 'short');`);
+    // typo exception in the database: a "minor" version that changes anything but summary/description is refused even when the app says minor
+    const pubId = one("select id from catalogue_products where published_version is not null order by updated_at desc limit 1");
+    const pubRow = JSON.parse(one(`select json_build_object('rv', p.row_version, 'slug', p.slug, 'cat', p.category_id, 'brand', p.brand_id, 'content', v.content) from catalogue_products p join catalogue_product_versions v on v.product_id = p.id and v.version = p.published_version where p.id = '${pubId}'`));
+    const tampered = JSON.stringify({ ...pubRow.content, specifications: [...(pubRow.content.specifications || []), { key: "Warranty", value: "5 years", unit: "" }] }).replace(/'/g, "''");
+    const fakeMinor = c(`select catalogue_save_version('${pubId}', ${pubRow.rv}, '${pubRow.slug}', '${pubRow.cat}', ${pubRow.brand ? `'${pubRow.brand}'` : "null"}, '${tampered}'::jsonb, 'minor', 'tamper@x');`);
+    const fakeInitial = c(`select catalogue_save_version('${pubId}', ${pubRow.rv}, '${pubRow.slug}', '${pubRow.cat}', ${pubRow.brand ? `'${pubRow.brand}'` : "null"}, '${tampered}'::jsonb, 'initial', 'tamper@x');`);
+    check("DB02", "the database refuses a 'minor' version that changes a specification (typo exception cannot be abused by the application) and 'initial' after publication", /minor_not_allowed/.test(fakeMinor.err) && /initial_not_allowed/.test(fakeInitial.err), { fakeMinor: fakeMinor.err.slice(0, 160), fakeInitial: fakeInitial.err.slice(0, 160) });
     check("DB01", "in the database itself: the author cannot approve (own_change) and an override reason < 20 chars is refused", /own_change/.test(selfApprove.err) && /override_reason_too_short/.test(shortOverride.err), { selfApprove: selfApprove.err.slice(0, 160), shortOverride: shortOverride.err.slice(0, 160) });
     // 20 concurrent approve transactions, each in its own session
     const res = await concurrentSql(Array.from({ length: 20 }, (_, i) => `set role service_role; select (catalogue_transition('${pid}', 2, 'approve', 'reviewer${i}@x', '', ''))->>'workflow_status';`));

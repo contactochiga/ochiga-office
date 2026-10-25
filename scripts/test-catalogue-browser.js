@@ -25,7 +25,8 @@ async function main() {
   const config = { ...createConfig(), authMode: "required_api_key", apiKeys: ["cat-browser-key"], allowedOrigins: [], officeBackendBaseUrl: "http://127.0.0.1:1", officeBackendApiKey: "cat-bridge" };
   const { store } = await createTempStore();
   const people = {
-    writer: { role: "ochiga_staff", scopes: [] },
+    writer: { role: "ochiga_staff", scopes: ["catalogue.write"] },
+    staff: { role: "ochiga_staff", scopes: [] },
     reviewer: { role: "ochiga_staff", scopes: ["catalogue.review"] },
     publisher: { role: "ochiga_staff", scopes: ["catalogue.publish"] },
     pricer: { role: "ochiga_staff", scopes: ["catalogue.price.approve"] },
@@ -117,9 +118,10 @@ async function main() {
     await as("pricer", "catalogue/prices");
     await waitFor(`/₦185,000\\.50/.test(document.querySelector('.catalogue-host')?.textContent || '')`, "price queue shows the exact amount");
     assert.ok(await clickButton("Approve"));
-    await waitFor(`/Approved/.test(document.querySelector('.catalogue-host')?.textContent || '')`, "price approved");
+    // the queue re-renders after the API call: approved = no Approve button left and the state badge reads Approved
+    await waitFor(`![...document.querySelectorAll('.catalogue-host button')].some((b) => b.textContent.trim() === 'Approve') && [...document.querySelectorAll('.catalogue-host .badge')].some((b) => /^Approved$/i.test(b.textContent.trim()))`, "price approved", 15000);
     await as("publisher", "catalogue/prices");
-    await waitFor(`[...document.querySelectorAll('button')].some((b) => b.textContent.trim() === 'Publish price')`, "publish price button");
+    await waitFor(`[...document.querySelectorAll('button')].some((b) => b.textContent.trim() === 'Publish price')`, "publish price button", 15000);
     assert.ok(await clickButton("Publish price"));
     await waitFor(`/Published/.test(document.querySelector('.catalogue-host')?.textContent || '')`, "price published");
     await as("writer", `catalogue/products/${productId}`);
@@ -135,6 +137,18 @@ async function main() {
     await fillDialog({ name: "Lagos Locks Ltd", country: "NG" });
     await waitFor(`/Lagos Locks Ltd/.test(document.querySelector('.catalogue-host')?.textContent || '')`, "supplier listed");
     console.log("5. Finance: suppliers tab visible, supplier recorded — PASS");
+
+    // 5b. least privilege: a general staff member sees the catalogue read-only (no create, no workflow actions, no price/inventory buttons)
+    await as("staff", "catalogue");
+    await waitFor(`document.querySelector('.view-heading h1')?.textContent === 'Products' && !!document.querySelector('.crm-table')`, "staff product list");
+    assert.ok(!(await evalJs(`[...document.querySelectorAll('button')].some((b) => b.textContent.trim() === 'New product')`)), "no New product for general staff");
+    await as("staff", `catalogue/products/${productId}`);
+    await waitFor(`document.querySelector('.view-heading h1')?.textContent === 'Oyi Smart Lock'`, "staff product page");
+    assert.deepEqual(await buttons(), [], "no workflow action for general staff");
+    assert.ok(await evalJs(`[...document.querySelectorAll('.catalogue-editor input')].every((i) => i.disabled) && !document.querySelector('.catalogue-editor [type=submit]')`), "editor is read-only");
+    assert.ok(!(await evalJs(`[...document.querySelectorAll('button')].some((b) => ['Request price', 'Inventory', 'Costs'].includes(b.textContent.trim()))`)), "no price/inventory/cost actions");
+    await shot("catalogue-product-staff-readonly.png");
+    console.log("5b. General staff: read-only catalogue (no create, no actions, editor disabled) — PASS");
 
     // 6. mobile: the product page has no horizontal overflow
     await send("Emulation.setDeviceMetricsOverride", { width: 390, height: 800, deviceScaleFactor: 2, mobile: true });

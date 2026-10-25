@@ -37,7 +37,26 @@ ok(C.materialityOf(c, { ...c, specifications: [{ key: "Voltage", value: "240", u
 ok(C.materialityOf(c, { ...c, compatibility: { ...c.compatibility, edge: true } }) === "material", "compatibility -> material");
 ok(C.materialityOf(c, { ...c, variants: [...c.variants, { sku: "SW2-BLK", name: "Black", options: {} }] }) === "material", "variant added -> material");
 const withMedia = { ...c, media: [{ office_file_id: "a", alt: "front" }, { office_file_id: "b", alt: "side" }] };
-ok(C.materialityOf(withMedia, { ...withMedia, media: [{ office_file_id: "a", alt: "Front view" }, { office_file_id: "b", alt: "side" }] }) === "minor", "(Phase 2 rule) alt-text-only media edit -> minor");
+ok(C.materialityOf(withMedia, { ...withMedia, media: [{ office_file_id: "a", alt: "Front view" }, { office_file_id: "b", alt: "side" }] }) === "material", "any media change (even alt text) is material until Phase 2 decides otherwise");
+// typo exception audit (release review): commercially material details never pass as typos
+const prose = { ...c, summary: "Two-gang switch.", description: "Includes a 2-year warranty. Not compatible with Oyi Core. IP20 rated, 230 V, ₦5,000 installation extra." };
+const minorOf = (description) => C.materialityOf(prose, { ...prose, description });
+ok(minorOf(prose.description.replace("Includes", "Inclues")) === "material", "'Includes' is a protected inclusion term -> material even for 1 character");
+ok(minorOf(prose.description.replace("2-year", "5-year")) === "material", "warranty term digit change -> material");
+ok(minorOf(prose.description.replace("warranty", "warrenty")) === "material", "the word 'warranty' itself is protected -> material");
+ok(minorOf(prose.description.replace("Not compatible", "Now compatible")) === "material", "negation change ('Not' -> 'Now') -> material");
+ok(minorOf(prose.description.replace("IP20", "IP65")) === "material", "rating with digits -> material");
+ok(minorOf(prose.description.replace("230 V", "240 V")) === "material", "number/unit -> material");
+ok(minorOf(prose.description.replace("₦5,000", "₦4,000")) === "material", "currency amount -> material");
+ok(minorOf(prose.description.replace("Oyi Core.", "Oyi Core and Edge.")) === "material", "words added -> material");
+ok(minorOf(prose.description.replace(" rated,", ",")) === "material", "word removed -> material");
+ok(minorOf(prose.description.replace("Includes a", "a Includes")) === "material", "words reordered -> material");
+ok(minorOf(prose.description.replace("Core.", "Core!")) === "material", "punctuation change -> material");
+const typoBase = { ...c, description: "A neutral wire swich with locl control for modern homes." };
+const fixed = C.materialityOf(typoBase, { ...typoBase, description: "A neutral wire switch with local control for modern homes." });
+ok(fixed === "minor", "genuine spelling corrections (swich->switch, locl->local: 2 characters) -> minor", fixed);
+ok(C.materialityOf(typoBase, { ...typoBase, description: "A neutral wire switch with local control for modren homes." }) === "material", "corrections plus a third edit (transposition, 2 characters) exceed the 3-character budget -> material");
+ok(C.typoDistance("Smart lock", "Smart lock") === 0 && C.typoDistance("smrat lock", "smart lock") === 2 && C.typoDistance("lock", "lockk-2") === Infinity, "typoDistance: exact / letters-only / digits refused");
 ok(C.materialityOf(withMedia, { ...withMedia, media: [withMedia.media[1], withMedia.media[0]] }) === "material", "(Phase 2 rule, 4.6a) gallery reorder -> material");
 // regression: Postgres jsonb returns object keys in another order; equality must not depend on key order
 const reordered = Object.fromEntries(Object.entries(c).reverse());
@@ -72,12 +91,15 @@ ok(throwsCode(() => C.validateOverrideReason("too short"), 400) && C.validateOve
 const keys = Object.values(C.CATALOGUE_PERMISSIONS);
 ok(keys.every((k) => PERMISSION_KEYS.includes(k)), "every catalogue permission is a registered key");
 ok(ROLE_PERMISSIONS.super_admin.includes("catalogue.override") && !ROLE_PERMISSIONS.ochiga_admin.includes("catalogue.override") && !ROLE_PERMISSIONS.ochiga_admin.includes("team.manage"), "catalogue.override: super_admin only (ochiga_admin keeps everything else)");
-ok(keys.filter((k) => k !== "catalogue.override").every((k) => ROLE_PERMISSIONS.ochiga_admin.includes(k)), "ochiga_admin holds every other catalogue grant");
-ok(JSON.stringify(ROLE_PERMISSIONS.ochiga_staff.filter((k) => keys.includes(k))) === JSON.stringify(["catalogue.read", "catalogue.write"]), "ochiga_staff: read + write only by default");
+ok(JSON.stringify(ROLE_PERMISSIONS.ochiga_admin.filter((k) => keys.includes(k))) === JSON.stringify(["catalogue.read"]), "least privilege: ochiga_admin holds catalogue.read only by role (every operational grant is per user)");
+ok(JSON.stringify(ROLE_PERMISSIONS.ochiga_staff.filter((k) => keys.includes(k))) === JSON.stringify(["catalogue.read"]), "least privilege: general staff hold catalogue.read only by role");
+ok(keys.every((k) => ROLE_PERMISSIONS.super_admin.includes(k)), "super_admin holds every catalogue grant (permission management + exceptional override)");
+ok(ROLE_PERMISSIONS.ochiga_admin.filter((k) => !keys.includes(k)).length === PERMISSION_KEYS.filter((k) => !keys.includes(k)).length - 1, "ochiga_admin keeps every non-catalogue key except team.manage (unchanged)");
 ["estate_admin", "facility_manager", "security_operator", "maintenance_operator", "finance_operator", "resident", "guest", "ai_agent"].forEach((role) => ok(!ROLE_PERMISSIONS[role].some((k) => keys.includes(k)), `${role} has no catalogue grant`));
 ok(throwsCode(() => C.requireCataloguePermission({ type: "api_key" }, "catalogue.read"), 403) && throwsCode(() => C.requireCataloguePermission({ type: "scoped_api_key", scopes: ["intake.submit"] }, "catalogue.read"), 403) && throwsCode(() => C.requireCataloguePermission(null, "catalogue.read"), 401), "API keys (full and scoped) never pass a catalogue permission; no session -> 401");
 ok(hasPermission({ type: "session", role: "ochiga_staff", permissionScopes: ["catalogue.review"] }, "catalogue.review") && !hasPermission({ type: "session", role: "ochiga_staff", permissionScopes: [] }, "catalogue.review"), "per-user permission_scopes grant review additively");
 const staff = { type: "session", role: "ochiga_staff", permissionScopes: [] };
+ok(!hasPermission(staff, "catalogue.write") && hasPermission({ ...staff, permissionScopes: ["catalogue.write"] }, "catalogue.write"), "drafting needs a per-user catalogue.write grant");
 ok(!("supplier_id" in C.internalVariant({ sku: "A", supplier_id: "s1" }, staff)) && C.internalVariant({ sku: "A", supplier_id: "s1" }, { ...staff, permissionScopes: ["catalogue.cost.read"] }).supplier_id === "s1", "supplier link visible only with catalogue.cost.read");
 
 console.log(JSON.stringify({ suite: "catalogue-model", checks, failed: 0 }));

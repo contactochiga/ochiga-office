@@ -8,8 +8,10 @@ const crypto = require("crypto");
 const CATALOGUE_TEST_USERS = Object.freeze({
   superAdmin: { role: "super_admin", scopes: [] },
   admin: { role: "ochiga_admin", scopes: [] },
-  writerA: { role: "ochiga_staff", scopes: [] },
-  writerB: { role: "ochiga_staff", scopes: [] },
+  staff: { role: "ochiga_staff", scopes: [] },
+  writerA: { role: "ochiga_staff", scopes: ["catalogue.write"] },
+  writerB: { role: "ochiga_staff", scopes: ["catalogue.write"] },
+  senior: { role: "ochiga_staff", scopes: ["catalogue.write", "catalogue.review", "catalogue.publish", "catalogue.price.approve"] },
   reviewer: { role: "ochiga_staff", scopes: ["catalogue.review"] },
   reviewer2: { role: "ochiga_staff", scopes: ["catalogue.review"] },
   publisher: { role: "ochiga_staff", scopes: ["catalogue.publish"] },
@@ -63,6 +65,16 @@ async function runCatalogueScenarios({ base, users, fullKey, scopedKey, check, l
     const outsider = await A.outsider.get("/products");
     check(id("AT13a"), "a FULL API key (which passes every legacy permission) is refused on catalogue routes: staff session required", viaFull.status === 403 && viaFull.json.error === "catalogue_requires_staff_session" && viaFullPost.status === 403, { viaFull, viaFullPost: viaFullPost.status });
     check(id("AT13b"), "a scoped (website) key is refused; no credential is 401; a staff user without catalogue.read is 403", viaScoped.status === 403 && anonymous.status === 401 && outsider.status === 403, { viaScoped: viaScoped.status, anonymous: anonymous.status, outsider: outsider.status });
+  }
+
+  // ------------------------------------------------------------------------------------------------ least privilege (release review)
+  {
+    const staffRead = await A.staff.get("/products");
+    const staffCreate = await A.staff.post("/products", { slug: `lp-${slugTag}`, content: {} });
+    const adminRead = await A.admin.get("/products");
+    const adminCreate = await A.admin.post("/products", { slug: `lp2-${slugTag}`, content: {} });
+    const adminSuppliers = await A.admin.get("/suppliers");
+    check(id("LP1"), "least privilege: general staff and ochiga_admin can read the catalogue but cannot create products or see suppliers without a per-user grant", staffRead.status === 200 && staffCreate.status === 403 && adminRead.status === 200 && adminCreate.status === 403 && adminSuppliers.status === 403, { staffRead: staffRead.status, staffCreate: staffCreate.status, adminRead: adminRead.status, adminCreate: adminCreate.status, adminSuppliers: adminSuppliers.status });
   }
 
   // ------------------------------------------------------------------------------------------------ AT-04 taxonomy
@@ -126,8 +138,9 @@ async function runCatalogueScenarios({ base, users, fullKey, scopedKey, check, l
   // ------------------------------------------------------------------------------------------------ AT-20 / AT-21 review and publishing
   {
     const pubDraft = await A.publisher.post(`/products/${pid}/publish`, { expected_row_version: product.row_version });
+    const seniorDraft = await A.senior.post(`/products/${pid}/publish`, { expected_row_version: product.row_version });
     const adminDraft = await A.admin.post(`/products/${pid}/publish`, { expected_row_version: product.row_version });
-    check(id("AT20a"), "publishing a never-reviewed draft is refused (publisher, and an admin without override)", pubDraft.status === 409 && pubDraft.json.error === "review_required" && adminDraft.status === 409, { pubDraft: pubDraft.json, adminDraft: adminDraft.json });
+    check(id("AT20a"), "publishing a never-reviewed draft is refused (publisher, and a senior editor holding review+publish without override); ochiga_admin has no publish grant by default", pubDraft.status === 409 && pubDraft.json.error === "review_required" && seniorDraft.status === 409 && adminDraft.status === 403, { pubDraft: pubDraft.json, seniorDraft: seniorDraft.json, adminDraft: adminDraft.status });
     const writerApprove = await A.writerA.post(`/products/${pid}/approve`, { expected_row_version: product.row_version });
     check(id("AT13c"), "catalogue.write does not grant review", writerApprove.status === 403, writerApprove.status);
     const submit = await A.writerA.post(`/products/${pid}/submit`, { expected_row_version: product.row_version });
@@ -138,11 +151,11 @@ async function runCatalogueScenarios({ base, users, fullKey, scopedKey, check, l
   }
   // an author who also holds catalogue.review (the admin) cannot approve their own change: create a product authored by the admin
   {
-    const own = await A.admin.post("/products", { slug: `own-${slugTag}`, content: content({ variants: [{ sku: `OWN-${tag}`, name: "Own" }] }) });
-    const ownSubmit = await A.admin.post(`/products/${own.json.product.id}/submit`, { expected_row_version: own.json.product.row_version });
-    const ownApprove = await A.admin.post(`/products/${own.json.product.id}/approve`, { expected_row_version: ownSubmit.json.product.row_version });
-    const ownChanges = await A.admin.post(`/products/${own.json.product.id}/request-changes`, { expected_row_version: ownSubmit.json.product.row_version, note: "self" });
-    check(id("AT21b"), "second person enforced server-side, also for an admin: the author cannot approve or request changes on their own version", ownApprove.status === 403 && ownApprove.json.error === "own_change" && ownChanges.status === 403, { ownApprove: ownApprove.json, ownChanges: ownChanges.json });
+    const own = await A.senior.post("/products", { slug: `own-${slugTag}`, content: content({ variants: [{ sku: `OWN-${tag}`, name: "Own" }] }) });
+    const ownSubmit = await A.senior.post(`/products/${own.json.product.id}/submit`, { expected_row_version: own.json.product.row_version });
+    const ownApprove = await A.senior.post(`/products/${own.json.product.id}/approve`, { expected_row_version: ownSubmit.json.product.row_version });
+    const ownChanges = await A.senior.post(`/products/${own.json.product.id}/request-changes`, { expected_row_version: ownSubmit.json.product.row_version, note: "self" });
+    check(id("AT21b"), "second person enforced server-side, also for someone holding review: the author cannot approve or request changes on their own version", ownApprove.status === 403 && ownApprove.json.error === "own_change" && ownChanges.status === 403, { ownApprove: ownApprove.json, ownChanges: ownChanges.json });
   }
   {
     const changes = await A.reviewer.post(`/products/${pid}/request-changes`, { expected_row_version: product.row_version, note: "Add the IP rating" });
@@ -290,10 +303,10 @@ async function runCatalogueScenarios({ base, users, fullKey, scopedKey, check, l
     const v1 = (await A.writerA.get(`/products/${p2.json.product.id}`)).json.variants[0];
     check(id("AT30d"), "after approval by a different holder AND publication, the variant carries the new VAT-inclusive price and treatment", v1.price_ngn_kobo === 18500000 && v1.vat_treatment === "standard" && v1.vat_rate_bp === 750, v1);
     const own = await A.writerA.post(`/variants/${variant.id}/price-changes`, { price_ngn_kobo: 17500000, vat_treatment: "standard" });
-    const ownApprove = await call("admin", "POST", `/price-changes/${own.json.price_change.id}/approve`);
-    const selfReq = await A.admin.post(`/variants/${variant.id}/price-changes`, { price_ngn_kobo: 17000000, vat_treatment: "standard" });
-    const selfApprove = await A.admin.post(`/price-changes/${selfReq.json.price_change.id}/approve`);
-    check(id("AT30e"), "the requester can never approve their own price change (also an admin who holds price.approve)", ownApprove.status === 200 && selfApprove.status === 403 && selfApprove.json.error === "own_request", { ownApprove: ownApprove.status, selfApprove: selfApprove.json });
+    const ownApprove = await call("senior", "POST", `/price-changes/${own.json.price_change.id}/approve`);
+    const selfReq = await A.senior.post(`/variants/${variant.id}/price-changes`, { price_ngn_kobo: 17000000, vat_treatment: "standard" });
+    const selfApprove = await A.senior.post(`/price-changes/${selfReq.json.price_change.id}/approve`);
+    check(id("AT30e"), "the requester can never approve their own price change (also someone who holds write + price.approve)", ownApprove.status === 200 && selfApprove.status === 403 && selfApprove.json.error === "own_request", { ownApprove: ownApprove.status, selfApprove: selfApprove.json });
     // two approved changes made against the same old price: the first published makes the second stale
     const pubOwn = await A.publisher.post(`/price-changes/${own.json.price_change.id}/publish`);
     await A.pricerB.post(`/price-changes/${selfReq.json.price_change.id}/approve`);

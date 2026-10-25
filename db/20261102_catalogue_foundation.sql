@@ -293,6 +293,16 @@ returns jsonb language plpgsql set search_path = public, pg_temp as $f$
 declare p catalogue_products%rowtype;
 begin
   if p_materiality not in ('initial', 'material', 'minor') then raise exception 'invalid_materiality' using errcode = '22023'; end if;
+  -- the typo exception, enforced here as well: a "minor" version may differ from the PUBLISHED version in summary/description only
+  -- (the application additionally restricts those edits to typo corrections); "initial" exists only before the first publication
+  if p_materiality = 'minor' and not exists (
+       select 1 from catalogue_products c join catalogue_product_versions v on v.product_id = c.id and v.version = c.published_version
+        where c.id = p_product_id and (v.content - 'summary' - 'description') = (p_content - 'summary' - 'description')) then
+    raise exception 'minor_not_allowed' using errcode = 'PT409';
+  end if;
+  if p_materiality = 'initial' and exists (select 1 from catalogue_products where id = p_product_id and published_version is not null) then
+    raise exception 'initial_not_allowed' using errcode = 'PT409';
+  end if;
   update catalogue_products
      set row_version = row_version + 1, current_version = current_version + 1, workflow_status = 'draft', review_version = null, approved_version = null,
          slug = p_slug, category_id = p_category_id, brand_id = p_brand_id, updated_by = p_actor, updated_at = now()

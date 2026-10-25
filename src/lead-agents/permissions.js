@@ -101,13 +101,17 @@ const PERMISSION_KEYS = Object.freeze([
 
 // Keys that only super_admin holds by role (never via ochiga_admin's otherwise-full grant).
 const SUPER_ADMIN_ONLY = Object.freeze(["team.manage", "catalogue.override"]);
+// Least privilege for the catalogue (release review 2026-10-25): no role except super_admin receives an operational catalogue grant.
+// Staff and ochiga_admin hold catalogue.read only; drafting, review, publication, price approval, inventory and supplier costs are
+// granted to named people through permission_scopes (set by team.manage holders, i.e. super_admin), which keeps the duties separate.
+const CATALOGUE_SCOPED_ONLY = Object.freeze(["catalogue.write", "catalogue.review", "catalogue.publish", "catalogue.price.approve", "catalogue.cost.read", "catalogue.cost.manage", "inventory.manage"]);
 
 const ROLE_PERMISSIONS = Object.freeze({
   super_admin: PERMISSION_KEYS,
   // Every other key is unchanged from super_admin -- ochiga_admin stays
   // a fully-privileged operational admin. team.manage is the one
   // deliberate exception (Team governance/deletion lifecycle task).
-  ochiga_admin: PERMISSION_KEYS.filter((key) => !SUPER_ADMIN_ONLY.includes(key)),
+  ochiga_admin: PERMISSION_KEYS.filter((key) => !SUPER_ADMIN_ONLY.includes(key) && !CATALOGUE_SCOPED_ONLY.includes(key)),
   ochiga_staff: [
     "office.read",
     "estates.read",
@@ -149,9 +153,8 @@ const ROLE_PERMISSIONS = Object.freeze({
     // per-user via permission_scopes, same additive pattern as
     // content.publish above.
     "reports.write",
-    // catalogue: read + draft/submit only; review, publish, price approval, costs and inventory are granted per user (permission_scopes)
+    // catalogue: read only; every operational catalogue grant is per user (permission_scopes, see CATALOGUE_SCOPED_ONLY)
     "catalogue.read",
-    "catalogue.write",
   ],
   estate_admin: [
     "estates.read",

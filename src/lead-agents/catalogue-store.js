@@ -22,6 +22,12 @@ const SEED_CATEGORIES = Object.freeze([
 ]);
 
 const nowIso = () => new Date().toISOString();
+// key-order-independent serialisation (the in-memory equivalent of jsonb equality)
+function canonicalJson(value) {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  if (value && typeof value === "object") return `{${Object.keys(value).sort().filter((k) => value[k] !== undefined).map((k) => `${JSON.stringify(k)}:${canonicalJson(value[k])}`).join(",")}}`;
+  return JSON.stringify(value === undefined ? null : value);
+}
 const clone = (value) => (value == null ? value : JSON.parse(JSON.stringify(value)));
 
 function priceChangeState(decisions) {
@@ -299,6 +305,13 @@ class FileCatalogueStore {
   async saveVersion({ id, expectedRowVersion, slug, categoryId, brandId, content, materiality, actor }) {
     const p = this.s.products.find((x) => x.id === id);
     if (!p || p.row_version !== Number(expectedRowVersion) || p.publication_status === "archived") this.stateChanged(p);
+    // same guard as catalogue_save_version: "minor" differs from the published version in summary/description only
+    if (materiality === "minor") {
+      const published = this.s.versions.find((v) => v.product_id === id && v.version === p.published_version);
+      const rest = (c) => { const { summary, description, ...others } = c || {}; return canonicalJson(others); };
+      if (!published || rest(published.content) !== rest(content)) throw httpError(409, "minor_not_allowed");
+    }
+    if (materiality === "initial" && p.published_version != null) throw httpError(409, "initial_not_allowed");
     if (p.slug !== slug && p.first_published_at) throw httpError(409, "slug_locked");
     if (p.slug !== slug && this.s.products.some((x) => x.slug === slug && x.id !== id)) throw httpError(409, "slug_taken");
     for (const v of content.variants || []) { const owner = this.s.variants.find((x) => x.sku === v.sku); if (owner && owner.product_id !== id) throw httpError(409, "sku_taken", { current: { sku: v.sku } }); }

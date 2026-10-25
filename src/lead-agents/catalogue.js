@@ -169,19 +169,57 @@ function canonical(value) {
 }
 const same = (a, b) => canonical(a) === canonical(b);
 
+// Words whose change alters meaning or a commercial commitment even when only a letter or two differ ("not"->"now", "years"->"yeard"
+// is harmless but "warranty"/"guarantee" edits are not). A substitution touching any of these is never a typo.
+const PROTECTED_WORDS = new Set([
+  "not", "no", "non", "never", "none", "nor", "without", "cannot", "can", "will", "wont", "only", "all", "any", "every", "each", "both", "either", "neither",
+  "warranty", "warranties", "warranted", "guarantee", "guarantees", "guaranteed", "lifetime", "refund", "refunds", "return", "returns", "replacement", "replace",
+  "year", "years", "month", "months", "week", "weeks", "day", "days", "hour", "hours",
+  "included", "includes", "include", "including", "excluded", "excludes", "exclude", "excluding", "extra", "optional", "free", "paid", "price", "prices",
+  "vat", "cost", "costs", "fee", "fees", "delivery", "installation", "install", "installed", "shipping",
+  "compatible", "compatibility", "incompatible", "supports", "support", "supported", "unsupported", "requires", "required", "require", "requirement",
+  "certified", "certification", "approved", "rated", "rating", "waterproof", "weatherproof", "indoor", "outdoor",
+  "maximum", "minimum", "max", "min", "up", "over", "under", "plus", "pro", "lite", "mini", "single", "double", "dual", "stock", "available", "availability",
+]);
+const EDGE_PUNCTUATION = /^([("'“‘[]*)(.*?)([)"'”’\].,;:!?]*)$/u;
+
+// A summary/description change qualifies as a typo correction only when every changed word is a same-position substitution of a purely
+// alphabetic, unprotected word within 2 characters, with the surrounding punctuation unchanged (no word added, removed or reordered; no
+// digit, unit, currency or percentage touched). Returns the total character distance, or Infinity when the change is not a typo.
+function typoDistance(before = "", after = "") {
+  if (before === after) return 0;
+  const a = before.split(/\s+/).filter(Boolean);
+  const b = after.split(/\s+/).filter(Boolean);
+  if (a.length !== b.length) return Infinity;
+  let total = 0;
+  for (let i = 0; i < a.length; i += 1) {
+    if (a[i] === b[i]) continue;
+    const [, preA, coreA, postA] = EDGE_PUNCTUATION.exec(a[i]);
+    const [, preB, coreB, postB] = EDGE_PUNCTUATION.exec(b[i]);
+    if (preA !== preB || postA !== postB) return Infinity;
+    if (!/^\p{L}+$/u.test(coreA) || !/^\p{L}+$/u.test(coreB)) return Infinity;
+    if (PROTECTED_WORDS.has(coreA.toLowerCase()) || PROTECTED_WORDS.has(coreB.toLowerCase())) return Infinity;
+    const distance = editDistance(coreA, coreB, 2);
+    if (distance > 2) return Infinity;
+    total += distance;
+  }
+  return total;
+}
+
 // D2: relative to the PUBLISHED content (cumulative, so many small edits cannot add up to an unreviewed material change).
-// initial = never published; minor = only typo-class edits (<= 3 characters in total) to summary/description, or alt-text-only media
-// edits; material = anything else. Gallery add/remove/reorder/replace is material (4.6a).
+// initial = never published; minor = ONLY typo corrections (typoDistance, <= 3 characters in total) in summary/description with every other
+// field identical; material = anything else -- specifications, compatibility, variants, name, model, category, brand, any media/document
+// change, any number, unit, negation, warranty/guarantee, inclusion or other protected term. Prices and inventory are never part of a
+// version: they have their own approval (price) and logging (inventory) and cannot be changed through this path at all.
+// The database re-checks the essential guarantee (a "minor" version differs from the published one in summary/description only).
 function materialityOf(publishedContent, nextContent) {
   if (!publishedContent) return "initial";
   if (MATERIAL_FIELDS.some((field) => !same(publishedContent[field], nextContent[field]))) return "material";
-  const media = (list) => (list || []).map((item) => ({ ...item, alt: undefined }));
-  if (!same(media(publishedContent.media), media(nextContent.media))) return "material";
-  let budget = MINOR_TEXT_EDIT_MAX;
+  if (!same(publishedContent.media || [], nextContent.media || [])) return "material";
+  let total = 0;
   for (const field of ["summary", "description"]) {
-    const distance = editDistance(publishedContent[field] || "", nextContent[field] || "", budget);
-    budget -= distance;
-    if (budget < 0) return "material";
+    total += typoDistance(publishedContent[field] || "", nextContent[field] || "");
+    if (total > MINOR_TEXT_EDIT_MAX) return "material";
   }
   return "minor";
 }
@@ -348,6 +386,7 @@ module.exports = {
   internalVariant,
   isUuid,
   materialityOf,
+  typoDistance,
   requireCataloguePermission,
   validSlug,
   validateContent,
