@@ -3,7 +3,7 @@
 // Product gallery image processing (Phase 2 stage 3). Pure validation + sharp; no storage, no database.
 //   1. the bytes must START with a JPEG, PNG or WebP signature (the declared Content-Type and file name are ignored);
 //   2. sharp must decode them as that same format (a polyglot or mislabelled file is refused), as a single still frame, within the size,
-//      pixel and dimension limits, without decoder errors;
+//      pixel and dimension limits, without decoder errors or warnings;
 //   3. derivatives are re-encoded WebP, auto-rotated from EXIF and converted to sRGB, with ALL metadata stripped (EXIF/GPS, XMP, IPTC, ICC).
 // The original stays private: it is stored as uploaded and never served.
 // Memory: Render's instance is small, so libvips runs single-threaded without its operation cache, and at most one image is processed
@@ -74,7 +74,9 @@ async function withSlot(task) {
   }
 }
 
-const decoderOptions = { failOn: "error", limitInputPixels: MEDIA_LIMITS.maxPixels, sequentialRead: true, animated: false };
+// failOn "warning": libjpeg reports corrupt entropy data (a valid header over a damaged body) only as a warning, so a laxer level would
+// accept a garbled picture (found by the stage 4 failure audit). Staff re-export such files; nothing damaged reaches a product page.
+const decoderOptions = { failOn: "warning", limitInputPixels: MEDIA_LIMITS.maxPixels, sequentialRead: true, animated: false };
 
 // Validates and processes one upload. Throws 413 / 415 / 422 with a specific code; returns the facts and the WebP renditions.
 async function processProductImage(buffer) {

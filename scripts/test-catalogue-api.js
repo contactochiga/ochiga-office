@@ -9,10 +9,11 @@ const os = require("os");
 const path = require("path");
 const { spawn } = require("child_process");
 const { hashPassword } = require("../src/lead-agents/auth");
-const { runCatalogueScenarios, testUsers } = require("./catalogue-scenarios");
+const { runCatalogueScenarios, startRevalidator, testUsers } = require("./catalogue-scenarios");
 
 const ROOT = path.resolve(__dirname, "..");
 const FULL_KEY = `full_${crypto.randomBytes(12).toString("hex")}`;
+const CATALOGUE_KEY = `oyicat_${crypto.randomBytes(24).toString("hex")}`, REVALIDATE_SECRET = crypto.randomBytes(24).toString("hex");
 const SITE_KEY = `oyi_${crypto.randomBytes(24).toString("hex")}`;
 const SESSION_SECRET = crypto.randomBytes(24).toString("hex");
 const sha = (v) => crypto.createHash("sha256").update(v).digest("hex");
@@ -26,7 +27,8 @@ async function startServer(dir) {
     PATH: process.env.PATH, HOME: dir, NODE_ENV: "test", LEAD_AGENTS_HOST: "127.0.0.1", LEAD_AGENTS_PORT: String(port),
     LEAD_AGENTS_STORE_PATH: path.join(dir, "store.json"), OFFICE_STORAGE_DIR: path.join(dir, "storage"),
     LEAD_AGENTS_AUTH_MODE: "required_api_key", LEAD_AGENTS_API_KEYS: FULL_KEY, LEAD_AGENTS_SESSION_SECRET: SESSION_SECRET,
-    LEAD_AGENTS_SCOPED_API_KEYS: JSON.stringify([{ client: "getoyi", key_sha256: sha(SITE_KEY), scopes: ["intake.submit"] }]),
+    LEAD_AGENTS_SCOPED_API_KEYS: JSON.stringify([{ client: "getoyi", key_sha256: sha(SITE_KEY), scopes: ["intake.submit"] }, { client: "getoyi-catalogue", key_sha256: sha(CATALOGUE_KEY), scopes: ["catalogue.public.read"] }]),
+      GETOYI_REVALIDATE_URL: process.env.__REVALIDATE_URL || "", GETOYI_REVALIDATE_SECRET: REVALIDATE_SECRET, GETOYI_PUBLIC_BASE_URL: "https://getoyi.example",
     OPENAI_API_KEY: "sk-fixture-not-real", OPENAI_BASE_URL: "http://127.0.0.1:9/v1",
     LEAD_AGENTS_RATE_LIMIT_MAX_REQUESTS: "100000", LEAD_AGENTS_OFFICE_RATE_LIMIT_MAX_REQUESTS: "100000", LEAD_AGENTS_LOGIN_RATE_LIMIT_MAX_ATTEMPTS: "1000",
   };
@@ -47,11 +49,13 @@ async function main() {
   fs.writeFileSync(path.join(dir, "store.json"), JSON.stringify({
     admin_users: Object.values(users).map((u) => ({ id: crypto.randomUUID(), email: u.email, password_hash: hashPassword(u.password), role: u.role, status: "active", display_name: u.email, permission_scopes: u.scopes, created_at: now, updated_at: now })),
   }));
+  const revalidator = await startRevalidator(REVALIDATE_SECRET);
+  process.env.__REVALIDATE_URL = revalidator.url;
   let srv = await startServer(dir);
   const allLogs = [srv.logs];
   let result;
   try {
-    result = await runCatalogueScenarios({ base: srv.url, users, fullKey: FULL_KEY, scopedKey: SITE_KEY, check, storageDir: path.join(dir, "storage") });
+    result = await runCatalogueScenarios({ base: srv.url, users, fullKey: FULL_KEY, scopedKey: SITE_KEY, check, storageDir: path.join(dir, "storage"), catalogueKey: CATALOGUE_KEY, revalidator });
   } finally {
     await srv.stop();
   }
@@ -67,7 +71,7 @@ async function main() {
     await srv.stop();
   }
   const logs = allLogs.map((l) => l.join("")).join("\n");
-  check("AT80", "no API key, its digest, session secret or user password appears in any log", ![FULL_KEY, SITE_KEY, sha(SITE_KEY), SESSION_SECRET, ...Object.values(users).map((u) => u.password)].some((s) => logs.includes(s)));
+  check("AT80", "no API key, its digest, session secret or user password appears in any log", ![FULL_KEY, SITE_KEY, sha(SITE_KEY), CATALOGUE_KEY, sha(CATALOGUE_KEY), REVALIDATE_SECRET, SESSION_SECRET, ...Object.values(users).map((u) => u.password)].some((s) => logs.includes(s)));
   console.log(JSON.stringify({ suite: "catalogue-api (file store)", checks, failed: failures }));
   process.exit(failures ? 1 : 0);
 }

@@ -12,6 +12,8 @@ const { notifyRecipients } = require("./office-operating-system");
 const { catalogueStoreFor } = require("./catalogue-store");
 const C = require("./catalogue");
 const M = require("./catalogue-media");
+const PUB = require("./catalogue-public");
+const { refreshPublic } = require("./catalogue-public-api");
 
 const P = C.CATALOGUE_PERMISSIONS;
 const PREFIX = "/api/lead-agents/admin/catalogue";
@@ -52,14 +54,42 @@ async function mediaLibrary(cat, productId) {
   };
 }
 
-async function productDetail(cat, product, authContext) {
-  const [version, versions, reviews, events, variants, media] = await Promise.all([
+// GetOyi public state of one product, for the editor. effective: not_public | public | withdrawn | hidden (listed public but no longer
+// internally published: the projection already hides it).
+async function publicState(cat, product, config) {
+  if (!(await cat.publicAvailable())) return { available: false };
+  const [listing, requirements, events, redirects] = await Promise.all([
+    cat.getPublicListing(product.id), cat.publicRequirements(product.id), cat.listPublicEvents(product.id), cat.listSlugRedirects(product.id),
+  ]);
+  const internallyPublished = product.publication_status === "published";
+  const effective = !listing ? "not_public" : listing.status === "withdrawn" ? "withdrawn" : internallyPublished ? "public" : "hidden";
+  const issues = Array.isArray(requirements) ? requirements : [];
+  return {
+    available: true,
+    effective,
+    listing: listing ? {
+      status: listing.status, public_version: listing.public_version, slug: listing.slug, row_version: listing.row_version, released_at: listing.released_at, released_by: listing.released_by,
+      withdrawn_at: listing.withdrawn_at, withdrawn_by: listing.withdrawn_by, withdrawn_reason: listing.withdrawn_reason,
+      refresh_status: listing.refresh_status, refresh_attempts: listing.refresh_attempts, refresh_completed_at: listing.refresh_completed_at, refresh_error: listing.refresh_error,
+    } : null,
+    public_url: listing && config ? `${config.getoyiPublicBaseUrl}/hardware/${listing.slug}` : null,
+    requirements: issues.map((code) => ({ code, label: PUB.REQUIREMENT_LABELS[code] || code })),
+    releasable: issues.length === 0 && !(listing && listing.status === "public" && listing.public_version === product.published_version && listing.slug === product.slug),
+    update_available: Boolean(listing && listing.status === "public" && product.published_version && product.published_version !== listing.public_version),
+    events,
+    redirects: redirects.map((r) => ({ old_slug: r.old_slug, created_at: r.created_at, created_by: r.created_by })),
+  };
+}
+
+async function productDetail(cat, product, authContext, config) {
+  const [version, versions, reviews, events, variants, media, publicInfo] = await Promise.all([
     cat.getVersion(product.id, product.current_version),
     cat.listVersions(product.id),
     cat.listReviews(product.id),
     cat.listPublicationEvents(product.id),
     cat.listVariants(product.id),
     mediaLibrary(cat, product.id),
+    publicState(cat, product, config),
   ]);
   return {
     product,
@@ -67,6 +97,7 @@ async function productDetail(cat, product, authContext) {
     content: version ? version.content : null,
     media_library: media,
     gallery_readiness: C.galleryReadiness(version ? version.content : {}),
+    public: publicInfo,
     current_materiality: version ? version.materiality : null,
     versions,
     reviews,
@@ -96,7 +127,7 @@ async function storeUpload(storageService, store, input) {
   return typeof store.createOfficeFile === "function" ? (await store.createOfficeFile(raw)) || raw : raw;
 }
 
-async function handleCatalogueRequest({ req, res, ctx, pathname, authContext, store, eventBus, storageService, log = () => {} }) {
+async function handleCatalogueRequest({ req, res, ctx, pathname, authContext, store, eventBus, storageService, config = {}, log = () => {} }) {
   if (pathname !== PREFIX && !pathname.startsWith(`${PREFIX}/`)) return false;
   const headers = { "x-request-id": ctx.requestId };
   const send = (status, payload) => json(res, status, payload, headers);
@@ -272,7 +303,7 @@ async function handleCatalogueRequest({ req, res, ctx, pathname, authContext, st
         await referencesExist(cat, content);
         const product = await cat.createProduct({ slug, categoryId: content.category_id, brandId: content.brand_id, content, actor });
         await audit("catalogue_product_created", "catalogue_product", product.id, { slug, version: 1 });
-        return send(201, await productDetail(cat, product, authContext)), true;
+        return send(201, await productDetail(cat, product, authContext, config)), true;
       }
       return send(405, { error: "method_not_allowed" }), true;
     }
@@ -281,7 +312,7 @@ async function handleCatalogueRequest({ req, res, ctx, pathname, authContext, st
       const id = m[1];
       const product = await cat.getProduct(id);
       if (!product) return send(404, { error: "product_not_found" }), true;
-      if (method === "GET") return send(200, await productDetail(cat, product, authContext)), true;
+      if (method === "GET") return send(200, await productDetail(cat, product, authContext, config)), true;
       if (method === "PATCH") {
         need(P.write);
         const expected = expectedRowVersion(body);
@@ -296,9 +327,57 @@ async function handleCatalogueRequest({ req, res, ctx, pathname, authContext, st
         const before = await cat.getVersion(id, product.current_version);
         const galleryChanges = C.diffContent({ media: (before && before.content.media) || [] }, { media: content.media }).length;
         await audit("catalogue_product_edited", "catalogue_product", id, { version: updated.current_version, materiality, ...(galleryChanges ? { gallery_changes: galleryChanges, images: content.media.length } : {}) });
-        return send(200, await productDetail(cat, updated, authContext)), true;
+        return send(200, await productDetail(cat, updated, authContext, config)), true;
       }
       return send(405, { error: "method_not_allowed" }), true;
+    }
+
+    // ------------------------------------------------------------------------------------------------ public release to GetOyi (stage 4)
+    if ((m = sub.match(/^\/products\/([^/]+)\/(public\/release|public\/withdraw|public\/refresh|slug|preview)$/))) {
+      const [, id, action] = m;
+      if (method !== "POST") return send(405, { error: "method_not_allowed" }), true;
+      const product = C.isUuid(id) ? await cat.getProduct(id) : null;
+      if (!product) return send(404, { error: "product_not_found" }), true;
+      if (!(await cat.publicAvailable())) throw C.httpError(503, "public_unavailable");
+      const listingVersion = () => {
+        const value = body.expected_listing_row_version;
+        if (!Number.isInteger(value) || value < 0) throw C.badRequest("expected_listing_row_version (0 when the product was never public) is required");
+        return value;
+      };
+      if (action === "preview") {
+        // any catalogue reader may preview; the link is bound to this version, this staff member and 10 minutes, and dies on archive
+        const grant = await cat.createPreviewGrant({ productId: id, staff: actor, ttlSeconds: PUB.PREVIEW_TTL_SECONDS });
+        const token = PUB.previewToken(config, grant.id);
+        await audit("catalogue_preview_created", "catalogue_product", id, { grant_id: grant.id, version: grant.version, expires_at: grant.expires_at });
+        return send(201, { url: `${config.getoyiPublicBaseUrl || ""}/hardware/preview/${token}`, version: grant.version, expires_at: grant.expires_at }), true;
+      }
+      if (action === "public/release") {
+        need(P.publicPublish);
+        const listing = await cat.publicRelease({ productId: id, expectedProductRowVersion: expectedRowVersion(body), expectedListingRowVersion: listingVersion(), actor });
+        await audit("catalogue_public_released", "catalogue_product", id, { version: listing.public_version, slug: listing.slug, row_version: listing.row_version });
+        await refreshPublic({ store, config, productId: id, event: "released", log });
+      } else if (action === "public/withdraw") {
+        // taking a product off GetOyi is the safe direction: a publisher may do it too
+        if (!hasPermission(authContext, P.publicPublish)) need(P.publish);
+        const reason = typeof body.reason === "string" ? body.reason.trim().slice(0, 500) : "";
+        const listing = await cat.publicWithdraw({ productId: id, expectedListingRowVersion: listingVersion(), actor, reason });
+        await audit("catalogue_public_withdrawn", "catalogue_product", id, { version: listing.public_version, slug: listing.slug, ...(reason ? { reason } : {}) });
+        await refreshPublic({ store, config, productId: id, event: "withdrawn", log });
+      } else if (action === "public/refresh") {
+        if (!hasPermission(authContext, P.publicPublish)) need(P.publish);
+        if (!(await cat.getPublicListing(id))) throw C.httpError(409, "not_public");
+        await audit("catalogue_public_refresh_retried", "catalogue_product", id, {});
+        await refreshPublic({ store, config, productId: id, event: "retry", log, newRound: true });
+      } else {
+        need(P.publicPublish);
+        const slug = C.validSlug(body.slug);
+        if (!slug) throw C.badRequest("slug must be lowercase letters, digits and single hyphens (max 80)");
+        const from = product.slug;
+        await cat.changeSlug({ productId: id, expectedRowVersion: expectedRowVersion(body), slug, actor });
+        await audit("catalogue_slug_changed", "catalogue_product", id, { from, to: slug });
+        await refreshPublic({ store, config, productId: id, event: "slug_changed", log });
+      }
+      return send(200, await productDetail(cat, await cat.getProduct(id), authContext, config)), true;
     }
 
     if ((m = sub.match(/^\/products\/([^/]+)\/(submit|approve|request-changes|publish|unpublish|archive|duplicate)$/))) {
@@ -320,7 +399,7 @@ async function handleCatalogueRequest({ req, res, ctx, pathname, authContext, st
         const content = C.validateContent({ ...source.content, variants, media: [], name: body.name || `${source.content.name} (copy)` });
         const copy = await cat.createProduct({ slug, categoryId: content.category_id, brandId: content.brand_id, content, actor });
         await audit("catalogue_product_duplicated", "catalogue_product", copy.id, { source_product_id: id, source_version: product.current_version, slug });
-        return send(201, await productDetail(cat, copy, authContext)), true;
+        return send(201, await productDetail(cat, copy, authContext, config)), true;
       }
 
       const expected = expectedRowVersion(body);
@@ -349,7 +428,16 @@ async function handleCatalogueRequest({ req, res, ctx, pathname, authContext, st
       } else if (action === "publish" && overrideReason) {
         await notifyRecipients(store, eventBus, { recipientEmails: await reviewerEmails(store, actor), actorEmail: actor, type: "catalogue_override_publish", urgency: "high", summary: `"${updated.slug}" v${updated.current_version} was published WITHOUT second review (override): ${overrideReason}`, relatedType: "catalogue_product", relatedId: id });
       }
-      return send(200, await productDetail(cat, updated, authContext)), true;
+      if ((action === "unpublish" || action === "archive") && (await cat.publicAvailable())) {
+        // the public projection already hides it (internal state is part of the public check); tell GetOyi now rather than at expiry
+        const listing = await cat.getPublicListing(id);
+        if (listing && listing.status === "public") await refreshPublic({ store, config, productId: id, event: action === "archive" ? "archived" : "unpublished_internally", log, newRound: true });
+        if (action === "archive") {
+          const revoked = await cat.revokePreviewGrants({ productId: id, actor });
+          if (revoked) await audit("catalogue_previews_revoked", "catalogue_product", id, { count: revoked, reason: "archived" });
+        }
+      }
+      return send(200, await productDetail(cat, updated, authContext, config)), true;
     }
 
     if ((m = sub.match(/^\/products\/([^/]+)\/versions$/))) {
@@ -399,6 +487,10 @@ async function handleCatalogueRequest({ req, res, ctx, pathname, authContext, st
         need(P.publish);
         const variant = await cat.publishPriceChange({ id, actor });
         await audit("catalogue_price_change_published", "catalogue_variant", variant.id, { price_change_id: id, sku: variant.sku, price_ngn_kobo: variant.price_ngn_kobo, vat_treatment: variant.vat_treatment });
+        if (await cat.publicAvailable()) {
+          const listing = await cat.getPublicListing(variant.product_id);
+          if (listing && listing.status === "public") await refreshPublic({ store, config, productId: variant.product_id, event: "price_changed", log, newRound: true });
+        }
       } else {
         need(P.priceApprove);
         await cat.decidePriceChange({ id, decision: action === "approve" ? "approved" : "rejected", actor, note });

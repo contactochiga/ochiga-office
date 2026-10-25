@@ -60,6 +60,11 @@ class SupabaseCatalogueStore {
     const data = response.data || {};
     if (data.code === "PGRST202" || data.code === "42883" || data.code === "42P01" || data.code === "PGRST205" || data.code === "PGRST200") {
       // a missing media object (20261104 not installed or rolled back) disables media only, never the rest of the catalogue
+      if (/catalogue_(public|slug_redirect|preview|change_slug|create_preview|revoke_preview)/.test(JSON.stringify(data))) {
+        this.publicCapability = false;
+        this.publicCheckedAt = Date.now();
+        throw httpError(503, "public_unavailable");
+      }
       if (/catalogue_(media|register_media|remove_media)/.test(JSON.stringify(data))) {
         this.mediaCapability = false;
         this.mediaCheckedAt = Date.now();
@@ -242,6 +247,73 @@ class SupabaseCatalogueStore {
   }
   removeMedia({ mediaId, actor }) { return this.rpc("catalogue_remove_media", { p_media_id: mediaId, p_actor: actor }); }
 
+  // ---- public release, slugs, previews (20261105; reported unavailable until that migration is installed)
+  async publicAvailable() {
+    if (this.publicCapability !== undefined && Date.now() - (this.publicCheckedAt || 0) < 60_000) return this.publicCapability;
+    this.publicCheckedAt = Date.now();
+    try {
+      const response = await this.client.post("/rpc/catalogue_public_schema_version", {});
+      this.publicCapability = Number(response.data) >= 1;
+    } catch {
+      this.publicCapability = false;
+    }
+    return this.publicCapability;
+  }
+  async getPublicListing(productId) { return (await this.get(`/catalogue_public_listings?product_id=eq.${encodeURIComponent(productId)}`))[0] || null; }
+  listPublicListings() { return this.get("/catalogue_public_listings?status=eq.public&order=released_at.desc&limit=5000"); }
+  async getPublicListingBySlug(slug) { return (await this.get(`/catalogue_public_listings?slug=eq.${encodeURIComponent(slug)}&status=eq.public`))[0] || null; }
+  async getSlugRedirect(slug) { return (await this.get(`/catalogue_slug_redirects?old_slug=eq.${encodeURIComponent(slug)}`))[0] || null; }
+  listSlugRedirects(productId) { return this.get(`/catalogue_slug_redirects?product_id=eq.${encodeURIComponent(productId)}&order=created_at.asc`); }
+  listPublicEvents(productId) { return this.get(`/catalogue_public_events?product_id=eq.${encodeURIComponent(productId)}&order=created_at.asc`); }
+  publicRequirements(productId) { return this.rpc("catalogue_public_requirements", { p_product_id: productId }); }
+  publicRelease({ productId, expectedProductRowVersion, expectedListingRowVersion, actor }) {
+    return this.rpc("catalogue_public_release", { p_product_id: productId, p_expected_product_row_version: expectedProductRowVersion, p_expected_listing_row_version: expectedListingRowVersion, p_actor: actor });
+  }
+  publicWithdraw({ productId, expectedListingRowVersion, actor, reason }) {
+    return this.rpc("catalogue_public_withdraw", { p_product_id: productId, p_expected_listing_row_version: expectedListingRowVersion, p_actor: actor, p_reason: reason || "" });
+  }
+  changeSlug({ productId, expectedRowVersion, slug, actor }) { return this.rpc("catalogue_change_slug", { p_product_id: productId, p_expected_row_version: expectedRowVersion, p_new_slug: slug, p_actor: actor }); }
+  requestPublicRefresh(productId) { return this.rpc("catalogue_public_request_refresh", { p_product_id: productId }); }
+  recordPublicRefresh({ productId, seq, outcome, error }) { return this.rpc("catalogue_public_record_refresh", { p_product_id: productId, p_seq: seq, p_outcome: outcome, p_error: error || "" }); }
+  createPreviewGrant({ productId, staff, ttlSeconds }) { return this.rpc("catalogue_create_preview_grant", { p_product_id: productId, p_staff: staff, p_ttl_seconds: ttlSeconds }); }
+  async getPreviewGrant(id) { return (await this.get(`/catalogue_preview_grants?id=eq.${encodeURIComponent(id)}`))[0] || null; }
+  revokePreviewGrants({ productId, actor }) { return this.rpc("catalogue_revoke_preview_grants", { p_product_id: productId, p_actor: actor }); }
+  // media rows with their renditions' public facts, for the given ids
+  async mediaWithRenditions(ids) {
+    const list = [...new Set(ids)].filter(Boolean);
+    const out = [];
+    for (let i = 0; i < list.length; i += 50) {
+      out.push(...await this.get(`/catalogue_media?id=in.(${list.slice(i, i + 50).join(",")})&select=id,status,product_id,derivatives:catalogue_media_derivatives(kind,sha256,width,height)`));
+    }
+    return out;
+  }
+  // a rendition by content hash -> { media_id, kind, filename, status, product_id }
+  async renditionBySha(sha) {
+    const rows = await this.get(`/catalogue_media_derivatives?sha256=eq.${encodeURIComponent(sha)}&select=kind,media_id,file:office_files(filename),media:catalogue_media(status,product_id)`);
+    return rows.filter((r) => r.file && r.media).map((r) => ({ media_id: r.media_id, kind: r.kind, filename: r.file.filename, status: r.media.status, product_id: r.media.product_id }));
+  }
+  // exact versions for several products: [{ product_id, version, content }]
+  async versionsFor(pairs) {
+    const out = [];
+    for (let i = 0; i < pairs.length; i += 40) {
+      const filter = pairs.slice(i, i + 40).map(([pid, v]) => `and(product_id.eq.${pid},version.eq.${Number(v)})`).join(",");
+      out.push(...await this.get(`/catalogue_product_versions?or=(${filter})&select=product_id,version,content`));
+    }
+    return out;
+  }
+  async productsByIds(ids) {
+    const list = [...new Set(ids)].filter(Boolean);
+    const out = [];
+    for (let i = 0; i < list.length; i += 100) out.push(...await this.get(`/catalogue_products?id=in.(${list.slice(i, i + 100).join(",")})`));
+    return out;
+  }
+  async variantsForProducts(ids) {
+    const list = [...new Set(ids)].filter(Boolean);
+    const out = [];
+    for (let i = 0; i < list.length; i += 100) out.push(...await this.get(`/catalogue_variants?product_id=in.(${list.slice(i, i + 100).join(",")})&order=sku.asc`));
+    return out;
+  }
+
   listSuppliers() { return this.get("/office_suppliers?order=name.asc"); }
   async getSupplier(id) { return (await this.get(`/office_suppliers?id=eq.${encodeURIComponent(id)}`))[0] || null; }
   createSupplier(input, actor) { return this.insert("office_suppliers", normalizeCorporateRecord("suppliers", input, { actorEmail: actor })); }
@@ -363,7 +435,7 @@ class FileCatalogueStore {
   }
 
   async createProduct({ slug, categoryId, brandId, content, actor }) {
-    if (this.s.products.some((p) => p.slug === slug)) throw httpError(409, "slug_taken");
+    if (this.s.products.some((p) => p.slug === slug) || (this.s.slug_redirects || []).some((r) => r.old_slug === slug)) throw httpError(409, "slug_taken");
     for (const v of content.variants || []) { const owner = this.s.variants.find((x) => x.sku === v.sku); if (owner) throw httpError(409, "sku_taken", { current: { sku: v.sku } }); }
     const at = nowIso();
     if ((content.media || []).length) throw httpError(409, "media_not_available");
@@ -383,7 +455,7 @@ class FileCatalogueStore {
     if (materiality === "initial" && p.published_version != null) throw httpError(409, "initial_not_allowed");
     if (materiality === "material" && p.published_version == null) throw httpError(409, "material_not_allowed");
     if (p.slug !== slug && p.first_published_at) throw httpError(409, "slug_locked");
-    if (p.slug !== slug && this.s.products.some((x) => x.slug === slug && x.id !== id)) throw httpError(409, "slug_taken");
+    if (p.slug !== slug && (this.s.products.some((x) => x.slug === slug && x.id !== id) || (this.s.slug_redirects || []).some((r) => r.old_slug === slug && r.product_id !== id))) throw httpError(409, "slug_taken");
     for (const v of content.variants || []) { const owner = this.s.variants.find((x) => x.sku === v.sku); if (owner && owner.product_id !== id) throw httpError(409, "sku_taken", { current: { sku: v.sku } }); }
     this.checkGallery(id, content);
     const at = nowIso();
@@ -556,6 +628,146 @@ class FileCatalogueStore {
   }
   // mirror of office_files ... ON DELETE RESTRICT from the media tables
   officeFileInUse(fileId) { return this.media.some((m) => m.office_file_id === fileId) || this.derivatives.some((d) => d.office_file_id === fileId); }
+
+  // ---- public release, slugs, previews (same rules as 20261105)
+  get pub() {
+    if (!this.s.public_listings) Object.assign(this.s, { public_listings: [], public_events: [], slug_redirects: [], preview_grants: [] });
+    return this.s;
+  }
+  async publicAvailable() { return true; }
+  async getPublicListing(productId) { return clone(this.pub.public_listings.find((l) => l.product_id === productId) || null); }
+  async listPublicListings() { return clone(this.pub.public_listings.filter((l) => l.status === "public")); }
+  async getPublicListingBySlug(slug) { return clone(this.pub.public_listings.find((l) => l.slug === slug && l.status === "public") || null); }
+  async getSlugRedirect(slug) { return clone(this.pub.slug_redirects.find((r) => r.old_slug === slug) || null); }
+  async listSlugRedirects(productId) { return clone(this.pub.slug_redirects.filter((r) => r.product_id === productId)); }
+  async listPublicEvents(productId) { return clone(this.pub.public_events.filter((e) => e.product_id === productId)); }
+  requirementsOf(p) {
+    if (!p) throw httpError(404, "product_not_found");
+    if (p.publication_status === "archived") return ["archived"];
+    if (p.publication_status !== "published" || p.published_version == null) return ["not_published_internally"];
+    const v = this.s.versions.find((x) => x.product_id === p.id && x.version === p.published_version);
+    const issues = [];
+    if (!this.s.reviews.some((r) => r.product_id === p.id && r.version === p.published_version && r.decision === "approved")) issues.push("version_not_approved");
+    const media = (v.content.media || []);
+    if (!media.length) issues.push("no_images");
+    else {
+      if (media.filter((m) => m.cover === true).length !== 1) issues.push("no_cover");
+      if (media.some((m) => !String(m.alt || "").trim())) issues.push("alt_text_missing");
+      if (media.some((m) => !this.media.some((x) => x.id === m.media_id && x.product_id === p.id && x.status === "active") || this.derivatives.filter((d) => d.media_id === m.media_id).length !== 4)) issues.push("media_unavailable");
+    }
+    const listed = new Set((v.content.variants || []).map((x) => x.sku));
+    const active = this.s.variants.filter((x) => x.product_id === p.id && x.status === "active" && listed.has(x.sku));
+    if (!active.length) issues.push("no_active_variant");
+    else if (active.some((x) => x.price_ngn_kobo == null || x.vat_treatment == null)) issues.push("price_not_approved");
+    return issues;
+  }
+  async publicRequirements(productId) { return this.requirementsOf(this.s.products.find((p) => p.id === productId)); }
+  publicEvent(productId, action, version, slug, actor, note = "") { this.pub.public_events.push({ id: crypto.randomUUID(), product_id: productId, action, version, slug, actor, note: String(note || "").slice(0, 500), created_at: nowIso() }); }
+  listingConflict(l) { throw httpError(409, "public_state_changed", { current: l ? { row_version: l.row_version, status: l.status, public_version: l.public_version } : { row_version: 0 } }); }
+  async publicRelease({ productId, expectedProductRowVersion, expectedListingRowVersion, actor }) {
+    const p = this.s.products.find((x) => x.id === productId);
+    if (!p) throw httpError(404, "product_not_found");
+    if (p.row_version !== Number(expectedProductRowVersion)) this.stateChanged(p);
+    const issues = this.requirementsOf(p);
+    if (issues.length) throw httpError(409, "public_requirements_not_met", { current: { issues } });
+    const at = nowIso();
+    let l = this.pub.public_listings.find((x) => x.product_id === productId);
+    let action;
+    if (!l) {
+      if (Number(expectedListingRowVersion || 0) !== 0) this.listingConflict(null);
+      l = { product_id: p.id, status: "public", public_version: p.published_version, slug: p.slug, row_version: 1, released_at: at, released_by: actor, withdrawn_at: null, withdrawn_by: null, withdrawn_reason: "", refresh_seq: 1, refresh_status: "pending", refresh_attempts: 0, refresh_requested_at: at, refresh_completed_at: null, refresh_error: "", created_at: at, updated_at: at };
+      this.pub.public_listings.push(l);
+      action = "released";
+    } else {
+      if (l.row_version !== Number(expectedListingRowVersion)) this.listingConflict(l);
+      if (l.status === "public" && l.public_version === p.published_version && l.slug === p.slug) throw httpError(409, "already_public");
+      action = l.status === "public" ? "updated" : "released";
+      Object.assign(l, { status: "public", public_version: p.published_version, slug: p.slug, row_version: l.row_version + 1, released_at: at, released_by: actor, withdrawn_at: null, withdrawn_by: null, withdrawn_reason: "", refresh_seq: l.refresh_seq + 1, refresh_status: "pending", refresh_attempts: 0, refresh_requested_at: at, refresh_completed_at: null, refresh_error: "", updated_at: at });
+    }
+    this.publicEvent(p.id, action, p.published_version, p.slug, actor);
+    await this.persist();
+    return clone(l);
+  }
+  async publicWithdraw({ productId, expectedListingRowVersion, actor, reason }) {
+    const l = this.pub.public_listings.find((x) => x.product_id === productId);
+    if (!l) throw httpError(409, "not_public");
+    if (l.row_version !== Number(expectedListingRowVersion) || l.status !== "public") this.listingConflict(l);
+    const at = nowIso();
+    Object.assign(l, { status: "withdrawn", withdrawn_at: at, withdrawn_by: actor, withdrawn_reason: String(reason || "").slice(0, 500), row_version: l.row_version + 1, refresh_seq: l.refresh_seq + 1, refresh_status: "pending", refresh_attempts: 0, refresh_requested_at: at, refresh_completed_at: null, refresh_error: "", updated_at: at });
+    this.publicEvent(productId, "withdrawn", l.public_version, l.slug, actor, reason);
+    await this.persist();
+    return clone(l);
+  }
+  async changeSlug({ productId, expectedRowVersion, slug, actor }) {
+    if (!/^[a-z0-9]+(-[a-z0-9]+)*$/.test(String(slug || "")) || slug.length > 80) throw httpError(400, "invalid_slug");
+    const p = this.s.products.find((x) => x.id === productId);
+    if (!p) throw httpError(404, "product_not_found");
+    if (!p.first_published_at) throw httpError(400, "slug_change_not_needed");
+    if (p.publication_status === "archived") throw httpError(409, "product_archived");
+    if (p.slug === slug) throw httpError(400, "slug_unchanged");
+    if (this.s.products.some((x) => x.slug === slug && x.id !== productId) || this.pub.slug_redirects.some((r) => r.old_slug === slug && r.product_id !== productId)) throw httpError(409, "slug_taken");
+    if (p.row_version !== Number(expectedRowVersion)) this.stateChanged(p);
+    const old = p.slug;
+    const at = nowIso();
+    Object.assign(p, { slug, row_version: p.row_version + 1, updated_by: actor, updated_at: at });
+    if (!this.pub.slug_redirects.some((r) => r.old_slug === old)) this.pub.slug_redirects.push({ old_slug: old, product_id: productId, created_by: actor, created_at: at });
+    const l = this.pub.public_listings.find((x) => x.product_id === productId);
+    if (l) Object.assign(l, { slug, refresh_seq: l.refresh_seq + 1, refresh_status: "pending", refresh_attempts: 0, refresh_requested_at: at, refresh_completed_at: null, refresh_error: "", updated_at: at });
+    this.publicEvent(productId, "slug_changed", p.published_version, slug, actor, `from ${old}`);
+    await this.persist();
+    return clone(p);
+  }
+  async requestPublicRefresh(productId) {
+    const l = this.pub.public_listings.find((x) => x.product_id === productId);
+    if (!l) throw httpError(409, "not_public");
+    Object.assign(l, { refresh_seq: l.refresh_seq + 1, refresh_status: "pending", refresh_requested_at: nowIso(), refresh_completed_at: null, refresh_error: "" });
+    await this.persist();
+    return l.refresh_seq;
+  }
+  async recordPublicRefresh({ productId, seq, outcome, error }) {
+    if (!["succeeded", "failed", "not_configured"].includes(outcome)) throw httpError(400, "invalid_outcome");
+    const l = this.pub.public_listings.find((x) => x.product_id === productId);
+    if (!l || l.refresh_seq !== Number(seq)) return false;
+    Object.assign(l, { refresh_status: outcome, refresh_attempts: l.refresh_attempts + 1, refresh_completed_at: nowIso(), refresh_error: String(error || "").slice(0, 500) });
+    await this.persist();
+    return true;
+  }
+  async createPreviewGrant({ productId, staff, ttlSeconds }) {
+    if (!(ttlSeconds >= 60 && ttlSeconds <= 1800)) throw httpError(400, "invalid_ttl");
+    const p = this.s.products.find((x) => x.id === productId);
+    if (!p) throw httpError(404, "product_not_found");
+    if (p.publication_status === "archived") throw httpError(409, "product_archived");
+    const now = Date.now();
+    const g = { id: crypto.randomUUID(), product_id: p.id, version: p.current_version, staff, created_at: new Date(now).toISOString(), expires_at: new Date(now + ttlSeconds * 1000).toISOString(), revoked_at: null, revoked_by: null };
+    this.pub.preview_grants.push(g);
+    await this.persist();
+    return clone(g);
+  }
+  async getPreviewGrant(id) { return clone(this.pub.preview_grants.find((g) => g.id === id) || null); }
+  async revokePreviewGrants({ productId, actor }) {
+    const now = nowIso();
+    const live = this.pub.preview_grants.filter((g) => g.product_id === productId && !g.revoked_at && g.expires_at > now);
+    live.forEach((g) => Object.assign(g, { revoked_at: now, revoked_by: actor }));
+    await this.persist();
+    return live.length;
+  }
+  async mediaWithRenditions(ids) {
+    const set = new Set(ids);
+    return clone(this.media.filter((m) => set.has(m.id)).map((m) => ({ id: m.id, status: m.status, product_id: m.product_id, derivatives: this.derivatives.filter((d) => d.media_id === m.id).map(({ kind, sha256, width, height }) => ({ kind, sha256, width, height })) })));
+  }
+  async renditionBySha(sha) {
+    const files = this.store.state.office_files || [];
+    return this.derivatives.filter((d) => d.sha256 === sha).map((d) => {
+      const m = this.media.find((x) => x.id === d.media_id);
+      const f = files.find((x) => x.id === d.office_file_id);
+      return m && f ? { media_id: m.id, kind: d.kind, filename: f.filename, status: m.status, product_id: m.product_id } : null;
+    }).filter(Boolean);
+  }
+  async versionsFor(pairs) {
+    return clone(pairs.map(([pid, v]) => this.s.versions.find((x) => x.product_id === pid && x.version === Number(v))).filter(Boolean).map(({ product_id, version, content }) => ({ product_id, version, content })));
+  }
+  async productsByIds(ids) { const set = new Set(ids); return clone(this.s.products.filter((p) => set.has(p.id))); }
+  async variantsForProducts(ids) { const set = new Set(ids); return clone(this.s.variants.filter((v) => set.has(v.product_id))); }
 
   // ---- suppliers (CORPORATE_COLLECTIONS.suppliers -> state.office_suppliers)
   get suppliers() {

@@ -97,6 +97,9 @@ const PERMISSION_KEYS = Object.freeze([
   "catalogue.cost.manage",
   "inventory.manage",
   "catalogue.override",
+  // Phase 2 stage 4: releasing an internally published, approved version to the public GetOyi Hardware catalogue (and slug changes /
+  // public withdrawal). A separate grant from catalogue.publish: internal publication is not public availability.
+  "catalogue.public.publish",
 ]);
 
 // Keys that only super_admin holds by role (never via ochiga_admin's otherwise-full grant).
@@ -104,7 +107,7 @@ const SUPER_ADMIN_ONLY = Object.freeze(["team.manage", "catalogue.override"]);
 // Least privilege for the catalogue (release review 2026-10-25): no role except super_admin receives an operational catalogue grant.
 // Staff and ochiga_admin hold catalogue.read only; drafting, review, publication, price approval, inventory and supplier costs are
 // granted to named people through permission_scopes (set by team.manage holders, i.e. super_admin), which keeps the duties separate.
-const CATALOGUE_SCOPED_ONLY = Object.freeze(["catalogue.write", "catalogue.review", "catalogue.publish", "catalogue.price.approve", "catalogue.cost.read", "catalogue.cost.manage", "inventory.manage"]);
+const CATALOGUE_SCOPED_ONLY = Object.freeze(["catalogue.write", "catalogue.review", "catalogue.publish", "catalogue.price.approve", "catalogue.cost.read", "catalogue.cost.manage", "inventory.manage", "catalogue.public.publish"]);
 
 const ROLE_PERMISSIONS = Object.freeze({
   super_admin: PERMISSION_KEYS,

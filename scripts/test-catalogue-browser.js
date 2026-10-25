@@ -65,7 +65,13 @@ async function main() {
     ws = new WebSocket(targets.find((t) => t.type === "page").webSocketDebuggerUrl);
     await new Promise((r, j) => { ws.onopen = r; ws.onerror = j; });
     ws.onmessage = (m) => { const d = JSON.parse(m.data); if (d.id && pending.has(d.id)) { pending.get(d.id)(d); pending.delete(d.id); } };
-    const send = (method, params = {}) => new Promise((resolve) => { const n = ++id; pending.set(n, resolve); ws.send(JSON.stringify({ id: n, method, params })); });
+    // every DevTools call has a deadline: a page that stops answering fails the run with the call's name instead of hanging it
+    const send = (method, params = {}) => new Promise((resolve, reject) => {
+      const n = ++id;
+      const timer = setTimeout(() => { pending.delete(n); reject(new Error(`DevTools ${method} did not answer within 30 s (in-flight: ${[...inflight.values()].join(", ")})`)); }, 30000);
+      pending.set(n, (d) => { clearTimeout(timer); resolve(d); });
+      ws.send(JSON.stringify({ id: n, method, params }));
+    });
     const evalJs = async (expr) => { const r = await send("Runtime.evaluate", { expression: expr, awaitPromise: true, returnByValue: true }); if (r.result.exceptionDetails) throw new Error(JSON.stringify(r.result.exceptionDetails).slice(0, 400)); return r.result.result.value; };
     const waitFor = async (expr, label, ms = 10000) => { const end = Date.now() + ms; while (Date.now() < end) { try { if (await evalJs(expr)) return true; } catch { /* navigating */ } await sleep(150); } throw new Error(`timeout waiting for: ${label} (in-flight: ${[...inflight.values()].join(", ")})`); };
     const shot = async (name) => { if (!process.env.OFFICE_CAT_SHOTS) return; const r = await send("Page.captureScreenshot", { format: "png" }); fs.writeFileSync(path.join(process.env.OFFICE_CAT_SHOTS, name), Buffer.from(r.result.data, "base64")); };
@@ -88,7 +94,7 @@ async function main() {
     const productId = (await evalJs(`location.hash`)).split("/").pop();
     const ratio = await evalJs(`(() => { const l = document.querySelector('.cat-left').getBoundingClientRect().width, r = document.querySelector('.cat-right').getBoundingClientRect().width; return Math.round(100 * l / (l + r)); })()`);
     assert.ok(ratio >= 52 && ratio <= 58, `table/editor proportion about 55/45 (got ${ratio}/${100 - ratio})`);
-    assert.deepEqual(await barButtons(), ["Submit for review"], "writer: one primary action (Submit for review); Preview disabled until stage 4");
+    assert.deepEqual(await barButtons(), ["Preview", "Submit for review"], "writer: Preview (stage 4) and one primary action (Submit for review)");
     console.log(`1. Add product -> persistent table + editor (${ratio}/${100 - ratio}), new draft selected — PASS`);
 
     // 2. edit through Overview and Specifications, save as a new version
@@ -317,7 +323,7 @@ async function main() {
     await evalJs(`document.querySelector('.cat-tr[data-id]').click()`);
     await waitFor(`!!document.querySelector('.cat-ed-title h2')`, "staff editor");
     assert.ok(await evalJs(`[...document.querySelectorAll('.catalogue-editor input, .catalogue-editor select, .catalogue-editor textarea')].every((i) => i.disabled) && !document.querySelector('[data-edit]')`), "fields read-only, no Edit");
-    assert.deepEqual(await barButtons(), [], "no actions for general staff");
+    assert.deepEqual(await barButtons(), ["Preview"], "general staff: Preview only, no workflow actions");
     assert.ok(!(await evalJs(`[...document.querySelectorAll('.catalogue-tabs button')].some((b) => /Suppliers/.test(b.textContent))`)), "suppliers hidden");
     console.log("8. General staff: read-only workspace — PASS");
 

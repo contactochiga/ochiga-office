@@ -18,6 +18,7 @@ const CATALOGUE_PERMISSIONS = Object.freeze({
   costManage: "catalogue.cost.manage",
   inventory: "inventory.manage",
   override: "catalogue.override",
+  publicPublish: "catalogue.public.publish",
 });
 
 const LIMITS = Object.freeze({

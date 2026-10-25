@@ -20,6 +20,7 @@ const CATALOGUE_TEST_USERS = Object.freeze({
   finance: { role: "ochiga_staff", scopes: ["catalogue.cost.read", "catalogue.cost.manage"] },
   ops: { role: "ochiga_staff", scopes: ["inventory.manage"] },
   scopedOverride: { role: "ochiga_staff", scopes: ["catalogue.publish", "catalogue.override"] },
+  releaser: { role: "ochiga_staff", scopes: ["catalogue.public.publish"] },
   outsider: { role: "estate_admin", scopes: [] },
 });
 
@@ -27,7 +28,33 @@ function testUsers(tag = crypto.randomBytes(3).toString("hex")) {
   return Object.fromEntries(Object.entries(CATALOGUE_TEST_USERS).map(([name, u]) => [name, { ...u, email: `${name.toLowerCase()}.${tag}@fixture.test`, password: `Cat!${crypto.randomBytes(8).toString("hex")}Aa1` }]));
 }
 
-async function runCatalogueScenarios({ base, users, fullKey, scopedKey, check, label = "", storageDir = null }) {
+// GetOyi revalidation stand-in: verifies the HMAC signature like GetOyi does, records each request, and can fail on demand.
+function startRevalidator(secret) {
+  const http = require("http");
+  const state = { requests: [], failures: 0 };
+  const server = http.createServer((req, res) => {
+    const chunks = [];
+    req.on("data", (c) => chunks.push(c));
+    req.on("end", () => {
+      const body = Buffer.concat(chunks).toString("utf8");
+      const sig = String(req.headers["x-getoyi-signature"] || "");
+      const t = (sig.match(/t=(\d+)/) || [])[1], v1 = (sig.match(/v1=([0-9a-f]{64})/) || [])[1];
+      const valid = Boolean(t && v1 && crypto.createHmac("sha256", secret).update(`${t}.${body}`).digest("hex") === v1 && Math.abs(Date.now() / 1000 - Number(t)) < 300);
+      let payload = null; try { payload = JSON.parse(body); } catch { /* invalid */ }
+      state.requests.push({ valid, payload });
+      if (state.failures > 0) { state.failures -= 1; res.writeHead(503); res.end("{}"); return; }
+      res.writeHead(valid ? 200 : 401, { "content-type": "application/json" }); res.end(JSON.stringify({ revalidated: valid }));
+    });
+  });
+  return new Promise((resolve) => server.listen(0, "127.0.0.1", () => resolve({
+    url: `http://127.0.0.1:${server.address().port}/api/hardware/revalidate`,
+    requests: state.requests,
+    failNext: (n) => { state.failures = n; },
+    close: () => new Promise((r) => server.close(r)),
+  })));
+}
+
+async function runCatalogueScenarios({ base, users, fullKey, scopedKey, check, label = "", storageDir = null, catalogueKey = null, revalidator = null }) {
   const cookies = {};
   async function login(name) {
     const u = users[name];
@@ -535,17 +562,243 @@ async function runCatalogueScenarios({ base, users, fullKey, scopedKey, check, l
       staffLib.status === 200 && staffLib.json.media_library.items.length >= 8 && !JSON.stringify(staffLib.json).includes("product_image_") && !JSON.stringify(staffLib.json).includes("storage_key"), { status: staffLib.status });
   }
 
+  // ------------------------------------------------------------------------------------------------ Phase 2 stage 4: public release to GetOyi
+  if (catalogueKey) {
+    const sharp = require("sharp");
+    const img = (bg) => sharp({ create: { width: 1000, height: 800, channels: 3, background: bg } }).jpeg({ quality: 85 }).toBuffer();
+    const upload = async (productId, buf) => {
+      const r = await fetch(`${base}/api/lead-agents/admin/catalogue/products/${productId}/media?name=p.jpg`, { method: "POST", headers: { "content-type": "image/jpeg", origin: base, cookie: cookies.writerA }, body: buf });
+      return (await r.json()).media;
+    };
+    const pub = async (p, key = catalogueKey, init = {}) => {
+      const headers = { ...(key ? { "x-api-key": key } : {}), ...(init.headers || {}) };
+      const r = await fetch(`${base}/api/public/catalogue${p}`, { ...init, headers });
+      const buf = Buffer.from(await r.arrayBuffer());
+      let json = null; try { json = JSON.parse(buf.toString("utf8")); } catch { /* binary */ }
+      return { status: r.status, json, buf, headers: r.headers };
+    };
+    const detailOf = async (productId, who = "writerA") => (await A[who].get(`/products/${productId}`)).json;
+    const reviewAndPublish = async (productId) => {
+      let d = await detailOf(productId);
+      const sub = await A.writerB.post(`/products/${productId}/submit`, { expected_row_version: d.product.row_version });
+      const ap = await A.reviewer2.post(`/products/${productId}/approve`, { expected_row_version: sub.json.product.row_version });
+      const pb = await A.publisher.post(`/products/${productId}/publish`, { expected_row_version: ap.json.product.row_version });
+      return pb;
+    };
+    const lastReval = () => (revalidator ? revalidator.requests[revalidator.requests.length - 1] : null);
+    const pvariants = [{ sku: `PUB-${tag}-1`, name: "White", options: { colour: "white" } }, { sku: `PUB-${tag}-2`, name: "Black", options: { colour: "black" } }];
+    const made = await A.writerA.post("/products", { slug: `public-hub-${slugTag}`, content: content({ name: "Public Hub", model: `PH-${tag}`, summary: "Hub for the public catalogue", variants: pvariants }) });
+    const ppid = made.json.product.id;
+    const m1 = await upload(ppid, await img("#1d4ed8"));
+    const m2 = await upload(ppid, await img("#15803d"));
+    let d = await detailOf(ppid);
+    await A.writerA.patch(`/products/${ppid}`, { expected_row_version: d.product.row_version, content: { ...d.content, media: [{ media_id: m1.id, cover: true, alt: "Public Hub, front", caption: "Front" }, { media_id: m2.id, cover: false, alt: "", caption: "" }] } });
+    await reviewAndPublish(ppid);
+    // a price for variant 1 only (request -> approval by a different approver -> publication)
+    d = await detailOf(ppid);
+    const v1 = d.variants.find((v) => v.sku === pvariants[0].sku), v2 = d.variants.find((v) => v.sku === pvariants[1].sku);
+    const pr = await A.writerA.post(`/variants/${v1.id}/price-changes`, { price_ngn_kobo: 4500000, vat_treatment: "standard" });
+    await A.pricerA.post(`/price-changes/${pr.json.price_change.id}/approve`);
+    await A.publisher.post(`/price-changes/${pr.json.price_change.id}/publish`);
+    d = await detailOf(ppid);
+    const codes = (x) => x.public.requirements.map((r) => r.code).sort().join(",");
+    check(id("PB1"), "public requirements are computed for the internally published version: missing alt text on an image and an unpriced active variant are reported", d.public.available && d.public.effective === "not_public" && codes(d) === "alt_text_missing,price_not_approved" && !d.public.releasable, d.public);
+    const blocked = await A.releaser.post(`/products/${ppid}/public/release`, { expected_row_version: d.product.row_version, expected_listing_row_version: 0 });
+    check(id("PB1b"), "release is refused while requirements are unmet (409 public_requirements_not_met with the issues)", blocked.status === 409 && blocked.json.error === "public_requirements_not_met" && blocked.json.current.issues.includes("alt_text_missing"), blocked.json);
+    // fix: alt text (new version, reviewed and published) and deactivate the unpriced variant
+    d = await detailOf(ppid);
+    await A.writerA.patch(`/products/${ppid}`, { expected_row_version: d.product.row_version, content: { ...d.content, media: d.content.media.map((x) => ({ ...x, alt: x.alt || "Public Hub, side" })) } });
+    await reviewAndPublish(ppid);
+    const v2now = (await detailOf(ppid)).variants.find((v) => v.sku === pvariants[1].sku);
+    await A.ops.patch(`/variants/${v2.id}/inventory`, { expected_row_version: v2now.row_version, status: "inactive", reason: "Not for sale yet" });
+    const v1now = (await detailOf(ppid)).variants.find((v) => v.sku === pvariants[0].sku);
+    await A.ops.patch(`/variants/${v1.id}/inventory`, { expected_row_version: v1now.row_version, stock_on_hand: 7, stock_reserved: 1, sourcing: "in_stock" });
+    d = await detailOf(ppid);
+    check(id("PB2"), "after fixing alt text and deactivating the unpriced variant the published version is releasable", d.public.requirements.length === 0 && d.public.releasable, d.public.requirements);
+
+    // permissions + stale protection
+    const asPublisher = await A.publisher.post(`/products/${ppid}/public/release`, { expected_row_version: d.product.row_version, expected_listing_row_version: 0 });
+    const asStaff = await A.staff.post(`/products/${ppid}/public/release`, { expected_row_version: d.product.row_version, expected_listing_row_version: 0 });
+    const asAdmin = await A.admin.post(`/products/${ppid}/public/release`, { expected_row_version: d.product.row_version, expected_listing_row_version: 0 });
+    const stale = await A.releaser.post(`/products/${ppid}/public/release`, { expected_row_version: d.product.row_version - 1, expected_listing_row_version: 0 });
+    const before = revalidator ? revalidator.requests.length : 0;
+    const released = await A.releaser.post(`/products/${ppid}/public/release`, { expected_row_version: d.product.row_version, expected_listing_row_version: 0 });
+    check(id("PB3"), "public release needs catalogue.public.publish (publisher, general staff and ochiga_admin 403); a stale product row_version is 409; the releaser releases the published version",
+      asPublisher.status === 403 && asStaff.status === 403 && asAdmin.status === 403 && stale.status === 409 && stale.json.error === "state_changed" && released.status === 200
+        && released.json.public.effective === "public" && released.json.public.listing.public_version === released.json.product.published_version && /\/hardware\/public-hub-/.test(released.json.public.public_url || ""),
+      { asPublisher: asPublisher.status, asStaff: asStaff.status, asAdmin: asAdmin.status, stale: stale.status, released: released.status, pub: released.json && released.json.public });
+    if (revalidator) {
+      const r = lastReval();
+      check(id("PB3b"), "GetOyi is told to revalidate (signed request, event released, slug); refresh status recorded as succeeded",
+        revalidator.requests.length === before + 1 && r.valid && r.payload.event === "released" && r.payload.slug === `public-hub-${slugTag}` && released.json.public.listing.refresh_status === "succeeded", { r, refresh: released.json.public.listing });
+    }
+
+    // public API boundary and exposure
+    const list = await pub("/products");
+    const card = list.json && list.json.products.find((c) => c.slug === `public-hub-${slugTag}`);
+    const one = await pub(`/products/public-hub-${slugTag}`);
+    const cats = await pub("/categories");
+    const text = JSON.stringify([list.json, one.json, cats.json]);
+    const forbidden = [ppid, m1.id, m2.id, "supplier", "cost", "row_version", "stock_on_hand", "product_image_", "office_file", users.writerA.email, users.reviewer2.email, "review", "draft", "internal"];
+    check(id("PB4"), "public API (catalogue key): list, detail and categories show the released product with its VAT-inclusive price, availability label, cover and alt text",
+      list.status === 200 && card && card.price_from_kobo === 4500000 && card.availability === "in_stock" && /^media\/[0-9a-f]{64}\.webp$/.test(card.cover.src) && one.status === 200
+        && one.json.product.variants.length === 1 && one.json.product.variants[0].price.vat_inclusive === true && one.json.product.images.length === 2 && one.json.product.images[0].alt === "Public Hub, front" && one.json.product.images[0].cover
+        && cats.json.categories.some((c) => c.product_count >= 1), { list: list.status, card, one: one.json });
+    check(id("PB4b"), "nothing internal leaves Office: no product or media ids, costs, suppliers, stock counts, storage names, staff e-mails, review or draft data; the inactive variant is absent",
+      forbidden.every((f) => !text.includes(f)) && !text.includes(pvariants[1].sku), forbidden.filter((f) => text.includes(f)));
+    const noKey = await pub("/products", null);
+    const intake = await pub("/products", scopedKey);
+    const full = await pub("/products", fullKey);
+    const staffCookie = await fetch(`${base}/api/public/catalogue/products`, { headers: { cookie: cookies.superAdmin } });
+    const post = await pub("/products", catalogueKey, { method: "POST" });
+    const keyOnStaff = await fetch(`${base}/api/lead-agents/admin/catalogue/products`, { headers: { "x-api-key": catalogueKey } });
+    check(id("PB4c"), "public API boundary: no key 401; the website's intake key, a FULL key and a staff session 403; POST 403; the catalogue key cannot reach staff catalogue routes (403)",
+      noKey.status === 401 && intake.status === 403 && full.status === 403 && staffCookie.status === 403 && post.status === 403 && keyOnStaff.status === 403,
+      { noKey: noKey.status, intake: intake.status, full: full.status, staff: staffCookie.status, post: post.status, keyOnStaff: keyOnStaff.status });
+
+    // images
+    const coverSha = one.json.product.images[0].src.match(/[0-9a-f]{64}/)[0];
+    const image = await pub(`/media/${coverSha}.webp`);
+    const draftImage = await upload(ppid, await img("#7c2d12"));
+    const draftSha = (await detailOf(ppid)).media_library.items.find((x) => x.id === draftImage.id);
+    const draftThumb = await fetch(`${base}${draftSha.urls.w960}`, { headers: { cookie: cookies.writerA } });
+    const draftBytes = Buffer.from(await draftThumb.arrayBuffer());
+    const crypto2 = require("crypto");
+    const draftHash = crypto2.createHash("sha256").update(draftBytes).digest("hex");
+    const draftPublic = await pub(`/media/${draftHash}.webp`);
+    const randomSha = await pub(`/media/${"a".repeat(64)}.webp`);
+    const sneaky = await pub(`/media/..%2F..%2Fproducts`);
+    check(id("PB5"), "published images are served by content hash as WebP with public 5-minute caching and nosniff; a draft-only image of the same product, an unknown hash and path tricks are 404",
+      image.status === 200 && image.headers.get("content-type") === "image/webp" && /public, max-age=300/.test(image.headers.get("cache-control") || "") && image.headers.get("x-content-type-options") === "nosniff"
+        && crypto2.createHash("sha256").update(image.buf).digest("hex") === coverSha.replace(/[^0-9a-f]/g, "") || false,
+      { image: image.status, type: image.headers.get("content-type"), cache: image.headers.get("cache-control") });
+    check(id("PB5b"), "…draft-only image 404, unknown hash 404, traversal refused", draftPublic.status === 404 && randomSha.status === 404 && sneaky.status >= 400, { draftPublic: draftPublic.status, randomSha: randomSha.status, sneaky: sneaky.status });
+
+    // pinned public version
+    d = await detailOf(ppid);
+    await A.writerA.patch(`/products/${ppid}`, { expected_row_version: d.product.row_version, content: { ...d.content, description: "Updated description for v-next." } });
+    const whileDraft = await pub(`/products/public-hub-${slugTag}`);
+    await reviewAndPublish(ppid);
+    const afterInternal = await pub(`/products/public-hub-${slugTag}`);
+    d = await detailOf(ppid);
+    check(id("PB6"), "GetOyi shows the released version: a newer draft AND a newer internal publication do not change the public product; the editor offers an update",
+      !/Updated description/.test(JSON.stringify(whileDraft.json)) && !/Updated description/.test(JSON.stringify(afterInternal.json)) && d.public.update_available && d.public.releasable, { update: d.public.update_available });
+    const upd = await A.releaser.post(`/products/${ppid}/public/release`, { expected_row_version: d.product.row_version, expected_listing_row_version: d.public.listing.row_version });
+    const afterUpdate = await pub(`/products/public-hub-${slugTag}`);
+    const again = await A.releaser.post(`/products/${ppid}/public/release`, { expected_row_version: upd.json.product.row_version, expected_listing_row_version: upd.json.public.listing.row_version });
+    check(id("PB6b"), "releasing again updates GetOyi to the new version (event 'updated'); releasing an unchanged version is 409 already_public",
+      upd.status === 200 && /Updated description/.test(JSON.stringify(afterUpdate.json)) && upd.json.public.events.some((e) => e.action === "updated") && again.status === 409 && again.json.error === "already_public", { upd: upd.status, again: again.json });
+
+    // concurrent withdrawals: one wins
+    const lrv = upd.json.public.listing.row_version;
+    const race = await Promise.all([A.releaser.post(`/products/${ppid}/public/withdraw`, { expected_listing_row_version: lrv, reason: "race A" }), A.publisher.post(`/products/${ppid}/public/withdraw`, { expected_listing_row_version: lrv, reason: "race B" })]);
+    const afterWithdraw = await pub(`/products/public-hub-${slugTag}`);
+    const listAfter = await pub("/products");
+    const imageAfter = await pub(`/media/${coverSha}.webp`);
+    check(id("PB7"), "two concurrent withdrawals: exactly one succeeds (a publisher may withdraw), the other is 409; the product, its listing entry and its images disappear from the public API at once",
+      race.map((r) => r.status).sort().join() === "200,409" && afterWithdraw.status === 404 && !listAfter.json.products.some((c) => c.slug === `public-hub-${slugTag}`) && imageAfter.status === 404,
+      { race: race.map((r) => [r.status, r.json && r.json.error]), afterWithdraw: afterWithdraw.status, imageAfter: imageAfter.status });
+    if (revalidator) check(id("PB7b"), "withdrawal notifies GetOyi (event withdrawn)", lastReval().payload.event === "withdrawn" && lastReval().payload.status === "withdrawn", lastReval());
+    d = await detailOf(ppid);
+    const rerelease = await A.releaser.post(`/products/${ppid}/public/release`, { expected_row_version: d.product.row_version, expected_listing_row_version: d.public.listing.row_version });
+    check(id("PB7c"), "a withdrawn product can be released again", rerelease.status === 200 && (await pub(`/products/public-hub-${slugTag}`)).status === 200, rerelease.json && rerelease.json.public);
+
+    // internal unpublish hides it immediately; internal re-publication of the same approved version restores it
+    d = await detailOf(ppid);
+    const unpub = await A.publisher.post(`/products/${ppid}/unpublish`, { expected_row_version: d.product.row_version });
+    const hidden = await pub(`/products/public-hub-${slugTag}`);
+    check(id("PB8"), "internal unpublish removes the product from the public API immediately; the editor shows it as hidden; GetOyi is notified",
+      unpub.status === 200 && hidden.status === 404 && unpub.json.public.effective === "hidden" && (!revalidator || lastReval().payload.event === "unpublished_internally"), { unpub: unpub.status, hidden: hidden.status, effective: unpub.json.public && unpub.json.public.effective });
+    const repub = await A.publisher.post(`/products/${ppid}/publish`, { expected_row_version: unpub.json.product.row_version });
+    check(id("PB8b"), "publishing the same approved version internally again makes the listing visible again (the public release was never withdrawn)", repub.status === 200 && (await pub(`/products/public-hub-${slugTag}`)).status === 200, repub.json && repub.json.public);
+
+    // slug change with redirect
+    d = await detailOf(ppid);
+    const oldSlug = `public-hub-${slugTag}`, newSlug = `oyi-public-hub-${slugTag}`;
+    const slugByPublisher = await A.publisher.post(`/products/${ppid}/slug`, { expected_row_version: d.product.row_version, slug: newSlug });
+    const slugged = await A.releaser.post(`/products/${ppid}/slug`, { expected_row_version: d.product.row_version, slug: newSlug });
+    const viaOld = await pub(`/products/${oldSlug}`);
+    const viaNew = await pub(`/products/${newSlug}`);
+    const takeOld = await A.writerA.post("/products", { slug: oldSlug, content: content({ name: "Hijack", model: `HJ-${tag}`, variants: [{ sku: `HJ-${tag}-1`, name: "x" }] }) });
+    check(id("PB9"), "slug change (catalogue.public.publish only): the old slug answers redirect_to the new one, the new slug serves the product, the editor reports the public URL and the redirect; another product can never take the old slug",
+      slugByPublisher.status === 403 && slugged.status === 200 && viaOld.status === 200 && viaOld.json.redirect_to === newSlug && viaNew.status === 200 && slugged.json.public.public_url.endsWith(`/hardware/${newSlug}`)
+        && slugged.json.public.redirects.some((r) => r.old_slug === oldSlug) && takeOld.status === 409 && takeOld.json.error === "slug_taken",
+      { slugByPublisher: slugByPublisher.status, slugged: slugged.status, viaOld: viaOld.json, viaNew: viaNew.status, takeOld: takeOld.json });
+    if (revalidator) check(id("PB9b"), "slug change notifies GetOyi with the previous slugs", lastReval().payload.event === "slug_changed" && lastReval().payload.previous_slugs.includes(oldSlug) && lastReval().payload.slug === newSlug, lastReval());
+
+    // price change on a public product -> GetOyi refresh + new public price
+    d = await detailOf(ppid);
+    const pv = d.variants.find((v) => v.sku === pvariants[0].sku);
+    const pr2 = await A.writerA.post(`/variants/${pv.id}/price-changes`, { price_ngn_kobo: 4750000, vat_treatment: "standard" });
+    await A.pricerB.post(`/price-changes/${pr2.json.price_change.id}/approve`);
+    await A.publisher.post(`/price-changes/${pr2.json.price_change.id}/publish`);
+    const repriced = await pub(`/products/${newSlug}`);
+    check(id("PB10"), "a published price change shows on the public product at once and notifies GetOyi", repriced.json.product.price_from_kobo === 4750000 && (!revalidator || lastReval().payload.event === "price_changed"), repriced.json.product.price_from_kobo);
+
+    // refresh failure and retry
+    if (revalidator) {
+      revalidator.failNext(1);
+      d = await detailOf(ppid);
+      const draft2 = await A.writerA.patch(`/products/${ppid}`, { expected_row_version: d.product.row_version, content: { ...d.content, summary: "Hub for the public catalogue, v-next" } });
+      await reviewAndPublish(ppid);
+      d = await detailOf(ppid);
+      const failedRel = await A.releaser.post(`/products/${ppid}/public/release`, { expected_row_version: d.product.row_version, expected_listing_row_version: d.public.listing.row_version });
+      const retry = await A.publisher.post(`/products/${ppid}/public/refresh`, {});
+      const staffRetry = await A.staff.post(`/products/${ppid}/public/refresh`, {});
+      check(id("PB11"), "when GetOyi does not answer, the release still happens and the editor shows refresh 'failed'; Retry (publisher) starts a new round that succeeds; staff cannot retry",
+        draft2.status === 200 && failedRel.status === 200 && failedRel.json.public.listing.refresh_status === "failed" && retry.status === 200 && retry.json.public.listing.refresh_status === "succeeded" && staffRetry.status === 403,
+        { failed: failedRel.json && failedRel.json.public.listing, retry: retry.json && retry.json.public.listing, staffRetry: staffRetry.status });
+    }
+
+    // preview
+    d = await detailOf(ppid);
+    await A.writerA.patch(`/products/${ppid}`, { expected_row_version: d.product.row_version, content: { ...d.content, name: "Public Hub (draft name)", media: [...d.content.media, { media_id: draftImage.id, cover: false, alt: "Draft angle", caption: "" }] } });
+    const pv1 = await A.staff.post(`/products/${ppid}/preview`, {});
+    const token = (pv1.json.url || "").split("/hardware/preview/")[1];
+    const view = await pub(`/preview/${token}`);
+    const draftImg = view.json && view.json.product.images.find((x) => x.alt === "Draft angle");
+    const pimg = draftImg ? await pub(`/preview/${token}/media/${draftImg.src.match(/[0-9a-f]{64}/)[0]}.webp`) : { status: 0, headers: new Map() };
+    const leakPublic = draftImg ? await pub(`/media/${draftImg.src.match(/[0-9a-f]{64}/)[0]}.webp`) : { status: 0 };
+    const tampered = await pub(`/preview/${token.slice(0, -2)}xx`);
+    const intakePreview = await pub(`/preview/${token}`, scopedKey);
+    const stillPublic = await pub(`/products/${newSlug}`);
+    check(id("PB12"), "preview: any catalogue reader gets a 10-minute link to the CURRENT draft; through the catalogue key it shows the draft (name, draft image served no-store) while the public product is unchanged; tampered token 404, intake key 403",
+      pv1.status === 201 && /\/hardware\/preview\/pv1\./.test(pv1.json.url) && view.status === 200 && view.json.product.name === "Public Hub (draft name)" && view.json.preview.status === "not_published"
+        && pimg.status === 200 && /no-store/.test(pimg.headers.get("cache-control") || "") && leakPublic.status === 404 && tampered.status === 404 && intakePreview.status === 403 && stillPublic.json.product.name === "Public Hub",
+      { pv1: pv1.status, view: view.status, name: view.json && view.json.product.name, pimg: pimg.status, leakPublic: leakPublic.status, tampered: tampered.status, intakePreview: intakePreview.status });
+
+    // override-published versions cannot go public
+    const ov = await A.writerA.post("/products", { slug: `override-hub-${slugTag}`, content: content({ name: "Override Hub", model: `OH-${tag}`, variants: [{ sku: `OH-${tag}-1`, name: "x" }] }) });
+    const om = await upload(ov.json.product.id, await img("#a21caf"));
+    let od = await detailOf(ov.json.product.id);
+    await A.writerA.patch(`/products/${ov.json.product.id}`, { expected_row_version: od.product.row_version, content: { ...od.content, media: [{ media_id: om.id, cover: true, alt: "Override Hub", caption: "" }] } });
+    od = await detailOf(ov.json.product.id);
+    await A.superAdmin.post(`/products/${ov.json.product.id}/publish`, { expected_row_version: od.product.row_version, override_reason: "Emergency listing for scenario testing purposes" });
+    od = await detailOf(ov.json.product.id);
+    check(id("PB13"), "a version published by administrative override (no second-person approval) can never be released publicly (version_not_approved)", od.product.publication_status === "published" && od.public.requirements.some((r) => r.code === "version_not_approved"), od.public.requirements);
+
+    // archive: hidden, previews revoked
+    d = await detailOf(ppid);
+    const arch = await A.publisher.post(`/products/${ppid}/archive`, { expected_row_version: d.product.row_version });
+    const archivedPublic = await pub(`/products/${newSlug}`);
+    const archivedPreview = await pub(`/preview/${token}`);
+    const archivedImage = await pub(`/media/${coverSha}.webp`);
+    check(id("PB14"), "archiving removes the product, its old-slug redirect target and its images from the public API and revokes open previews (410)",
+      arch.status === 200 && archivedPublic.status === 404 && (await pub(`/products/${oldSlug}`)).status === 404 && archivedPreview.status === 410 && archivedImage.status === 404 && arch.json.public.effective === "hidden",
+      { arch: arch.status, archivedPublic: archivedPublic.status, archivedPreview: archivedPreview.status, archivedImage: archivedImage.status });
+  }
+
   // ------------------------------------------------------------------------------------------------ audit evidence
   {
     const events = await audit();
     const actions = new Set(events.map((e) => e.action));
-    const wanted = ["catalogue_product_created", "catalogue_product_edited", "catalogue_product_submitted", "catalogue_product_approved", "catalogue_product_changes_requested", "catalogue_product_published", "catalogue_product_published_override", "catalogue_product_unpublished", "catalogue_product_archived", "catalogue_product_duplicated", "catalogue_category_created", "catalogue_category_updated", "catalogue_brand_created", "catalogue_price_change_requested", "catalogue_price_change_approved", "catalogue_price_change_published", "catalogue_inventory_changed", "catalogue_supplier_created", "catalogue_cost_recorded", "catalogue_media_uploaded", "catalogue_media_rejected", "catalogue_media_removed", "catalogue_media_removal_refused"];
+    const wanted = ["catalogue_product_created", "catalogue_product_edited", "catalogue_product_submitted", "catalogue_product_approved", "catalogue_product_changes_requested", "catalogue_product_published", "catalogue_product_published_override", "catalogue_product_unpublished", "catalogue_product_archived", "catalogue_product_duplicated", "catalogue_category_created", "catalogue_category_updated", "catalogue_brand_created", "catalogue_price_change_requested", "catalogue_price_change_approved", "catalogue_price_change_published", "catalogue_inventory_changed", "catalogue_supplier_created", "catalogue_cost_recorded", "catalogue_media_uploaded", "catalogue_media_rejected", "catalogue_media_removed", "catalogue_media_removal_refused", ...(catalogueKey ? ["catalogue_public_released", "catalogue_public_withdrawn", "catalogue_slug_changed", "catalogue_preview_created", "catalogue_preview_viewed", "catalogue_previews_revoked", ...(revalidator ? ["catalogue_public_refresh_retried"] : [])] : [])];
     const missing = wanted.filter((w) => !actions.has(w));
     const costAudit = events.find((e) => e.action === "catalogue_cost_recorded");
-    check(id("AUD1"), "every catalogue write is audited (23 action types present, incl. media upload / rejection / removal / refused removal)", missing.length === 0, missing);
+    check(id("AUD1"), `every catalogue write is audited (${wanted.length} action types present, incl. media and public release)`, missing.length === 0, missing);
     check(id("AUD2"), "the cost audit record carries no amounts (audit readers may lack catalogue.cost.read)", costAudit && !/9000000|11000000/.test(JSON.stringify(costAudit)), costAudit);
   }
   return { productId: pid };
 }
 
-module.exports = { CATALOGUE_TEST_USERS, runCatalogueScenarios, testUsers };
+module.exports = { CATALOGUE_TEST_USERS, runCatalogueScenarios, startRevalidator, testUsers };

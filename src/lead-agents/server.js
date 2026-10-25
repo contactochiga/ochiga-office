@@ -130,6 +130,7 @@ const { appendAuditRecord } = require("./audit");
 const { PERMISSION_KEYS, ROLE_PERMISSIONS, hasPermission } = require("./permissions");
 const relationshipWorkspace = require("./relationship-workspace");
 const { handleCatalogueRequest } = require("./catalogue-api");
+const { handlePublicCatalogueRequest } = require("./catalogue-public-api");
 const signatureStats = require("./webhook-signature-stats");
 const inboundVisibility = require("./whatsapp-inbound-visibility");
 const communicationOutbox = require("./communication-outbox");
@@ -1989,12 +1990,14 @@ async function respondToIntakeResult({ res, ctx, config, envelope, result, minim
 }
 
 // The ONLY routes a scoped integration key may call, per scope (method + exact path). Everything else answers 403 before any handler runs.
+// (`prefix` entries allow the read-only public catalogue's sub-paths; the handler itself re-checks the scope.)
 const SCOPED_ROUTES = Object.freeze({
   "intake.submit": [{ method: "POST", path: "/api/office/intake" }],
+  "catalogue.public.read": [{ method: "GET", prefix: "/api/public/catalogue/" }],
 });
 
 function scopedRouteAllowed(authContext, method, pathname) {
-  return (authContext.scopes || []).some((scope) => (SCOPED_ROUTES[scope] || []).some((route) => route.method === method && route.path === pathname));
+  return (authContext.scopes || []).some((scope) => (SCOPED_ROUTES[scope] || []).some((route) => route.method === method && (route.path ? route.path === pathname : pathname.startsWith(route.prefix) && !pathname.includes(".."))));
 }
 
 async function enrichAuthContext(authContext, store) {
@@ -2336,7 +2339,9 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
       }
 
       // Product catalogue (Office-managed GetOyi hardware): self-contained, staff-session-only module (catalogue-api.js)
-      if (await handleCatalogueRequest({ req, res, ctx, pathname, authContext, store, eventBus, storageService, log })) return;
+      if (await handleCatalogueRequest({ req, res, ctx, pathname, authContext, store, eventBus, storageService, config, log })) return;
+      // Public catalogue projection for GetOyi (read-only; catalogue.public.read scoped key only)
+      if (await handlePublicCatalogueRequest({ req, res, ctx, pathname, authContext, store, storageService, config, log })) return;
 
       if (pathname === "/healthz") {
         if (req.method !== "GET") {

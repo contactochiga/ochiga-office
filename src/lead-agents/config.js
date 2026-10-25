@@ -12,7 +12,9 @@ function stringListFromEnv(value) {
     .filter(Boolean);
 }
 
-const KNOWN_API_KEY_SCOPES = new Set(["intake.submit"]);
+// intake.submit: website enquiries (POST /api/office/intake). catalogue.public.read: the read-only public catalogue projection
+// (GET /api/public/catalogue/*, Phase 2 stage 4). A website gets a separate key per scope; neither is ever a privileged key.
+const KNOWN_API_KEY_SCOPES = new Set(["intake.submit", "catalogue.public.read"]);
 
 // Malformed entries are dropped (never widened): an entry needs a client name, a 64-hex SHA-256 digest and at least one known scope.
 function scopedApiKeysFromEnv(value) {
@@ -93,6 +95,13 @@ function createConfig() {
     // Narrow integration credentials (e.g. the GetOyi website). JSON list of { "client", "key_sha256", "scopes" }; only the SHA-256
     // digest of each key is configured here. A scoped key never becomes an admin principal (see auth.js / SCOPED_ROUTES in server.js).
     scopedApiKeys: scopedApiKeysFromEnv(process.env.LEAD_AGENTS_SCOPED_API_KEYS),
+    // Public catalogue (Phase 2 stage 4). The signing secret keys preview links (falls back to a domain-separated derivative of the
+    // session secret); the revalidation URL/secret let Office tell GetOyi to refresh its Hardware pages after a public change.
+    catalogueSigningSecret: process.env.CATALOGUE_SIGNING_SECRET || "",
+    getoyiPublicBaseUrl: String(process.env.GETOYI_PUBLIC_BASE_URL || "https://getoyi.com").replace(/\/$/, ""),
+    getoyiRevalidateUrl: process.env.GETOYI_REVALIDATE_URL || "",
+    getoyiRevalidateSecret: process.env.GETOYI_REVALIDATE_SECRET || "",
+    getoyiRevalidateTimeoutMs: numberFromEnv(process.env.GETOYI_REVALIDATE_TIMEOUT_MS, 5000),
     edgeAgentTokens: stringListFromEnv(
       process.env.OYI_EDGE_AGENT_TOKENS || process.env.OYI_EDGE_AGENT_TOKEN
     ),

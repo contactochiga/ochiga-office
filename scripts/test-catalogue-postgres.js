@@ -13,7 +13,7 @@ const os = require("os");
 const path = require("path");
 const { spawn, spawnSync } = require("child_process");
 const { hashPassword } = require("../src/lead-agents/auth");
-const { runCatalogueScenarios, testUsers } = require("./catalogue-scenarios");
+const { runCatalogueScenarios, startRevalidator, testUsers } = require("./catalogue-scenarios");
 
 const ROOT = path.resolve(__dirname, "..");
 const PG_IMAGE = process.env.PG_IMAGE || "public.ecr.aws/supabase/postgres:17.6.1.131";
@@ -21,6 +21,7 @@ const PGRST_IMAGE = process.env.PGRST_IMAGE || "public.ecr.aws/supabase/postgres
 const RUN = crypto.randomBytes(3).toString("hex");
 const NET = `cat-net-${RUN}`, PG = `cat-pg-${RUN}`, REST = `cat-rest-${RUN}`;
 const PW = `pw_${crypto.randomBytes(10).toString("hex")}`, JWT_SECRET = crypto.randomBytes(24).toString("hex");
+const CATALOGUE_KEY = `oyicat_${crypto.randomBytes(24).toString("hex")}`, REVALIDATE_SECRET = crypto.randomBytes(24).toString("hex");
 const SITE_KEY = `oyi_${crypto.randomBytes(24).toString("hex")}`, FULL_KEY = `full_${crypto.randomBytes(12).toString("hex")}`;
 const SESSION_SECRET = crypto.randomBytes(24).toString("hex");
 const MIGRATION = path.join(ROOT, "db", "20261102_catalogue_foundation.sql");
@@ -47,10 +48,12 @@ function jwt(role) {
   return `${head}.${body}.${crypto.createHmac("sha256", JWT_SECRET).update(`${head}.${body}`).digest("base64url")}`;
 }
 
-const TABLES = ["office_suppliers", "catalogue_categories", "catalogue_brands", "catalogue_products", "catalogue_product_versions", "catalogue_reviews", "catalogue_publication_events", "catalogue_variants", "catalogue_price_changes", "catalogue_price_decisions", "catalogue_inventory_changes", "catalogue_variant_costs", "catalogue_media", "catalogue_media_derivatives"];
+const TABLES = ["office_suppliers", "catalogue_categories", "catalogue_brands", "catalogue_products", "catalogue_product_versions", "catalogue_reviews", "catalogue_publication_events", "catalogue_variants", "catalogue_price_changes", "catalogue_price_decisions", "catalogue_inventory_changes", "catalogue_variant_costs", "catalogue_media", "catalogue_media_derivatives", "catalogue_public_listings", "catalogue_public_events", "catalogue_slug_redirects", "catalogue_preview_grants"];
 // catalogue_media allows exactly one update (active -> removed, unreferenced only), tested separately in DBM1; everything else refused
-const APPEND_ONLY = ["catalogue_product_versions", "catalogue_reviews", "catalogue_publication_events", "catalogue_price_changes", "catalogue_price_decisions", "catalogue_inventory_changes", "catalogue_variant_costs", "catalogue_media", "catalogue_media_derivatives"];
+const APPEND_ONLY = ["catalogue_product_versions", "catalogue_reviews", "catalogue_publication_events", "catalogue_price_changes", "catalogue_price_decisions", "catalogue_inventory_changes", "catalogue_variant_costs", "catalogue_media", "catalogue_media_derivatives", "catalogue_public_events", "catalogue_slug_redirects"];
 const MEDIA_ROLLBACK = path.join(ROOT, "db", "rollback", "20261104_catalogue_media.down.sql");
+const PUBLIC_ROLLBACK = path.join(ROOT, "db", "rollback", "20261105_catalogue_public_release.down.sql");
+const FN_TOTAL = "28"; // 11 foundation + 5 media + 12 public release
 const inList = (list) => list.map((t) => `'${t}'`).join(",");
 
 async function setup() {
@@ -141,7 +144,8 @@ async function startApp(gatewayUrl) {
       PATH: process.env.PATH, HOME: dir, NODE_ENV: "test", LEAD_AGENTS_HOST: "127.0.0.1", LEAD_AGENTS_PORT: String(port), OFFICE_STORAGE_DIR: path.join(dir, "storage"),
       LEAD_AGENTS_STORE_DRIVER: "supabase", SUPABASE_URL: gatewayUrl, SUPABASE_SERVICE_ROLE_KEY: jwt("service_role"),
       LEAD_AGENTS_AUTH_MODE: "required_api_key", LEAD_AGENTS_API_KEYS: FULL_KEY, LEAD_AGENTS_SESSION_SECRET: SESSION_SECRET,
-      LEAD_AGENTS_SCOPED_API_KEYS: JSON.stringify([{ client: "getoyi", key_sha256: sha(SITE_KEY), scopes: ["intake.submit"] }]),
+      LEAD_AGENTS_SCOPED_API_KEYS: JSON.stringify([{ client: "getoyi", key_sha256: sha(SITE_KEY), scopes: ["intake.submit"] }, { client: "getoyi-catalogue", key_sha256: sha(CATALOGUE_KEY), scopes: ["catalogue.public.read"] }]),
+      GETOYI_REVALIDATE_URL: process.env.__REVALIDATE_URL || "", GETOYI_REVALIDATE_SECRET: REVALIDATE_SECRET, GETOYI_PUBLIC_BASE_URL: "https://getoyi.example",
       OPENAI_API_KEY: "sk-fixture-not-real", OPENAI_BASE_URL: "http://127.0.0.1:9/v1", LEAD_AGENTS_RATE_LIMIT_MAX_REQUESTS: "100000", LEAD_AGENTS_OFFICE_RATE_LIMIT_MAX_REQUESTS: "100000", LEAD_AGENTS_LOGIN_RATE_LIMIT_MAX_ATTEMPTS: "1000",
     },
   });
@@ -184,13 +188,13 @@ async function main() {
   const fnRows = JSON.parse(one(`select coalesce(json_agg(json_build_object('fn', p.oid::regprocedure::text, 'secdef', p.prosecdef, 'config', p.proconfig,
       'anon', has_function_privilege('anon',p.oid,'EXECUTE'), 'authenticated', has_function_privilege('authenticated',p.oid,'EXECUTE'), 'service', has_function_privilege('service_role',p.oid,'EXECUTE'),
       'public', exists (select 1 from aclexplode(coalesce(p.proacl, acldefault('f',p.proowner))) a where a.grantee=0))), '[]') from pg_proc p where p.pronamespace='public'::regnamespace and p.proname like 'catalogue\\_%'`));
-  check("AT02b", "16 catalogue functions (11 foundation + 5 media): all SECURITY INVOKER, search_path pinned to public, pg_temp, EXECUTE for service_role only (no PUBLIC/anon/authenticated)",
-    fnRows.length === 16 && fnRows.every((f) => !f.secdef && JSON.stringify(f.config) === JSON.stringify(["search_path=public, pg_temp"]) && !f.anon && !f.authenticated && !f.public && f.service), fnRows.filter((f) => f.secdef || f.anon || f.authenticated || f.public || !f.service || JSON.stringify(f.config) !== JSON.stringify(["search_path=public, pg_temp"])));
+  check("AT02b", "28 catalogue functions (11 foundation + 5 media + 12 public release): all SECURITY INVOKER, search_path pinned to public, pg_temp, EXECUTE for service_role only (no PUBLIC/anon/authenticated)",
+    fnRows.length === Number(FN_TOTAL) && fnRows.every((f) => !f.secdef && JSON.stringify(f.config) === JSON.stringify(["search_path=public, pg_temp"]) && !f.anon && !f.authenticated && !f.public && f.service), fnRows.filter((f) => f.secdef || f.anon || f.authenticated || f.public || !f.service || JSON.stringify(f.config) !== JSON.stringify(["search_path=public, pg_temp"])));
   const rls = one(`select count(*) filter (where relrowsecurity) || '/' || count(*) from pg_class where relnamespace='public'::regnamespace and relname in (${tl})`);
   const policies = one(`select count(*) from pg_policy p join pg_class c on c.oid=p.polrelid where c.relname in (${tl})`);
-  check("AT02c", "RLS enabled on all 14 tables, no policy (deny by default); schema USAGE still closed to anon/authenticated", rls === "14/14" && policies === "0" && one("select has_schema_privilege('anon','public','USAGE') or has_schema_privilege('authenticated','public','USAGE')") === "f", { rls, policies });
+  check("AT02c", "RLS enabled on all 18 tables, no policy (deny by default); schema USAGE still closed to anon/authenticated", rls === "18/18" && policies === "0" && one("select has_schema_privilege('anon','public','USAGE') or has_schema_privilege('authenticated','public','USAGE')") === "f", { rls, policies });
   const svc = JSON.parse(one(`select json_object_agg(c.relname, json_build_object('s', has_table_privilege('service_role',c.oid,'SELECT'), 'i', has_table_privilege('service_role',c.oid,'INSERT'), 'u', has_table_privilege('service_role',c.oid,'UPDATE'), 'd', has_table_privilege('service_role',c.oid,'DELETE'), 't', has_table_privilege('service_role',c.oid,'TRUNCATE'))) from pg_class c where c.relnamespace='public'::regnamespace and c.relname in (${tl})`));
-  check("AT02d", "service_role keeps SELECT/INSERT/UPDATE/DELETE on every catalogue table (gate B6) and has TRUNCATE on none (production default privileges overridden)", Object.values(svc).length === 14 && Object.values(svc).every((x) => x.s && x.i && x.u && x.d && !x.t), svc);
+  check("AT02d", "service_role keeps SELECT/INSERT/UPDATE/DELETE on every catalogue table (gate B6) and has TRUNCATE on none (production default privileges overridden)", Object.values(svc).length === 18 && Object.values(svc).every((x) => x.s && x.i && x.u && x.d && !x.t), svc);
   const costRefs = one(`select count(*) from pg_proc p where p.pronamespace='public'::regnamespace and p.prosrc ilike '%catalogue_variant_costs%'`);
   check("AT02e", "no function references catalogue_variant_costs; no view in public", costRefs === "0" && one("select count(*) from pg_class where relnamespace='public'::regnamespace and relkind in ('v','m')") === "0", costRefs);
 
@@ -199,10 +203,13 @@ async function main() {
   const userSql = Object.values(users).map((u) => `insert into admin_users (email, password_hash, role, status, display_name, permission_scopes) values ('${u.email}', '${hashPassword(u.password)}', '${u.role}', 'active', '${u.email}', array[${u.scopes.map((s) => `'${s}'`).join(",")}]::text[]);`).join("\n");
   check("M20", "test staff users provisioned", psql(userSql).status === 0);
   await reloadSchema(restUrl);
+  const revalidator = await startRevalidator(REVALIDATE_SECRET);
+  cleanup.push(() => revalidator.close());
+  process.env.__REVALIDATE_URL = revalidator.url;
   const app = await startApp(gatewayUrl);
 
   // ------------------------------------------------------------------------------------------------ the shared acceptance scenarios, on Postgres
-  const { productId } = await runCatalogueScenarios({ base: app.url, users, fullKey: FULL_KEY, scopedKey: SITE_KEY, check, label: "PG-", storageDir });
+  const { productId } = await runCatalogueScenarios({ base: app.url, users, fullKey: FULL_KEY, scopedKey: SITE_KEY, check, label: "PG-", storageDir, catalogueKey: CATALOGUE_KEY, revalidator });
 
   // ------------------------------------------------------------------------------------------------ AT-03 append-only, for every role
   {
@@ -210,7 +217,7 @@ async function main() {
     for (const t of APPEND_ONLY) {
       for (const role of ["service_role", "postgres"]) {
         const prefix = role === "postgres" ? "" : "set role service_role; ";
-        const col = t === "catalogue_product_versions" ? "version" : t === "catalogue_media_derivatives" ? "kind" : "id";
+        const col = t === "catalogue_product_versions" ? "version" : t === "catalogue_media_derivatives" ? "kind" : t === "catalogue_slug_redirects" ? "old_slug" : "id";
         const upd = psql(`${prefix}update ${t} set ${col} = ${col};`);
         const del = psql(`${prefix}delete from ${t};`);
         results.push({ t, role, upd: /append_only/.test(upd.err), del: /append_only/.test(del.err) });
@@ -219,7 +226,7 @@ async function main() {
       const svcTrunc = psql(`set role service_role; truncate ${t};`);
       results.push({ t, role: "truncate", upd: /append_only/.test(trunc.err), del: /permission denied|append_only/.test(svcTrunc.err) });
     }
-    check("AT03a", "the 9 history tables (incl. media and renditions) refuse UPDATE and DELETE for service_role AND the owner (postgres), and TRUNCATE (owner: trigger, service_role: no privilege)", results.every((r) => r.upd && r.del), results.filter((r) => !r.upd || !r.del));
+    check("AT03a", "the 11 history tables (incl. media, renditions, public events and slug redirects) refuse UPDATE and DELETE for service_role AND the owner (postgres), and TRUNCATE (owner: trigger, service_role: no privilege)", results.every((r) => r.upd && r.del), results.filter((r) => !r.upd || !r.del));
     const versionsBefore = one(`select count(*) from catalogue_product_versions where product_id = '${productId}'`);
     const viaRest = await rest(restUrl, "service_role", "PATCH", `/catalogue_product_versions?product_id=eq.${productId}&version=eq.1`, { content: { name: "tampered" } });
     const viaRestDel = await rest(restUrl, "service_role", "DELETE", `/catalogue_reviews?product_id=eq.${productId}`);
@@ -359,6 +366,105 @@ async function main() {
     const archReg = c(`${registerSql(archived, hex("arch"), archFiles)};`);
     check("DBM6", "an archived product accepts no media (product_archived)", /product_archived/.test(archReg.err), archReg.err.slice(0, 120));
 
+    // ---------------------------------------------------------------------------------------------- public release in the database (stage 4)
+    {
+      const rel = (pid, prv, lrv, actor = "releaser@x") => c(`select catalogue_public_release('${pid}', ${prv}, ${lrv}, '${actor}');`);
+      const prow = (pid) => JSON.parse(one(`select json_build_object('rv', row_version, 'slug', slug, 'pv', published_version, 'cv', current_version) from catalogue_products where id='${pid}'`));
+      const lrow = (pid) => JSON.parse(one(`select coalesce((select json_build_object('rv', row_version, 'status', status, 'seq', refresh_seq) from catalogue_public_listings where product_id='${pid}'), '{"rv":0}')`));
+      // a releasable product built through the database functions only
+      const skuP = `DBP-${RUN.toUpperCase()}`;
+      const pp = mk(`dbp-${RUN}`, skuP);
+      const pm = register(pp, hex("dbp-image"));
+      c(`${save(pp, [ref(pm, true, { alt: "Front" })], skuP).sql};`);
+      const r0 = prow(pp);
+      c(`select catalogue_transition('${pp}', ${r0.rv}, 'submit', 'author@x', '', '');`);
+      c(`select catalogue_transition('${pp}', ${r0.rv + 1}, 'approve', 'reviewer@x', '', '');`);
+      c(`select catalogue_transition('${pp}', ${r0.rv + 2}, 'publish', 'publisher@x', '', '');`);
+      const unpriced = one(`select catalogue_public_requirements('${pp}')::text`);
+      const vid = one(`select id from catalogue_variants where product_id='${pp}'`);
+      const chg = c(`select (catalogue_request_price_change('${vid}', 990000, 'standard', 750, 'req@x', ''))->>'id';`).out.split("\n").pop();
+      c(`select catalogue_decide_price_change('${chg}', 'approved', 'approver@x', ''); select catalogue_publish_price_change('${chg}', 'publisher@x');`);
+      const ready = one(`select catalogue_public_requirements('${pp}')::text`);
+      check("DBP1", "in the database: catalogue_public_requirements reports the unpriced variant, then nothing once the price is approved and published", /price_not_approved/.test(unpriced) && ready === "[]", { unpriced, ready });
+
+      // 10 concurrent first releases: one listing, one event
+      const r1 = prow(pp);
+      const rels = await concurrentSql(Array.from({ length: 10 }, (_, i) => `set role service_role; select (catalogue_public_release('${pp}', ${r1.rv}, 0, 'releaser${i}@x'))->>'status';`));
+      check("DBP2", "10 concurrent first releases in separate sessions: exactly one commits, one listing row and one 'released' event",
+        rels.filter((r) => r.code === 0).length === 1 && one(`select count(*) from catalogue_public_listings where product_id='${pp}'`) === "1" && one(`select count(*) from catalogue_public_events where product_id='${pp}'`) === "1", rels.map((r) => [r.code, r.err.slice(0, 60)]));
+
+      // tampering
+      const delListing = c(`delete from catalogue_public_listings where product_id='${pp}';`);
+      const ownerDel = psql(`delete from catalogue_public_listings where product_id='${pp}';`);
+      const evEdit = c(`update catalogue_public_events set actor='evil' where product_id='${pp}';`);
+      const g = JSON.parse(c(`select catalogue_create_preview_grant('${pp}', 'staff@x', 600)::text;`).out.split("\n").pop());
+      const extend = c(`update catalogue_preview_grants set expires_at = expires_at + interval '1 day' where id='${g.id}';`);
+      const gDel = c(`delete from catalogue_preview_grants where id='${g.id}';`);
+      const tooLong = c(`select catalogue_create_preview_grant('${pp}', 'staff@x', 7200);`);
+      const restListing = await rest(restUrl, "service_role", "DELETE", `/catalogue_public_listings?product_id=eq.${pp}`);
+      check("DBP3", "listings cannot be deleted (service_role, owner, PostgREST); public events are immutable; a preview grant can only be revoked (no extension, no delete, at most 30 minutes)",
+        /append_only/.test(delListing.err) && /append_only/.test(ownerDel.err) && /append_only/.test(evEdit.err) && /append_only/.test(extend.err) && /append_only/.test(gDel.err) && /invalid_ttl/.test(tooLong.err) && restListing.status >= 400,
+        { delListing: delListing.err.slice(0, 80), evEdit: evEdit.err.slice(0, 80), extend: extend.err.slice(0, 80), gDel: gDel.err.slice(0, 80), tooLong: tooLong.err.slice(0, 80), rest: restListing.status });
+
+      // slug: rename, then another product cannot take the old slug even by a direct UPDATE; the original product may return to it
+      const r2 = prow(pp);
+      const renamed = c(`select catalogue_change_slug('${pp}', ${r2.rv}, 'dbp-renamed-${RUN}', 'releaser@x');`);
+      const hijack = c(`update catalogue_products set slug='dbp-${RUN}' where id='${pa}';`);
+      const r3 = prow(pp);
+      const back = c(`select catalogue_change_slug('${pp}', ${r3.rv}, 'dbp-${RUN}', 'releaser@x');`);
+      check("DBP4", "slug change records a permanent redirect; a different product cannot take a redirecting slug even by a direct UPDATE (trigger); the listing follows the slug",
+        renamed.status === 0 && /slug_taken/.test(hijack.err) && back.status === 0 && one(`select slug from catalogue_public_listings where product_id='${pp}'`) === `dbp-${RUN}` && one(`select count(*) from catalogue_slug_redirects where product_id='${pp}'`) === "2",
+        { renamed: renamed.err.slice(0, 80), hijack: hijack.err.slice(0, 80), back: back.err.slice(0, 80) });
+
+      // refresh rounds: a late answer to an older round never overwrites the newer one
+      const seqA = Number(one(`set role service_role; select catalogue_public_request_refresh('${pp}');`).split("\n").pop());
+      const seqB = Number(one(`set role service_role; select catalogue_public_request_refresh('${pp}');`).split("\n").pop());
+      const late = one(`set role service_role; select catalogue_public_record_refresh('${pp}', ${seqA}, 'failed', 'late');`).split("\n").pop();
+      const fresh = one(`set role service_role; select catalogue_public_record_refresh('${pp}', ${seqB}, 'succeeded', '');`).split("\n").pop();
+      check("DBP5", "refresh rounds: recording an outcome for a superseded round is ignored (false); the current round records (true)", late === "f" && fresh === "t" && one(`select refresh_status from catalogue_public_listings where product_id='${pp}'`) === "succeeded", { late, fresh });
+
+      // release vs internal unpublish at the same time: the unpublish waits for the release, then applies; the product is hidden
+      const l1 = lrow(pp), r4 = prow(pp);
+      c(`select catalogue_public_withdraw('${pp}', ${l1.rv}, 'releaser@x', 'reset');`);
+      const l2 = lrow(pp);
+      const race = await concurrentSql([
+        `set role service_role; begin; select catalogue_public_release('${pp}', ${r4.rv}, ${l2.rv}, 'releaser@x'); select pg_sleep(1.2); commit;`,
+        `select pg_sleep(0.4); set role service_role; select catalogue_transition('${pp}', ${r4.rv}, 'unpublish', 'publisher@x', '', '');`,
+      ]);
+      check("DBP6", "release and an internal unpublish racing: the unpublish waits for the release lock, then applies; the listing is 'public' but the product is unpublished, so the public projection hides it",
+        race[0].code === 0 && race[1].code === 0 && one(`select status from catalogue_public_listings where product_id='${pp}'`) === "public" && one(`select publication_status from catalogue_products where id='${pp}'`) === "unpublished",
+        race.map((r) => [r.code, r.err.slice(0, 80)]));
+
+      // previews: an expired grant (inserted directly) and a revoked grant answer 410 through the public API
+      const expired = one(`insert into catalogue_preview_grants (product_id, version, staff, created_at, expires_at) values ('${pp}', 1, '${users.staff.email}', now() - interval '20 minutes', now() - interval '10 minutes') returning id`);
+      const live = one(`insert into catalogue_preview_grants (product_id, version, staff, expires_at) values ('${pp}', 1, '${users.staff.email}', now() + interval '10 minutes') returning id`);
+      const key = crypto.createHmac("sha256", SESSION_SECRET).update("ochiga-catalogue:preview:v1").digest();
+      const tok = (gid) => `pv1.${gid}.${crypto.createHmac("sha256", key).update(`pv1.${gid}`).digest("base64url")}`;
+      const getPreview = (gid) => fetch(`${app.url}/api/public/catalogue/preview/${tok(gid)}`, { headers: { "x-api-key": CATALOGUE_KEY } }).then(async (r) => ({ status: r.status, body: await r.json().catch(() => null) }));
+      const pExpired = await getPreview(expired), pLive = await getPreview(live);
+      c(`select catalogue_revoke_preview_grants('${pp}', 'admin@x');`);
+      const pRevoked = await getPreview(live);
+      check("DBP7", "previews: a live grant shows the version; an expired grant is 410 preview_expired; after revocation the same link is 410 preview_revoked",
+        pLive.status === 200 && pExpired.status === 410 && pExpired.body.error === "preview_expired" && pRevoked.status === 410 && pRevoked.body.error === "preview_revoked", { pLive: pLive.status, pExpired, pRevoked });
+
+      // rollback of 20261105: public API 503, staff reads fine, rows kept; re-apply restores
+      const listings = one("select count(*) from catalogue_public_listings");
+      const rbPub = applyFile(PUBLIC_ROLLBACK);
+      await reloadSchema(restUrl);
+      await sleep(61_000); // availability is re-probed at most once a minute
+      const pubAfter = await fetch(`${app.url}/api/public/catalogue/products`, { headers: { "x-api-key": CATALOGUE_KEY } });
+      const loginW = await fetch(`${app.url}/api/lead-agents/admin/session/login`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ email: users.writerA.email, password: users.writerA.password }) });
+      const cookieW = ((loginW.headers.getSetCookie ? loginW.headers.getSetCookie() : []).find((h) => /^lead_agents_admin=/.test(h)) || "").split(";")[0];
+      const staffRead = await fetch(`${app.url}/api/lead-agents/admin/catalogue/products/${pp}`, { headers: { cookie: cookieW } });
+      const staffJson = await staffRead.json();
+      check("M42", "public-release rollback: applies; the public API answers 503 (nothing served); staff product reads work (public block unavailable); listings kept and still undeletable",
+        rbPub.status === 0 && pubAfter.status === 503 && staffRead.status === 200 && staffJson.public.available === false && one("select count(*) from catalogue_public_listings") === listings && /append_only/.test(c(`delete from catalogue_public_listings where product_id='${pp}';`).err),
+        { rb: rbPub.err.slice(0, 200), pubAfter: pubAfter.status, staffRead: staffRead.status, pub: staffJson.public });
+      const rePub = applyFile(path.join(ROOT, "db", "20261105_catalogue_public_release.sql"));
+      await reloadSchema(restUrl);
+      check("M43", "re-applying 20261105 restores the functions and the slug trigger with every row intact", rePub.status === 0 && one("select count(*) from pg_proc where pronamespace='public'::regnamespace and proname like 'catalogue\\_%'") === FN_TOTAL && one("select count(*) from pg_trigger where tgname='catalogue_products_slug_redirect_check'") === "1" && one("select count(*) from catalogue_public_listings") === listings, rePub.err.slice(0, 200));
+    }
+
     // media rollback: functions and the version check go, tables/rows/guards stay; Office reports media unavailable; re-apply restores
     const mediaRows = one("select count(*) from catalogue_media");
     const rb = applyFile(MEDIA_ROLLBACK);
@@ -375,7 +481,7 @@ async function main() {
       { rb: rb.err.slice(0, 200), up: up.status, read: read.status, lib: readJson.media_library, rows: one("select count(*) from catalogue_media") });
     const reMedia = applyFile(path.join(ROOT, "db", "20261104_catalogue_media.sql"));
     await reloadSchema(restUrl);
-    check("M41", "re-applying 20261104 restores the media functions and the version check with every row intact", reMedia.status === 0 && one("select count(*) from pg_proc where pronamespace='public'::regnamespace and proname like 'catalogue\\_%'") === "16" && one("select count(*) from pg_trigger where tgname='catalogue_product_versions_media_check'") === "1" && one("select count(*) from catalogue_media") === mediaRows, reMedia.err.slice(0, 200));
+    check("M41", "re-applying 20261104 restores the media functions and the version check with every row intact", reMedia.status === 0 && one("select count(*) from pg_proc where pronamespace='public'::regnamespace and proname like 'catalogue\\_%'") === FN_TOTAL && one("select count(*) from pg_trigger where tgname='catalogue_product_versions_media_check'") === "1" && one("select count(*) from catalogue_media") === mediaRows, reMedia.err.slice(0, 200));
   }
 
   // ------------------------------------------------------------------------------------------------ rollback and re-apply
@@ -389,15 +495,15 @@ async function main() {
     const write = await fetch(`${app.url}/api/lead-agents/admin/catalogue/products`, { method: "POST", headers: { cookie, "content-type": "application/json", origin: app.url }, body: JSON.stringify({ slug: `after-rollback-${RUN}`, content: { category_id: one("select id from catalogue_categories limit 1"), name: "x", variants: [{ sku: `RB-${RUN.toUpperCase()}`, name: "x" }] } }) });
     const health = await fetch(`${app.url}/healthz`);
     check("M30", "rollback (functions only): applies; catalogue writes answer 503 catalogue_unavailable; the rest of Office is unaffected (healthz 200)", rb.status === 0 && write.status === 503 && health.status === 200, { rb: rb.err.slice(0, 200), write: write.status, health: health.status });
-    check("M31", "…and keeps every table and row (non-destructive)", one("select count(*) from catalogue_product_versions") === before && one(`select count(*) from pg_class where relnamespace='public'::regnamespace and relname in (${tl})`) === "14", { before, after: one("select count(*) from catalogue_product_versions") });
+    check("M31", "…and keeps every table and row (non-destructive)", one("select count(*) from catalogue_product_versions") === before && one(`select count(*) from pg_class where relnamespace='public'::regnamespace and relname in (${tl})`) === "18", { before, after: one("select count(*) from catalogue_product_versions") });
     const re = applyFile(MIGRATION);
     CATALOGUE_FOLLOWUPS.forEach((f) => applyFile(path.join(ROOT, "db", f)));
     await reloadSchema(restUrl);
-    check("M32", "re-applying the migration restores the functions with the data intact (seed not duplicated)", re.status === 0 && one("select count(*) from pg_proc where pronamespace='public'::regnamespace and proname like 'catalogue\\_%'") === "16" && one("select count(*) from catalogue_categories where created_by='migration'") === "6", re.err.slice(0, 200));
+    check("M32", "re-applying the migration restores the functions with the data intact (seed not duplicated)", re.status === 0 && one("select count(*) from pg_proc where pronamespace='public'::regnamespace and proname like 'catalogue\\_%'") === FN_TOTAL && one("select count(*) from catalogue_categories where created_by='migration'") === "6", re.err.slice(0, 200));
   }
 
   const logs = app.logs.join("");
-  check("AT80", "no key, JWT secret, session secret or password appears in the server log", ![FULL_KEY, SITE_KEY, sha(SITE_KEY), JWT_SECRET, SESSION_SECRET, PW, ...Object.values(users).map((u) => u.password)].some((s) => logs.includes(s)));
+  check("AT80", "no key, JWT secret, session secret or password appears in the server log", ![FULL_KEY, SITE_KEY, sha(SITE_KEY), CATALOGUE_KEY, sha(CATALOGUE_KEY), REVALIDATE_SECRET, JWT_SECRET, SESSION_SECRET, PW, ...Object.values(users).map((u) => u.password)].some((s) => logs.includes(s)));
   console.log(JSON.stringify({ suite: "catalogue-postgres", checks, failed: failures }));
 }
 

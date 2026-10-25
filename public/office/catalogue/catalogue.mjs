@@ -196,6 +196,16 @@ function ensureStyles() {
     .cat-lib { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 8px; }
     .cat-lib .cat-mtile .cat-mctl button { font-size: 11px; }
     .cat-sm { height: 30px; padding: 0 10px; font-weight: 500; }
+    .cat-pub-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 10px; }
+    .cat-pub-row a { color: var(--text-primary); text-decoration: underline; text-underline-offset: 2px; overflow-wrap: anywhere; font-size: 12.5px; }
+    .cat-reqs { list-style: none; margin: 0 0 10px; padding: 0; display: grid; gap: 4px; font-size: 12.5px; }
+    .cat-reqs li { display: flex; gap: 8px; align-items: baseline; color: var(--text-secondary); }
+    .cat-reqs li::before { content: "✕"; color: var(--red-bright); font-weight: 700; }
+    .cat-reqs li.ok::before { content: "✓"; color: #7fd9a0; }
+    .cat-pub-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+    .cat-chip { display: inline-flex; align-items: center; gap: 5px; padding: 2px 8px; border-radius: 999px; font-size: 11px; font-weight: 600; margin-left: 6px; vertical-align: 2px; }
+    .cat-chip.public { color: #7fd9a0; background: rgba(63,143,95,.16); }
+    .cat-chip.hidden, .cat-chip.withdrawn { color: #e3a54b; background: rgba(201,134,43,.16); }
     .cat-actionbar { display: flex; gap: 10px; justify-content: space-between; align-items: center; padding: 12px; border: 1px solid var(--line); border-radius: var(--cat-radius); background: var(--cat-panel); margin-top: 6px; flex-wrap: wrap; }
     .cat-actionbar .grow { flex: 1; }
     .cat-note { color: var(--text-tertiary); font-size: 12px; }
@@ -238,6 +248,14 @@ const ICONS = {
   image: '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="3.5" y="4.5" width="17" height="15" rx="2"/><circle cx="9" cy="10" r="1.6"/><path d="m4 18 5-5 4 4 2.5-2.5L20 19"/></svg>',
   eye: '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12z"/><circle cx="12" cy="12" r="2.8"/></svg>',
 };
+
+// GetOyi (public) state next to the internal status: internal publication is not public availability
+function publicChip(pub) {
+  if (!pub || !pub.available || !pub.listing) return "";
+  if (pub.effective === "public") return `<span class="cat-chip public" title="Shown on the GetOyi Hardware catalogue">On GetOyi · v${pub.listing.public_version}</span>`;
+  if (pub.effective === "hidden") return `<span class="cat-chip hidden" title="Released to GetOyi but not published internally, so it is not shown">GetOyi: hidden</span>`;
+  return `<span class="cat-chip withdrawn">Withdrawn from GetOyi</span>`;
+}
 
 const STATUS_LABEL = { draft: "Draft", in_review: "In review", changes_requested: "Changes requested", approved: "Approved", published: "Published", published_changes_pending: "Published · changes pending", unpublished: "Unpublished", archived: "Archived" };
 const AVAILABILITY_LABEL = { in_stock: "In stock", available_to_order: "To order", unavailable: "Unavailable" };
@@ -564,7 +582,7 @@ async function renderEditor(right, id, ui, ctx) {
   const updatedBy = product.updated_by || product.created_by || "";
   const head = el(`<div class="cat-ed-head">
     <div class="cat-thumb" data-head-thumb>${thumbHtml(ui, ((content.media || []).find((m) => m.cover) || {}).media_id, content.name)}</div>
-    <div class="cat-ed-title"><h2>${escapeHtml(content.name)}</h2>${pill(ui, status)}
+    <div class="cat-ed-title"><h2>${escapeHtml(content.name)}</h2>${pill(ui, status)}${publicChip(detail.public)}
       <p>v${product.current_version}${product.published_version ? ` · live v${product.published_version}` : ""} · Last updated ${escapeHtml(ui.fmtDateTime(product.updated_at))}${updatedBy ? ` by ${escapeHtml(updatedBy)}` : ""}</p></div>
     <button type="button" class="cat-btn cat-btn-icon" aria-label="More product actions" data-more>⋯</button></div>`);
   right.appendChild(head);
@@ -924,12 +942,14 @@ async function renderEditor(right, id, ui, ctx) {
       body.appendChild(dcard);
     } else {
       const lifecycle = el(`<div class="cat-card"><div class="cat-card-head"><h3>Publication</h3>${pill(ui, status)}</div>
-        <p class="cat-note" style="margin:0;">${archived ? "Archived: no further edits, reviews or publication. The full history is kept." : live ? "The current version is published internally. There is no public storefront yet." : product.published_version ? `v${product.published_version} is published internally; v${product.current_version} is pending.` : "Not published yet."} Every change after publication needs approval by a second person.</p></div>`);
+        <p class="cat-note" style="margin:0;">${archived ? "Archived: no further edits, reviews or publication. The full history is kept." : live ? "The current version is published internally. Public availability on GetOyi is controlled separately below." : product.published_version ? `v${product.published_version} is published internally; v${product.current_version} is pending.` : "Not published yet."} Every change after publication needs approval by a second person.</p></div>`);
       body.appendChild(lifecycle);
+      body.appendChild(publicCard());
       const history = el(`<div class="cat-card"><div class="cat-card-head"><h3>History</h3></div><div data-items></div><div data-diff style="margin-top:10px;"></div></div>`);
       const items = [
         ...versions.map((v) => ({ at: v.created_at, html: `<strong>v${v.version}</strong> saved by ${escapeHtml(v.author)} ${ui.badge(v.materiality, "amber")}${v.version > 1 ? ` <button type="button" class="cat-btn" style="height:26px;padding:0 8px;font-weight:500;" data-diff-version="${v.version}">Changes vs v${v.version - 1}</button>` : ""}` })),
         ...reviews.map((r) => ({ at: r.created_at, html: `${ui.badge(ui.titleCase(r.decision), r.decision === "approved" ? "green" : r.decision === "override" ? "red" : "default")} v${r.version} by ${escapeHtml(r.actor)}${r.note ? `<br/><span class="cat-muted">${escapeHtml(r.note)}</span>` : ""}` })),
+        ...((detail.public && detail.public.events) || []).map((e) => ({ at: e.created_at, html: `${ui.badge(`GetOyi ${e.action.replace("_", " ")}`, e.action === "withdrawn" ? "amber" : "blue")}${e.version ? ` v${e.version}` : ""} by ${escapeHtml(e.actor)}<br/><span class="cat-muted">/hardware/${escapeHtml(e.slug)}${e.note ? ` · ${escapeHtml(e.note)}` : ""}</span>` })),
         ...events.map((e) => ({ at: e.created_at, html: `${ui.badge(ui.titleCase(e.action), e.override ? "red" : e.action === "archived" ? "default" : "green")}${e.version ? ` v${e.version}` : ""} by ${escapeHtml(e.actor)}${e.override_reason ? `<br/><span class="cat-muted">Override: ${escapeHtml(e.override_reason)}</span>` : ""}` })),
       ].sort((a, b) => String(b.at).localeCompare(String(a.at)));
       const list = history.querySelector("[data-items]");
@@ -943,11 +963,63 @@ async function renderEditor(right, id, ui, ctx) {
     }
   }
 
-  // Bottom bar: Preview (next stage), Save draft (while editing), and ONE primary action for the current state and the user's rights.
+  // Preview: a signed 10-minute GetOyi link to the current version (the tab is opened first so the browser does not block it)
+  async function openPreview() {
+    if (dirty) { ui.toast("Save the draft first: the preview shows saved versions only.", "error"); return; }
+    const win = window.open("about:blank", "_blank");
+    try {
+      const result = await ui.api(`${API}/products/${id}/preview`, { method: "POST", body: {} });
+      if (win) { win.opener = null; win.location.replace(result.url); } else window.location.assign(result.url);
+      ui.toast(`Preview of v${result.version} opened (valid for 10 minutes).`, "success");
+    } catch (error) {
+      if (win) win.close();
+      ui.toast(error.status === 503 ? "Previews are not available in this environment yet." : conflictMessage(error), "error");
+    }
+  }
+
+  // GetOyi card in Publishing & History: public state, requirements, URL, refresh status and the public actions
+  function publicCard() {
+    const pub = detail.public;
+    if (!pub || !pub.available) return el(`<div class="cat-card"><div class="cat-card-head"><h3>GetOyi Hardware</h3></div><p class="cat-note" style="margin:0;">Public publishing is not installed in this environment yet.</p></div>`);
+    const l = pub.listing;
+    const head = { public: `<span class="cat-pill published">On GetOyi · v${l && l.public_version}</span>`, hidden: `<span class="cat-pill in_review">Hidden — not published internally</span>`, withdrawn: `<span class="cat-pill unpublished">Withdrawn</span>`, not_public: `<span class="cat-pill draft">Not on GetOyi</span>` }[pub.effective];
+    const refresh = !l ? "" : { succeeded: `GetOyi refreshed ${escapeHtml(ui.fmtDateTime(l.refresh_completed_at))}`, pending: "Refreshing GetOyi…", not_configured: "GetOyi refresh is not configured here (pages update within 5 minutes)", failed: `GetOyi refresh failed (${escapeHtml(l.refresh_error || "error")}) after ${l.refresh_attempts} attempt${l.refresh_attempts === 1 ? "" : "s"}` }[l.refresh_status] || "";
+    const card = el(`<div class="cat-card" data-public-card><div class="cat-card-head"><h3>GetOyi Hardware</h3>${head}</div>
+      ${pub.effective === "public" && pub.public_url ? `<div class="cat-pub-row"><a href="${escapeHtml(pub.public_url)}" target="_blank" rel="noopener noreferrer" data-public-url>${escapeHtml(pub.public_url)}</a></div>` : ""}
+      ${l ? `<div class="cat-pub-row cat-note" data-refresh-status="${escapeHtml(l.refresh_status)}">${refresh}</div>` : ""}
+      ${pub.update_available ? `<p class="cat-note" style="margin:0 0 10px;">GetOyi shows v${l.public_version}; v${product.published_version} is published internally.</p>` : ""}
+      ${pub.effective === "withdrawn" && l.withdrawn_reason ? `<p class="cat-note" style="margin:0 0 10px;">Withdrawn by ${escapeHtml(l.withdrawn_by || "")}: ${escapeHtml(l.withdrawn_reason)}</p>` : ""}
+      ${pub.effective !== "public" || pub.update_available ? (pub.requirements.length ? `<ul class="cat-reqs" data-requirements>${pub.requirements.map((r) => `<li>${escapeHtml(r.label)}</li>`).join("")}</ul>` : `<ul class="cat-reqs" data-requirements><li class="ok">Approved version, images with alt text and approved prices: ready for GetOyi</li></ul>`) : ""}
+      <div class="cat-pub-actions"></div>
+      ${pub.redirects.length ? `<p class="cat-note" style="margin:10px 0 0;">Old addresses redirect here: ${pub.redirects.map((r) => `<code>/hardware/${escapeHtml(r.old_slug)}</code>`).join(", ")}</p>` : ""}
+      <p class="cat-note" style="margin:10px 0 0;">Internal publication is not public. GetOyi shows the released version until it is updated or withdrawn; unpublishing or archiving hides it at once. Checkout stays off.</p></div>`);
+    const actions = card.querySelector(".cat-pub-actions");
+    const small = (label, cls, handler, attr = "") => { const b = el(`<button type="button" class="cat-btn cat-sm ${cls}" ${attr}>${escapeHtml(label)}</button>`); b.addEventListener("click", handler); actions.appendChild(b); };
+    const lrv = l ? l.row_version : 0;
+    const publicAct = async (path, body, success) => {
+      try {
+        const result = await ui.api(`${API}/products/${id}/${path}`, { method: "POST", body });
+        const st = result.public && result.public.listing && result.public.listing.refresh_status;
+        ui.toast(st === "failed" ? `${success} GetOyi did not confirm the refresh — use Retry.` : success, st === "failed" ? "error" : "success");
+      } catch (error) {
+        const issues = error.data && error.data.current && error.data.current.issues;
+        ui.toast(issues ? "Not ready for GetOyi yet — see the requirements." : error.data && error.data.error === "public_state_changed" ? "The GetOyi state changed a moment ago — reloaded." : conflictMessage(error), "error");
+      }
+      reload();
+    };
+    if (permissions.publicPublish && !archived && pub.releasable && pub.effective !== "public" && pub.effective !== "hidden") small("Publish to GetOyi", "cat-btn-primary", () => publicAct("public/release", { expected_row_version: product.row_version, expected_listing_row_version: lrv }, "Published to GetOyi."), "data-public-release");
+    if (permissions.publicPublish && pub.update_available && pub.releasable) small(`Update GetOyi to v${product.published_version}`, "cat-btn-primary", () => publicAct("public/release", { expected_row_version: product.row_version, expected_listing_row_version: lrv }, "GetOyi updated."), "data-public-update");
+    if ((permissions.publicPublish || permissions.publish) && l && l.status === "public") small("Withdraw from GetOyi", "", () => ui.openDialog("Withdraw from GetOyi", [{ name: "reason", label: "Reason (recorded)", type: "textarea" }], (data) => publicAct("public/withdraw", { expected_listing_row_version: lrv, reason: data.reason }, "Withdrawn from GetOyi.")), "data-public-withdraw");
+    if ((permissions.publicPublish || permissions.publish) && l && (l.refresh_status === "failed" || l.refresh_status === "pending")) small("Retry refresh", "", () => publicAct("public/refresh", {}, "GetOyi refreshed."), "data-public-retry");
+    if (permissions.publicPublish && product.first_published_at && !archived) small("Change slug…", "", () => ui.openDialog("Change public slug", [{ name: "slug", label: `New slug (the old address /hardware/${product.slug} will redirect)`, value: product.slug }], (data) => publicAct("slug", { expected_row_version: product.row_version, slug: data.slug }, "Slug changed; the old address redirects.")), "data-change-slug");
+    return card;
+  }
+
+  // Bottom bar: Preview, Save draft (while editing), and ONE primary action for the current state and the user's rights.
   function drawBar() {
     bar.innerHTML = "";
     const button = (label, cls, handler, attrs = "") => { const b = el(`<button type="button" class="cat-btn ${cls}" ${attrs}>${label}</button>`); if (handler) b.addEventListener("click", handler); bar.appendChild(b); return b; };
-    button(`${ICONS.eye} Preview`, "", null, `disabled title="Authenticated previews arrive with publishing (stage 4)"`);
+    button(`${ICONS.eye} Preview`, "", openPreview, `data-preview title="Open this version on GetOyi as a private 10-minute preview"`);
     bar.appendChild(el(`<span class="grow"></span>`));
     if (editing) {
       button("Cancel", "", () => { editing = false; dirty = false; selectedMedia = null; Object.assign(draft, JSON.parse(JSON.stringify(content))); if (!Array.isArray(draft.media)) draft.media = []; drawBody(); drawBar(); });
