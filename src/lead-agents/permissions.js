@@ -101,6 +101,9 @@ const PERMISSION_KEYS = Object.freeze([
   // public withdrawal). A separate grant from catalogue.publish: internal publication is not public availability.
   "catalogue.public.publish",
   // Stage 4A: order operations are explicit scopes for every non-super-admin role.
+  "commerce.orders.reconcile",
+  "commerce.orders.refund.request",
+  "commerce.orders.refund.approve",
   "commerce.orders.delivery.confirm",
   "commerce.orders.read",
   "commerce.orders.create",

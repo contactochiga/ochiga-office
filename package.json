@@ -50,7 +50,8 @@
     "office:orders:test": "node scripts/test-hardware-orders-boundary.js && node scripts/test-hardware-orders-postgres.js",
     "office:checkout:test": "TEST_CHECKOUT=true node scripts/test-hardware-orders-postgres.js",
     "office:reservations:test": "TEST_CHECKOUT=true TEST_RESERVATIONS=true node scripts/test-hardware-orders-postgres.js",
-    "office:payments:test": "TEST_CHECKOUT=true TEST_RESERVATIONS=true TEST_PAYMENTS=true node scripts/test-hardware-orders-postgres.js"
+    "office:payments:test": "TEST_CHECKOUT=true TEST_RESERVATIONS=true TEST_PAYMENTS=true node scripts/test-hardware-orders-postgres.js",
+    "office:financial:test": "TEST_FINANCIAL=true TEST_CHECKOUT=true TEST_RESERVATIONS=true TEST_PAYMENTS=true node scripts/test-hardware-orders-postgres.js"
   },
   "dependencies": {
     "@sanity/client": "^6.29.1",
