@@ -1,0 +1,375 @@
+{
+  "functions": [
+    {
+      "acl": [
+        [
+          "postgres",
+          "EXECUTE",
+          false
+        ],
+        [
+          "service_role",
+          "EXECUTE",
+          false
+        ]
+      ],
+      "owner": "postgres",
+      "signature": "catalogue_update_inventory(uuid,integer,jsonb,text,text)",
+      "definition": "CREATE OR REPLACE FUNCTION public.catalogue_update_inventory(p_variant_id uuid, p_expected_row_version integer, p_patch jsonb, p_actor text, p_reason text)\n RETURNS jsonb\n LANGUAGE plpgsql\n SET search_path TO 'public', 'pg_temp'\nAS $function$\ndeclare o catalogue_variants%rowtype; v catalogue_variants%rowtype; f text;\nbegin\n  select * into o from catalogue_variants where id = p_variant_id and row_version = p_expected_row_version for update;\n  if not found then\n    if not exists (select 1 from catalogue_variants where id = p_variant_id) then raise exception 'variant_not_found' using errcode = 'PT404'; end if;\n    raise exception 'state_changed' using errcode = 'PT409', detail = (select jsonb_build_object('id', id, 'row_version', row_version) from catalogue_variants where id = p_variant_id)::text;\n  end if;\n  update catalogue_variants set\n    stock_on_hand = case when p_patch ? 'stock_on_hand' then (p_patch->>'stock_on_hand')::integer else stock_on_hand end,\n    stock_reserved = case when p_patch ? 'stock_reserved' then (p_patch->>'stock_reserved')::integer else stock_reserved end,\n    sourcing = case when p_patch ? 'sourcing' then p_patch->>'sourcing' else sourcing end,\n    lead_time_days_min = case when p_patch ? 'lead_time_days_min' then (p_patch->>'lead_time_days_min')::integer else lead_time_days_min end,\n    lead_time_days_max = case when p_patch ? 'lead_time_days_max' then (p_patch->>'lead_time_days_max')::integer else lead_time_days_max end,\n    status = case when p_patch ? 'status' then p_patch->>'status' else status end,\n    supplier_id = case when p_patch ? 'supplier_id' then nullif(p_patch->>'supplier_id', '') else supplier_id end,\n    row_version = row_version + 1, updated_at = now()\n  where id = p_variant_id and row_version = p_expected_row_version\n  returning * into v;\n  foreach f in array array['stock_on_hand', 'stock_reserved', 'sourcing', 'lead_time_days_min', 'lead_time_days_max', 'status', 'supplier_id'] loop\n    if (to_jsonb(o)->>f) is distinct from (to_jsonb(v)->>f) then\n      insert into catalogue_inventory_changes (variant_id, field, old_value, new_value, actor, reason) values (v.id, f, to_jsonb(o)->>f, to_jsonb(v)->>f, p_actor, coalesce(p_reason, ''));\n    end if;\n  end loop;\n  return to_jsonb(v);\nend $function$\n"
+    }
+  ],
+  "relations": [
+    {
+      "acl": [
+        [
+          "postgres",
+          "DELETE",
+          false
+        ],
+        [
+          "postgres",
+          "INSERT",
+          false
+        ],
+        [
+          "postgres",
+          "MAINTAIN",
+          false
+        ],
+        [
+          "postgres",
+          "REFERENCES",
+          false
+        ],
+        [
+          "postgres",
+          "SELECT",
+          false
+        ],
+        [
+          "postgres",
+          "TRIGGER",
+          false
+        ],
+        [
+          "postgres",
+          "TRUNCATE",
+          false
+        ],
+        [
+          "postgres",
+          "UPDATE",
+          false
+        ],
+        [
+          "service_role",
+          "DELETE",
+          false
+        ],
+        [
+          "service_role",
+          "INSERT",
+          false
+        ],
+        [
+          "service_role",
+          "SELECT",
+          false
+        ],
+        [
+          "service_role",
+          "UPDATE",
+          false
+        ]
+      ],
+      "rls": true,
+      "kind": "r",
+      "name": "catalogue_variants",
+      "owner": "postgres",
+      "columns": [
+        {
+          "acl": null,
+          "name": "id",
+          "type": "uuid",
+          "default": "gen_random_uuid()",
+          "identity": "",
+          "not_null": true,
+          "generated": ""
+        },
+        {
+          "acl": null,
+          "name": "product_id",
+          "type": "uuid",
+          "default": null,
+          "identity": "",
+          "not_null": true,
+          "generated": ""
+        },
+        {
+          "acl": null,
+          "name": "sku",
+          "type": "text",
+          "default": null,
+          "identity": "",
+          "not_null": true,
+          "generated": ""
+        },
+        {
+          "acl": null,
+          "name": "status",
+          "type": "text",
+          "default": "'active'::text",
+          "identity": "",
+          "not_null": true,
+          "generated": ""
+        },
+        {
+          "acl": null,
+          "name": "price_ngn_kobo",
+          "type": "bigint",
+          "default": null,
+          "identity": "",
+          "not_null": false,
+          "generated": ""
+        },
+        {
+          "acl": null,
+          "name": "vat_treatment",
+          "type": "text",
+          "default": null,
+          "identity": "",
+          "not_null": false,
+          "generated": ""
+        },
+        {
+          "acl": null,
+          "name": "vat_rate_bp",
+          "type": "integer",
+          "default": null,
+          "identity": "",
+          "not_null": false,
+          "generated": ""
+        },
+        {
+          "acl": null,
+          "name": "stock_on_hand",
+          "type": "integer",
+          "default": "0",
+          "identity": "",
+          "not_null": true,
+          "generated": ""
+        },
+        {
+          "acl": null,
+          "name": "stock_reserved",
+          "type": "integer",
+          "default": "0",
+          "identity": "",
+          "not_null": true,
+          "generated": ""
+        },
+        {
+          "acl": null,
+          "name": "sourcing",
+          "type": "text",
+          "default": "'supplier_sourced'::text",
+          "identity": "",
+          "not_null": true,
+          "generated": ""
+        },
+        {
+          "acl": null,
+          "name": "lead_time_days_min",
+          "type": "integer",
+          "default": null,
+          "identity": "",
+          "not_null": false,
+          "generated": ""
+        },
+        {
+          "acl": null,
+          "name": "lead_time_days_max",
+          "type": "integer",
+          "default": null,
+          "identity": "",
+          "not_null": false,
+          "generated": ""
+        },
+        {
+          "acl": null,
+          "name": "supplier_id",
+          "type": "text",
+          "default": null,
+          "identity": "",
+          "not_null": false,
+          "generated": ""
+        },
+        {
+          "acl": null,
+          "name": "row_version",
+          "type": "integer",
+          "default": "1",
+          "identity": "",
+          "not_null": true,
+          "generated": ""
+        },
+        {
+          "acl": null,
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "default": "now()",
+          "identity": "",
+          "not_null": true,
+          "generated": ""
+        },
+        {
+          "acl": null,
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "default": "now()",
+          "identity": "",
+          "not_null": true,
+          "generated": ""
+        }
+      ],
+      "policies": 0,
+      "triggers": [],
+      "force_rls": false,
+      "constraints": [
+        [
+          "catalogue_variants_check",
+          "CHECK ((stock_reserved <= stock_on_hand))",
+          true,
+          false,
+          false
+        ],
+        [
+          "catalogue_variants_check1",
+          "CHECK (((lead_time_days_min IS NULL) OR (lead_time_days_max IS NULL) OR (lead_time_days_min <= lead_time_days_max)))",
+          true,
+          false,
+          false
+        ],
+        [
+          "catalogue_variants_check2",
+          "CHECK ((((price_ngn_kobo IS NULL) = (vat_treatment IS NULL)) AND ((vat_treatment IS NULL) = (vat_rate_bp IS NULL))))",
+          true,
+          false,
+          false
+        ],
+        [
+          "catalogue_variants_check3",
+          "CHECK (((vat_treatment IS NULL) OR ((vat_treatment = 'standard'::text) = (vat_rate_bp > 0))))",
+          true,
+          false,
+          false
+        ],
+        [
+          "catalogue_variants_lead_time_days_max_check",
+          "CHECK (((lead_time_days_max IS NULL) OR (lead_time_days_max >= 0)))",
+          true,
+          false,
+          false
+        ],
+        [
+          "catalogue_variants_lead_time_days_min_check",
+          "CHECK (((lead_time_days_min IS NULL) OR (lead_time_days_min >= 0)))",
+          true,
+          false,
+          false
+        ],
+        [
+          "catalogue_variants_pkey",
+          "PRIMARY KEY (id)",
+          true,
+          false,
+          false
+        ],
+        [
+          "catalogue_variants_price_ngn_kobo_check",
+          "CHECK (((price_ngn_kobo IS NULL) OR (price_ngn_kobo >= 0)))",
+          true,
+          false,
+          false
+        ],
+        [
+          "catalogue_variants_product_id_fkey",
+          "FOREIGN KEY (product_id) REFERENCES catalogue_products(id) ON DELETE RESTRICT",
+          true,
+          false,
+          false
+        ],
+        [
+          "catalogue_variants_row_version_check",
+          "CHECK ((row_version >= 1))",
+          true,
+          false,
+          false
+        ],
+        [
+          "catalogue_variants_sku_check",
+          "CHECK ((sku ~ '^[A-Z0-9][A-Z0-9._-]{1,63}$'::text))",
+          true,
+          false,
+          false
+        ],
+        [
+          "catalogue_variants_sku_key",
+          "UNIQUE (sku)",
+          true,
+          false,
+          false
+        ],
+        [
+          "catalogue_variants_sourcing_check",
+          "CHECK ((sourcing = ANY (ARRAY['in_stock'::text, 'supplier_sourced'::text, 'made_to_order'::text, 'discontinued'::text])))",
+          true,
+          false,
+          false
+        ],
+        [
+          "catalogue_variants_status_check",
+          "CHECK ((status = ANY (ARRAY['active'::text, 'inactive'::text])))",
+          true,
+          false,
+          false
+        ],
+        [
+          "catalogue_variants_stock_on_hand_check",
+          "CHECK ((stock_on_hand >= 0))",
+          true,
+          false,
+          false
+        ],
+        [
+          "catalogue_variants_stock_reserved_check",
+          "CHECK ((stock_reserved >= 0))",
+          true,
+          false,
+          false
+        ],
+        [
+          "catalogue_variants_supplier_id_fkey",
+          "FOREIGN KEY (supplier_id) REFERENCES office_suppliers(id) ON DELETE RESTRICT",
+          true,
+          false,
+          false
+        ],
+        [
+          "catalogue_variants_vat_rate_bp_check",
+          "CHECK (((vat_rate_bp IS NULL) OR ((vat_rate_bp >= 0) AND (vat_rate_bp <= 10000))))",
+          true,
+          false,
+          false
+        ],
+        [
+          "catalogue_variants_vat_treatment_check",
+          "CHECK (((vat_treatment IS NULL) OR (vat_treatment = ANY (ARRAY['standard'::text, 'exempt'::text, 'zero_rated'::text]))))",
+          true,
+          false,
+          false
+        ]
+      ]
+    }
+  ]
+}

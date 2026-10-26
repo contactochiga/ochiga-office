@@ -68,11 +68,16 @@ async function handleHardwareCheckoutRequest({
         b.id = r.data[0].order_id;
       }
       if (!/^[0-9a-f-]{36}$/.test(b.id || "")) fail(400, "invalid_checkout");
-      const order = await rpc("hardware_checkout_get", {
-        p_client: authContext.client,
-        p_guest_hash: b.guest_hash,
-        p_id: b.id,
-      });
+      const order = await rpc(
+        process.env.OFFICE_HARDWARE_RESERVATIONS_ENABLED === "true"
+          ? "hardware_reservation_status"
+          : "hardware_checkout_get",
+        {
+          p_client: authContext.client,
+          p_guest_hash: b.guest_hash,
+          p_id: b.id,
+        },
+      );
       if (!order) fail(404, "order_not_found");
       return send(200, { order });
     }
@@ -108,10 +113,16 @@ async function handleHardwareCheckoutRequest({
       lines.push({ variant_id: r.data[0].id, quantity: l.quantity });
     }
     if (action === "quote") {
+      if (process.env.OFFICE_HARDWARE_RESERVATIONS_ENABLED === "true")
+        await rpc("hardware_reservation_expire", { p_limit: 1000 });
       const q = await rpc("hardware_checkout_quote", { p_lines: lines });
       return send(200, {
         quote: {
           ...q,
+          reservation_ttl_seconds:
+            process.env.OFFICE_HARDWARE_RESERVATIONS_ENABLED === "true"
+              ? 900
+              : null,
           lines: q.lines.map((l) => ({
             sku: l.sku,
             name: l.product_name,
@@ -125,13 +136,18 @@ async function handleHardwareCheckoutRequest({
         },
       });
     }
-    const order = await rpc("hardware_checkout_submit", {
-      p_client: authContext.client,
-      p_guest_hash: b.guest_hash,
-      p_key: b.idempotency_key,
-      p_request: { ...b.order, lines },
-      p_quote_hash: b.quote_hash,
-    });
+    const order = await rpc(
+      process.env.OFFICE_HARDWARE_RESERVATIONS_ENABLED === "true"
+        ? "hardware_reservation_checkout"
+        : "hardware_checkout_submit",
+      {
+        p_client: authContext.client,
+        p_guest_hash: b.guest_hash,
+        p_key: b.idempotency_key,
+        p_request: { ...b.order, lines },
+        p_quote_hash: b.quote_hash,
+      },
+    );
     return send(order.replayed ? 200 : 201, { order });
   } catch (e) {
     if (e.statusCode && e.code) return send(e.statusCode, { error: e.code });

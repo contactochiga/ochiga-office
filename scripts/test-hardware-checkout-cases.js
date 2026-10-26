@@ -16,6 +16,7 @@ module.exports = async ({
   FULL_KEY,
   SITE_KEY,
   CATALOGUE_KEY,
+  concurrentSql,startApp,gatewayUrl,PG,sh,sleep,
 }) => {
   const sql = fs.readFileSync(
     path.join(ROOT, "db/20261108_hardware_checkout.sql"),
@@ -257,6 +258,7 @@ module.exports = async ({
       r.err,
     );
   }
+  if (process.env.TEST_RESERVATIONS === "true") await require('./test-hardware-reservations-cases')({psql,one,check,app,restUrl,reloadSchema,ROOT,pid,vid,RUN,concurrentSql,startApp,gatewayUrl,PG,sh,sleep});
   if (process.env.TEST_CHECKOUT_WEB === "true")
     await require("./test-hardware-checkout-web")({ app, RUN });
   psql(`update catalogue_variants set stock_on_hand=0 where id='${vid}'`);

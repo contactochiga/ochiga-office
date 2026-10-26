@@ -5,7 +5,7 @@ const { spawn } = require("node:child_process"),
   crypto = require("node:crypto");
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 module.exports = async ({ app, RUN }) => {
-  const root = path.resolve(__dirname, "../../oyi-phase4b");
+  const root = path.resolve(__dirname, process.env.TEST_RESERVATIONS === "true" ? "../../oyi-phase4c" : "../../oyi-phase4b");
   if (!fs.existsSync(path.join(root, "tests/phase4/checkout-http.cjs")))
     throw Error("GetOyi isolated checkout worktree missing");
   const route = path.join(root, "src/app/checkout-rehearsal"),

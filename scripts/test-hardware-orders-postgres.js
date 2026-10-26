@@ -131,14 +131,14 @@ async function reloadSchema(restUrl) {
   await sleep(500);
 }
 
-async function startApp(gatewayUrl) {
+async function startApp(gatewayUrl, reservations = false) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "catalogue-pg-app-"));
   const port = await freePort();
   const logs = [];
   const proc = spawn(process.execPath, ["lead-agents-server.js"], {
     cwd: ROOT, stdio: ["ignore", "pipe", "pipe"],
     env: {
-      PATH: process.env.PATH, HOME: dir, NODE_ENV: "test", LEAD_AGENTS_HOST: "127.0.0.1", LEAD_AGENTS_PORT: String(port), OFFICE_STORAGE_DIR: path.join(dir, "storage"), OFFICE_HARDWARE_ORDERS_ENABLED: "true", OFFICE_HARDWARE_CHECKOUT_ENABLED: "true",
+      PATH: process.env.PATH, HOME: dir, NODE_ENV: "test", LEAD_AGENTS_HOST: "127.0.0.1", LEAD_AGENTS_PORT: String(port), OFFICE_STORAGE_DIR: path.join(dir, "storage"), OFFICE_HARDWARE_ORDERS_ENABLED: "true", OFFICE_HARDWARE_CHECKOUT_ENABLED: "true", OFFICE_HARDWARE_RESERVATIONS_ENABLED: reservations ? "true" : "false",
       LEAD_AGENTS_STORE_DRIVER: "supabase", SUPABASE_URL: gatewayUrl, SUPABASE_SERVICE_ROLE_KEY: jwt("service_role"),
       LEAD_AGENTS_AUTH_MODE: "required_api_key", LEAD_AGENTS_API_KEYS: FULL_KEY, LEAD_AGENTS_SESSION_SECRET: SESSION_SECRET,
       LEAD_AGENTS_SCOPED_API_KEYS: JSON.stringify([{ client: "getoyi", key_sha256: sha(SITE_KEY), scopes: ["intake.submit"] }, { client: "checkout", key_sha256: sha("isolated-checkout-"+RUN), scopes: ["commerce.checkout.submit"] }, { client: "getoyi-catalogue", key_sha256: sha(CATALOGUE_KEY), scopes: ["catalogue.public.read"] }]),
@@ -249,7 +249,7 @@ async function main() {
  check('HIGH2','late status event injection denied',psql(`insert into hardware_order_events(order_id,event_type,row_version,actor) values('${id}','cancelled',99,'creator@fixture.test')`).status!==0);
  const hist=one('select count(*) from hardware_order_events');const reapplied=psql(migration);check('M2','reapply preserves history',reapplied.status===0&&one('select count(*) from hardware_order_events')===hist,reapplied.err);
  check('ISOLATION','no stock reservations consumed',one(`select stock_reserved from catalogue_variants where id='${vid}'`)==='0');
- if(process.env.TEST_CHECKOUT==='true') await require('./test-hardware-checkout-cases')({psql,one,check,app,restUrl,reloadSchema,ROOT,pid,vid,RUN,FULL_KEY,SITE_KEY,CATALOGUE_KEY});
+ if(process.env.TEST_CHECKOUT==='true') await require('./test-hardware-checkout-cases')({psql,one,check,app,restUrl,reloadSchema,ROOT,pid,vid,RUN,FULL_KEY,SITE_KEY,CATALOGUE_KEY,concurrentSql,startApp,gatewayUrl,PG,sh,sleep});
  console.log(JSON.stringify({suite:'hardware-orders-stage4a',checks,failed:failures}));
 }
 main().catch(e=>{console.error(e);failures++}).finally(async()=>{for(const f of cleanup){try{await f()}catch{}}process.exit(failures?1:0)});
