@@ -57,7 +57,8 @@ async function handleHardwareCheckoutRequest({
     const rpc = async (name, body) =>
       (await store.client.post("/rpc/" + name, body)).data;
     if (["payment-quote","payment-start"].includes(action)) {
-      if(process.env.OFFICE_HARDWARE_PAYMENTS_ENABLED!=="true")fail(503,"payments_disabled");
+      // Eligibility is read-only; the execution switch protects initialization only.
+      if(action==="payment-start" && process.env.OFFICE_HARDWARE_PAYMENTS_ENABLED!=="true")fail(503,"payments_disabled");
       if(!/^[0-9a-f]{64}$/.test(b.guest_hash||"")||!/^[0-9a-f-]{36}$/.test(b.id||""))fail(400,"invalid_checkout");
       const args={p_client:authContext.client,p_guest_hash:b.guest_hash,p_order:b.id};
       if(action==="payment-quote")return send(200,{payment:await rpc("hardware_payment_quote",args)});

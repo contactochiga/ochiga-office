@@ -543,6 +543,7 @@ module.exports = async ({
   run(
     `select hardware_order_cancel('canceller@fixture.test','${cancelled}',1)`,
   );
+  check("D-QUOTE-CANCEL", "cancelled order quote is ineligible", one(`select hardware_payment_quote('payment-test','${guest}','${cancelled}')->>'eligible'`) === "false");
   await service.reconcile(ca.reference);
   check(
     "D-CANCEL",
@@ -669,6 +670,7 @@ module.exports = async ({
     "D-RECOVERY waiting for real reservation and abandoned worker lease expiry",
   );
   await new Promise((resolve) => setTimeout(resolve, 62000));
+  check("D-QUOTE-EXPIRED", "expired hold quote is ineligible without expiry mutation", one(`select hardware_payment_quote('payment-test','${guest}','${expiry}')->>'eligible'`) === "false");
   await service.reconcile(ea.reference);
   check(
     "D-REAL-EXPIRY",
