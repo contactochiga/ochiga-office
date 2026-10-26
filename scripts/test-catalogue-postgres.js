@@ -68,7 +68,7 @@ async function setup() {
   psql(fs.readFileSync(path.join(ROOT, "db", "lead-agents-schema.sql"), "utf8"), { stop: false });
   const second = psql(fs.readFileSync(path.join(ROOT, "db", "lead-agents-schema.sql"), "utf8"), { stop: false });
   check("M00", "bootstrap schema: second pass is clean", !/ERROR/.test(second.err), second.err.slice(0, 300));
-  const dated = fs.readdirSync(path.join(ROOT, "db")).filter((f) => /^2026\d+.*\.sql$/.test(f) && f !== path.basename(MIGRATION) && !CATALOGUE_FOLLOWUPS.includes(f) && f !== "20261107_hardware_orders.sql").sort();
+  const dated = fs.readdirSync(path.join(ROOT, "db")).filter((f) => /^2026\d+.*\.sql$/.test(f) && f !== path.basename(MIGRATION) && !CATALOGUE_FOLLOWUPS.includes(f) && f !== "20261107_hardware_orders.sql" && f !== "20261108_hardware_checkout.sql").sort();
   const failed = dated.map((f) => ({ f, r: applyFile(path.join(ROOT, "db", f)) })).filter((x) => x.r.status !== 0);
   check("M01", "every earlier dated migration (incl. 20261101 intake receipts) applies", failed.length === 0, failed.map((x) => x.f + ": " + x.r.err.slice(0, 200)));
   // the production hardening state measured in R11 (RLS everywhere, nothing for PUBLIC/anon/authenticated, schema USAGE closed)

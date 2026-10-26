@@ -65,7 +65,7 @@ async function setup() {
   psql(fs.readFileSync(path.join(ROOT, "db", "lead-agents-schema.sql"), "utf8"), { stop: false });
   const second = psql(fs.readFileSync(path.join(ROOT, "db", "lead-agents-schema.sql"), "utf8"), { stop: false });
   check("M00", "bootstrap schema: second pass is clean", !/ERROR/.test(second.err), second.err.slice(0, 300));
-  const dated = fs.readdirSync(path.join(ROOT, "db")).filter((f) => /^2026\d+.*\.sql$/.test(f) && f !== path.basename(MIGRATION) && !CATALOGUE_FOLLOWUPS.includes(f) && f !== "20261107_hardware_orders.sql").sort();
+  const dated = fs.readdirSync(path.join(ROOT, "db")).filter((f) => /^2026\d+.*\.sql$/.test(f) && f !== path.basename(MIGRATION) && !CATALOGUE_FOLLOWUPS.includes(f) && f !== "20261107_hardware_orders.sql" && f !== "20261108_hardware_checkout.sql").sort();
   const failed = dated.map((f) => ({ f, r: applyFile(path.join(ROOT, "db", f)) })).filter((x) => x.r.status !== 0);
   check("M01", "every earlier dated migration (incl. 20261101 intake receipts) applies", failed.length === 0, failed.map((x) => x.f + ": " + x.r.err.slice(0, 200)));
   // the production hardening state measured in R11 (RLS everywhere, nothing for PUBLIC/anon/authenticated, schema USAGE closed)
@@ -138,10 +138,10 @@ async function startApp(gatewayUrl) {
   const proc = spawn(process.execPath, ["lead-agents-server.js"], {
     cwd: ROOT, stdio: ["ignore", "pipe", "pipe"],
     env: {
-      PATH: process.env.PATH, HOME: dir, NODE_ENV: "test", LEAD_AGENTS_HOST: "127.0.0.1", LEAD_AGENTS_PORT: String(port), OFFICE_STORAGE_DIR: path.join(dir, "storage"), OFFICE_HARDWARE_ORDERS_ENABLED: "true",
+      PATH: process.env.PATH, HOME: dir, NODE_ENV: "test", LEAD_AGENTS_HOST: "127.0.0.1", LEAD_AGENTS_PORT: String(port), OFFICE_STORAGE_DIR: path.join(dir, "storage"), OFFICE_HARDWARE_ORDERS_ENABLED: "true", OFFICE_HARDWARE_CHECKOUT_ENABLED: "true",
       LEAD_AGENTS_STORE_DRIVER: "supabase", SUPABASE_URL: gatewayUrl, SUPABASE_SERVICE_ROLE_KEY: jwt("service_role"),
       LEAD_AGENTS_AUTH_MODE: "required_api_key", LEAD_AGENTS_API_KEYS: FULL_KEY, LEAD_AGENTS_SESSION_SECRET: SESSION_SECRET,
-      LEAD_AGENTS_SCOPED_API_KEYS: JSON.stringify([{ client: "getoyi", key_sha256: sha(SITE_KEY), scopes: ["intake.submit"] }, { client: "getoyi-catalogue", key_sha256: sha(CATALOGUE_KEY), scopes: ["catalogue.public.read"] }]),
+      LEAD_AGENTS_SCOPED_API_KEYS: JSON.stringify([{ client: "getoyi", key_sha256: sha(SITE_KEY), scopes: ["intake.submit"] }, { client: "checkout", key_sha256: sha("isolated-checkout-"+RUN), scopes: ["commerce.checkout.submit"] }, { client: "getoyi-catalogue", key_sha256: sha(CATALOGUE_KEY), scopes: ["catalogue.public.read"] }]),
       GETOYI_REVALIDATE_URL: process.env.__REVALIDATE_URL || "", GETOYI_REVALIDATE_SECRET: REVALIDATE_SECRET, GETOYI_PUBLIC_BASE_URL: "https://getoyi.example",
       OPENAI_API_KEY: "sk-fixture-not-real", OPENAI_BASE_URL: "http://127.0.0.1:9/v1", LEAD_AGENTS_RATE_LIMIT_MAX_REQUESTS: "100000", LEAD_AGENTS_OFFICE_RATE_LIMIT_MAX_REQUESTS: "100000", LEAD_AGENTS_LOGIN_RATE_LIMIT_MAX_ATTEMPTS: "1000",
     },
@@ -249,6 +249,7 @@ async function main() {
  check('HIGH2','late status event injection denied',psql(`insert into hardware_order_events(order_id,event_type,row_version,actor) values('${id}','cancelled',99,'creator@fixture.test')`).status!==0);
  const hist=one('select count(*) from hardware_order_events');const reapplied=psql(migration);check('M2','reapply preserves history',reapplied.status===0&&one('select count(*) from hardware_order_events')===hist,reapplied.err);
  check('ISOLATION','no stock reservations consumed',one(`select stock_reserved from catalogue_variants where id='${vid}'`)==='0');
+ if(process.env.TEST_CHECKOUT==='true') await require('./test-hardware-checkout-cases')({psql,one,check,app,restUrl,reloadSchema,ROOT,pid,vid,RUN,FULL_KEY,SITE_KEY,CATALOGUE_KEY});
  console.log(JSON.stringify({suite:'hardware-orders-stage4a',checks,failed:failures}));
 }
 main().catch(e=>{console.error(e);failures++}).finally(async()=>{for(const f of cleanup){try{await f()}catch{}}process.exit(failures?1:0)});

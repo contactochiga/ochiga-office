@@ -46,7 +46,7 @@ Base `/api/lead-agents/admin/hardware-orders`:
 - POST: `{idempotency_key, order:{contact_id, organization_id?, opportunity_id?, delivery:{country:"NG",state,city,address,postcode?}, installation_requested?, lines:[{variant_id,quantity}]}}`. No price, tax, paid flag or provider data accepted. Returns identity and replay marker only; 201 new / 200 identical replay.
 - GET `/:id`: public-to-staff order fields, immutable lines and status history; `payment_eligible:false`.
 - GET `/:id?customer=true`: separate permission plus audited private read; PII never copied into generic audit metadata.
-- POST `/:id/cancel`: `{expected_row_version}`; 409 on stale or terminal state.
+- POST `/:id/cancel`: `{expected_row_version}`; identical cancellation retries return the original result; 409 on incompatible state/version.
 
 Responses are private/no-store and nosniff. Writes require exact canonical Office origin (OFFICE_APP_URL via existing config); local tests use their loopback origin. Staff browser requests cannot use arbitrary Origin or missing Origin for mutations. Errors expose stable codes, not SQL, request bodies or PII. Existing server authentication, scope allowlists and rate limits are reused; existing intake/catalogue routes are unchanged.
 

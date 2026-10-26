@@ -47,7 +47,8 @@
     "office:team-lifecycle-meetings-trash:test": "node scripts/test-office-team-lifecycle-meetings-trash.js",
     "office:messages-workspace:test": "node scripts/test-office-messages-workspace.js",
     "office:knowledge-positioning:test": "node scripts/test-knowledge-positioning.js",
-    "office:orders:test": "node scripts/test-hardware-orders-boundary.js && node scripts/test-hardware-orders-postgres.js"
+    "office:orders:test": "node scripts/test-hardware-orders-boundary.js && node scripts/test-hardware-orders-postgres.js",
+    "office:checkout:test": "TEST_CHECKOUT=true node scripts/test-hardware-orders-postgres.js"
   },
   "dependencies": {
     "@sanity/client": "^6.29.1",
