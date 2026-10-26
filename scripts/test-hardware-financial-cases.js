@@ -415,4 +415,5 @@ module.exports = async ({
   run(
     `select hardware_reservation_finish('${pending.order_id}','released','fixture','Isolated pending-payment cleanup')`,
   );
+  if(process.env.TEST_BOUNDED_EXECUTOR==='true') await require(path.join(backend,'scripts/test-bounded-executor-cases.js'))({run,one,check,bsql,rpc,backend,make,auth,deps,quote});
 };
