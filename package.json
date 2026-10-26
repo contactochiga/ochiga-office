@@ -52,7 +52,8 @@
     "office:ingestion:test": "node scripts/test-ingestion-v2.js && node scripts/test-ingestion-v2-postgres.js && node scripts/test-ingestion-v2-edges.js && node scripts/test-ingestion-multisheet.js && node scripts/test-ingestion-taxonomy.js",
     "office:orders:test": "node scripts/test-hardware-orders-boundary.js && node scripts/test-hardware-orders-postgres.js",
     "office:checkout:test": "TEST_CHECKOUT=true node scripts/test-hardware-orders-postgres.js",
-    "office:reservations:test": "TEST_CHECKOUT=true TEST_RESERVATIONS=true node scripts/test-hardware-orders-postgres.js"
+    "office:reservations:test": "TEST_CHECKOUT=true TEST_RESERVATIONS=true node scripts/test-hardware-orders-postgres.js",
+    "office:payments:test": "TEST_CHECKOUT=true TEST_RESERVATIONS=true TEST_PAYMENTS=true node scripts/test-hardware-orders-postgres.js"
   },
   "dependencies": {
     "@sanity/client": "^6.29.1",

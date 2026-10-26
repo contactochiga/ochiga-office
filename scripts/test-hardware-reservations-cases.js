@@ -29,6 +29,14 @@ module.exports = async ({
     if (r.status) throw Error(r.err);
     return r.out;
   };
+  if(process.env.TEST_PAYMENTS_FAST==='true') {
+    run('begin;'+sql+'commit;');
+    const order=()=>{const c=one("insert into crm_contacts(name,email) values('LOCAL PAYMENT','payment@example.invalid') returning id");return JSON.parse(run(`select hardware_order_create('creator@fixture.test','${crypto.randomUUID()}','${JSON.stringify({contact_id:c,delivery:{country:'NG',state:'Plateau',city:'Jos',address:'LOCAL TEST'},lines:[{variant_id:vid,quantity:1}]})}')`)).id;};
+    const hold=id=>`select hardware_reservation_hold('${id}','reservation-key-${id}','fixture',900)`;
+    const release=id=>run(`select hardware_reservation_finish('${id}','released','fixture','Local cleanup')`);
+    run(`update catalogue_variants set stock_on_hand=100 where id='${vid}'`);
+    await require('./test-hardware-payments-cases')({run,one,psql,check,order,hold,release,vid,PG,sh,concurrentSql,ROOT,startApp,gatewayUrl,RUN,reloadSchema,restUrl});return;
+  }
   const shapeSql = fs.readFileSync(
     path.join(ROOT, "release/phase4c-gate/reservation-shape.sql"),
     "utf8",
@@ -677,5 +685,5 @@ module.exports = async ({
     runtimeRows,
   );
   Object.assign(app, await startApp(gatewayUrl));
-  run(`update catalogue_variants set stock_on_hand=100 where id='${vid}'`);
+  run(`update catalogue_variants set stock_on_hand=100 where id='${vid}'`);  if(process.env.TEST_PAYMENTS==='true')await require('./test-hardware-payments-cases')({run,one,psql,check,order,hold,release,vid,PG,sh,concurrentSql,ROOT,startApp,gatewayUrl,RUN,reloadSchema,restUrl});
 };

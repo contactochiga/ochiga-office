@@ -1,5 +1,6 @@
 "use strict";
 const { json, readJsonBody } = require("./http");
+const { initializeHardwarePayment } = require("./hardware-payments-api");
 const PREFIX = "/api/commerce/checkout/";
 const fail = (status, code) => {
   const e = new Error(code);
@@ -47,7 +48,7 @@ async function handleHardwareCheckoutRequest({
       b = await readJsonBody(req, 32 * 1024);
     only(
       b,
-      action === "quote"
+      action.startsWith("payment-") ? ["guest_hash","id","accepted_total_kobo"] : action === "quote"
         ? ["lines"]
         : action === "submit"
           ? ["guest_hash", "idempotency_key", "order", "quote_hash"]
@@ -55,6 +56,15 @@ async function handleHardwareCheckoutRequest({
     );
     const rpc = async (name, body) =>
       (await store.client.post("/rpc/" + name, body)).data;
+    if (["payment-quote","payment-start"].includes(action)) {
+      if(process.env.OFFICE_HARDWARE_PAYMENTS_ENABLED!=="true")fail(503,"payments_disabled");
+      if(!/^[0-9a-f]{64}$/.test(b.guest_hash||"")||!/^[0-9a-f-]{36}$/.test(b.id||""))fail(400,"invalid_checkout");
+      const args={p_client:authContext.client,p_guest_hash:b.guest_hash,p_order:b.id};
+      if(action==="payment-quote")return send(200,{payment:await rpc("hardware_payment_quote",args)});
+      if(!Number.isSafeInteger(b.accepted_total_kobo)||b.accepted_total_kobo<1)fail(400,"invalid_payment_total");
+      const authorization=await rpc("hardware_payment_authorize",{...args,p_accepted_total:b.accepted_total_kobo});
+      return send(200,{payment:await initializeHardwarePayment(authorization)});
+    }
     if (action === "status") {
       if (!/^[0-9a-f]{64}$/.test(b.guest_hash || ""))
         fail(400, "invalid_checkout");
