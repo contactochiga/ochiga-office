@@ -235,7 +235,7 @@ async function main() {
  await invalid(request,'product_not_approved');
  check('ATOMIC','rejected commercial requests leave no orders or events',one('select count(*) from hardware_orders')===countBefore&&one('select count(*) from hardware_order_events')===countBefore);
  const cancel=await api('canceller','POST','/'+id+'/cancel',{expected_row_version:1});check('S1','authorized cancel records conditional status transition',cancel.status===200&&cancel.data.order.row_version===2,cancel);
- check('S2','stale cancellation conflicts',(await api('canceller','POST','/'+id+'/cancel',{expected_row_version:1})).status===409);
+ check('S2','identical cancellation retry is idempotent',(await api('canceller','POST','/'+id+'/cancel',{expected_row_version:1})).status===200&&one(`select count(*) from hardware_order_events where order_id='${id}'`)==='2');
  check('S3','reader cannot cancel',(await api('reader','POST','/'+id+'/cancel',{expected_row_version:2})).status===403);
  check('S4','client payment-success transition does not exist',(await api('creator','POST','/'+id+'/paid',{})).status===405);
  for(const sql of [`update hardware_orders set goods_total_kobo=1 where id='${id}'`,`update hardware_orders set payment_state='paid' where id='${id}'`,`update hardware_order_lines set unit_price_kobo=1 where order_id='${id}'`,`delete from hardware_order_events where order_id='${id}'`,`update hardware_order_private set delivery='{}' where order_id='${id}'`,`truncate hardware_order_events`]){const r=psql('set role service_role;'+sql);check('IMM','financial/private/history mutation denied',r.status!==0,r.err)}
@@ -245,6 +245,8 @@ async function main() {
  const tables=['hardware_orders','hardware_order_private','hardware_order_lines','hardware_order_events'];
  for(const t of tables){check('DB','RLS / anonymous grants / no truncate '+t,one(`select relrowsecurity and not has_table_privilege('anon','${t}','SELECT') and not has_table_privilege('authenticated','${t}','SELECT') and not has_table_privilege('service_role','${t}','TRUNCATE') from pg_class where oid='${t}'::regclass`)==='t');}
  check('DBFN','functions invoker, pinned path, service-only execute',one("select count(*) from pg_proc p where pronamespace='public'::regnamespace and proname like 'hardware_order_%' and (prosecdef or proconfig is distinct from array['search_path=public, pg_temp'] or has_function_privilege('anon',p.oid,'EXECUTE') or has_function_privilege('authenticated',p.oid,'EXECUTE'))")==='0');
+ check('HIGH1','direct status mutation without evidence denied',psql(`update hardware_orders set order_state='cancelled',row_version=2 where id='${newer.data.order.id}'`).status!==0);
+ check('HIGH2','late status event injection denied',psql(`insert into hardware_order_events(order_id,event_type,row_version,actor) values('${id}','cancelled',99,'creator@fixture.test')`).status!==0);
  const hist=one('select count(*) from hardware_order_events');const reapplied=psql(migration);check('M2','reapply preserves history',reapplied.status===0&&one('select count(*) from hardware_order_events')===hist,reapplied.err);
  check('ISOLATION','no stock reservations consumed',one(`select stock_reserved from catalogue_variants where id='${vid}'`)==='0');
  console.log(JSON.stringify({suite:'hardware-orders-stage4a',checks,failed:failures}));

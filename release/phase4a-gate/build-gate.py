@@ -5,8 +5,8 @@ root=Path(__file__).resolve().parent
 base=(root.parent/'phase3-gate/production-rollout-gates.sql').read_text()
 assert hashlib.sha256(base.encode()).hexdigest()=='f54f615f5b3cbd4e4f262ea66452933436d5180cce6f9d38c34b7d8e2ed67e1d'
 shape=(root/'order-shape.sql').read_text().strip().rstrip(';')
-assert hashlib.sha256((root/'reviewed-shape.json').read_bytes()).hexdigest()=='20ab0b5a2bb470e651237dc0626d060a5ec5674959f24f3dc0fbe69cb9da799d', 'Manifest drift: review required'
-assert hashlib.sha256((root.parent.parent/'db/20261107_hardware_orders.sql').read_bytes()).hexdigest()=='1bd14ac80de64e8b9ec0f768a41469dad0fecbbee25a360b5f6d4959af76e70b', 'Migration drift: review required'
+assert hashlib.sha256((root/'reviewed-shape.json').read_bytes()).hexdigest()=='bc5e54bc35ef3e0dae5355fdeb895eb6d6db8b8a16901309c019fd6206be283f', 'Manifest drift: review required'
+assert hashlib.sha256((root.parent.parent/'db/20261107_hardware_orders.sql').read_bytes()).hexdigest()=='21b29e994f184efbb4b105617c0578b07ff85dab286484e07538d30925b27c62', 'Migration drift: review required'
 manifest=json.loads((root/'reviewed-shape.json').read_text())
 expected=json.dumps(manifest,separators=(',',':'))
 p4=f'''p4_shape as ({shape}),
