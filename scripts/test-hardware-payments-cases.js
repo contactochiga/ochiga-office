@@ -42,7 +42,7 @@ module.exports = async ({
   );
   if (rb.status) throw Error(rb.err);
   run("begin;" + migration + "commit;");
-  const backend = path.resolve(ROOT, "../backend-phase4d");
+  const backend = path.resolve(ROOT, process.env.TEST_FINANCIAL==='true'?"../backend-phase4e":"../backend-phase4d");
   const br = sh("docker", [
     "exec",
     PG,
@@ -330,6 +330,7 @@ module.exports = async ({
       ),
     );
   }
+  if(process.env.TEST_FINANCIAL_ONLY==='true') {await require('./test-hardware-financial-cases')({run,one,psql,check,bsql,rpc,asyncSql,backend,ROOT,make,auth,service,providerResults,deps,quote});return;}
   const first = make(false);
   check(
     "D-DELIVERY",
@@ -749,4 +750,5 @@ module.exports = async ({
     psql(`select hardware_reservation_allocate('${unverified}')`).status !== 0,
   );
   release(unverified);
+  if(process.env.TEST_FINANCIAL==='true') await require('./test-hardware-financial-cases')({run,one,psql,check,bsql,rpc,asyncSql,backend,ROOT,make,auth,service,providerResults,deps,quote});
 };
