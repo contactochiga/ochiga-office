@@ -14,7 +14,7 @@ function stringListFromEnv(value) {
 
 // intake.submit: website enquiries (POST /api/office/intake). catalogue.public.read: the read-only public catalogue projection
 // (GET /api/public/catalogue/*, Phase 2 stage 4). A website gets a separate key per scope; neither is ever a privileged key.
-const KNOWN_API_KEY_SCOPES = new Set(["intake.submit", "catalogue.public.read", "commerce.checkout.submit", "commerce.payment.confirm"]);
+const KNOWN_API_KEY_SCOPES = new Set(["intake.submit", "catalogue.public.read", "commerce.checkout.submit", "commerce.payment.confirm", "commerce.payment.operations"]);
 
 // Malformed entries are dropped (never widened): an entry needs a client name, a 64-hex SHA-256 digest and at least one known scope.
 function scopedApiKeysFromEnv(value) {
