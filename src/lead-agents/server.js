@@ -130,6 +130,7 @@ const { appendAuditRecord } = require("./audit");
 const { PERMISSION_KEYS, ROLE_PERMISSIONS, hasPermission } = require("./permissions");
 const relationshipWorkspace = require("./relationship-workspace");
 const { handleCatalogueRequest } = require("./catalogue-api");
+const { handleHardwareOrdersRequest } = require("./hardware-orders-api");
 const { handlePublicCatalogueRequest } = require("./catalogue-public-api");
 const signatureStats = require("./webhook-signature-stats");
 const inboundVisibility = require("./whatsapp-inbound-visibility");
@@ -2338,6 +2339,7 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
         );
       }
 
+      if (await handleHardwareOrdersRequest({ req, res, pathname, authContext, store, config })) return;
       // Product catalogue (Office-managed GetOyi hardware): self-contained, staff-session-only module (catalogue-api.js)
       if (await handleCatalogueRequest({ req, res, ctx, pathname, authContext, store, eventBus, storageService, config, log })) return;
       // Public catalogue projection for GetOyi (read-only; catalogue.public.read scoped key only)

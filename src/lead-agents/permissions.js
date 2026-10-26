@@ -100,6 +100,11 @@ const PERMISSION_KEYS = Object.freeze([
   // Phase 2 stage 4: releasing an internally published, approved version to the public GetOyi Hardware catalogue (and slug changes /
   // public withdrawal). A separate grant from catalogue.publish: internal publication is not public availability.
   "catalogue.public.publish",
+  // Stage 4A: order operations are explicit scopes for every non-super-admin role.
+  "commerce.orders.read",
+  "commerce.orders.create",
+  "commerce.orders.cancel",
+  "commerce.orders.customer.read",
 ]);
 
 // Keys that only super_admin holds by role (never via ochiga_admin's otherwise-full grant).
@@ -114,7 +119,7 @@ const ROLE_PERMISSIONS = Object.freeze({
   // Every other key is unchanged from super_admin -- ochiga_admin stays
   // a fully-privileged operational admin. team.manage is the one
   // deliberate exception (Team governance/deletion lifecycle task).
-  ochiga_admin: PERMISSION_KEYS.filter((key) => !SUPER_ADMIN_ONLY.includes(key) && !CATALOGUE_SCOPED_ONLY.includes(key)),
+  ochiga_admin: PERMISSION_KEYS.filter((key) => !SUPER_ADMIN_ONLY.includes(key) && !CATALOGUE_SCOPED_ONLY.includes(key) && !key.startsWith("commerce.orders.")),
   ochiga_staff: [
     "office.read",
     "estates.read",
