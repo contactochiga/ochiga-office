@@ -130,6 +130,7 @@ const { appendAuditRecord } = require("./audit");
 const { PERMISSION_KEYS, ROLE_PERMISSIONS, hasPermission } = require("./permissions");
 const relationshipWorkspace = require("./relationship-workspace");
 const { handleCatalogueRequest } = require("./catalogue-api");
+const { handleHardwarePaymentsRequest } = require("./hardware-payments-api");
 const { handleHardwareCheckoutRequest } = require("./hardware-checkout-api");
 const { handleHardwareOrdersRequest } = require("./hardware-orders-api");
 const { handlePublicCatalogueRequest } = require("./catalogue-public-api");
@@ -1994,7 +1995,8 @@ async function respondToIntakeResult({ res, ctx, config, envelope, result, minim
 // The ONLY routes a scoped integration key may call, per scope (method + exact path). Everything else answers 403 before any handler runs.
 // (`prefix` entries allow the read-only public catalogue's sub-paths; the handler itself re-checks the scope.)
 const SCOPED_ROUTES = Object.freeze({
-  "commerce.checkout.submit": ["quote", "submit", "status"].map(action => ({method: "POST", path: "/api/commerce/checkout/" + action})),
+  "commerce.payment.confirm": [{method:"POST",path:"/api/commerce/payments/confirm"}],
+  "commerce.checkout.submit": ["quote", "submit", "status", "payment-quote", "payment-start"].map(action => ({method: "POST", path: "/api/commerce/checkout/" + action})),
   "intake.submit": [{ method: "POST", path: "/api/office/intake" }],
   "catalogue.public.read": [{ method: "GET", prefix: "/api/public/catalogue/" }],
 });
@@ -2341,6 +2343,7 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
         );
       }
 
+      if (await handleHardwarePaymentsRequest({ req, res, pathname, authContext, store, config })) return;
       if (await handleHardwareCheckoutRequest({ req, res, pathname, authContext, store })) return;
       if (await handleHardwareOrdersRequest({ req, res, pathname, authContext, store, config })) return;
       // Product catalogue (Office-managed GetOyi hardware): self-contained, staff-session-only module (catalogue-api.js)

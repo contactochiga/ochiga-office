@@ -131,17 +131,17 @@ async function reloadSchema(restUrl) {
   await sleep(500);
 }
 
-async function startApp(gatewayUrl, reservations = false) {
+async function startApp(gatewayUrl, reservations = false, payments = false) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "catalogue-pg-app-"));
   const port = await freePort();
   const logs = [];
   const proc = spawn(process.execPath, ["lead-agents-server.js"], {
     cwd: ROOT, stdio: ["ignore", "pipe", "pipe"],
     env: {
-      PATH: process.env.PATH, HOME: dir, NODE_ENV: "test", LEAD_AGENTS_HOST: "127.0.0.1", LEAD_AGENTS_PORT: String(port), OFFICE_STORAGE_DIR: path.join(dir, "storage"), OFFICE_HARDWARE_ORDERS_ENABLED: "true", OFFICE_HARDWARE_CHECKOUT_ENABLED: "true", OFFICE_HARDWARE_RESERVATIONS_ENABLED: reservations ? "true" : "false",
+      PATH: process.env.PATH, HOME: dir, NODE_ENV: "test", LEAD_AGENTS_HOST: "127.0.0.1", LEAD_AGENTS_PORT: String(port), OFFICE_STORAGE_DIR: path.join(dir, "storage"), OFFICE_HARDWARE_ORDERS_ENABLED: "true", OFFICE_HARDWARE_CHECKOUT_ENABLED: "true", OFFICE_HARDWARE_RESERVATIONS_ENABLED: reservations ? "true" : "false", OFFICE_HARDWARE_PAYMENTS_ENABLED: payments ? "true" : "false", OFFICE_HARDWARE_PAYMENT_PROCESSING_ENABLED: payments ? "true" : "false",
       LEAD_AGENTS_STORE_DRIVER: "supabase", SUPABASE_URL: gatewayUrl, SUPABASE_SERVICE_ROLE_KEY: jwt("service_role"),
       LEAD_AGENTS_AUTH_MODE: "required_api_key", LEAD_AGENTS_API_KEYS: FULL_KEY, LEAD_AGENTS_SESSION_SECRET: SESSION_SECRET,
-      LEAD_AGENTS_SCOPED_API_KEYS: JSON.stringify([{ client: "getoyi", key_sha256: sha(SITE_KEY), scopes: ["intake.submit"] }, { client: "checkout", key_sha256: sha("isolated-checkout-"+RUN), scopes: ["commerce.checkout.submit"] }, { client: "getoyi-catalogue", key_sha256: sha(CATALOGUE_KEY), scopes: ["catalogue.public.read"] }]),
+      LEAD_AGENTS_SCOPED_API_KEYS: JSON.stringify([{client:"hardware-backend",key_sha256:sha("isolated-payments-"+RUN),scopes:["commerce.payment.confirm"]}, { client: "getoyi", key_sha256: sha(SITE_KEY), scopes: ["intake.submit"] }, { client: "checkout", key_sha256: sha("isolated-checkout-"+RUN), scopes: ["commerce.checkout.submit"] }, { client: "getoyi-catalogue", key_sha256: sha(CATALOGUE_KEY), scopes: ["catalogue.public.read"] }]),
       GETOYI_REVALIDATE_URL: process.env.__REVALIDATE_URL || "", GETOYI_REVALIDATE_SECRET: REVALIDATE_SECRET, GETOYI_PUBLIC_BASE_URL: "https://getoyi.example",
       OPENAI_API_KEY: "sk-fixture-not-real", OPENAI_BASE_URL: "http://127.0.0.1:9/v1", LEAD_AGENTS_RATE_LIMIT_MAX_REQUESTS: "100000", LEAD_AGENTS_OFFICE_RATE_LIMIT_MAX_REQUESTS: "100000", LEAD_AGENTS_LOGIN_RATE_LIMIT_MAX_ATTEMPTS: "1000",
     },
