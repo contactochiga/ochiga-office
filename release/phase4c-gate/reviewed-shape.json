@@ -1,0 +1,1790 @@
+{
+  "functions": [
+    {
+      "acl": [
+        [
+          "postgres",
+          "EXECUTE",
+          false
+        ],
+        [
+          "service_role",
+          "EXECUTE",
+          false
+        ]
+      ],
+      "owner": "postgres",
+      "signature": "catalogue_update_inventory(uuid,integer,jsonb,text,text)",
+      "definition": "CREATE OR REPLACE FUNCTION public.catalogue_update_inventory(p_variant_id uuid, p_expected_row_version integer, p_patch jsonb, p_actor text, p_reason text)\n RETURNS jsonb\n LANGUAGE plpgsql\n SET search_path TO 'public', 'pg_temp'\nAS $function$\ndeclare managed integer;\nbegin\n perform pg_advisory_xact_lock(71404,4);\n -- Do not sweep here: a caller's expected inventory revision must not silently change under it.\n perform 1 from catalogue_variants where id=p_variant_id for update;\n if p_patch ? 'stock_reserved' and exists(select 1 from hardware_reservation_stock where variant_id=p_variant_id) then\n select coalesce(sum(l.quantity),0) into managed from hardware_reservation_lines l join hardware_reservations r on r.id=l.reservation_id where l.variant_id=p_variant_id and r.state='held';\n if (p_patch->>'stock_reserved')::integer<managed then raise exception 'reserved_stock_protected' using errcode='PT409';end if;\n update hardware_reservation_stock set legacy_reserved=(p_patch->>'stock_reserved')::integer-managed where variant_id=p_variant_id;\n end if;\n return hardware_reservation_inventory_core(p_variant_id,p_expected_row_version,p_patch,p_actor,p_reason);\nend $function$\n"
+    },
+    {
+      "acl": [
+        [
+          "postgres",
+          "EXECUTE",
+          false
+        ],
+        [
+          "service_role",
+          "EXECUTE",
+          false
+        ]
+      ],
+      "owner": "postgres",
+      "signature": "hardware_reservation_allocate(uuid)",
+      "definition": "CREATE OR REPLACE FUNCTION public.hardware_reservation_allocate(p_order uuid)\n RETURNS jsonb\n LANGUAGE plpgsql\n SET search_path TO 'public', 'pg_temp'\nAS $function$\ndeclare r hardware_reservations%rowtype;\nbegin\n perform pg_advisory_xact_lock(71404,4);\n perform 1 from hardware_orders where id=p_order for update;\n select * into r from hardware_reservations where order_id=p_order for update;\n if not found then raise exception 'reservation_not_found' using errcode='PT404';end if;\n if r.state='allocated' then return jsonb_build_object('id',r.id,'state','allocated','replayed',true);end if;\n if r.state<>'held' then raise exception 'reservation_not_held' using errcode='PT409';end if;\n if r.expires_at<=clock_timestamp() then return hardware_reservation_finish(p_order,'expired','system:reservation-expiry','Payment arrived after expiry');end if;\n if not hardware_reservation_payment_verified(p_order,r.id) then raise exception 'verified_order_payment_required' using errcode='PT409';end if;\n return hardware_reservation_finish(p_order,'allocated','system:verified-order-payment','Verified order payment allocation');\nend $function$\n"
+    },
+    {
+      "acl": [
+        [
+          "postgres",
+          "EXECUTE",
+          false
+        ],
+        [
+          "service_role",
+          "EXECUTE",
+          false
+        ]
+      ],
+      "owner": "postgres",
+      "signature": "hardware_reservation_cancel_core(text,uuid,integer)",
+      "definition": "CREATE OR REPLACE FUNCTION public.hardware_reservation_cancel_core(p_actor text, p_id uuid, p_expected integer)\n RETURNS jsonb\n LANGUAGE plpgsql\n SET search_path TO 'public', 'pg_temp'\nAS $function$\ndeclare o hardware_orders%rowtype;\nbegin\n perform hardware_order_require_actor(p_actor,'commerce.orders.cancel');\n select * into o from hardware_orders where id=p_id for update;\n if not found then raise exception 'order_not_found' using errcode='PT404'; end if;\n if o.order_state='cancelled' and o.row_version=p_expected+1 then return jsonb_build_object('id',o.id,'row_version',o.row_version,'order_state',o.order_state,'replayed',true); end if;\n if o.reservation_state='allocated' then raise exception 'allocated_order_requires_refund_workflow' using errcode='PT409';end if;\n if o.row_version<>p_expected or o.order_state<>'awaiting_confirmation' then raise exception 'order_state_changed' using errcode='PT409'; end if;\n update hardware_orders set order_state='cancelled',row_version=row_version+1,updated_at=now() where id=p_id returning * into o;\n insert into hardware_order_events(order_id,event_type,row_version,actor) values(o.id,'cancelled',o.row_version,p_actor);\n insert into audit_events(actor_email,action,target_type,target_id,metadata) values(p_actor,'hardware_order_cancelled','hardware_order',o.id::text,jsonb_build_object('row_version',o.row_version));\n insert into crm_activities(contact_id,organization_id,opportunity_id,related_type,related_id,activity_type,title,source,actor,metadata) values(o.contact_id,o.organization_id,o.opportunity_id,'hardware_order',o.id::text,'hardware_order_cancelled','Hardware order cancelled','office',p_actor,jsonb_build_object('order_id',o.id));\n return jsonb_build_object('id',o.id,'row_version',o.row_version,'order_state',o.order_state);\nend $function$\n"
+    },
+    {
+      "acl": [
+        [
+          "postgres",
+          "EXECUTE",
+          false
+        ],
+        [
+          "service_role",
+          "EXECUTE",
+          false
+        ]
+      ],
+      "owner": "postgres",
+      "signature": "hardware_reservation_check()",
+      "definition": "CREATE OR REPLACE FUNCTION public.hardware_reservation_check()\n RETURNS trigger\n LANGUAGE plpgsql\n SET search_path TO 'public', 'pg_temp'\nAS $function$\ndeclare r hardware_reservations%rowtype; o hardware_orders%rowtype; rid uuid; vid uuid; baseline integer; held bigint;\nbegin\n if tg_table_name in ('catalogue_variants','hardware_reservation_stock') then\n vid:=coalesce((to_jsonb(new)->>'variant_id')::uuid,(to_jsonb(new)->>'id')::uuid);\n select legacy_reserved into baseline from hardware_reservation_stock where variant_id=vid;\n if found then\n select coalesce(sum(l.quantity),0) into held from hardware_reservation_lines l join hardware_reservations x on x.id=l.reservation_id where l.variant_id=vid and x.state='held';\n if not exists(select 1 from catalogue_variants where id=vid and stock_reserved=baseline+held) then raise exception 'reservation_stock_integrity' using errcode='PT409';end if;\n end if;return null;end if;\n if tg_table_name='hardware_orders' then\n select * into r from hardware_reservations where order_id=new.id;\n if not found then if new.reservation_state<>'not_reserved' then raise exception 'reservation_order_integrity' using errcode='PT409';end if;return null;end if;\n else rid:=coalesce((to_jsonb(new)->>'reservation_id')::uuid,(to_jsonb(new)->>'id')::uuid);select * into r from hardware_reservations where id=rid;end if;\n select * into o from hardware_orders where id=r.order_id;\n if o.reservation_state<>r.state or (o.order_state='cancelled' and r.state='held')\n or (r.state='allocated' and (o.fulfilment_state<>'allocated' or not hardware_reservation_payment_verified(o.id,r.id)))\n or (r.state<>'allocated' and o.fulfilment_state<>'unallocated')\n or not exists(select 1 from hardware_reservation_events where reservation_id=r.id and row_version=1 and event_type='held' and actor=r.actor)\n or (select count(*) from hardware_reservation_events where reservation_id=r.id)<>r.row_version\n or not exists(select 1 from hardware_reservation_events where reservation_id=r.id and row_version=r.row_version and event_type=r.state)\n or exists((select variant_id,quantity from hardware_order_lines where order_id=o.id) except (select variant_id,quantity from hardware_reservation_lines where reservation_id=r.id))\n or exists((select variant_id,quantity from hardware_reservation_lines where reservation_id=r.id) except (select variant_id,quantity from hardware_order_lines where order_id=o.id))\n or exists(select 1 from hardware_reservation_events e where e.reservation_id=r.id and not exists(select 1 from audit_events a where a.target_type='hardware_reservation' and a.target_id=r.id::text and a.action='hardware_reservation_'||e.event_type and a.actor_email=e.actor and a.metadata->>'row_version'=e.row_version::text))\n or exists(select 1 from hardware_reservation_lines l join hardware_reservation_events e on e.reservation_id=l.reservation_id where l.reservation_id=r.id and not exists(select 1 from catalogue_inventory_changes c where c.variant_id=l.variant_id and c.field='stock_reserved' and c.reason='reservation:'||r.id::text||':'||e.row_version and c.actor=e.actor and (c.new_value::integer-c.old_value::integer)=case when e.event_type='held' then l.quantity else -l.quantity end))\n or exists(select 1 from hardware_reservation_lines l where l.reservation_id=r.id and r.state='allocated' and not exists(select 1 from catalogue_inventory_changes c where c.variant_id=l.variant_id and c.field='stock_on_hand' and c.reason='reservation:'||r.id::text||':2' and c.new_value::integer-c.old_value::integer=-l.quantity))\n then raise exception 'reservation_integrity' using errcode='PT409';end if;\n return null;\nend $function$\n"
+    },
+    {
+      "acl": [
+        [
+          "postgres",
+          "EXECUTE",
+          false
+        ],
+        [
+          "service_role",
+          "EXECUTE",
+          false
+        ]
+      ],
+      "owner": "postgres",
+      "signature": "hardware_reservation_checkout(text,text,text,jsonb,text)",
+      "definition": "CREATE OR REPLACE FUNCTION public.hardware_reservation_checkout(p_client text, p_guest_hash text, p_key text, p_request jsonb, p_quote_hash text)\n RETURNS jsonb\n LANGUAGE plpgsql\n SET search_path TO 'public', 'pg_temp'\nAS $function$\ndeclare result jsonb; hold jsonb;\nbegin\n perform pg_advisory_xact_lock(71404,4);perform hardware_reservation_expire(1000);\n result:=hardware_checkout_submit(p_client,p_guest_hash,p_key,p_request,p_quote_hash);\n hold:=hardware_reservation_hold((result->>'id')::uuid,p_key,'checkout:'||p_client,900);\n return result||jsonb_build_object('reservation',hold,'payment_eligible',false);\nend $function$\n"
+    },
+    {
+      "acl": [
+        [
+          "postgres",
+          "EXECUTE",
+          false
+        ],
+        [
+          "service_role",
+          "EXECUTE",
+          false
+        ]
+      ],
+      "owner": "postgres",
+      "signature": "hardware_reservation_expire(integer)",
+      "definition": "CREATE OR REPLACE FUNCTION public.hardware_reservation_expire(p_limit integer DEFAULT 500)\n RETURNS integer\n LANGUAGE plpgsql\n SET search_path TO 'public', 'pg_temp'\nAS $function$\ndeclare r record; n integer:=0;\nbegin\n if p_limit not between 1 and 1000 then raise exception 'invalid_limit' using errcode='PT400';end if;\n perform pg_advisory_xact_lock(71404,4);\n for r in select order_id from hardware_reservations where state='held' and expires_at<=clock_timestamp() order by expires_at,id limit p_limit loop\n perform hardware_reservation_finish(r.order_id,'expired','system:reservation-expiry','Reservation TTL elapsed');n:=n+1;end loop;\n return n;\nend $function$\n"
+    },
+    {
+      "acl": [
+        [
+          "postgres",
+          "EXECUTE",
+          false
+        ],
+        [
+          "service_role",
+          "EXECUTE",
+          false
+        ]
+      ],
+      "owner": "postgres",
+      "signature": "hardware_reservation_finish(uuid,text,text,text)",
+      "definition": "CREATE OR REPLACE FUNCTION public.hardware_reservation_finish(p_order uuid, p_state text, p_actor text, p_reason text)\n RETURNS jsonb\n LANGUAGE plpgsql\n SET search_path TO 'public', 'pg_temp'\nAS $function$\ndeclare r hardware_reservations%rowtype; l record; before_qty integer; before_on_hand integer;\nbegin\n perform pg_advisory_xact_lock(71404,4);\n perform 1 from hardware_orders where id=p_order for update;\n select * into r from hardware_reservations where order_id=p_order for update;\n if not found then return jsonb_build_object('state','not_reserved');end if;\n if r.state<>'held' then return jsonb_build_object('id',r.id,'state',r.state,'replayed',true);end if;\n if p_state not in ('released','expired','allocated') then raise exception 'invalid_reservation_action' using errcode='PT400';end if;\n if p_state='allocated' and (r.expires_at<=clock_timestamp() or not hardware_reservation_payment_verified(p_order,r.id)) then raise exception 'verified_order_payment_required' using errcode='PT409';end if;\n if p_state='expired' and r.expires_at>clock_timestamp() then raise exception 'reservation_not_expired' using errcode='PT409';end if;\n if r.expires_at<=clock_timestamp() then p_state:='expired';end if;\n for l in select * from hardware_reservation_lines where reservation_id=r.id order by variant_id loop\n select stock_reserved,stock_on_hand into before_qty,before_on_hand from catalogue_variants where id=l.variant_id for update;\n update catalogue_variants set stock_reserved=stock_reserved-l.quantity,stock_on_hand=stock_on_hand-case when p_state='allocated' then l.quantity else 0 end,row_version=row_version+1,updated_at=now() where id=l.variant_id;\n insert into catalogue_inventory_changes(variant_id,field,old_value,new_value,actor,reason) values(l.variant_id,'stock_reserved',before_qty::text,(before_qty-l.quantity)::text,p_actor,'reservation:'||r.id::text||':2');\n if p_state='allocated' then insert into catalogue_inventory_changes(variant_id,field,old_value,new_value,actor,reason) values(l.variant_id,'stock_on_hand',before_on_hand::text,(before_on_hand-l.quantity)::text,p_actor,'reservation:'||r.id::text||':2');end if;\n end loop;\n update hardware_reservations set state=p_state,ended_at=clock_timestamp(),row_version=2 where id=r.id;\n update hardware_orders set reservation_state=p_state,fulfilment_state=case when p_state='allocated' then 'allocated' else 'unallocated' end where id=p_order;\n insert into hardware_reservation_events(reservation_id,row_version,event_type,actor,reason) values(r.id,2,p_state,p_actor,left(coalesce(p_reason,''),500));\n insert into audit_events(actor_email,action,target_type,target_id,metadata) values(p_actor,'hardware_reservation_'||p_state,'hardware_reservation',r.id::text,jsonb_build_object('order_id',p_order,'row_version',2));\n return jsonb_build_object('id',r.id,'state',p_state,'replayed',false);\nend $function$\n"
+    },
+    {
+      "acl": [
+        [
+          "postgres",
+          "EXECUTE",
+          false
+        ],
+        [
+          "service_role",
+          "EXECUTE",
+          false
+        ]
+      ],
+      "owner": "postgres",
+      "signature": "hardware_reservation_guard()",
+      "definition": "CREATE OR REPLACE FUNCTION public.hardware_reservation_guard()\n RETURNS trigger\n LANGUAGE plpgsql\n SET search_path TO 'public', 'pg_temp'\nAS $function$\nbegin\n if tg_op<>'UPDATE' or old.state<>'held' or new.state not in ('released','expired','allocated') or new.row_version<>old.row_version+1\n or new.ended_at is null or (to_jsonb(new)-array['state','row_version','ended_at']) is distinct from (to_jsonb(old)-array['state','row_version','ended_at'])\n then raise exception 'reservation_history_immutable' using errcode='PT409';end if;\n return new;\nend $function$\n"
+    },
+    {
+      "acl": [
+        [
+          "postgres",
+          "EXECUTE",
+          false
+        ],
+        [
+          "service_role",
+          "EXECUTE",
+          false
+        ]
+      ],
+      "owner": "postgres",
+      "signature": "hardware_reservation_hold(uuid,text,text,integer)",
+      "definition": "CREATE OR REPLACE FUNCTION public.hardware_reservation_hold(p_order uuid, p_key text, p_actor text, p_ttl integer DEFAULT 900)\n RETURNS jsonb\n LANGUAGE plpgsql\n SET search_path TO 'public', 'pg_temp'\nAS $function$\ndeclare o hardware_orders%rowtype; r hardware_reservations%rowtype; l record; q jsonb; current_line jsonb; h text; old_qty integer;\nbegin\n if p_key is null or p_key !~ '^[A-Za-z0-9_-]{16,128}$' or p_ttl not between 60 and 1800 then raise exception 'invalid_reservation' using errcode='PT400';end if;\n perform pg_advisory_xact_lock(71404,4);\n perform hardware_reservation_expire(1000);\n select * into o from hardware_orders where id=p_order for update;\n if not found then raise exception 'order_not_found' using errcode='PT404';end if;\n h:=encode(sha256(convert_to(p_order::text||':'||p_ttl::text,'UTF8')),'hex');\n select * into r from hardware_reservations where order_id=p_order;\n if found then\n if r.idempotency_key<>p_key or r.request_hash<>h then raise exception 'idempotency_conflict' using errcode='PT409';end if;\n return jsonb_build_object('id',r.id,'state',r.state,'expires_at',r.expires_at,'replayed',true);end if;\n if o.order_state<>'awaiting_confirmation' or o.payment_state<>'not_started' or o.reservation_state<>'not_reserved' then raise exception 'order_not_eligible' using errcode='PT409';end if;\n -- Quote checks independently approved price, current public version, sourcing and quantities under product/variant locks.\n select jsonb_agg(jsonb_build_object('variant_id',variant_id,'quantity',quantity) order by variant_id) into q from hardware_order_lines where order_id=p_order;\n q:=hardware_checkout_quote(q);\n for l in select * from hardware_order_lines where order_id=p_order order by variant_id loop\n select x into current_line from jsonb_array_elements(q->'lines') x where x->>'variant_id'=l.variant_id::text;\n if current_line->>'product_version'<>l.product_version::text or current_line->>'unit_price_kobo'<>l.unit_price_kobo::text or current_line->>'vat_rate_bp'<>l.vat_rate_bp::text or current_line->>'vat_treatment'<>l.vat_treatment or current_line->>'price_change_id'<>l.price_change_id::text then raise exception 'order_price_changed' using errcode='PT409';end if;\n end loop;\n -- Upgrade locks in the same stable order. A single DB mutex prevents shared-lock upgrade races between reservations.\n perform v.id from catalogue_variants v join hardware_order_lines ol on ol.variant_id=v.id where ol.order_id=p_order order by v.id for update of v;\n insert into hardware_reservations(order_id,idempotency_key,request_hash,actor,expires_at) values(p_order,p_key,h,p_actor,clock_timestamp()+make_interval(secs=>p_ttl)) returning * into r;\n for l in select * from hardware_order_lines where order_id=p_order order by variant_id loop\n select stock_reserved into old_qty from catalogue_variants where id=l.variant_id;\n insert into hardware_reservation_stock values(l.variant_id,old_qty) on conflict do nothing;\n insert into hardware_reservation_lines values(r.id,l.variant_id,l.quantity);\n update catalogue_variants set stock_reserved=stock_reserved+l.quantity,row_version=row_version+1,updated_at=now() where id=l.variant_id and stock_on_hand-stock_reserved>=l.quantity;\n if not found then raise exception 'stock_unavailable' using errcode='PT409';end if;\n insert into catalogue_inventory_changes(variant_id,field,old_value,new_value,actor,reason) values(l.variant_id,'stock_reserved',old_qty::text,(old_qty+l.quantity)::text,p_actor,'reservation:'||r.id::text||':1');\n end loop;\n update hardware_orders set reservation_state='held' where id=p_order;\n insert into hardware_reservation_events(reservation_id,row_version,event_type,actor) values(r.id,1,'held',p_actor);\n insert into audit_events(actor_email,action,target_type,target_id,metadata) values(p_actor,'hardware_reservation_held','hardware_reservation',r.id::text,jsonb_build_object('order_id',p_order,'row_version',1,'expires_at',r.expires_at));\n return jsonb_build_object('id',r.id,'state','held','expires_at',r.expires_at,'replayed',false);\nend $function$\n"
+    },
+    {
+      "acl": [
+        [
+          "postgres",
+          "EXECUTE",
+          false
+        ],
+        [
+          "service_role",
+          "EXECUTE",
+          false
+        ]
+      ],
+      "owner": "postgres",
+      "signature": "hardware_reservation_inventory_core(uuid,integer,jsonb,text,text)",
+      "definition": "CREATE OR REPLACE FUNCTION public.hardware_reservation_inventory_core(p_variant_id uuid, p_expected_row_version integer, p_patch jsonb, p_actor text, p_reason text)\n RETURNS jsonb\n LANGUAGE plpgsql\n SET search_path TO 'public', 'pg_temp'\nAS $function$\ndeclare o catalogue_variants%rowtype; v catalogue_variants%rowtype; f text;\nbegin\n  select * into o from catalogue_variants where id = p_variant_id and row_version = p_expected_row_version for update;\n  if not found then\n    if not exists (select 1 from catalogue_variants where id = p_variant_id) then raise exception 'variant_not_found' using errcode = 'PT404'; end if;\n    raise exception 'state_changed' using errcode = 'PT409', detail = (select jsonb_build_object('id', id, 'row_version', row_version) from catalogue_variants where id = p_variant_id)::text;\n  end if;\n  update catalogue_variants set\n    stock_on_hand = case when p_patch ? 'stock_on_hand' then (p_patch->>'stock_on_hand')::integer else stock_on_hand end,\n    stock_reserved = case when p_patch ? 'stock_reserved' then (p_patch->>'stock_reserved')::integer else stock_reserved end,\n    sourcing = case when p_patch ? 'sourcing' then p_patch->>'sourcing' else sourcing end,\n    lead_time_days_min = case when p_patch ? 'lead_time_days_min' then (p_patch->>'lead_time_days_min')::integer else lead_time_days_min end,\n    lead_time_days_max = case when p_patch ? 'lead_time_days_max' then (p_patch->>'lead_time_days_max')::integer else lead_time_days_max end,\n    status = case when p_patch ? 'status' then p_patch->>'status' else status end,\n    supplier_id = case when p_patch ? 'supplier_id' then nullif(p_patch->>'supplier_id', '') else supplier_id end,\n    row_version = row_version + 1, updated_at = now()\n  where id = p_variant_id and row_version = p_expected_row_version\n  returning * into v;\n  foreach f in array array['stock_on_hand', 'stock_reserved', 'sourcing', 'lead_time_days_min', 'lead_time_days_max', 'status', 'supplier_id'] loop\n    if (to_jsonb(o)->>f) is distinct from (to_jsonb(v)->>f) then\n      insert into catalogue_inventory_changes (variant_id, field, old_value, new_value, actor, reason) values (v.id, f, to_jsonb(o)->>f, to_jsonb(v)->>f, p_actor, coalesce(p_reason, ''));\n    end if;\n  end loop;\n  return to_jsonb(v);\nend $function$\n"
+    },
+    {
+      "acl": [
+        [
+          "postgres",
+          "EXECUTE",
+          false
+        ],
+        [
+          "service_role",
+          "EXECUTE",
+          false
+        ]
+      ],
+      "owner": "postgres",
+      "signature": "hardware_reservation_payment_verified(uuid,uuid)",
+      "definition": "CREATE OR REPLACE FUNCTION public.hardware_reservation_payment_verified(p_order uuid, p_reservation uuid)\n RETURNS boolean\n LANGUAGE sql\n STABLE\n SET search_path TO 'public', 'pg_temp'\nAS $function$ select false $function$\n"
+    },
+    {
+      "acl": [
+        [
+          "postgres",
+          "EXECUTE",
+          false
+        ],
+        [
+          "service_role",
+          "EXECUTE",
+          false
+        ]
+      ],
+      "owner": "postgres",
+      "signature": "hardware_reservation_staff(text,uuid,text,text)",
+      "definition": "CREATE OR REPLACE FUNCTION public.hardware_reservation_staff(p_actor text, p_order uuid, p_key text, p_action text)\n RETURNS jsonb\n LANGUAGE plpgsql\n SET search_path TO 'public', 'pg_temp'\nAS $function$\nbegin\n perform hardware_order_require_actor(p_actor,'commerce.orders.read');\n if p_action='hold' then perform hardware_order_require_actor(p_actor,'commerce.orders.create');return hardware_reservation_hold(p_order,p_key,p_actor,900);\n elsif p_action='release' then perform hardware_order_require_actor(p_actor,'commerce.orders.cancel');return hardware_reservation_finish(p_order,'released',p_actor,'Staff release');\n else raise exception 'invalid_reservation_action' using errcode='PT400';end if;\nend $function$\n"
+    },
+    {
+      "acl": [
+        [
+          "postgres",
+          "EXECUTE",
+          false
+        ],
+        [
+          "service_role",
+          "EXECUTE",
+          false
+        ]
+      ],
+      "owner": "postgres",
+      "signature": "hardware_reservation_status(text,text,uuid)",
+      "definition": "CREATE OR REPLACE FUNCTION public.hardware_reservation_status(p_client text, p_guest_hash text, p_id uuid)\n RETURNS jsonb\n LANGUAGE plpgsql\n SET search_path TO 'public', 'pg_temp'\nAS $function$\ndeclare result jsonb; reservation jsonb;\nbegin\n result:=hardware_checkout_get(p_client,p_guest_hash,p_id);if result is null then return null;end if;\n perform hardware_reservation_expire(1000);\n select jsonb_build_object('id',id,'state',state,'expires_at',expires_at) into reservation from hardware_reservations where order_id=p_id;\n return result||jsonb_build_object('reservation',reservation);\nend $function$\n"
+    }
+  ],
+  "relations": [
+    {
+      "acl": [
+        [
+          "postgres",
+          "DELETE",
+          false
+        ],
+        [
+          "postgres",
+          "INSERT",
+          false
+        ],
+        [
+          "postgres",
+          "MAINTAIN",
+          false
+        ],
+        [
+          "postgres",
+          "REFERENCES",
+          false
+        ],
+        [
+          "postgres",
+          "SELECT",
+          false
+        ],
+        [
+          "postgres",
+          "TRIGGER",
+          false
+        ],
+        [
+          "postgres",
+          "TRUNCATE",
+          false
+        ],
+        [
+          "postgres",
+          "UPDATE",
+          false
+        ],
+        [
+          "service_role",
+          "DELETE",
+          false
+        ],
+        [
+          "service_role",
+          "INSERT",
+          false
+        ],
+        [
+          "service_role",
+          "SELECT",
+          false
+        ],
+        [
+          "service_role",
+          "UPDATE",
+          false
+        ]
+      ],
+      "rls": true,
+      "kind": "r",
+      "name": "catalogue_variants",
+      "owner": "postgres",
+      "columns": [
+        {
+          "acl": null,
+          "name": "id",
+          "type": "uuid",
+          "default": "gen_random_uuid()",
+          "identity": "",
+          "not_null": true,
+          "generated": ""
+        },
+        {
+          "acl": null,
+          "name": "product_id",
+          "type": "uuid",
+          "default": null,
+          "identity": "",
+          "not_null": true,
+          "generated": ""
+        },
+        {
+          "acl": null,
+          "name": "sku",
+          "type": "text",
+          "default": null,
+          "identity": "",
+          "not_null": true,
+          "generated": ""
+        },
+        {
+          "acl": null,
+          "name": "status",
+          "type": "text",
+          "default": "'active'::text",
+          "identity": "",
+          "not_null": true,
+          "generated": ""
+        },
+        {
+          "acl": null,
+          "name": "price_ngn_kobo",
+          "type": "bigint",
+          "default": null,
+          "identity": "",
+          "not_null": false,
+          "generated": ""
+        },
+        {
+          "acl": null,
+          "name": "vat_treatment",
+          "type": "text",
+          "default": null,
+          "identity": "",
+          "not_null": false,
+          "generated": ""
+        },
+        {
+          "acl": null,
+          "name": "vat_rate_bp",
+          "type": "integer",
+          "default": null,
+          "identity": "",
+          "not_null": false,
+          "generated": ""
+        },
+        {
+          "acl": null,
+          "name": "stock_on_hand",
+          "type": "integer",
+          "default": "0",
+          "identity": "",
+          "not_null": true,
+          "generated": ""
+        },
+        {
+          "acl": null,
+          "name": "stock_reserved",
+          "type": "integer",
+          "default": "0",
+          "identity": "",
+          "not_null": true,
+          "generated": ""
+        },
+        {
+          "acl": null,
+          "name": "sourcing",
+          "type": "text",
+          "default": "'supplier_sourced'::text",
+          "identity": "",
+          "not_null": true,
+          "generated": ""
+        },
+        {
+          "acl": null,
+          "name": "lead_time_days_min",
+          "type": "integer",
+          "default": null,
+          "identity": "",
+          "not_null": false,
+          "generated": ""
+        },
+        {
+          "acl": null,
+          "name": "lead_time_days_max",
+          "type": "integer",
+          "default": null,
+          "identity": "",
+          "not_null": false,
+          "generated": ""
+        },
+        {
+          "acl": null,
+          "name": "supplier_id",
+          "type": "text",
+          "default": null,
+          "identity": "",
+          "not_null": false,
+          "generated": ""
+        },
+        {
+          "acl": null,
+          "name": "row_version",
+          "type": "integer",
+          "default": "1",
+          "identity": "",
+          "not_null": true,
+          "generated": ""
+        },
+        {
+          "acl": null,
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "default": "now()",
+          "identity": "",
+          "not_null": true,
+          "generated": ""
+        },
+        {
+          "acl": null,
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "default": "now()",
+          "identity": "",
+          "not_null": true,
+          "generated": ""
+        }
+      ],
+      "policies": 0,
+      "triggers": [
+        [
+          "reservation_consistency",
+          "CREATE CONSTRAINT TRIGGER reservation_consistency AFTER INSERT OR UPDATE ON public.catalogue_variants DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION hardware_reservation_check()",
+          "O"
+        ]
+      ],
+      "force_rls": false,
+      "constraints": [
+        [
+          "catalogue_variants_check",
+          "CHECK ((stock_reserved <= stock_on_hand))",
+          true,
+          false,
+          false
+        ],
+        [
+          "catalogue_variants_check1",
+          "CHECK (((lead_time_days_min IS NULL) OR (lead_time_days_max IS NULL) OR (lead_time_days_min <= lead_time_days_max)))",
+          true,
+          false,
+          false
+        ],
+        [
+          "catalogue_variants_check2",
+          "CHECK ((((price_ngn_kobo IS NULL) = (vat_treatment IS NULL)) AND ((vat_treatment IS NULL) = (vat_rate_bp IS NULL))))",
+          true,
+          false,
+          false
+        ],
+        [
+          "catalogue_variants_check3",
+          "CHECK (((vat_treatment IS NULL) OR ((vat_treatment = 'standard'::text) = (vat_rate_bp > 0))))",
+          true,
+          false,
+          false
+        ],
+        [
+          "catalogue_variants_lead_time_days_max_check",
+          "CHECK (((lead_time_days_max IS NULL) OR (lead_time_days_max >= 0)))",
+          true,
+          false,
+          false
+        ],
+        [
+          "catalogue_variants_lead_time_days_min_check",
+          "CHECK (((lead_time_days_min IS NULL) OR (lead_time_days_min >= 0)))",
+          true,
+          false,
+          false
+        ],
+        [
+          "catalogue_variants_pkey",
+          "PRIMARY KEY (id)",
+          true,
+          false,
+          false
+        ],
+        [
+          "catalogue_variants_price_ngn_kobo_check",
+          "CHECK (((price_ngn_kobo IS NULL) OR (price_ngn_kobo >= 0)))",
+          true,
+          false,
+          false
+        ],
+        [
+          "catalogue_variants_product_id_fkey",
+          "FOREIGN KEY (product_id) REFERENCES catalogue_products(id) ON DELETE RESTRICT",
+          true,
+          false,
+          false
+        ],
+        [
+          "catalogue_variants_row_version_check",
+          "CHECK ((row_version >= 1))",
+          true,
+          false,
+          false
+        ],
+        [
+          "catalogue_variants_sku_check",
+          "CHECK ((sku ~ '^[A-Z0-9][A-Z0-9._-]{1,63}$'::text))",
+          true,
+          false,
+          false
+        ],
+        [
+          "catalogue_variants_sku_key",
+          "UNIQUE (sku)",
+          true,
+          false,
+          false
+        ],
+        [
+          "catalogue_variants_sourcing_check",
+          "CHECK ((sourcing = ANY (ARRAY['in_stock'::text, 'supplier_sourced'::text, 'made_to_order'::text, 'discontinued'::text])))",
+          true,
+          false,
+          false
+        ],
+        [
+          "catalogue_variants_status_check",
+          "CHECK ((status = ANY (ARRAY['active'::text, 'inactive'::text])))",
+          true,
+          false,
+          false
+        ],
+        [
+          "catalogue_variants_stock_on_hand_check",
+          "CHECK ((stock_on_hand >= 0))",
+          true,
+          false,
+          false
+        ],
+        [
+          "catalogue_variants_stock_reserved_check",
+          "CHECK ((stock_reserved >= 0))",
+          true,
+          false,
+          false
+        ],
+        [
+          "catalogue_variants_supplier_id_fkey",
+          "FOREIGN KEY (supplier_id) REFERENCES office_suppliers(id) ON DELETE RESTRICT",
+          true,
+          false,
+          false
+        ],
+        [
+          "catalogue_variants_vat_rate_bp_check",
+          "CHECK (((vat_rate_bp IS NULL) OR ((vat_rate_bp >= 0) AND (vat_rate_bp <= 10000))))",
+          true,
+          false,
+          false
+        ],
+        [
+          "catalogue_variants_vat_treatment_check",
+          "CHECK (((vat_treatment IS NULL) OR (vat_treatment = ANY (ARRAY['standard'::text, 'exempt'::text, 'zero_rated'::text]))))",
+          true,
+          false,
+          false
+        ],
+        [
+          "reservation_consistency",
+          "TRIGGER DEFERRABLE INITIALLY DEFERRED",
+          true,
+          true,
+          true
+        ]
+      ]
+    },
+    {
+      "acl": [
+        [
+          "postgres",
+          "DELETE",
+          false
+        ],
+        [
+          "postgres",
+          "INSERT",
+          false
+        ],
+        [
+          "postgres",
+          "MAINTAIN",
+          false
+        ],
+        [
+          "postgres",
+          "REFERENCES",
+          false
+        ],
+        [
+          "postgres",
+          "SELECT",
+          false
+        ],
+        [
+          "postgres",
+          "TRIGGER",
+          false
+        ],
+        [
+          "postgres",
+          "TRUNCATE",
+          false
+        ],
+        [
+          "postgres",
+          "UPDATE",
+          false
+        ],
+        [
+          "service_role",
+          "DELETE",
+          false
+        ],
+        [
+          "service_role",
+          "INSERT",
+          false
+        ],
+        [
+          "service_role",
+          "SELECT",
+          false
+        ],
+        [
+          "service_role",
+          "UPDATE",
+          false
+        ]
+      ],
+      "rls": true,
+      "kind": "r",
+      "name": "hardware_reservation_events",
+      "owner": "postgres",
+      "columns": [
+        {
+          "acl": null,
+          "name": "id",
+          "type": "uuid",
+          "default": "gen_random_uuid()",
+          "identity": "",
+          "not_null": true,
+          "generated": ""
+        },
+        {
+          "acl": null,
+          "name": "reservation_id",
+          "type": "uuid",
+          "default": null,
+          "identity": "",
+          "not_null": true,
+          "generated": ""
+        },
+        {
+          "acl": null,
+          "name": "row_version",
+          "type": "integer",
+          "default": null,
+          "identity": "",
+          "not_null": true,
+          "generated": ""
+        },
+        {
+          "acl": null,
+          "name": "event_type",
+          "type": "text",
+          "default": null,
+          "identity": "",
+          "not_null": true,
+          "generated": ""
+        },
+        {
+          "acl": null,
+          "name": "actor",
+          "type": "text",
+          "default": null,
+          "identity": "",
+          "not_null": true,
+          "generated": ""
+        },
+        {
+          "acl": null,
+          "name": "reason",
+          "type": "text",
+          "default": "''::text",
+          "identity": "",
+          "not_null": true,
+          "generated": ""
+        },
+        {
+          "acl": null,
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "default": "clock_timestamp()",
+          "identity": "",
+          "not_null": true,
+          "generated": ""
+        }
+      ],
+      "policies": 0,
+      "triggers": [
+        [
+          "reservation_consistency",
+          "CREATE CONSTRAINT TRIGGER reservation_consistency AFTER INSERT OR UPDATE ON public.hardware_reservation_events DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION hardware_reservation_check()",
+          "O"
+        ],
+        [
+          "reservation_immutable",
+          "CREATE TRIGGER reservation_immutable BEFORE DELETE OR UPDATE ON public.hardware_reservation_events FOR EACH ROW EXECUTE FUNCTION hardware_order_immutable()",
+          "O"
+        ],
+        [
+          "reservation_no_truncate",
+          "CREATE TRIGGER reservation_no_truncate BEFORE TRUNCATE ON public.hardware_reservation_events FOR EACH STATEMENT EXECUTE FUNCTION hardware_order_immutable()",
+          "O"
+        ]
+      ],
+      "force_rls": false,
+      "constraints": [
+        [
+          "hardware_reservation_events_event_type_check",
+          "CHECK ((event_type = ANY (ARRAY['held'::text, 'released'::text, 'expired'::text, 'allocated'::text])))",
+          true,
+          false,
+          false
+        ],
+        [
+          "hardware_reservation_events_pkey",
+          "PRIMARY KEY (id)",
+          true,
+          false,
+          false
+        ],
+        [
+          "hardware_reservation_events_reason_check",
+          "CHECK ((length(reason) <= 500))",
+          true,
+          false,
+          false
+        ],
+        [
+          "hardware_reservation_events_reservation_id_fkey",
+          "FOREIGN KEY (reservation_id) REFERENCES hardware_reservations(id) ON DELETE RESTRICT",
+          true,
+          false,
+          false
+        ],
+        [
+          "hardware_reservation_events_reservation_id_row_version_key",
+          "UNIQUE (reservation_id, row_version)",
+          true,
+          false,
+          false
+        ],
+        [
+          "reservation_consistency",
+          "TRIGGER DEFERRABLE INITIALLY DEFERRED",
+          true,
+          true,
+          true
+        ]
+      ]
+    },
+    {
+      "acl": [
+        [
+          "postgres",
+          "DELETE",
+          false
+        ],
+        [
+          "postgres",
+          "INSERT",
+          false
+        ],
+        [
+          "postgres",
+          "MAINTAIN",
+          false
+        ],
+        [
+          "postgres",
+          "REFERENCES",
+          false
+        ],
+        [
+          "postgres",
+          "SELECT",
+          false
+        ],
+        [
+          "postgres",
+          "TRIGGER",
+          false
+        ],
+        [
+          "postgres",
+          "TRUNCATE",
+          false
+        ],
+        [
+          "postgres",
+          "UPDATE",
+          false
+        ]
+      ],
+      "rls": false,
+      "kind": "i",
+      "name": "hardware_reservation_events_pkey",
+      "owner": "postgres",
+      "columns": [
+        {
+          "acl": null,
+          "name": "id",
+          "type": "uuid",
+          "default": null,
+          "identity": "",
+          "not_null": false,
+          "generated": ""
+        }
+      ],
+      "policies": 0,
+      "triggers": [],
+      "force_rls": false,
+      "constraints": []
+    },
+    {
+      "acl": [
+        [
+          "postgres",
+          "DELETE",
+          false
+        ],
+        [
+          "postgres",
+          "INSERT",
+          false
+        ],
+        [
+          "postgres",
+          "MAINTAIN",
+          false
+        ],
+        [
+          "postgres",
+          "REFERENCES",
+          false
+        ],
+        [
+          "postgres",
+          "SELECT",
+          false
+        ],
+        [
+          "postgres",
+          "TRIGGER",
+          false
+        ],
+        [
+          "postgres",
+          "TRUNCATE",
+          false
+        ],
+        [
+          "postgres",
+          "UPDATE",
+          false
+        ]
+      ],
+      "rls": false,
+      "kind": "i",
+      "name": "hardware_reservation_events_reservation_id_row_version_key",
+      "owner": "postgres",
+      "columns": [
+        {
+          "acl": null,
+          "name": "reservation_id",
+          "type": "uuid",
+          "default": null,
+          "identity": "",
+          "not_null": false,
+          "generated": ""
+        },
+        {
+          "acl": null,
+          "name": "row_version",
+          "type": "integer",
+          "default": null,
+          "identity": "",
+          "not_null": false,
+          "generated": ""
+        }
+      ],
+      "policies": 0,
+      "triggers": [],
+      "force_rls": false,
+      "constraints": []
+    },
+    {
+      "acl": [
+        [
+          "postgres",
+          "DELETE",
+          false
+        ],
+        [
+          "postgres",
+          "INSERT",
+          false
+        ],
+        [
+          "postgres",
+          "MAINTAIN",
+          false
+        ],
+        [
+          "postgres",
+          "REFERENCES",
+          false
+        ],
+        [
+          "postgres",
+          "SELECT",
+          false
+        ],
+        [
+          "postgres",
+          "TRIGGER",
+          false
+        ],
+        [
+          "postgres",
+          "TRUNCATE",
+          false
+        ],
+        [
+          "postgres",
+          "UPDATE",
+          false
+        ],
+        [
+          "service_role",
+          "DELETE",
+          false
+        ],
+        [
+          "service_role",
+          "INSERT",
+          false
+        ],
+        [
+          "service_role",
+          "SELECT",
+          false
+        ],
+        [
+          "service_role",
+          "UPDATE",
+          false
+        ]
+      ],
+      "rls": true,
+      "kind": "r",
+      "name": "hardware_reservation_lines",
+      "owner": "postgres",
+      "columns": [
+        {
+          "acl": null,
+          "name": "reservation_id",
+          "type": "uuid",
+          "default": null,
+          "identity": "",
+          "not_null": true,
+          "generated": ""
+        },
+        {
+          "acl": null,
+          "name": "variant_id",
+          "type": "uuid",
+          "default": null,
+          "identity": "",
+          "not_null": true,
+          "generated": ""
+        },
+        {
+          "acl": null,
+          "name": "quantity",
+          "type": "integer",
+          "default": null,
+          "identity": "",
+          "not_null": true,
+          "generated": ""
+        }
+      ],
+      "policies": 0,
+      "triggers": [
+        [
+          "reservation_consistency",
+          "CREATE CONSTRAINT TRIGGER reservation_consistency AFTER INSERT OR UPDATE ON public.hardware_reservation_lines DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION hardware_reservation_check()",
+          "O"
+        ],
+        [
+          "reservation_immutable",
+          "CREATE TRIGGER reservation_immutable BEFORE DELETE OR UPDATE ON public.hardware_reservation_lines FOR EACH ROW EXECUTE FUNCTION hardware_order_immutable()",
+          "O"
+        ],
+        [
+          "reservation_no_truncate",
+          "CREATE TRIGGER reservation_no_truncate BEFORE TRUNCATE ON public.hardware_reservation_lines FOR EACH STATEMENT EXECUTE FUNCTION hardware_order_immutable()",
+          "O"
+        ]
+      ],
+      "force_rls": false,
+      "constraints": [
+        [
+          "hardware_reservation_lines_pkey",
+          "PRIMARY KEY (reservation_id, variant_id)",
+          true,
+          false,
+          false
+        ],
+        [
+          "hardware_reservation_lines_quantity_check",
+          "CHECK (((quantity >= 1) AND (quantity <= 1000)))",
+          true,
+          false,
+          false
+        ],
+        [
+          "hardware_reservation_lines_reservation_id_fkey",
+          "FOREIGN KEY (reservation_id) REFERENCES hardware_reservations(id) ON DELETE RESTRICT",
+          true,
+          false,
+          false
+        ],
+        [
+          "hardware_reservation_lines_variant_id_fkey",
+          "FOREIGN KEY (variant_id) REFERENCES catalogue_variants(id) ON DELETE RESTRICT",
+          true,
+          false,
+          false
+        ],
+        [
+          "reservation_consistency",
+          "TRIGGER DEFERRABLE INITIALLY DEFERRED",
+          true,
+          true,
+          true
+        ]
+      ]
+    },
+    {
+      "acl": [
+        [
+          "postgres",
+          "DELETE",
+          false
+        ],
+        [
+          "postgres",
+          "INSERT",
+          false
+        ],
+        [
+          "postgres",
+          "MAINTAIN",
+          false
+        ],
+        [
+          "postgres",
+          "REFERENCES",
+          false
+        ],
+        [
+          "postgres",
+          "SELECT",
+          false
+        ],
+        [
+          "postgres",
+          "TRIGGER",
+          false
+        ],
+        [
+          "postgres",
+          "TRUNCATE",
+          false
+        ],
+        [
+          "postgres",
+          "UPDATE",
+          false
+        ]
+      ],
+      "rls": false,
+      "kind": "i",
+      "name": "hardware_reservation_lines_pkey",
+      "owner": "postgres",
+      "columns": [
+        {
+          "acl": null,
+          "name": "reservation_id",
+          "type": "uuid",
+          "default": null,
+          "identity": "",
+          "not_null": false,
+          "generated": ""
+        },
+        {
+          "acl": null,
+          "name": "variant_id",
+          "type": "uuid",
+          "default": null,
+          "identity": "",
+          "not_null": false,
+          "generated": ""
+        }
+      ],
+      "policies": 0,
+      "triggers": [],
+      "force_rls": false,
+      "constraints": []
+    },
+    {
+      "acl": [
+        [
+          "postgres",
+          "DELETE",
+          false
+        ],
+        [
+          "postgres",
+          "INSERT",
+          false
+        ],
+        [
+          "postgres",
+          "MAINTAIN",
+          false
+        ],
+        [
+          "postgres",
+          "REFERENCES",
+          false
+        ],
+        [
+          "postgres",
+          "SELECT",
+          false
+        ],
+        [
+          "postgres",
+          "TRIGGER",
+          false
+        ],
+        [
+          "postgres",
+          "TRUNCATE",
+          false
+        ],
+        [
+          "postgres",
+          "UPDATE",
+          false
+        ],
+        [
+          "service_role",
+          "DELETE",
+          false
+        ],
+        [
+          "service_role",
+          "INSERT",
+          false
+        ],
+        [
+          "service_role",
+          "SELECT",
+          false
+        ],
+        [
+          "service_role",
+          "UPDATE",
+          false
+        ]
+      ],
+      "rls": true,
+      "kind": "r",
+      "name": "hardware_reservation_stock",
+      "owner": "postgres",
+      "columns": [
+        {
+          "acl": null,
+          "name": "variant_id",
+          "type": "uuid",
+          "default": null,
+          "identity": "",
+          "not_null": true,
+          "generated": ""
+        },
+        {
+          "acl": null,
+          "name": "legacy_reserved",
+          "type": "integer",
+          "default": null,
+          "identity": "",
+          "not_null": true,
+          "generated": ""
+        }
+      ],
+      "policies": 0,
+      "triggers": [
+        [
+          "reservation_consistency",
+          "CREATE CONSTRAINT TRIGGER reservation_consistency AFTER INSERT OR UPDATE ON public.hardware_reservation_stock DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION hardware_reservation_check()",
+          "O"
+        ],
+        [
+          "reservation_no_truncate",
+          "CREATE TRIGGER reservation_no_truncate BEFORE TRUNCATE ON public.hardware_reservation_stock FOR EACH STATEMENT EXECUTE FUNCTION hardware_order_immutable()",
+          "O"
+        ],
+        [
+          "reservation_stock_no_delete",
+          "CREATE TRIGGER reservation_stock_no_delete BEFORE DELETE ON public.hardware_reservation_stock FOR EACH ROW EXECUTE FUNCTION hardware_order_immutable()",
+          "O"
+        ]
+      ],
+      "force_rls": false,
+      "constraints": [
+        [
+          "hardware_reservation_stock_legacy_reserved_check",
+          "CHECK ((legacy_reserved >= 0))",
+          true,
+          false,
+          false
+        ],
+        [
+          "hardware_reservation_stock_pkey",
+          "PRIMARY KEY (variant_id)",
+          true,
+          false,
+          false
+        ],
+        [
+          "hardware_reservation_stock_variant_id_fkey",
+          "FOREIGN KEY (variant_id) REFERENCES catalogue_variants(id) ON DELETE RESTRICT",
+          true,
+          false,
+          false
+        ],
+        [
+          "reservation_consistency",
+          "TRIGGER DEFERRABLE INITIALLY DEFERRED",
+          true,
+          true,
+          true
+        ]
+      ]
+    },
+    {
+      "acl": [
+        [
+          "postgres",
+          "DELETE",
+          false
+        ],
+        [
+          "postgres",
+          "INSERT",
+          false
+        ],
+        [
+          "postgres",
+          "MAINTAIN",
+          false
+        ],
+        [
+          "postgres",
+          "REFERENCES",
+          false
+        ],
+        [
+          "postgres",
+          "SELECT",
+          false
+        ],
+        [
+          "postgres",
+          "TRIGGER",
+          false
+        ],
+        [
+          "postgres",
+          "TRUNCATE",
+          false
+        ],
+        [
+          "postgres",
+          "UPDATE",
+          false
+        ]
+      ],
+      "rls": false,
+      "kind": "i",
+      "name": "hardware_reservation_stock_pkey",
+      "owner": "postgres",
+      "columns": [
+        {
+          "acl": null,
+          "name": "variant_id",
+          "type": "uuid",
+          "default": null,
+          "identity": "",
+          "not_null": false,
+          "generated": ""
+        }
+      ],
+      "policies": 0,
+      "triggers": [],
+      "force_rls": false,
+      "constraints": []
+    },
+    {
+      "acl": [
+        [
+          "postgres",
+          "DELETE",
+          false
+        ],
+        [
+          "postgres",
+          "INSERT",
+          false
+        ],
+        [
+          "postgres",
+          "MAINTAIN",
+          false
+        ],
+        [
+          "postgres",
+          "REFERENCES",
+          false
+        ],
+        [
+          "postgres",
+          "SELECT",
+          false
+        ],
+        [
+          "postgres",
+          "TRIGGER",
+          false
+        ],
+        [
+          "postgres",
+          "TRUNCATE",
+          false
+        ],
+        [
+          "postgres",
+          "UPDATE",
+          false
+        ],
+        [
+          "service_role",
+          "DELETE",
+          false
+        ],
+        [
+          "service_role",
+          "INSERT",
+          false
+        ],
+        [
+          "service_role",
+          "SELECT",
+          false
+        ],
+        [
+          "service_role",
+          "UPDATE",
+          false
+        ]
+      ],
+      "rls": true,
+      "kind": "r",
+      "name": "hardware_reservations",
+      "owner": "postgres",
+      "columns": [
+        {
+          "acl": null,
+          "name": "id",
+          "type": "uuid",
+          "default": "gen_random_uuid()",
+          "identity": "",
+          "not_null": true,
+          "generated": ""
+        },
+        {
+          "acl": null,
+          "name": "order_id",
+          "type": "uuid",
+          "default": null,
+          "identity": "",
+          "not_null": true,
+          "generated": ""
+        },
+        {
+          "acl": null,
+          "name": "idempotency_key",
+          "type": "text",
+          "default": null,
+          "identity": "",
+          "not_null": true,
+          "generated": ""
+        },
+        {
+          "acl": null,
+          "name": "request_hash",
+          "type": "text",
+          "default": null,
+          "identity": "",
+          "not_null": true,
+          "generated": ""
+        },
+        {
+          "acl": null,
+          "name": "actor",
+          "type": "text",
+          "default": null,
+          "identity": "",
+          "not_null": true,
+          "generated": ""
+        },
+        {
+          "acl": null,
+          "name": "state",
+          "type": "text",
+          "default": "'held'::text",
+          "identity": "",
+          "not_null": true,
+          "generated": ""
+        },
+        {
+          "acl": null,
+          "name": "expires_at",
+          "type": "timestamp with time zone",
+          "default": null,
+          "identity": "",
+          "not_null": true,
+          "generated": ""
+        },
+        {
+          "acl": null,
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "default": "clock_timestamp()",
+          "identity": "",
+          "not_null": true,
+          "generated": ""
+        },
+        {
+          "acl": null,
+          "name": "ended_at",
+          "type": "timestamp with time zone",
+          "default": null,
+          "identity": "",
+          "not_null": false,
+          "generated": ""
+        },
+        {
+          "acl": null,
+          "name": "row_version",
+          "type": "integer",
+          "default": "1",
+          "identity": "",
+          "not_null": true,
+          "generated": ""
+        }
+      ],
+      "policies": 0,
+      "triggers": [
+        [
+          "reservation_consistency",
+          "CREATE CONSTRAINT TRIGGER reservation_consistency AFTER INSERT OR UPDATE ON public.hardware_reservations DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION hardware_reservation_check()",
+          "O"
+        ],
+        [
+          "reservation_no_truncate",
+          "CREATE TRIGGER reservation_no_truncate BEFORE TRUNCATE ON public.hardware_reservations FOR EACH STATEMENT EXECUTE FUNCTION hardware_order_immutable()",
+          "O"
+        ],
+        [
+          "reservation_state_guard",
+          "CREATE TRIGGER reservation_state_guard BEFORE DELETE OR UPDATE ON public.hardware_reservations FOR EACH ROW EXECUTE FUNCTION hardware_reservation_guard()",
+          "O"
+        ]
+      ],
+      "force_rls": false,
+      "constraints": [
+        [
+          "hardware_reservations_check",
+          "CHECK ((expires_at > created_at))",
+          true,
+          false,
+          false
+        ],
+        [
+          "hardware_reservations_check1",
+          "CHECK (((state = 'held'::text) = (ended_at IS NULL)))",
+          true,
+          false,
+          false
+        ],
+        [
+          "hardware_reservations_idempotency_key_check",
+          "CHECK ((idempotency_key ~ '^[A-Za-z0-9_-]{16,128}$'::text))",
+          true,
+          false,
+          false
+        ],
+        [
+          "hardware_reservations_order_id_fkey",
+          "FOREIGN KEY (order_id) REFERENCES hardware_orders(id) ON DELETE RESTRICT",
+          true,
+          false,
+          false
+        ],
+        [
+          "hardware_reservations_order_id_key",
+          "UNIQUE (order_id)",
+          true,
+          false,
+          false
+        ],
+        [
+          "hardware_reservations_pkey",
+          "PRIMARY KEY (id)",
+          true,
+          false,
+          false
+        ],
+        [
+          "hardware_reservations_row_version_check",
+          "CHECK ((row_version = ANY (ARRAY[1, 2])))",
+          true,
+          false,
+          false
+        ],
+        [
+          "hardware_reservations_state_check",
+          "CHECK ((state = ANY (ARRAY['held'::text, 'released'::text, 'expired'::text, 'allocated'::text])))",
+          true,
+          false,
+          false
+        ],
+        [
+          "reservation_consistency",
+          "TRIGGER DEFERRABLE INITIALLY DEFERRED",
+          true,
+          true,
+          true
+        ]
+      ]
+    },
+    {
+      "acl": [
+        [
+          "postgres",
+          "DELETE",
+          false
+        ],
+        [
+          "postgres",
+          "INSERT",
+          false
+        ],
+        [
+          "postgres",
+          "MAINTAIN",
+          false
+        ],
+        [
+          "postgres",
+          "REFERENCES",
+          false
+        ],
+        [
+          "postgres",
+          "SELECT",
+          false
+        ],
+        [
+          "postgres",
+          "TRIGGER",
+          false
+        ],
+        [
+          "postgres",
+          "TRUNCATE",
+          false
+        ],
+        [
+          "postgres",
+          "UPDATE",
+          false
+        ]
+      ],
+      "rls": false,
+      "kind": "i",
+      "name": "hardware_reservations_expiry",
+      "owner": "postgres",
+      "columns": [
+        {
+          "acl": null,
+          "name": "expires_at",
+          "type": "timestamp with time zone",
+          "default": null,
+          "identity": "",
+          "not_null": false,
+          "generated": ""
+        },
+        {
+          "acl": null,
+          "name": "id",
+          "type": "uuid",
+          "default": null,
+          "identity": "",
+          "not_null": false,
+          "generated": ""
+        }
+      ],
+      "policies": 0,
+      "triggers": [],
+      "force_rls": false,
+      "constraints": []
+    },
+    {
+      "acl": [
+        [
+          "postgres",
+          "DELETE",
+          false
+        ],
+        [
+          "postgres",
+          "INSERT",
+          false
+        ],
+        [
+          "postgres",
+          "MAINTAIN",
+          false
+        ],
+        [
+          "postgres",
+          "REFERENCES",
+          false
+        ],
+        [
+          "postgres",
+          "SELECT",
+          false
+        ],
+        [
+          "postgres",
+          "TRIGGER",
+          false
+        ],
+        [
+          "postgres",
+          "TRUNCATE",
+          false
+        ],
+        [
+          "postgres",
+          "UPDATE",
+          false
+        ]
+      ],
+      "rls": false,
+      "kind": "i",
+      "name": "hardware_reservations_order_id_key",
+      "owner": "postgres",
+      "columns": [
+        {
+          "acl": null,
+          "name": "order_id",
+          "type": "uuid",
+          "default": null,
+          "identity": "",
+          "not_null": false,
+          "generated": ""
+        }
+      ],
+      "policies": 0,
+      "triggers": [],
+      "force_rls": false,
+      "constraints": []
+    },
+    {
+      "acl": [
+        [
+          "postgres",
+          "DELETE",
+          false
+        ],
+        [
+          "postgres",
+          "INSERT",
+          false
+        ],
+        [
+          "postgres",
+          "MAINTAIN",
+          false
+        ],
+        [
+          "postgres",
+          "REFERENCES",
+          false
+        ],
+        [
+          "postgres",
+          "SELECT",
+          false
+        ],
+        [
+          "postgres",
+          "TRIGGER",
+          false
+        ],
+        [
+          "postgres",
+          "TRUNCATE",
+          false
+        ],
+        [
+          "postgres",
+          "UPDATE",
+          false
+        ]
+      ],
+      "rls": false,
+      "kind": "i",
+      "name": "hardware_reservations_pkey",
+      "owner": "postgres",
+      "columns": [
+        {
+          "acl": null,
+          "name": "id",
+          "type": "uuid",
+          "default": null,
+          "identity": "",
+          "not_null": false,
+          "generated": ""
+        }
+      ],
+      "policies": 0,
+      "triggers": [],
+      "force_rls": false,
+      "constraints": []
+    }
+  ]
+}

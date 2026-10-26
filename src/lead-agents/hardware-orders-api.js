@@ -49,6 +49,14 @@ async function handleHardwareOrdersRequest({ req, res, pathname, authContext, st
     const parts = sub.split("/").filter(Boolean);
     if (!UUID.test(parts[0] || "")) fail(404, "not_found");
     const id = parts[0];
+    if (parts.length === 2 && parts[1] === "reservation" && req.method === "POST") {
+      if (process.env.OFFICE_HARDWARE_RESERVATIONS_ENABLED !== "true") fail(503,"reservations_disabled");
+      const body=await readJsonBody(req,1024);only(body,["action","idempotency_key"]);
+      if (!["hold","release"].includes(body.action)) fail(400,"invalid_reservation_action");
+      need(authContext,body.action === "hold" ? "commerce.orders.create" : "commerce.orders.cancel");
+      const r=await store.client.post("/rpc/hardware_reservation_staff",{p_actor:actor,p_order:id,p_key:body.idempotency_key||null,p_action:body.action});
+      return send(200,{reservation:r.data,payment_eligible:false});
+    }
     if (parts.length === 2 && parts[1] === "cancel" && req.method === "POST") {
       need(authContext, "commerce.orders.cancel");
       const body = await readJsonBody(req, 1024); only(body, ["expected_row_version"]);

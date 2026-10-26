@@ -1,0 +1,5 @@
+-- Read-only runtime gate, AFTER pg_cron installation. Missing cron schema is a hard failure.
+select 'expiry job' as gate,case when count(*)=1 and bool_and(active and schedule='* * * * *' and command='select public.hardware_reservation_expire(500);' and username='postgres' and database=current_database()) then 'PASS' else 'FAIL' end as status from cron.job where jobname='getoyi-hardware-reservation-expiry'
+union all select 'scheduler enabled',case when current_setting('shared_preload_libraries') like '%pg_cron%' and current_setting('cron.launch_active_jobs',true)='on' then 'PASS' else 'FAIL' end
+union all select 'recent successful execution',case when exists(select 1 from cron.job_run_details d join cron.job j using(jobid) where j.jobname='getoyi-hardware-reservation-expiry' and d.status='succeeded' and d.end_time>clock_timestamp()-interval '10 minutes') then 'PASS' else 'FAIL' end
+union all select 'no overdue reservation backlog',case when not exists(select 1 from hardware_reservations where state='held' and expires_at<clock_timestamp()-interval '90 seconds') then 'PASS' else 'FAIL' end;
