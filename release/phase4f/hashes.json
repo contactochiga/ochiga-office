@@ -1,0 +1,6 @@
+{
+ "db/phase4f/20261026143000_hardware_payment_quote_reasons.sql": "0bce3a273dae1ef3b417c55b9bad03d4f444379789ccfde9be8182b0deb1c4e3",
+ "db/phase4f/rollback.sql": "889b6c1facdf806e01a1e9b9f0be30051dbfe9c7e80ed7fb866f2b650b48ac6c",
+ "release/phase4f/security-gate.sql": "eb23dd6f1e30b6b3ac0d25fd2d20cb77f89383b65c274cc41c969743e0c109ee",
+ "release/phase4f/verify-shape.py": "21389a406fcf7e9da65ac61b0748bd6ce4e347cbc46bebc6fd75e488897043ba"
+}

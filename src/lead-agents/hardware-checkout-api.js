@@ -2,6 +2,20 @@
 const { json, readJsonBody } = require("./http");
 const { initializeHardwarePayment } = require("./hardware-payments-api");
 const PREFIX = "/api/commerce/checkout/";
+const PAYMENT_QUOTE_CODES = new Set([
+  "eligible",
+  "order_not_found",
+  "order_cancelled",
+  "order_state_invalid",
+  "payment_already_started",
+  "reservation_missing",
+  "reservation_expired",
+  "reservation_invalid",
+  "delivery_unconfirmed",
+  "product_or_variant_unavailable",
+  "approved_price_missing_or_changed",
+  "catalogue_or_price_ineligible",
+]);
 const fail = (status, code) => {
   const e = new Error(code);
   e.statusCode = status;
@@ -61,7 +75,13 @@ async function handleHardwareCheckoutRequest({
       if(action==="payment-start" && process.env.OFFICE_HARDWARE_PAYMENTS_ENABLED!=="true")fail(503,"payments_disabled");
       if(!/^[0-9a-f]{64}$/.test(b.guest_hash||"")||!/^[0-9a-f-]{36}$/.test(b.id||""))fail(400,"invalid_checkout");
       const args={p_client:authContext.client,p_guest_hash:b.guest_hash,p_order:b.id};
-      if(action==="payment-quote")return send(200,{payment:await rpc("hardware_payment_quote",args)});
+      if(action==="payment-quote") {
+        const payment = await rpc("hardware_payment_quote",args);
+        const eligibility_code = PAYMENT_QUOTE_CODES.has(payment?.eligibility_code)
+          ? payment.eligibility_code
+          : payment?.eligible === true ? "eligible" : "catalogue_or_price_ineligible";
+        return send(200,{payment:{...payment,eligibility_code}});
+      }
       if(!Number.isSafeInteger(b.accepted_total_kobo)||b.accepted_total_kobo<1)fail(400,"invalid_payment_total");
       const authorization=await rpc("hardware_payment_authorize",{...args,p_accepted_total:b.accepted_total_kobo});
       return send(200,{payment:await initializeHardwarePayment(authorization)});

@@ -96,6 +96,73 @@ module.exports = async ({
     }
   }
 
+  const quoteReasons = fs.readFileSync(
+    path.join(ROOT, "db/phase4f/20261026143000_hardware_payment_quote_reasons.sql"),
+    "utf8",
+  );
+  run("begin;" + quoteReasons + "rollback;");
+  const rollbackState = psql("select (to_regprocedure('hardware_payment_quote(text,text,uuid)') is not null)::text||':'||(to_regclass('hardware_financial_observations') is not null)::text");
+  check(
+    "F-ROLLBACK",
+    "quote-diagnostic migration rolls back without removing Phase 4E objects",
+    rollbackState.status === 0 && rollbackState.out === "true:true",
+    rollbackState.out || rollbackState.err,
+  );
+  const quoteRollback = psql(
+    "begin;" + quoteReasons + fs.readFileSync(path.join(ROOT, "db/phase4f/rollback.sql"), "utf8") +
+    "select (pg_get_functiondef('hardware_payment_quote(text,text,uuid)'::regprocedure) like '%refund_state%') and (pg_get_functiondef('hardware_payment_quote(text,text,uuid)'::regprocedure) not like '%eligibility_code%');rollback;",
+  );
+  check(
+    "F-DOWN",
+    "forward and rollback restore the Phase 4E quote projection",
+    quoteRollback.status === 0 && quoteRollback.out === "t",
+    quoteRollback.err,
+  );
+  run(quoteReasons);
+  const quoteAcl=psql("select (has_function_privilege('anon','hardware_payment_quote(text,text,uuid)','execute') is false)::text||':'||(has_function_privilege('authenticated','hardware_payment_quote(text,text,uuid)','execute') is false)::text||':'||has_function_privilege('service_role','hardware_payment_quote(text,text,uuid)','execute')::text||':'||(select proconfig @> array['search_path=public, pg_temp'] from pg_proc where oid='hardware_payment_quote(text,text,uuid)'::regprocedure)::text");
+  check(
+    "F-ACL",
+    "quote diagnostics remain service-role-only with a fixed search path",
+    quoteAcl.status === 0 && quoteAcl.out === "true:true:true:true",
+    quoteAcl.out || quoteAcl.err,
+  );
+  const quoteGate=fs.readFileSync(path.join(ROOT,"release/phase4f/security-gate.sql"),"utf8");
+  check("F-GATE","Phase 4F owner, invoker, path, grants and Phase 4E delegation gate passes",psql(quoteGate).out==="PASS");
+  check("F-TAMPER","Phase 4F gate rejects public execution grant",psql("begin;grant execute on function hardware_payment_quote(text,text,uuid) to anon;"+quoteGate+"rollback;").out==="FAIL");
+  // Exact schema: the reviewed Phase 4E shape with only the two pinned Phase 4F quote differences (release/phase4f/verify-shape.py).
+  const shapeSql=fs.readFileSync(path.join(ROOT,"release/phase4e/shape.sql"),"utf8").trim().replace(/;\s*$/,"");
+  const verifyShape=(shapeOut)=>require("child_process").spawnSync("python3",[path.join(ROOT,"release/phase4f/verify-shape.py"),"--shape-json","-"],{input:shapeOut,encoding:"utf8"});
+  const exact=verifyShape(psql(shapeSql+";").out);
+  check("F-SHAPE","Phase 4F exact schema: reviewed Phase 4E shape plus only the pinned quote wrapper and the name-only renamed delegate",exact.status===0&&/"phase4f_exact_schema": "PASS"/.test(exact.stdout),exact.stdout.slice(0,400)||exact.stderr);
+  // the original defect class: same logic, different formatting of the Phase 4E delegate, must be rejected (inside a rolled-back transaction)
+  const reformatted=psql("begin;do $x$ declare d text; begin select pg_get_functiondef('public.hardware_financial_phase4e_quote(text,text,uuid)'::regprocedure) into d; execute replace(d,'begin',E'begin\\n'); end $x$;"+shapeSql+";rollback;");
+  const tampered=verifyShape(reformatted.out);
+  check("F-SHAPE-TAMPER","Phase 4F exact schema rejects a re-created delegate that differs only in formatting",tampered.status===1&&/"definition"/.test(tampered.stdout),tampered.stdout.slice(0,300)||reformatted.err);
+  check("F-SHAPE-INTACT","…and the rolled-back tamper left the delegate exactly as reviewed",verifyShape(psql(shapeSql+";").out).status===0);
+  const diagnosticCancelled=make();
+  run(`select hardware_order_cancel('canceller@fixture.test','${diagnosticCancelled}',1)`);
+  const cancelEventsBefore=one(`select count(*) from hardware_reservation_events e join hardware_reservations r on r.id=e.reservation_id where r.order_id='${diagnosticCancelled}'`);
+  const cancelQuote=JSON.parse(run(`select hardware_payment_quote('payment-test','${'a'.repeat(64)}','${diagnosticCancelled}'::uuid)`));
+  const cancelEventsAfter=one(`select count(*) from hardware_reservation_events e join hardware_reservations r on r.id=e.reservation_id where r.order_id='${diagnosticCancelled}'`);
+  check(
+    "F-CANCEL-REASON",
+    "owned cancelled-order quote returns an allowlisted reason without changing reservation history",
+    cancelQuote.eligible===false&&cancelQuote.eligibility_code==='order_cancelled'&&cancelEventsBefore===cancelEventsAfter,
+  );
+  // The earlier D expiry fixture has since been reconciled and is therefore
+  // correctly classified as payment-already-started. Use a fresh, unattempted
+  // hold so this assertion specifically exercises reservation expiry.
+  const diagnosticExpired=make(true,60);
+  await new Promise(resolve=>setTimeout(resolve,62000));
+  const expiryEventsBefore=one(`select count(*) from hardware_reservation_events e join hardware_reservations r on r.id=e.reservation_id where r.order_id='${diagnosticExpired}'`);
+  const expiryQuote=JSON.parse(run(`select hardware_payment_quote('payment-test','${'a'.repeat(64)}','${diagnosticExpired}'::uuid)`));
+  const expiryEventsAfter=one(`select count(*) from hardware_reservation_events e join hardware_reservations r on r.id=e.reservation_id where r.order_id='${diagnosticExpired}'`);
+  check(
+    "F-EXPIRED-REASON",
+    "expired reservation quote returns a reason without mutating reservation history",
+    expiryQuote.eligible===false&&expiryQuote.eligibility_code==='reservation_expired'&&expiryEventsBefore===expiryEventsAfter,
+  );
+
   run(
     "update admin_users set permission_scopes=permission_scopes||array['commerce.orders.refund.request','commerce.orders.refund.approve'] where email in ('creator@fixture.test','reader@fixture.test')",
   );
