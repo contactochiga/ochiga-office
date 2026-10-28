@@ -61,7 +61,14 @@ function parseSpecifications(cells) {
   };
   for(const cell of cells){
     if(!cell.value||/^[=+@]/.test(cell.value))continue;
-    if(cell.field==='specifications'){
+    if(cell.field==='specifications_json'){
+      try {const rows=JSON.parse(cell.value);if(!Array.isArray(rows)||rows.length>100)throw Error();
+        for(const row of rows){if(!row||typeof row.key!=='string'||!['string','number'].includes(typeof row.value)||(row.unit!=null&&typeof row.unit!=='string'))throw Error();
+          const key=row.key.trim(),value=String(row.value).trim(),unit=row.unit||'';if(!key||!value||key.length>80||value.length>400||unit.length>40)throw Error();
+          const prior=seen.get(normal(key));if(prior){if(prior.value!==value||prior.unit!==unit)unresolved.push({source:cell,reason:'Conflicting structured specification '+key});else prior.provenance.push(cell);}else{const attribute={key,value,unit,provenance:[cell]};seen.set(normal(key),attribute);attributes.push(attribute);}
+        }
+      }catch{unresolved.push({source:cell,reason:'Invalid structured specification JSON; original retained for review'});}
+    } else if(cell.field==='specifications'){
       const parts=cell.value.split(/[;\n•|]+/).map(s=>s.trim()).filter(Boolean);
       for(const part of parts){const pair=/^([^:=]{1,80})\s*[:=]\s*(.+)$/.exec(part);if(pair)add(pair[1],pair[2],cell);else {
         const count=/^(\d[\d,.]*)\s+(circuits?|channels?|ports?|fingerprints|transactions)$/i.exec(part);

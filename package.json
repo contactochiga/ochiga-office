@@ -49,7 +49,7 @@
     "office:knowledge-positioning:test": "node scripts/test-knowledge-positioning.js",
     "office:import:test": "node scripts/test-product-import.js && node scripts/test-product-import-postgres.js",
     "office:import:local": "node scripts/product-import-local.js",
-    "office:ingestion:test": "node scripts/test-ingestion-v2.js && node scripts/test-ingestion-v2-postgres.js && node scripts/test-ingestion-v2-edges.js"
+    "office:ingestion:test": "node scripts/test-ingestion-v2.js && node scripts/test-ingestion-v2-postgres.js && node scripts/test-ingestion-v2-edges.js && node scripts/test-ingestion-multisheet.js"
   },
   "dependencies": {
     "@sanity/client": "^6.29.1",

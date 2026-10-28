@@ -100,22 +100,25 @@ async function extractTables(buffer, extension) {
 const FIELDS = Object.freeze([...Object.keys(ALIASES), "specification", "retail_reference", "supplier_cost"]);
 const SINGLE_FIELDS = ["name", "sku", "category", "manufacturer", "model", "group", "variant", "description", "summary", "options"];
 const LOCKED_FIELDS = ["retail_reference", "supplier_cost", "supplier"];
-function inspectTables(tables, overrides = []) {
+function inspectTables(tables, overrides = [], version = 1) {
+  const sheets = version === 2 ? require("./ingestion-sheets") : null;
+  const classify = h => sheets ? sheets.fieldForV2(h, fieldFor) : fieldFor(h);
+  const allowedFields = sheets ? [...FIELDS, ...sheets.EXTRA_FIELDS] : FIELDS;
   if (!Array.isArray(overrides) || overrides.length > LIMITS.sheets) fail("import_invalid_mapping");
   if (new Set(overrides.map((o) => o?.sheet)).size !== overrides.length || overrides.some((o) => !o || !tables.some((t) => t.sheet === o.sheet))) fail("import_invalid_mapping");
   return tables.map((table) => {
     const choices = table.data.slice(0, 30).map((row, index) => {
-      const headings = row.map(text), fields = headings.map(fieldFor);
+      const headings = row.map(text), fields = headings.map(classify);
       const hasIdentity = fields.some((f) => ["sku", "category", "description", "model"].includes(f));
-      const score = fields.includes("name") && hasIdentity ? fields.filter((f) => !["source_reference", "ignore", "specification"].includes(f)).length : 0;
+      const score = sheets ? sheets.roleEvidence(table.sheet, headings, fields).score : fields.includes("name") && hasIdentity ? fields.filter((f) => !["source_reference", "ignore", "specification"].includes(f)).length : 0;
       return { row: index + 1, headings, fields, score };
     }).filter((row) => row.headings.some(Boolean));
-    const strong = choices.filter((c) => c.score > 0).sort((a, b) => b.score - a.score);
+    const strong = choices.filter((c) => c.score > (sheets ? 1 : 0)).sort((a, b) => b.score - a.score);
     const distinct = new Set(strong.map((c) => JSON.stringify(c.headings)));
     const chosen = overrides.find((o) => o.sheet === table.sheet);
     let selected = chosen ? choices.find((c) => c.row === chosen.row) : strong[0] || choices[0];
     if (chosen?.include === false && !selected && !choices.length) selected = {row:1,headings:[],fields:[],score:0};
-    if (chosen && ((chosen.include !== undefined && typeof chosen.include !== "boolean") || !selected || !Array.isArray(chosen.fields) || chosen.fields.length !== selected.headings.length || chosen.fields.some((f) => !FIELDS.includes(f)))) fail("import_invalid_mapping");
+    if (chosen && ((chosen.include !== undefined && typeof chosen.include !== "boolean") || !selected || !Array.isArray(chosen.fields) || chosen.fields.length !== selected.headings.length || chosen.fields.some((f) => !allowedFields.includes(f)))) fail("import_invalid_mapping");
     selected ||= { row: 1, headings: [], fields: [], score: 0 };
     const fields = chosen ? selected.fields.map((original, i) => LOCKED_FIELDS.includes(original) ? original : chosen.fields[i]) : selected.fields;
     const reasons = [];
@@ -124,14 +127,16 @@ function inspectTables(tables, overrides = []) {
     if (!chosen && distinct.size > 1) reasons.push("Multiple possible header rows; choose the product table explicitly.");
     for (const field of SINGLE_FIELDS) if (fields.filter((f) => f === field).length > 1) reasons.push(`Multiple columns map to ${field}; select one and retain the others as source references.`);
     if (chosen?.include === false) reasons.push("Sheet excluded by reviewer.");
-    return { sheet: table.sheet, total_rows: table.data.length, row: selected.row, headings: selected.headings, fields, accepted: reasons.length === 0, reasons, header_choices: choices.map(({row,headings}) => ({row,headings})) };
+    const diagnostic = { sheet: table.sheet, total_rows: table.data.length, row: selected.row, headings: selected.headings, fields, accepted: reasons.length === 0, reasons, header_choices: choices.map(({row,headings}) => ({row,headings})) };
+    if (!sheets) return diagnostic;
+    try { return sheets.applyRole(diagnostic, chosen); } catch { fail("import_invalid_mapping"); }
   });
 }
 function candidatesFromTables({ tables, warnings = [] }, overrides = [], version = 1) {
-  const candidates = [], mappings = [], diagnostics = inspectTables(tables, overrides);
+  const candidates = [], mappings = [], diagnostics = inspectTables(tables, overrides, version);
   for (const table of tables) {
     const diagnostic = diagnostics.find((d) => d.sheet === table.sheet);
-    if (!diagnostic.accepted) { warnings.push(`${table.sheet}: ${diagnostic.reasons.join(" ")}`); continue; }
+    if (!diagnostic.accepted) { if(version!==2||diagnostic.reasons.length)warnings.push(`${table.sheet}: ${diagnostic.reasons.join(" ")}`); continue; }
     const headerIndex = diagnostic.row - 1, headers = diagnostic.headings, fields = diagnostic.fields;
     mappings.push({ sheet: table.sheet, row: headerIndex + 1, columns: headers.map((header, i) => ({ column: i + 1, header, field: fields[i], locked: LOCKED_FIELDS.includes(fieldFor(header)) })) });
     const groups = new Map();
@@ -144,7 +149,7 @@ function candidatesFromTables({ tables, warnings = [] }, overrides = [], version
       const group = values.group || (version === 2 ? `row-${source.row}` : values.name ? `${values.name}\0${values.model || ""}` : `row-${source.row}`);
       let item = groups.get(group);
       if (!item) {
-        item = { id: `${mappings.length}:${source.row}`, source_rows: [], name: values.name || "", model: values.model || "", manufacturer: values.manufacturer || "", category: values.category || "", summary: values.summary || "", description: values.description || "", specifications: [], variants: [], retail_references: [], supplier_references: [], image_references: [], source_references: [], brand_model_reference: values.brand_model_reference || "", warnings: [] };
+        item = { id: `${version === 2 ? tables.indexOf(table)+1 : mappings.length}:${source.row}`, source_rows: [], name: values.name || "", model: values.model || "", manufacturer: values.manufacturer || "", category: values.category || "", summary: values.summary || "", description: values.description || "", specifications: [], variants: [], retail_references: [], supplier_references: [], image_references: [], source_references: [], brand_model_reference: values.brand_model_reference || "", warnings: [] };
         groups.set(group, item); candidates.push(item);
       }
       item.source_rows.push(source);
@@ -178,7 +183,7 @@ function candidatesFromTables({ tables, warnings = [] }, overrides = [], version
   if (candidates.length > (version === 2 ? 1000 : LIMITS.candidates)) fail("import_product_limit");
   // Permission checks cover raw source data even on skipped sheets or after a reviewer remaps columns.
   const supplierSource = tables.some((t) => t.data.slice(0,30).some((row, ri) => row.some((h, ci) => ["supplier", "supplier_cost"].includes(fieldFor(h)) && t.data.slice(ri+1).some((r) => text(r[ci])))));
-  return { candidates, mappings, diagnostics, mapping_fields: FIELDS, mapping_required: candidates.length === 0 || diagnostics.some((d) => !d.reasons.includes("Sheet excluded by reviewer.") && d.reasons.some((r) => /Multiple/.test(r))), warnings: warnings.slice(0, 200), contains_supplier_data: supplierSource || candidates.some((c) => c.supplier_references.length) };
+  return { candidates, mappings, diagnostics, mapping_fields: version === 2 ? [...FIELDS, ...require("./ingestion-sheets").EXTRA_FIELDS] : FIELDS, mapping_required: candidates.length === 0 || diagnostics.some((d) => !d.reasons.includes("Sheet excluded by reviewer.") && d.reasons.some((r) => /Multiple/.test(r))), warnings: warnings.slice(0, 200), contains_supplier_data: supplierSource || candidates.some((c) => c.supplier_references.length) };
 }
 let active = 0;
 function extract(buffer, extension, mapping = [], version = 1) {
@@ -194,5 +199,5 @@ function extract(buffer, extension, mapping = [], version = 1) {
     worker.once("exit", () => { if (!done) finish(C.httpError(422, "invalid_import_file")); });
   });
 }
-if (!isMainThread) extractTables(Buffer.from(workerData.buffer), workerData.extension).then((tables) => { const result = candidatesFromTables(tables, workerData.mapping, workerData.version); return workerData.version === 2 ? require("./ingestion-evidence").enrichExtraction(result, tables.tables) : result; }).then((v) => parentPort.postMessage(v)).catch((e) => parentPort.postMessage({ error: e.code?.startsWith("import_") || ["unsupported_import_format", "active_workbook_not_supported", "unsafe_workbook_xml"].includes(e.code) ? e.code : "invalid_import_file" }));
+if (!isMainThread) extractTables(Buffer.from(workerData.buffer), workerData.extension).then((tables) => { const result = candidatesFromTables(tables, workerData.mapping, workerData.version); return workerData.version === 2 ? require("./ingestion-sheets").reconcileSheets(require("./ingestion-evidence").enrichExtraction(result, tables.tables), tables.tables) : result; }).then((v) => parentPort.postMessage(v)).catch((e) => parentPort.postMessage({ error: e.code?.startsWith("import_") || ["unsupported_import_format", "active_workbook_not_supported", "unsafe_workbook_xml"].includes(e.code) ? e.code : "invalid_import_file" }));
 module.exports = { extract, extractTables, candidatesFromTables, fieldFor, money, LIMITS, inspectTables, FIELDS };

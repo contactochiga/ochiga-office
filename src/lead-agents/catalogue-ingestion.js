@@ -24,7 +24,7 @@ async function analyse(cat,extraction){
   const possible=[...new Map([...(byName.get(normal(c.name))||[]),...modelMatches].map(p=>[p.id,{id:p.id,name:p.name,slug:p.slug}])).values()];
   const taxonomy=!category.id||brand.status==='ambiguous'||(!!c.manufacturer&&!brand.id);
   const specReview=(c.specification_evidence?.unresolved||[]).length>0;
-  const groups=[];if(missing.length||specReview)groups.push('missing');if(taxonomy)groups.push('taxonomy');if(duplicates.length||modelMatches.length||insideModel)groups.push('duplicate');
+  const groups=[];if(missing.length||specReview)groups.push('missing');if(taxonomy)groups.push('taxonomy');if(duplicates.length||modelMatches.length||insideModel||c.sheet_conflicts?.length)groups.push('duplicate');
   // Commercial exceptions never turn into a selling price, cost, inventory or certification.
   groups.push('verification');if(!groups.some(g=>g!=='verification'))groups.unshift('ready');
   return {...c,content,slug:require('./catalogue-import').slugOf(c.name),category_match:category,brand_match:brand,groups,validation:missing,
@@ -37,12 +37,14 @@ async function preview(cat,extraction,query=new URLSearchParams()){
  const data=await analyse(cat,extraction),group=GROUPS.includes(query.get('group'))?query.get('group'):null;
  const filtered=group?data.candidates.filter(c=>c.groups.includes(group)):data.candidates;
  const page=Math.min(Math.max(1,Number(query.get('page'))||1),Math.max(1,Math.ceil(filtered.length/25)));
- return {...extraction,...data,candidates:filtered.slice((page-1)*25,page*25),version:2,total:extraction.candidates.length,filtered:filtered.length,page,page_size:25,match_note:'Matches cover the registry (up to 50,000 products). Suggestions never create categories or brands.',warnings:extraction.warnings};
+ return {...extraction,...data,candidates:filtered.slice((page-1)*25,page*25),version:2,reextract_required:extraction.sheet_processing_version!==1,total:extraction.candidates.length,filtered:filtered.length,page,page_size:25,match_note:'Matches cover the registry (up to 50,000 products). Suggestions never create categories or brands.',warnings:extraction.warnings};
 }
 async function handle({suffix,req,cat,envelope,id,authContext,storageService,store,send,audit,privateFile,load}){
  const actor=String(authContext.email||authContext.userId||'').trim().toLowerCase();
  if(suffix==='/jobs'&&req.method==='POST'){
+  if(envelope.extraction.sheet_processing_version!==1)throw C.httpError(409,'ingestion_reextract_required');
   if(envelope.extraction.version!==2||envelope.extraction.mapping_required)throw C.httpError(400,'import_mapping_required');
+  if(envelope.extraction.sheet_reconciliation?.conflicts.length||envelope.extraction.sheet_reconciliation?.unmatched.length)throw C.httpError(409,'ingestion_sheet_resolution_required');
   // Fail closed before creating a manifest if the receipt migration has not been reviewed/applied locally.
   await cat.ingestionReceipts(actor,envelope.source_sha256);
   const body=await readJsonBody(req,2*1024*1024);
@@ -79,9 +81,10 @@ async function handle({suffix,req,cat,envelope,id,authContext,storageService,sto
 async function status(cat,job,actor){
  const receipts=await cat.ingestionReceipts(actor,job.source_sha256), failures=await cat.ingestionFailures(actor,job.job_id);
  const rows=job.items.map(i=>{const receipt=receipts.find(r=>r.candidate_key===i.id);return {id:i.id,name:i.content.name,status:i.action==='skip'?'skipped':i.action==='propose_update'?'proposed_update':receipt?(receipt.review_file===job.job_id?'draft_created':'conflict'):'pending',product_id:receipt?.product_id||i.target_id||null,...(i.action==='propose_update'?{proposal:{slug:i.slug,content:i.content,source_rows:i.source_rows}}:{})};});
- return {total:rows.length,failures,conflicts:rows.filter(r=>r.status==='conflict').length,completed:rows.filter(r=>['draft_created','skipped','proposed_update'].includes(r.status)).length,pending:rows.filter(r=>r.status==='pending').length,results:rows,automatic_updates:false};
+ return {reextract_required:job.extraction.sheet_processing_version!==1,total:rows.length,failures,conflicts:rows.filter(r=>r.status==='conflict').length,completed:rows.filter(r=>['draft_created','skipped','proposed_update'].includes(r.status)).length,pending:rows.filter(r=>r.status==='pending').length,results:rows,automatic_updates:false};
 }
 async function run({cat,job,actor,id,send,audit}){
+ if(job.extraction.sheet_processing_version!==1)throw C.httpError(409,'ingestion_reextract_required');
  const results=[],receipts=await cat.ingestionReceipts(actor,job.source_sha256),completed=new Map(receipts.map(r=>[r.candidate_key,r]));
  // Each request processes at most ten products. Checkpoint is the atomic immutable receipt, not browser state.
  for(const item of job.items.filter(x=>x.action==='create')){
