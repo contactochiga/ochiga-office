@@ -59,10 +59,19 @@ function ensureStyles() {
   style.textContent = `
     .cat input, .cat select, .cat textarea, .cat button { font-size: 13px; }
     .cat { --cat-radius: 10px; --cat-panel: #0e0e0c; --cat-row-sel: rgba(179,36,27,.14); color: var(--text-primary); }
-    .cat-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; margin: 4px 0 14px; flex-wrap: wrap; }
-    .cat-head h1 { margin: 0; font-size: 28px; font-weight: 700; letter-spacing: -.02em; display: inline; }
-    .cat-head .cat-sub { color: var(--text-tertiary); margin-left: 12px; font-size: 13.5px; }
-    .cat-head-actions { display: flex; gap: 10px; align-items: center; }
+    .cat-nav { display:flex; align-items:center; gap:12px; border-bottom:1px solid var(--line); margin-bottom:20px; min-width:0; }
+    .cat .catalogue-tabs { flex:1; min-width:0; overflow-x:auto; margin:0; border:0; }
+    .cat .catalogue-tabs .crm-tab { font-size:12.5px; white-space:nowrap; flex-shrink:0; }
+    .cat .btn-sm { font-size:12px; }
+    .cat-head-actions { flex-shrink:0; margin-bottom:8px; }
+    .cat-add-menu { position:relative; }
+    .cat-add-menu summary { list-style:none; display:flex; align-items:center; gap:6px; height:28px; line-height:14px; cursor:pointer; width:auto; margin:0; }
+    .cat-add-menu summary::-webkit-details-marker { display:none; }
+    .cat-add-menu summary svg { width:14px; height:14px; }
+    .cat-add-options { position:absolute; right:0; top:calc(100% + 6px); z-index:40; width:180px; padding:4px; border:1px solid var(--line-strong); border-radius:6px; background:var(--graphite); box-shadow:0 8px 24px #0006; }
+    .cat-add-options button { display:block; width:100%; text-align:left; padding:9px 10px; border:0; border-radius:4px; background:none; color:var(--text-primary); cursor:pointer; }
+    .cat-add-options button:hover,.cat-add-options button:focus-visible { background:var(--line); }
+    .cat :focus-visible { outline:2px solid var(--red); outline-offset:3px; }
     .cat-btn { display: inline-flex; align-items: center; gap: 8px; height: 36px; padding: 0 14px; border-radius: 8px; border: 1px solid var(--line-strong); background: transparent; color: var(--text-primary); font: inherit; font-weight: 600; cursor: pointer; white-space: nowrap; }
     .cat-btn:hover { border-color: var(--grey-500); }
     .cat-btn:disabled { opacity: .45; cursor: default; }
@@ -75,13 +84,12 @@ function ensureStyles() {
     .cat-split { display: grid; grid-template-columns: minmax(0, 55fr) minmax(0, 45fr); border-top: 0; min-height: 70vh; }
     .cat-left { padding: 16px 16px 16px 0; border-right: 1px solid var(--line); min-width: 0; }
     .cat-right { padding: 16px 0 16px 16px; min-width: 0; }
-    .cat-stats { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin-bottom: 14px; }
-    .cat-stat { display: flex; gap: 10px; align-items: center; padding: 12px; white-space: nowrap; overflow: hidden; border: 1px solid var(--line); border-radius: var(--cat-radius); background: var(--charcoal); cursor: pointer; text-align: left; color: inherit; font: inherit; }
-    .cat-stat.active { border-color: var(--red); }
-    .cat-stat svg { width: 22px; height: 22px; flex: 0 0 auto; color: var(--text-secondary); }
-    .cat-stat.published svg { color: #7fd9a0; }
-    .cat-stat b { display: block; font-size: 20px; line-height: 1.1; }
-    .cat-stat span { color: var(--text-tertiary); font-size: 12.5px; }
+    .cat-stats { display:flex; flex-wrap:wrap; gap:6px 16px; padding:0 0 10px; margin-bottom:12px; border-bottom:1px solid var(--line); }
+    .cat-stat { display:flex; align-items:center; gap:6px; padding:4px 0; border:0; border-bottom:1px solid transparent; border-radius:0; background:none; cursor:pointer; text-align:left; color:inherit; font:inherit; }
+    .cat-stat.active { border-bottom-color:var(--red); }
+    .cat-stat svg { display:none; }
+    .cat-stat b { display:inline; margin-right:5px; font-size:13px; font-weight:600; }
+    .cat-stat span { color:var(--text-tertiary); font-size:12px; }
     .cat-toolbar { display: flex; gap: 6px; align-items: center; margin-bottom: 10px; flex-wrap: wrap; }
     .cat-search { position: relative; flex: 1 1 150px; min-width: 120px; }
     .cat-search input { width: 100%; height: 34px; padding: 0 12px 0 34px; border-radius: 8px; border: 1px solid var(--line-strong); background: var(--charcoal); color: var(--text-primary); font: inherit; }
@@ -222,11 +230,9 @@ function ensureStyles() {
       .cat-back { display: inline-flex; margin-bottom: 10px; }
     }
     @media (max-width: 720px) {
-      .cat-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
       .cat-tr { grid-template-columns: minmax(0, 1fr) auto 32px; }
       .cat-tr > .opt { display: none; }
       .cat-fields { grid-template-columns: 1fr; }
-      .cat-head .cat-sub { display: block; margin: 4px 0 0; }
       .cat-gallery { grid-template-columns: 1fr 1fr; grid-template-rows: none; height: auto; }
       .cat-slot { min-height: 90px; } .cat-slot.cover { grid-row: auto; grid-column: 1 / -1; min-height: 140px; }
       .cat-mgrid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
@@ -351,21 +357,21 @@ export async function renderCatalogueRoute(outlet, rest, token, ui) {
     { key: "taxonomy", label: "Categories & brands", permission: "catalogue.read" },
     { key: "suppliers", label: "Suppliers", permission: "catalogue.cost.read" },
   ].filter((tab) => ui.hasPermission(tab.permission));
-  const current = section === "products" ? "" : section || "";
+  const current = ["products","import","ingestion"].includes(section) ? "" : section || "";
   outlet.innerHTML = "";
   setTopbar("Products", "");
   const root = el(`<div class="cat"></div>`);
   outlet.appendChild(root);
-  const head = el(`<div class="cat-head"><div><h1>Products</h1><span class="cat-sub">Office-managed catalogue — internal only</span></div><div class="cat-head-actions"></div></div>`);
-  root.appendChild(head);
-  const headActions = head.querySelector(".cat-head-actions");
-  const tabBar = el(`<div class="cat-tabs catalogue-tabs" role="tablist"></div>`);
+  const nav = el(`<div class="cat-nav"></div>`);
+  root.appendChild(nav);
+  const headActions = el(`<div class="cat-head-actions"></div>`);
+  const tabBar = el(`<div class="crm-tabs catalogue-tabs" role="tablist" aria-label="Products workspace"></div>`);
   tabs.forEach((tab) => {
-    const button = el(`<button type="button" role="tab" class="cat-tab ${tab.key === current ? "active" : ""}">${escapeHtml(tab.label)}</button>`);
+    const button = el(`<button type="button" role="tab" aria-selected="${tab.key === current}" class="crm-tab ${tab.key === current ? "active" : ""}">${escapeHtml(tab.label)}</button>`);
     button.addEventListener("click", () => ui.navigate(tab.key ? `catalogue/${tab.key}` : "catalogue"));
     tabBar.appendChild(button);
   });
-  root.appendChild(tabBar);
+  nav.append(tabBar, headActions);
   const host = el(`<div class="catalogue-host"></div>`);
   root.appendChild(host);
   host.appendChild(ui.skeletonPanel(4));
@@ -391,12 +397,17 @@ async function renderProductsWorkspace(host, headActions, selectedId, token, ui)
   if (token !== ui.state.renderToken) return;
   const categoryName = Object.fromEntries(categories.map((c) => [c.id, c.name]));
   if (ui.hasPermission("catalogue.write")) {
-    const add = el(`<button type="button" class="cat-btn cat-btn-primary" data-add-product>${ICONS.plus} Add product manually</button>`);
-    add.addEventListener("click", () => openNewProduct(ui, categories, brands));
-    headActions.appendChild(add);
-    const importer = el(`<button type="button" class="cat-btn" data-import-products>Import products</button>`);
-    importer.addEventListener("click", () => ui.navigate("catalogue/import"));
-    headActions.appendChild(importer);
+    const menu = el(`<details class="cat-add-menu"><summary class="btn btn-primary btn-sm" aria-haspopup="menu">${ICONS.plus} Add product <span aria-hidden="true">⌄</span></summary><div class="cat-add-options" role="menu" aria-label="Add product"><button type="button" role="menuitem" data-add-product>Add manually</button><button type="button" role="menuitem" data-import-products>Import products</button></div></details>`);
+    const trigger=menu.querySelector('summary');let listeners=null;
+    menu.addEventListener('toggle',()=>{listeners?.abort();if(!menu.open)return;listeners=new AbortController();document.addEventListener('pointerdown',event=>{if(!menu.contains(event.target))menu.open=false;},{signal:listeners.signal});});
+    menu.addEventListener('keydown',event=>{
+      const items=[...menu.querySelectorAll('[role=menuitem]')];
+      if(event.key==='Escape'){menu.open=false;trigger.focus();event.preventDefault();}
+      if(['ArrowDown','ArrowUp'].includes(event.key)){event.preventDefault();menu.open=true;const index=items.indexOf(document.activeElement);items[(index+(event.key==='ArrowDown'?1:items.length-1)+items.length)%items.length].focus();}
+    });
+    menu.querySelector('[data-add-product]').onclick=()=>{menu.open=false;openNewProduct(ui,categories,brands);};
+    menu.querySelector('[data-import-products]').onclick=()=>{menu.open=false;ui.navigate('catalogue/import');};
+    headActions.appendChild(menu);
   }
   host.innerHTML = "";
   const split = el(`<div class="cat-split ${selectedId ? "has-selection" : ""}"><div class="cat-left"></div><div class="cat-right"></div></div>`);
