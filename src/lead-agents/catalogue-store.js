@@ -144,6 +144,14 @@ class SupabaseCatalogueStore {
   updateBrand(id, expectedRowVersion, patch, actor) { return this.conditionalPatch("catalogue_brands", id, expectedRowVersion, { ...patch, updated_by: actor }); }
   async getBrand(id) { return (await this.get(`/catalogue_brands?id=eq.${encodeURIComponent(id)}`))[0] || null; }
 
+  async findImportSkus(skus) {
+    const result = [];
+    for (let i = 0; i < skus.length; i += 100) {
+      const valid = skus.slice(i, i + 100).filter((s) => /^[A-Z0-9][A-Z0-9._-]{1,63}$/.test(s));
+      if (valid.length) result.push(...await this.get(`/catalogue_variants?sku=in.(${valid.join(",")})&select=sku,product_id`));
+    }
+    return result;
+  }
   async listProducts({ workflowStatus, publicationStatus } = {}) {
     const filters = [];
     if (workflowStatus) filters.push(`workflow_status=eq.${encodeURIComponent(workflowStatus)}`);
@@ -401,6 +409,7 @@ class FileCatalogueStore {
   async updateBrand(id, v, patch, actor) { const item = this.taxonomyUpdate(this.s.brands, id, v, patch, actor); await this.persist(); return clone(item); }
 
   // ---- products
+  async findImportSkus(skus) { const wanted = new Set(skus); return clone(this.s.variants.filter((v) => wanted.has(v.sku)).map(({ sku, product_id }) => ({ sku, product_id }))); }
   async listProducts({ workflowStatus, publicationStatus } = {}) {
     return clone(this.s.products
       .filter((p) => (!workflowStatus || p.workflow_status === workflowStatus) && (!publicationStatus || p.publication_status === publicationStatus))

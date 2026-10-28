@@ -2264,6 +2264,7 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
         pathname === "/office/shared/oyi-core/presence.mjs" ||
         pathname === "/office/shared/oyi-core/responseNormalizer.mjs" ||
         pathname === "/office/catalogue/catalogue.mjs" ||
+        pathname === "/office/catalogue/import.mjs" ||
         pathname === "/office/manifest.json" ||
         pathname === "/office/sw.js";
       const isPublicAdminSessionPath =
@@ -3339,6 +3340,12 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           return;
         }
         await serveFile(res, officeOyiCoreResponseNormalizerPath);
+        return;
+      }
+
+      if (pathname === "/office/catalogue/import.mjs") {
+        if (req.method !== "GET") { methodNotAllowed(res, "GET"); return; }
+        await serveFile(res, path.join(process.cwd(), "public", "office", "catalogue", "import.mjs"));
         return;
       }
 
@@ -7068,8 +7075,8 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
         };
         authorizePermission(authContext, PURPOSE_PERMISSION[body.purpose] || "manage_storage");
         // product gallery images are created only by the catalogue media route (content validation, processing, catalogue permission)
-        if (String(body.purpose || "").toLowerCase() === "product_image") {
-          json(res, 403, { error: "forbidden", message: "Product images are uploaded from Products." }, { "x-request-id": ctx.requestId });
+        if (String(body.purpose || "").toLowerCase() === "product_image" || String(body.purpose || "").toLowerCase() === "catalogue_import") {
+          json(res, 403, { error: "forbidden", message: "Product media and import files are uploaded from Products." }, { "x-request-id": ctx.requestId });
           return;
         }
         const storedFile = await storageService.putDataUrl(body);
@@ -8506,7 +8513,7 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           return;
         }
         const filename = path.basename(decodeURIComponent(rawFilename));
-        const shareObject = filename.startsWith("product_image_") ? null : await storageService.getObject(filename);
+        const shareObject = (filename.startsWith("product_image_") || filename.startsWith("catalogue_import_")) ? null : await storageService.getObject(filename);
         if (!shareObject) {
           notFound(res);
           return;
@@ -8524,7 +8531,7 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
         authorizePermission(authContext, "view_storage");
         const filename = path.basename(decodeURIComponent(storageMatch[1]));
         // product gallery originals stay private and renditions are served only by the catalogue media route (catalogue.read)
-        if (filename.startsWith("product_image_")) {
+        if (filename.startsWith("product_image_") || filename.startsWith("catalogue_import_")) {
           notFound(res);
           return;
         }

@@ -159,6 +159,7 @@ async function handleCatalogueRequest({ req, res, ctx, pathname, authContext, st
     const cat = catalogueStoreFor(store);
     if (!(await cat.available())) return send(503, { error: "catalogue_unavailable", message: "The catalogue database objects are not installed." }), true;
     const actor = actorOf(authContext);
+    if (await require("./catalogue-import").handleImport({ sub, req, cat, authContext, storageService, store, send, audit })) return true;
     if (sub === "/merchandising" || sub === "/merchandising/options") {
       const M = require("./catalogue-merchandising");
       const { publicViews } = require("./catalogue-public-api");

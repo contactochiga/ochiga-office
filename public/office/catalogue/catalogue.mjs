@@ -370,7 +370,8 @@ export async function renderCatalogueRoute(outlet, rest, token, ui) {
   root.appendChild(host);
   host.appendChild(ui.skeletonPanel(4));
   try {
-    if (section === "merchandising") { const { renderMerchandising } = await import("./merchandising.mjs"); await renderMerchandising(host, token, ui); }
+    if (section === "import") { const { renderProductImport } = await import("./import.mjs"); await renderProductImport(host, token, ui); }
+    else if (section === "merchandising") { const { renderMerchandising } = await import("./merchandising.mjs"); await renderMerchandising(host, token, ui); }
     else if (section === "prices") await renderPriceQueue(host, token, ui);
     else if (section === "taxonomy") await renderTaxonomy(host, token, ui);
     else if (section === "suppliers") await renderSuppliers(host, token, ui);
@@ -389,9 +390,12 @@ async function renderProductsWorkspace(host, headActions, selectedId, token, ui)
   if (token !== ui.state.renderToken) return;
   const categoryName = Object.fromEntries(categories.map((c) => [c.id, c.name]));
   if (ui.hasPermission("catalogue.write")) {
-    const add = el(`<button type="button" class="cat-btn cat-btn-primary" data-add-product>${ICONS.plus} Add product</button>`);
+    const add = el(`<button type="button" class="cat-btn cat-btn-primary" data-add-product>${ICONS.plus} Add product manually</button>`);
     add.addEventListener("click", () => openNewProduct(ui, categories, brands));
     headActions.appendChild(add);
+    const importer = el(`<button type="button" class="cat-btn" data-import-products>Import products</button>`);
+    importer.addEventListener("click", () => ui.navigate("catalogue/import"));
+    headActions.appendChild(importer);
   }
   host.innerHTML = "";
   const split = el(`<div class="cat-split ${selectedId ? "has-selection" : ""}"><div class="cat-left"></div><div class="cat-right"></div></div>`);
