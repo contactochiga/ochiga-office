@@ -11,27 +11,30 @@ const fail = (code) => { throw C.httpError(400, code); };
 const text = (v) => v == null ? "" : v instanceof Date ? v.toISOString() : String(v).trim();
 const key = (v) => text(v).toLowerCase().replace(/[₦()]/g, " ").replace(/[_\-\/]+/g, " ").replace(/\s+/g, " ").trim();
 const ALIASES = {
-  name: ["name", "product", "product name", "item", "item name", "product title", "equipment"],
-  sku: ["sku", "product sku", "item code", "product code", "code", "variant sku", "suggested sku", "recommended sku", "sku code"],
-  category: ["category", "product category", "category name", "type"],
+  name: ["name", "product", "product name", "item", "item name", "product title", "equipment", "proposed listing title", "listing title", "office product title"],
+  sku: ["sku", "product sku", "item code", "product code", "code", "variant sku", "suggested sku", "recommended sku", "sku code", "ochiga provisional sku", "provisional sku", "internal sku", "internal sku proposed"],
+  category: ["category", "product category", "category name", "type", "office subcategory", "subcategory", "category subcategory"],
   manufacturer: ["manufacturer", "brand", "brand name", "make"],
-  model: ["model", "model number", "model no"],
+  brand_model_reference: ["brand confirmed model", "brand model", "brand and model"],
+  model: ["model", "model number", "model no", "manufacturer model"],
   description: ["description", "product description", "full description"],
   summary: ["summary", "short description"],
   specifications: ["specifications", "technical specifications", "technical specification", "key specifications", "specs", "features", "key features"],
   variant: ["variant", "variant name", "variation"],
   options: ["options", "variant options"],
   image: ["image", "images", "image url", "image urls", "photo", "image reference", "product image"],
-  supplier: ["supplier", "supplier name"],
+  supplier: ["supplier", "supplier name", "supplier action"],
   group: ["product id", "parent sku", "group id"],
+  source_reference: ["source", "source product photo page", "source reference", "source url", "product page", "use case", "priority", "outstanding checks", "moq", "stock status", "listing status", "supplier manufacturer permission", "pricing status", "sourcing oyi status", "product photo & price source", "second source", "image source page", "usage license status"],
   ignore: ["no", "no.", "s n", "sn", "s/n", "quantity", "qty", "stock", "stock quantity"],
 };
 function fieldFor(header) {
   const h = key(header);
+  if (/^(technical |key )?specifications?(?: |$)/.test(h)) return "specifications";
   for (const [field, names] of Object.entries(ALIASES)) if (names.includes(h)) return field;
-  if (/supplier.*(price|cost)|purchase.*(price|cost)|wholesale|landed.*cost/.test(h)) return "supplier_cost";
+  if (/supplier.*(price|cost|quote)|dealer.*(price|cost|quote)|purchase.*(price|cost)|wholesale|landed.*cost/.test(h)) return "supplier_cost";
   if (/price|retail|benchmark|rrp|msrp|selling|cost|amount|currency/.test(h)) return "retail_reference";
-  return h ? "specification" : "ignore";
+  return h ? "source_reference" : "ignore";
 }
 function money(raw) {
   const value = text(raw).replace(/^(NGN|₦)\s*/i, "").replace(/,/g, "");
@@ -49,7 +52,7 @@ async function extractTables(buffer, extension) {
     const options = [",", ";", "\t"].map((delimiter) => {
       try {
         const rows = parse(data, { bom: true, delimiter, relax_column_count: true, max_record_size: 64000 });
-        const score = Math.max(0, ...rows.slice(0, 30).map((row) => row.some((h) => fieldFor(h) === "name") ? row.filter((h) => !["specification", "ignore"].includes(fieldFor(h))).length : 0));
+        const score = Math.max(0, ...rows.slice(0, 30).map((row) => row.some((h) => fieldFor(h) === "name") ? row.filter((h) => !["specification", "source_reference", "ignore"].includes(fieldFor(h))).length : 0));
         return { rows, score };
       } catch { return { rows: [], score: -1 }; }
     }).sort((a, b) => b.score - a.score);
@@ -94,13 +97,43 @@ async function extractTables(buffer, extension) {
   }
   return { tables, warnings };
 }
-function candidatesFromTables({ tables, warnings = [] }) {
-  const candidates = [], mappings = [];
+const FIELDS = Object.freeze([...Object.keys(ALIASES), "specification", "retail_reference", "supplier_cost"]);
+const SINGLE_FIELDS = ["name", "sku", "category", "manufacturer", "model", "group", "variant", "description", "summary", "options"];
+const LOCKED_FIELDS = ["retail_reference", "supplier_cost", "supplier"];
+function inspectTables(tables, overrides = []) {
+  if (!Array.isArray(overrides) || overrides.length > LIMITS.sheets) fail("import_invalid_mapping");
+  if (new Set(overrides.map((o) => o?.sheet)).size !== overrides.length || overrides.some((o) => !o || !tables.some((t) => t.sheet === o.sheet))) fail("import_invalid_mapping");
+  return tables.map((table) => {
+    const choices = table.data.slice(0, 30).map((row, index) => {
+      const headings = row.map(text), fields = headings.map(fieldFor);
+      const hasIdentity = fields.some((f) => ["sku", "category", "description", "model"].includes(f));
+      const score = fields.includes("name") && hasIdentity ? fields.filter((f) => !["source_reference", "ignore", "specification"].includes(f)).length : 0;
+      return { row: index + 1, headings, fields, score };
+    }).filter((row) => row.headings.some(Boolean));
+    const strong = choices.filter((c) => c.score > 0).sort((a, b) => b.score - a.score);
+    const distinct = new Set(strong.map((c) => JSON.stringify(c.headings)));
+    const chosen = overrides.find((o) => o.sheet === table.sheet);
+    let selected = chosen ? choices.find((c) => c.row === chosen.row) : strong[0] || choices[0];
+    if (chosen?.include === false && !selected && !choices.length) selected = {row:1,headings:[],fields:[],score:0};
+    if (chosen && ((chosen.include !== undefined && typeof chosen.include !== "boolean") || !selected || !Array.isArray(chosen.fields) || chosen.fields.length !== selected.headings.length || chosen.fields.some((f) => !FIELDS.includes(f)))) fail("import_invalid_mapping");
+    selected ||= { row: 1, headings: [], fields: [], score: 0 };
+    const fields = chosen ? selected.fields.map((original, i) => LOCKED_FIELDS.includes(original) ? original : chosen.fields[i]) : selected.fields;
+    const reasons = [];
+    if (!fields.includes("name")) reasons.push("No product-name column mapped.");
+    if (!fields.some((f) => ["sku", "category", "description", "model"].includes(f))) reasons.push("No SKU, category, description or model column mapped.");
+    if (!chosen && distinct.size > 1) reasons.push("Multiple possible header rows; choose the product table explicitly.");
+    for (const field of SINGLE_FIELDS) if (fields.filter((f) => f === field).length > 1) reasons.push(`Multiple columns map to ${field}; select one and retain the others as source references.`);
+    if (chosen?.include === false) reasons.push("Sheet excluded by reviewer.");
+    return { sheet: table.sheet, total_rows: table.data.length, row: selected.row, headings: selected.headings, fields, accepted: reasons.length === 0, reasons, header_choices: choices.map(({row,headings}) => ({row,headings})) };
+  });
+}
+function candidatesFromTables({ tables, warnings = [] }, overrides = []) {
+  const candidates = [], mappings = [], diagnostics = inspectTables(tables, overrides);
   for (const table of tables) {
-    const headerIndex = table.data.findIndex((row, i) => i < 30 && row.some((h) => fieldFor(h) === "name") && row.filter((h) => !["specification", "ignore"].includes(fieldFor(h))).length >= 2);
-    if (headerIndex < 0) { warnings.push(`No product header detected in ${table.sheet}; sheet skipped.`); continue; }
-    const headers = table.data[headerIndex].map(text), fields = headers.map(fieldFor);
-    mappings.push({ sheet: table.sheet, row: headerIndex + 1, columns: headers.map((header, i) => ({ column: i + 1, header, field: fields[i] })) });
+    const diagnostic = diagnostics.find((d) => d.sheet === table.sheet);
+    if (!diagnostic.accepted) { warnings.push(`${table.sheet}: ${diagnostic.reasons.join(" ")}`); continue; }
+    const headerIndex = diagnostic.row - 1, headers = diagnostic.headings, fields = diagnostic.fields;
+    mappings.push({ sheet: table.sheet, row: headerIndex + 1, columns: headers.map((header, i) => ({ column: i + 1, header, field: fields[i], locked: LOCKED_FIELDS.includes(fieldFor(header)) })) });
     const groups = new Map();
     table.data.slice(headerIndex + 1).forEach((row, offset) => {
       if (!row.some((cell) => text(cell))) return;
@@ -111,10 +144,11 @@ function candidatesFromTables({ tables, warnings = [] }) {
       const group = values.group || (values.name ? `${values.name}\0${values.model || ""}` : `row-${source.row}`);
       let item = groups.get(group);
       if (!item) {
-        item = { id: `${mappings.length}:${source.row}`, source_rows: [], name: values.name || "", model: values.model || "", manufacturer: values.manufacturer || "", category: values.category || "", summary: values.summary || "", description: values.description || "", specifications: [], variants: [], retail_references: [], supplier_references: [], image_references: [], warnings: [] };
+        item = { id: `${mappings.length}:${source.row}`, source_rows: [], name: values.name || "", model: values.model || "", manufacturer: values.manufacturer || "", category: values.category || "", summary: values.summary || "", description: values.description || "", specifications: [], variants: [], retail_references: [], supplier_references: [], image_references: [], source_references: [], brand_model_reference: values.brand_model_reference || "", warnings: [] };
         groups.set(group, item); candidates.push(item);
       }
       item.source_rows.push(source);
+      if (values.brand_model_reference) item.warnings.push("Combined brand/model source is unverified; confirm manufacturer and model separately before publishing.");
       if (fields.some((field, i) => field === "sku" && typeof row[i] === "number")) item.warnings.push("Numeric SKU: verify leading zeros and formatting against the source workbook.");
       const formula = (v) => /^[=+@]/.test(v);
       row.forEach((cell, i) => {
@@ -123,8 +157,9 @@ function candidatesFromTables({ tables, warnings = [] }) {
         if (formula(value)) { item.warnings.push(`Formula-like value in ${headers[i]} requires manual review.`); return; }
         const explicitNgn = /\bNGN\b|₦/i.test(`${headers[i]} ${value}`);
         if (field === "retail_reference") item.retail_references.push({ label: headers[i], value, ngn_kobo: explicitNgn ? money(value) : null, currency: explicitNgn ? "NGN" : "unspecified", ...source });
-        else if (field === "supplier_cost" || field === "supplier") item.supplier_references.push({ label: headers[i], value, ngn_kobo: field === "supplier_cost" && explicitNgn ? money(value) : null, ...source });
+        else if (field === "supplier_cost" || field === "supplier") item.supplier_references.push({ label: headers[i], kind: field, value, ngn_kobo: field === "supplier_cost" && explicitNgn ? money(value) : null, ...source });
         else if (field === "image") item.image_references.push({ value, ...source });
+        else if (field === "source_reference" || field === "brand_model_reference") item.source_references.push({ label: headers[i], value, ...source });
         else if (field === "specification" || field === "specifications") {
           if (!item.specifications.some((s) => s.key === headers[i] && s.value === value)) {
             if (item.specifications.some((s) => s.key === headers[i])) item.warnings.push(`Conflicting ${headers[i]} values across variant rows; review specifications.`);
@@ -141,14 +176,16 @@ function candidatesFromTables({ tables, warnings = [] }) {
     });
   }
   if (candidates.length > LIMITS.candidates) fail("import_product_limit");
-  return { candidates, mappings, warnings: warnings.slice(0, 200), contains_supplier_data: candidates.some((c) => c.supplier_references.length) };
+  // Permission checks cover raw source data even on skipped sheets or after a reviewer remaps columns.
+  const supplierSource = tables.some((t) => t.data.slice(0,30).some((row, ri) => row.some((h, ci) => ["supplier", "supplier_cost"].includes(fieldFor(h)) && t.data.slice(ri+1).some((r) => text(r[ci])))));
+  return { candidates, mappings, diagnostics, mapping_fields: FIELDS, mapping_required: candidates.length === 0 || diagnostics.some((d) => !d.reasons.includes("Sheet excluded by reviewer.") && d.reasons.some((r) => /Multiple/.test(r))), warnings: warnings.slice(0, 200), contains_supplier_data: supplierSource || candidates.some((c) => c.supplier_references.length) };
 }
 let active = 0;
-function extract(buffer, extension) {
+function extract(buffer, extension, mapping = []) {
   if (active >= 2) return Promise.reject(C.httpError(429, "import_busy"));
   active++;
   return new Promise((resolve, reject) => {
-    const worker = new Worker(__filename, { workerData: { buffer, extension }, resourceLimits: { maxOldGenerationSizeMb: 128 } });
+    const worker = new Worker(__filename, { workerData: { buffer, extension, mapping }, resourceLimits: { maxOldGenerationSizeMb: 128 } });
     let done = false;
     const finish = (error, value) => { if (done) return; done = true; clearTimeout(timer); active--; worker.terminate(); error ? reject(error) : resolve(value); };
     const timer = setTimeout(() => finish(C.httpError(422, "import_parse_timeout")), 15000);
@@ -157,5 +194,5 @@ function extract(buffer, extension) {
     worker.once("exit", () => { if (!done) finish(C.httpError(422, "invalid_import_file")); });
   });
 }
-if (!isMainThread) extractTables(Buffer.from(workerData.buffer), workerData.extension).then(candidatesFromTables).then((v) => parentPort.postMessage(v)).catch((e) => parentPort.postMessage({ error: e.code?.startsWith("import_") || ["unsupported_import_format", "active_workbook_not_supported", "unsafe_workbook_xml"].includes(e.code) ? e.code : "invalid_import_file" }));
-module.exports = { extract, extractTables, candidatesFromTables, fieldFor, money, LIMITS };
+if (!isMainThread) extractTables(Buffer.from(workerData.buffer), workerData.extension).then((tables) => candidatesFromTables(tables, workerData.mapping)).then((v) => parentPort.postMessage(v)).catch((e) => parentPort.postMessage({ error: e.code?.startsWith("import_") || ["unsupported_import_format", "active_workbook_not_supported", "unsafe_workbook_xml"].includes(e.code) ? e.code : "invalid_import_file" }));
+module.exports = { extract, extractTables, candidatesFromTables, fieldFor, money, LIMITS, inspectTables, FIELDS };

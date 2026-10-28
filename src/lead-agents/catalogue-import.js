@@ -49,6 +49,7 @@ async function preview(cat, extraction) {
     if (!c.image_references.length) warnings.push("Images missing. Gallery can be added after draft creation.");
     else warnings.push("Image references retained only; no remote images downloaded or validated.");
     if (!c.supplier_references.length) warnings.push("Supplier information and supplier cost missing.");
+    else if (!c.supplier_references.some((r) => r.kind === "supplier_cost" && r.ngn_kobo !== null)) warnings.push("Supplier cost missing or unverified; request a dealer quote.");
     if (!c.retail_references.length) warnings.push("Retail-price reference missing. Selling price remains unapproved.");
     else warnings.push("All spreadsheet prices are unapproved references; no selling price will be set.");
     const duplicates = c.variants.map((v) => v.sku).filter((s) => counts.get(s) > 1 || existing.some((v) => v.sku === s));
@@ -69,23 +70,35 @@ async function handleImport({ sub, req, cat, authContext, storageService, store,
     if (!["csv", "xlsx"].includes(ext)) throw C.httpError(415, "unsupported_import_format");
     const buffer = await readBytes(req);
     const extraction = await extract(buffer, ext);
-    if (!extraction.candidates.length) throw C.httpError(422, "no_product_rows_detected");
     if (extraction.contains_supplier_data) C.requireCataloguePermission(authContext, P.costRead);
     const docId = crypto.randomUUID(), sourceHash = SHA(buffer);
     const source = await privateFile(storageService, store, buffer, `.${ext}`, docId);
-    const envelope = { kind: "product_import_v1", owner: actor, document_id: docId, name, source_file: source, source_sha256: sourceHash, extraction };
+    const envelope = { kind: "product_import_v1", owner: actor, document_id: docId, name, source_file: source, extension: ext, source_sha256: sourceHash, extraction };
     const id = await privateFile(storageService, store, Buffer.from(JSON.stringify(envelope)), ".json", docId);
     // Existing Documents registry gets a safe index only. Source/cost values never enter its broadly readable metadata or shares.
     const doc = await store.createOfficeDocument({ id: docId, title: `Product import: ${name}`, document_type: "product_import", status: "draft", owner: actor, related_type: "catalogue_import", related_id: id, metadata: { source_sha256: sourceHash, candidate_count: extraction.candidates.length, private_source: true } });
     if (doc.sync_status === "schema_pending") throw C.httpError(503, "import_documents_unavailable");
     await audit("catalogue_import_previewed", "office_document", docId, { source_sha256: sourceHash, candidate_count: extraction.candidates.length });
-    send(201, { id, document_id: docId, name, ...(await preview(cat, extraction)) }); return true;
+    send(extraction.candidates.length ? 201 : 202, { id, document_id: docId, name, ...(await preview(cat, extraction)) }); return true;
   }
-  const match = /^\/imports\/([^/]+)(\/drafts)?$/.exec(sub);
+  const match = /^\/imports\/([^/]+)(\/(?:drafts|mapping))?$/.exec(sub);
   if (!match) throw C.httpError(404, "not_found");
   const id = match[1], envelope = await load(storageService, id, authContext);
   if (!match[2] && req.method === "GET") { send(200, { id, name: envelope.name, ...(await preview(cat, envelope.extraction)) }); return true; }
+  if (match[2] === "/mapping" && req.method === "POST") {
+    const body = await readJsonBody(req, 128 * 1024);
+    if (!body || !Array.isArray(body.mapping)) throw C.httpError(400, "import_invalid_mapping");
+    const source = await storageService.getObject(envelope.source_file);
+    if (!source || SHA(source.buffer) !== envelope.source_sha256) throw C.httpError(409, "import_source_changed");
+    const extraction = await extract(source.buffer, envelope.extension || envelope.name.split(".").pop().toLowerCase(), body.mapping);
+    if (extraction.contains_supplier_data) C.requireCataloguePermission(authContext, P.costRead);
+    const updated = { ...envelope, extraction, previous_preview: id };
+    const updatedId = await privateFile(storageService, store, Buffer.from(JSON.stringify(updated)), ".json", envelope.document_id);
+    await audit("catalogue_import_mapped", "office_document", envelope.document_id, { source_sha256: envelope.source_sha256, candidate_count: extraction.candidates.length, previous_preview: id, preview: updatedId });
+    send(200, { id: updatedId, name: envelope.name, ...(await preview(cat, extraction)) }); return true;
+  }
   if (!match[2] || req.method !== "POST") throw C.httpError(405, "method_not_allowed");
+  if (envelope.extraction.mapping_required) throw C.httpError(400, "import_mapping_required");
   const body = await readJsonBody(req, 1024 * 1024);
   if (!body || typeof body !== "object" || body.confirm_drafts_only !== true || !Array.isArray(body.items) || !body.items.length || body.items.length > LIMITS.candidates) throw C.httpError(400, "import_confirmation_required");
   const seenIds = new Set(), seenSkus = new Set(), seenSlugs = new Set();

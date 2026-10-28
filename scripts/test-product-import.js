@@ -42,6 +42,10 @@ async function main() {
   for (const [name, b, ext] of [["corrupt XLSX", Buffer.from("not a workbook"), "xlsx"], ["oversized file", Buffer.alloc(5 * 1024 * 1024 + 1), "csv"], ["active content", Buffer.from(zipSync({ "xl/vbaProject.bin": new Uint8Array([1]) })), "xlsx"]]) {
     await assert.rejects(extract(b, ext)); checks++; console.log(`PASS reject ${name}`);
   }
+  if (process.argv.includes("--extract-only")) {
+    console.log(JSON.stringify({ suite: "product-import-extraction-only", checks, failed: 0 }));
+    return;
+  }
   const app = await startLocal({ directory: fs.mkdtempSync(path.join(os.tmpdir(), "product-import-test-")) });
   try {
     const cookies = {};

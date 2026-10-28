@@ -1,5 +1,7 @@
 # Intelligent Product Import V1 — local engineering review
 
+Update: actual residential/commercial workbook extraction was subsequently corrected and verified at 12/12 and 15/15. See [REAL-WORKBOOK-CORRECTION.md](REAL-WORKBOOK-CORRECTION.md) for current evidence and manual retest instructions. The original validation and pending-workbook statements below describe the initial feature review, not the corrected acceptance result.
+
 Date: 28 October 2026. Branch: `codex/intelligent-product-import-v1`.
 Worktree: `/Users/ochigaidoko/getoyi-work/office-product-import`.
 Baseline: reviewed Phase 3 Office `2cb6c76`. This branch deliberately excludes the separate Phase 4 financial work.
