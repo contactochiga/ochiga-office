@@ -31,11 +31,12 @@ async function load(storage, id, auth) {
   const object = await storage.getObject(id);
   if (!object) throw C.httpError(404, "import_not_found");
   const envelope = JSON.parse(object.buffer.toString("utf8"));
-  if (envelope.kind !== "product_import_v1" || envelope.owner !== actorOf(auth)) throw C.httpError(404, "import_not_found");
+  if (!["product_import_v1", "product_ingestion_job_v2"].includes(envelope.kind) || envelope.owner !== actorOf(auth)) throw C.httpError(404, "import_not_found");
   if (envelope.extraction.contains_supplier_data) C.requireCataloguePermission(auth, P.costRead);
   return envelope;
 }
-async function preview(cat, extraction) {
+async function preview(cat, extraction, query) {
+  if (extraction.version === 2) return require("./catalogue-ingestion").preview(cat, extraction, query);
   const [categories, brands, products] = await Promise.all([cat.listCategories(), cat.listBrands(), cat.listProducts()]);
   const allSkus = extraction.candidates.flatMap((c) => c.variants.map((v) => v.sku)).filter((s) => /^[A-Z0-9][A-Z0-9._-]{1,63}$/.test(s));
   const existing = await cat.findImportSkus(allSkus);
@@ -69,7 +70,8 @@ async function handleImport({ sub, req, cat, authContext, storageService, store,
     const ext = name.split(".").pop().toLowerCase();
     if (!["csv", "xlsx"].includes(ext)) throw C.httpError(415, "unsupported_import_format");
     const buffer = await readBytes(req);
-    const extraction = await extract(buffer, ext);
+    const version = new URL(req.url,"http://localhost").searchParams.get("version") === "2" ? 2 : 1;
+    const extraction = await extract(buffer, ext, [], version);
     if (extraction.contains_supplier_data) C.requireCataloguePermission(authContext, P.costRead);
     const docId = crypto.randomUUID(), sourceHash = SHA(buffer);
     const source = await privateFile(storageService, store, buffer, `.${ext}`, docId);
@@ -81,16 +83,24 @@ async function handleImport({ sub, req, cat, authContext, storageService, store,
     await audit("catalogue_import_previewed", "office_document", docId, { source_sha256: sourceHash, candidate_count: extraction.candidates.length });
     send(extraction.candidates.length ? 201 : 202, { id, document_id: docId, name, ...(await preview(cat, extraction)) }); return true;
   }
-  const match = /^\/imports\/([^/]+)(\/(?:drafts|mapping))?$/.exec(sub);
+  const match = /^\/imports\/([^/]+)(\/(?:drafts|mapping|jobs|run))?$/.exec(sub);
   if (!match) throw C.httpError(404, "not_found");
   const id = match[1], envelope = await load(storageService, id, authContext);
-  if (!match[2] && req.method === "GET") { send(200, { id, name: envelope.name, ...(await preview(cat, envelope.extraction)) }); return true; }
+  const ING = require("./catalogue-ingestion");
+  if (envelope.kind === "product_ingestion_job_v2") {
+    envelope.job_id = id;
+    if (!match[2] && req.method === "GET") { send(200,{job:id,source_preview:envelope.source_preview,...await ING.status(cat,envelope,actor)});return true; }
+    if (match[2] === "/run" && req.method === "POST") { const body=await readJsonBody(req,4096);if(body?.confirm_drafts_only!==true)throw C.httpError(400,"import_confirmation_required"); await ING.run({cat,job:envelope,actor,id,send,audit});return true; }
+    throw C.httpError(405,"method_not_allowed");
+  }
+  if (match[2] === "/jobs" && await ING.handle({suffix:match[2],req,cat,envelope,id,authContext,storageService,store,send,audit,privateFile,load}))return true;
+  if (!match[2] && req.method === "GET") { send(200, { id, name: envelope.name, ...(await preview(cat, envelope.extraction, new URL(req.url,"http://localhost").searchParams)) }); return true; }
   if (match[2] === "/mapping" && req.method === "POST") {
     const body = await readJsonBody(req, 128 * 1024);
     if (!body || !Array.isArray(body.mapping)) throw C.httpError(400, "import_invalid_mapping");
     const source = await storageService.getObject(envelope.source_file);
     if (!source || SHA(source.buffer) !== envelope.source_sha256) throw C.httpError(409, "import_source_changed");
-    const extraction = await extract(source.buffer, envelope.extension || envelope.name.split(".").pop().toLowerCase(), body.mapping);
+    const extraction = await extract(source.buffer, envelope.extension || envelope.name.split(".").pop().toLowerCase(), body.mapping, envelope.extraction.version || 1);
     if (extraction.contains_supplier_data) C.requireCataloguePermission(authContext, P.costRead);
     const updated = { ...envelope, extraction, previous_preview: id };
     const updatedId = await privateFile(storageService, store, Buffer.from(JSON.stringify(updated)), ".json", envelope.document_id);
@@ -98,6 +108,7 @@ async function handleImport({ sub, req, cat, authContext, storageService, store,
     send(200, { id: updatedId, name: envelope.name, ...(await preview(cat, extraction)) }); return true;
   }
   if (!match[2] || req.method !== "POST") throw C.httpError(405, "method_not_allowed");
+  if (envelope.extraction.version === 2) throw C.httpError(400,"ingestion_job_required");
   if (envelope.extraction.mapping_required) throw C.httpError(400, "import_mapping_required");
   const body = await readJsonBody(req, 1024 * 1024);
   if (!body || typeof body !== "object" || body.confirm_drafts_only !== true || !Array.isArray(body.items) || !body.items.length || body.items.length > LIMITS.candidates) throw C.httpError(400, "import_confirmation_required");

@@ -127,7 +127,7 @@ function inspectTables(tables, overrides = []) {
     return { sheet: table.sheet, total_rows: table.data.length, row: selected.row, headings: selected.headings, fields, accepted: reasons.length === 0, reasons, header_choices: choices.map(({row,headings}) => ({row,headings})) };
   });
 }
-function candidatesFromTables({ tables, warnings = [] }, overrides = []) {
+function candidatesFromTables({ tables, warnings = [] }, overrides = [], version = 1) {
   const candidates = [], mappings = [], diagnostics = inspectTables(tables, overrides);
   for (const table of tables) {
     const diagnostic = diagnostics.find((d) => d.sheet === table.sheet);
@@ -141,7 +141,7 @@ function candidatesFromTables({ tables, warnings = [] }, overrides = []) {
       fields.forEach((field, i) => { if (text(row[i]) && !values[field]) values[field] = text(row[i]); });
       if (values.name && fieldFor(values.name) === "name" && values.sku && fieldFor(values.sku) === "sku") return; // repeated page header
       const source = { sheet: table.sheet, row: headerIndex + offset + 2 };
-      const group = values.group || (values.name ? `${values.name}\0${values.model || ""}` : `row-${source.row}`);
+      const group = values.group || (version === 2 ? `row-${source.row}` : values.name ? `${values.name}\0${values.model || ""}` : `row-${source.row}`);
       let item = groups.get(group);
       if (!item) {
         item = { id: `${mappings.length}:${source.row}`, source_rows: [], name: values.name || "", model: values.model || "", manufacturer: values.manufacturer || "", category: values.category || "", summary: values.summary || "", description: values.description || "", specifications: [], variants: [], retail_references: [], supplier_references: [], image_references: [], source_references: [], brand_model_reference: values.brand_model_reference || "", warnings: [] };
@@ -175,17 +175,17 @@ function candidatesFromTables({ tables, warnings = [] }, overrides = []) {
       if (!values.name) item.warnings.push("Product name missing; row retained for review.");
     });
   }
-  if (candidates.length > LIMITS.candidates) fail("import_product_limit");
+  if (candidates.length > (version === 2 ? 1000 : LIMITS.candidates)) fail("import_product_limit");
   // Permission checks cover raw source data even on skipped sheets or after a reviewer remaps columns.
   const supplierSource = tables.some((t) => t.data.slice(0,30).some((row, ri) => row.some((h, ci) => ["supplier", "supplier_cost"].includes(fieldFor(h)) && t.data.slice(ri+1).some((r) => text(r[ci])))));
   return { candidates, mappings, diagnostics, mapping_fields: FIELDS, mapping_required: candidates.length === 0 || diagnostics.some((d) => !d.reasons.includes("Sheet excluded by reviewer.") && d.reasons.some((r) => /Multiple/.test(r))), warnings: warnings.slice(0, 200), contains_supplier_data: supplierSource || candidates.some((c) => c.supplier_references.length) };
 }
 let active = 0;
-function extract(buffer, extension, mapping = []) {
+function extract(buffer, extension, mapping = [], version = 1) {
   if (active >= 2) return Promise.reject(C.httpError(429, "import_busy"));
   active++;
   return new Promise((resolve, reject) => {
-    const worker = new Worker(__filename, { workerData: { buffer, extension, mapping }, resourceLimits: { maxOldGenerationSizeMb: 128 } });
+    const worker = new Worker(__filename, { workerData: { buffer, extension, mapping, version }, resourceLimits: { maxOldGenerationSizeMb: 128 } });
     let done = false;
     const finish = (error, value) => { if (done) return; done = true; clearTimeout(timer); active--; worker.terminate(); error ? reject(error) : resolve(value); };
     const timer = setTimeout(() => finish(C.httpError(422, "import_parse_timeout")), 15000);
@@ -194,5 +194,5 @@ function extract(buffer, extension, mapping = []) {
     worker.once("exit", () => { if (!done) finish(C.httpError(422, "invalid_import_file")); });
   });
 }
-if (!isMainThread) extractTables(Buffer.from(workerData.buffer), workerData.extension).then((tables) => candidatesFromTables(tables, workerData.mapping)).then((v) => parentPort.postMessage(v)).catch((e) => parentPort.postMessage({ error: e.code?.startsWith("import_") || ["unsupported_import_format", "active_workbook_not_supported", "unsafe_workbook_xml"].includes(e.code) ? e.code : "invalid_import_file" }));
+if (!isMainThread) extractTables(Buffer.from(workerData.buffer), workerData.extension).then((tables) => { const result = candidatesFromTables(tables, workerData.mapping, workerData.version); return workerData.version === 2 ? require("./ingestion-evidence").enrichExtraction(result, tables.tables) : result; }).then((v) => parentPort.postMessage(v)).catch((e) => parentPort.postMessage({ error: e.code?.startsWith("import_") || ["unsupported_import_format", "active_workbook_not_supported", "unsafe_workbook_xml"].includes(e.code) ? e.code : "invalid_import_file" }));
 module.exports = { extract, extractTables, candidatesFromTables, fieldFor, money, LIMITS, inspectTables, FIELDS };

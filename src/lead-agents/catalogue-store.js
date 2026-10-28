@@ -59,6 +59,8 @@ class SupabaseCatalogueStore {
     if (!response) throw error;
     const data = response.data || {};
     if (data.code === "PGRST202" || data.code === "42883" || data.code === "42P01" || data.code === "PGRST205" || data.code === "PGRST200") {
+      // Optional ingestion migration must never disable manual creation or V1.
+      if (/catalogue_ingestion_/.test(JSON.stringify(data))) throw httpError(503, "ingestion_unavailable");
       // a missing media object (20261104 not installed or rolled back) disables media only, never the rest of the catalogue
       if (/catalogue_(public|slug_redirect|preview|change_slug|create_preview|revoke_preview)/.test(JSON.stringify(data))) {
         this.publicCapability = false;
@@ -144,6 +146,19 @@ class SupabaseCatalogueStore {
   updateBrand(id, expectedRowVersion, patch, actor) { return this.conditionalPatch("catalogue_brands", id, expectedRowVersion, { ...patch, updated_by: actor }); }
   async getBrand(id) { return (await this.get(`/catalogue_brands?id=eq.${encodeURIComponent(id)}`))[0] || null; }
 
+  async ingestionFailures(actor,job) { return this.get(`/audit_events?actor_email=eq.${encodeURIComponent(actor)}&action=eq.catalogue_ingestion_stopped&metadata->>job=eq.${encodeURIComponent(job)}&select=created_at,metadata&order=created_at.desc&limit=20`); }
+  async ingestionReceipts(actor, source) {
+    try { return (await this.client.get(`/catalogue_ingestion_receipts?actor=eq.${encodeURIComponent(actor)}&source_sha256=eq.${source}&limit=1000`)).data; }
+    catch(error){if(error.response?.status===404)throw httpError(503,"ingestion_unavailable");throw httpError(503,"ingestion_read_unavailable");}
+  }
+  createIngestedDraft({actor,source,candidate,review,slug,categoryId,brandId,content}) { return this.rpc("catalogue_ingestion_create", {p_actor:actor,p_source:source,p_candidate:candidate,p_review:review,p_slug:slug,p_category:categoryId,p_brand:brandId,p_content:content}); }
+  async importIdentityIndex() {
+    const result=[];
+    for(let offset=0;offset<50000;offset+=200){
+      const page=await this.rpc("catalogue_ingestion_identity_page",{p_offset:offset});result.push(...page);
+      if(page.length<200)return result;
+    }throw httpError(422,"ingestion_catalogue_limit");
+  }
   async findImportSkus(skus) {
     const result = [];
     for (let i = 0; i < skus.length; i += 100) {
@@ -409,6 +424,31 @@ class FileCatalogueStore {
   async updateBrand(id, v, patch, actor) { const item = this.taxonomyUpdate(this.s.brands, id, v, patch, actor); await this.persist(); return clone(item); }
 
   // ---- products
+  async ingestionFailures(actor,job) {return clone((this.store.state.audit_events||[]).filter(r=>r.actor_email===actor&&r.action==='catalogue_ingestion_stopped'&&r.metadata?.job===job).slice(-20));}
+  async importIdentityIndex() { return this.listProducts(); }
+  async ingestionReceipts(actor, source) { return clone((this.s.ingestion_receipts||[]).filter(r=>r.actor===actor&&r.source_sha256===source)); }
+  async createIngestedDraft(args) {
+    // File mode is the existing single-process local rehearsal store. Production uses the atomic DB RPC.
+    const run=async()=>{
+      const {actor,source,candidate,review,slug,categoryId,brandId,content}=args;
+      const fingerprint=crypto.createHash("sha256").update(JSON.stringify({slug,categoryId,brandId,content})).digest("hex");
+      const prior=(await this.ingestionReceipts(actor,source)).find(r=>r.candidate_key===candidate);
+      if(prior){if(prior.request_hash!==fingerprint)throw httpError(409,"ingestion_receipt_mismatch");return prior;}
+      if((await this.getCategory(categoryId))?.status!=="active")throw httpError(400,"category_not_found");
+      if(brandId&&(await this.getBrand(brandId))?.status!=="active")throw httpError(400,"brand_not_found");
+      const before=JSON.stringify(this.store.state), state=clone(this.store.state), temporary={state,persist:async()=>{}};
+      const staged=new FileCatalogueStore(temporary);
+      const product=await staged.createProduct({slug,categoryId,brandId,content,actor});
+      const receipt={actor,source_sha256:source,candidate_key:candidate,request_hash:fingerprint,product_id:product.id,review_file:review,created_at:nowIso()};
+      (staged.s.ingestion_receipts ||= []).push(receipt);
+      (state.audit_events ||= []).push({id:crypto.randomUUID(),actor_email:actor,action:"catalogue_product_imported",target_type:"catalogue_product",target_id:product.id,metadata:{version:1,source_sha256:source,candidate_key:candidate,review_file:review,pricing:"unapproved_source_reference",ingestion_version:2},created_at:nowIso()});
+      if(JSON.stringify(this.store.state)!==before)throw httpError(409,"state_changed");
+      const previous=this.store.state;this.store.state=state;
+      try{await this.persist();}catch(error){this.store.state=previous;throw error;}
+      return clone(receipt);
+    };
+    const pending=(this.store.ingestionQueue||Promise.resolve()).then(run);this.store.ingestionQueue=pending.catch(()=>{});return pending;
+  }
   async findImportSkus(skus) { const wanted = new Set(skus); return clone(this.s.variants.filter((v) => wanted.has(v.sku)).map(({ sku, product_id }) => ({ sku, product_id }))); }
   async listProducts({ workflowStatus, publicationStatus } = {}) {
     return clone(this.s.products
