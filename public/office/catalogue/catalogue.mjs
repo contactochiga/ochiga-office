@@ -370,7 +370,8 @@ export async function renderCatalogueRoute(outlet, rest, token, ui) {
   root.appendChild(host);
   host.appendChild(ui.skeletonPanel(4));
   try {
-    if (section === "import") { const { renderProductImport } = await import("./import.mjs"); await renderProductImport(host, token, ui); }
+    if (section === "ingestion") { const { renderIngestion } = await import("./ingestion.mjs"); await renderIngestion(host, token, ui); }
+    else if (section === "import") { const { renderProductImport } = await import("./import.mjs"); await renderProductImport(host, token, ui); }
     else if (section === "merchandising") { const { renderMerchandising } = await import("./merchandising.mjs"); await renderMerchandising(host, token, ui); }
     else if (section === "prices") await renderPriceQueue(host, token, ui);
     else if (section === "taxonomy") await renderTaxonomy(host, token, ui);

@@ -1,0 +1,45 @@
+{
+  "baseline": "2304a3fdfdd80f8005266e7a986172f21fa1459b",
+  "scope": "isolated local only",
+  "fixture": {
+    "filename": "GetOyi_50_Products_Office_Import_Only.xlsx",
+    "sha256": "5c638fa4072be739a02a2d6a10012ba71cf76ad166230539808981115e176f69",
+    "candidates": 50,
+    "category_matches": 46,
+    "category_exceptions": 4,
+    "source_specification_attributes": 141,
+    "products_requiring_qualified_spec_review": 50,
+    "source_products_created": 0
+  },
+  "suites": {
+    "ingestion_http": 21,
+    "ingestion_sql": 16,
+    "ingestion_edges": 10,
+    "v1_import": 33,
+    "v1_actual_workbooks": 25,
+    "v1_feedback": 10,
+    "v1_persistence": 8,
+    "catalogue_model": 56,
+    "catalogue_api": 104,
+    "catalogue_media": 25,
+    "catalogue_media_failures": 8,
+    "public_projection": 8,
+    "v1_postgres": 10
+  },
+  "targeted_assertion_groups": 334,
+  "failed": 0,
+  "release_suite": "PASS",
+  "dependency_advisories": 0,
+  "performance": {
+    "synthetic_candidates": 1000,
+    "csv_extraction_ms": 142,
+    "file_store_full_harness_peak_rss_mb": 409,
+    "xlsx_extraction_ms": 127,
+    "xlsx_input_bytes": 21199,
+    "production_resource_certified": false
+  },
+  "sql_concurrency_limit": "PGlite serializes queries; multi-connection PostgreSQL/PostgREST release gate remains open",
+  "migration_sha256": "3ebd09127b9261573f19669ba44ee6e6f06ee18cccad303266e2f33e5df149f8",
+  "owner_acceptance": "GO",
+  "production_release": "NO-GO"
+}

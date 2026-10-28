@@ -2265,6 +2265,7 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
         pathname === "/office/shared/oyi-core/responseNormalizer.mjs" ||
         pathname === "/office/catalogue/catalogue.mjs" ||
         pathname === "/office/catalogue/import.mjs" ||
+        pathname === "/office/catalogue/ingestion.mjs" ||
         pathname === "/office/manifest.json" ||
         pathname === "/office/sw.js";
       const isPublicAdminSessionPath =
@@ -3343,6 +3344,11 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
         return;
       }
 
+      if (pathname === "/office/catalogue/ingestion.mjs") {
+        if (req.method !== "GET") { methodNotAllowed(res, "GET"); return; }
+        await serveFile(res, path.join(process.cwd(), "public", "office", "catalogue", "ingestion.mjs"));
+        return;
+      }
       if (pathname === "/office/catalogue/import.mjs") {
         if (req.method !== "GET") { methodNotAllowed(res, "GET"); return; }
         await serveFile(res, path.join(process.cwd(), "public", "office", "catalogue", "import.mjs"));

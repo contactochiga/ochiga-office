@@ -15,45 +15,29 @@ export async function renderProductImport(host, token, ui) {
     .cat-import .import-confirm{display:flex;gap:10px;align-items:flex-start;margin:12px 0}.cat-import .import-structured-row{display:grid;grid-template-columns:1fr 2fr 1fr auto;gap:8px;align-items:start}.cat-import .import-structured-row label{min-width:0}.cat-import pre{white-space:pre-wrap;overflow-wrap:anywhere;font-size:12px}
     @media(max-width:700px){.cat-import .import-grid{grid-template-columns:1fr}.cat-import .import-card{padding:12px}.cat-import .import-structured-row{grid-template-columns:1fr 1fr}.cat-import .import-sticky{position:static}}
   </style><h2>Import products</h2><p>Upload an XLSX or CSV catalogue, review the detected fields, then choose which drafts to create. Spreadsheet prices are references only. Nothing is approved or published.</p>
-  <div class="import-upload"><label for="product-import-file">Product catalogue · XLSX or UTF-8 CSV · up to 5 MB</label><input id="product-import-file" type="file" accept=".xlsx,.csv"/><div class="import-actions"><button type="button" class="cat-btn cat-btn-primary" data-extract>Extract & review</button><button type="button" class="cat-btn" data-back>Back to products</button></div></div>
+  <button type="button" class="cat-btn" data-v2>V2 · batch ingestion and exception review</button><div class="import-upload"><label for="product-import-file">Product catalogue · XLSX or UTF-8 CSV · up to 5 MB</label><input id="product-import-file" type="file" accept=".xlsx,.csv"/><div class="import-actions"><button type="button" class="cat-btn cat-btn-primary" data-extract>Extract & review</button><button type="button" class="cat-btn" data-back>Back to products</button></div></div>
   <div class="import-status" role="status" aria-live="polite"></div><div data-preview></div></section>`);
   host.appendChild(root);
   const status = root.querySelector(".import-status"), fileInput = root.querySelector("input[type=file]"), extract = root.querySelector("[data-extract]"), preview = root.querySelector("[data-preview]");
   root.querySelector("[data-back]").onclick = () => ui.navigate("catalogue");
+  root.querySelector("[data-v2]").onclick = () => ui.navigate("catalogue/ingestion");
   let state, busy = false;
   const message = (error) => {
     const code = error.data?.error || error.code;
     const labels = { forbidden: "This file requires supplier-cost read permission. Ask an authorized colleague to review it.", no_product_rows_detected: "No product table found. Include a Product name column and a SKU, category or description column.", sku_taken: "A selected SKU already exists. Re-extract to refresh duplicate checks, or correct the SKU.", import_file_size: "The file exceeds 5 MB.", unsupported_import_format: "Choose an XLSX or UTF-8 CSV file.", import_parse_timeout: "This workbook is too complex. Export its product table as CSV.", invalid_import_file: "The file could not be read. Save a standard XLSX or UTF-8 CSV and try again." };
     return labels[code] || (error.data?.details ? error.data.details.join("; ") : error.message || "Import failed.");
   };
-  const FIELD_LABELS = { name: "Product name", sku: "SKU", category: "Category", manufacturer: "Brand / manufacturer", brand_model_reference: "Combined brand/model (unverified source)", model: "Model", specifications: "Technical specifications", specification: "Technical specification", retail_reference: "Unapproved retail reference", supplier_cost: "Unapproved supplier-cost reference", source_reference: "Source reference / staff note", ignore: "Ignore" };
   function drawMapping() {
-    const panel = el(`<details ${state.mapping_required ? "open" : ""}><summary>Review worksheet detection & edit column mapping</summary><p>Every worksheet is inspected. Non-product sheets are excluded. Remapping replaces unsaved field edits. Price and supplier columns cannot be mapped into product specifications or approved prices.</p><div data-sheets></div><button type="button" class="cat-btn" data-remap>Apply mapping & extract again</button></details>`);
-    preview.prepend(panel);
-    for (const d of state.diagnostics || []) {
-      const section = el(`<section class="import-upload" data-sheet="${e(d.sheet)}"><h4>${e(d.sheet)}</h4><p>${d.accepted ? "Product table recognized" : e(d.reasons.join(" "))} · ${d.total_rows} worksheet rows</p><label class="import-confirm"><input type="checkbox" data-include ${d.accepted ? "checked" : ""}/>Use this worksheet as a product table</label><label>Header row<select data-header>${d.header_choices.map((r) => `<option value="${r.row}" ${r.row === d.row ? "selected" : ""}>Row ${r.row}: ${e(r.headings.join(" · ").slice(0,160))}</option>`).join("")}</select></label><div class="import-grid" data-columns></div></section>`);
-      const columnHost = section.querySelector("[data-columns]");
-      const paint = () => {
-        const row = d.header_choices.find((r) => r.row === Number(section.querySelector("[data-header]").value));
-        columnHost.innerHTML = (row?.headings || []).map((header,i) => {
-          const original = row.row === d.row ? d.fields[i] : "source_reference";
-          const locked = (state.mappings.find((m) => m.sheet === d.sheet && m.row === row.row)?.columns[i]?.locked) || ["supplier", "supplier_cost", "retail_reference"].includes(original);
-          return `<label>${i+1}. ${e(header || "Blank heading")}<select data-column ${locked ? "disabled" : ""}>${state.mapping_fields.map((f) => `<option value="${e(f)}" ${f === original ? "selected" : ""}>${e(FIELD_LABELS[f] || f)}</option>`).join("")}</select>${locked ? "Financial source classification is protected" : ""}</label>`;
-        }).join("");
-      };
-      section.querySelector("[data-header]").onchange = paint; paint(); panel.querySelector("[data-sheets]").appendChild(section);
-    }
-    panel.querySelector("[data-remap]").onclick = async () => {
+    renderColumnMapping(preview, state, ui, async (mapping) => {
       if (busy) return;
-      busy = true; panel.querySelector("[data-remap]").disabled = true; extract.disabled = true; fileInput.disabled = true;
+      busy = true; extract.disabled = true; fileInput.disabled = true;
       status.textContent = "Checking the revised mapping. No products are being created…";
       try {
-        const mapping = [...panel.querySelectorAll("[data-sheet]")].map((s) => ({ sheet: s.dataset.sheet, row: Number(s.querySelector("[data-header]").value), include: s.querySelector("[data-include]").checked, fields: [...s.querySelectorAll("[data-column]")].map((x) => x.value) }));
         state = await ui.api(`${API}/${state.id}/mapping`, { method: "POST", body: { mapping } });
         draw(); status.textContent = state.mapping_required ? "Mapping needs attention. Review the sheet explanations below." : `${state.candidates.length} candidates detected. Review before selecting drafts.`;
       } catch (error) { status.textContent = message(error); }
-      finally { busy = false; extract.disabled = false; fileInput.disabled = false; panel.querySelector("[data-remap]").disabled = false; }
-    };
+      finally { busy = false; extract.disabled = false; fileInput.disabled = false; }
+    });
   }
   function draw() {
     preview.innerHTML = `<h3>${state.candidates.length} candidate products · ${e(state.name)}</h3><p>${e(state.match_note)}</p><p class="import-warning">${state.warnings.map(e).join("<br>")}</p>
@@ -194,4 +178,33 @@ export async function renderProductImport(host, token, ui) {
     finally { busy = false; extract.disabled = false; fileInput.disabled = false; }
   };
   fileInput.onchange = () => extract.click();
+}
+
+// Shared source-mapping presentation; both versions use the existing protected mapping API.
+export function renderColumnMapping(host, state, ui, applyMapping) {
+  const { el, escapeHtml: e } = ui;
+  const FIELD_LABELS = { name: "Product name", sku: "SKU", category: "Category", manufacturer: "Brand / manufacturer", brand_model_reference: "Combined brand/model (unverified source)", model: "Model", specifications: "Technical specifications", specification: "Technical specification", retail_reference: "Unapproved retail reference", supplier_cost: "Unapproved supplier-cost reference", source_reference: "Source reference / staff note", ignore: "Ignore" };
+    const panel = el(`<details ${state.mapping_required ? "open" : ""}><summary>Review worksheet detection & edit column mapping</summary><p>Every worksheet is inspected. Non-product sheets are excluded. Remapping replaces unsaved field edits. Price and supplier columns cannot be mapped into product specifications or approved prices.</p><div data-sheets></div><button type="button" class="cat-btn" data-remap>Apply mapping & extract again</button></details>`);
+    host.prepend(panel);
+    for (const d of state.diagnostics || []) {
+      const section = el(`<section class="import-upload" data-sheet="${e(d.sheet)}"><h4>${e(d.sheet)}</h4><p>${d.accepted ? "Product table recognized" : e(d.reasons.join(" "))} · ${d.total_rows} worksheet rows</p><label class="import-confirm"><input type="checkbox" data-include ${d.accepted ? "checked" : ""}/>Use this worksheet as a product table</label><label>Header row<select data-header>${d.header_choices.map((r) => `<option value="${r.row}" ${r.row === d.row ? "selected" : ""}>Row ${r.row}: ${e(r.headings.join(" · ").slice(0,160))}</option>`).join("")}</select></label><div class="import-grid" data-columns></div></section>`);
+      const columnHost = section.querySelector("[data-columns]");
+      const paint = () => {
+        const row = d.header_choices.find((r) => r.row === Number(section.querySelector("[data-header]").value));
+        columnHost.innerHTML = (row?.headings || []).map((header,i) => {
+          const original = row.row === d.row ? d.fields[i] : "source_reference";
+          const locked = (state.mappings.find((m) => m.sheet === d.sheet && m.row === row.row)?.columns[i]?.locked) || ["supplier", "supplier_cost", "retail_reference"].includes(original);
+          return `<label>${i+1}. ${e(header || "Blank heading")}<select data-column ${locked ? "disabled data-mapping-locked" : ""}>${state.mapping_fields.map((f) => `<option value="${e(f)}" ${f === original ? "selected" : ""}>${e(FIELD_LABELS[f] || f)}</option>`).join("")}</select>${locked ? "Financial source classification is protected" : ""}</label>`;
+        }).join("");
+      };
+      section.querySelector("[data-header]").onchange = paint; paint(); panel.querySelector("[data-sheets]").appendChild(section);
+    }
+    panel.querySelector("[data-remap]").onclick = async () => {
+      const button = panel.querySelector("[data-remap]");
+      if (button.disabled) return;
+      const mapping = [...panel.querySelectorAll("[data-sheet]")].map((s) => ({ sheet: s.dataset.sheet, row: Number(s.querySelector("[data-header]").value), include: s.querySelector("[data-include]").checked, fields: [...s.querySelectorAll("[data-column]")].map((x) => x.value) }));
+      button.disabled = true;
+      try { await applyMapping(mapping); } finally { button.disabled = false; }
+    };
+    return panel;
 }
