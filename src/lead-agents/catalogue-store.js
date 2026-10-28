@@ -146,6 +146,13 @@ class SupabaseCatalogueStore {
   updateBrand(id, expectedRowVersion, patch, actor) { return this.conditionalPatch("catalogue_brands", id, expectedRowVersion, { ...patch, updated_by: actor }); }
   async getBrand(id) { return (await this.get(`/catalogue_brands?id=eq.${encodeURIComponent(id)}`))[0] || null; }
 
+  async ingestionTaxonomyDecisions(actor) {
+    const rows=[];
+    for(let offset=0;offset<10000;offset+=200){
+      const page=await this.get(`/audit_events?actor_email=eq.${encodeURIComponent(actor)}&action=eq.catalogue_ingestion_taxonomy_reviewed&select=id,metadata&order=created_at.asc,id.asc&limit=200&offset=${offset}`);
+      rows.push(...page);if(page.length<200)return rows;
+    }throw httpError(422,'ingestion_mapping_history_limit');
+  }
   async ingestionFailures(actor,job) { return this.get(`/audit_events?actor_email=eq.${encodeURIComponent(actor)}&action=eq.catalogue_ingestion_stopped&metadata->>job=eq.${encodeURIComponent(job)}&select=created_at,metadata&order=created_at.desc&limit=20`); }
   async ingestionReceipts(actor, source) {
     try { return (await this.client.get(`/catalogue_ingestion_receipts?actor=eq.${encodeURIComponent(actor)}&source_sha256=eq.${source}&limit=1000`)).data; }
@@ -424,6 +431,7 @@ class FileCatalogueStore {
   async updateBrand(id, v, patch, actor) { const item = this.taxonomyUpdate(this.s.brands, id, v, patch, actor); await this.persist(); return clone(item); }
 
   // ---- products
+  async ingestionTaxonomyDecisions(actor) { return clone((this.store.state.audit_events||[]).filter(r=>r.actor_email===actor&&r.action==='catalogue_ingestion_taxonomy_reviewed')); }
   async ingestionFailures(actor,job) {return clone((this.store.state.audit_events||[]).filter(r=>r.actor_email===actor&&r.action==='catalogue_ingestion_stopped'&&r.metadata?.job===job).slice(-20));}
   async importIdentityIndex() { return this.listProducts(); }
   async ingestionReceipts(actor, source) { return clone((this.s.ingestion_receipts||[]).filter(r=>r.actor===actor&&r.source_sha256===source)); }

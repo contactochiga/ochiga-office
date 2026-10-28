@@ -2266,6 +2266,7 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
         pathname === "/office/catalogue/catalogue.mjs" ||
         pathname === "/office/catalogue/import.mjs" ||
         pathname === "/office/catalogue/ingestion.mjs" ||
+        pathname === "/office/catalogue/ingestion-taxonomy.mjs" ||
         pathname === "/office/manifest.json" ||
         pathname === "/office/sw.js";
       const isPublicAdminSessionPath =
@@ -3344,6 +3345,12 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
         return;
       }
 
+      if (pathname === "/office/catalogue/ingestion-taxonomy.mjs") {
+        if (req.method !== "GET") { methodNotAllowed(res, "GET"); return; }
+        res.setHeader("cache-control", "no-store");
+        await serveFile(res, path.join(process.cwd(), "public", "office", "catalogue", "ingestion-taxonomy.mjs"));
+        return;
+      }
       if (pathname === "/office/catalogue/ingestion.mjs") {
         if (req.method !== "GET") { methodNotAllowed(res, "GET"); return; }
         await serveFile(res, path.join(process.cwd(), "public", "office", "catalogue", "ingestion.mjs"));

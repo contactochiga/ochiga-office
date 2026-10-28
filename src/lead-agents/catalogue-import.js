@@ -35,8 +35,8 @@ async function load(storage, id, auth) {
   if (envelope.extraction.contains_supplier_data) C.requireCataloguePermission(auth, P.costRead);
   return envelope;
 }
-async function preview(cat, extraction, query) {
-  if (extraction.version === 2) return require("./catalogue-ingestion").preview(cat, extraction, query);
+async function preview(cat, extraction, query, actor) {
+  if (extraction.version === 2) return require("./catalogue-ingestion").preview(cat, extraction, query, actor);
   const [categories, brands, products] = await Promise.all([cat.listCategories(), cat.listBrands(), cat.listProducts()]);
   const allSkus = extraction.candidates.flatMap((c) => c.variants.map((v) => v.sku)).filter((s) => /^[A-Z0-9][A-Z0-9._-]{1,63}$/.test(s));
   const existing = await cat.findImportSkus(allSkus);
@@ -81,9 +81,9 @@ async function handleImport({ sub, req, cat, authContext, storageService, store,
     const doc = await store.createOfficeDocument({ id: docId, title: `Product import: ${name}`, document_type: "product_import", status: "draft", owner: actor, related_type: "catalogue_import", related_id: id, metadata: { source_sha256: sourceHash, candidate_count: extraction.candidates.length, private_source: true } });
     if (doc.sync_status === "schema_pending") throw C.httpError(503, "import_documents_unavailable");
     await audit("catalogue_import_previewed", "office_document", docId, { source_sha256: sourceHash, candidate_count: extraction.candidates.length });
-    send(extraction.candidates.length ? 201 : 202, { id, document_id: docId, name, ...(await preview(cat, extraction)) }); return true;
+    send(extraction.candidates.length ? 201 : 202, { id, document_id: docId, name, ...(await preview(cat, extraction, undefined, actor)) }); return true;
   }
-  const match = /^\/imports\/([^/]+)(\/(?:drafts|mapping|jobs|run))?$/.exec(sub);
+  const match = /^\/imports\/([^/]+)(\/(?:drafts|mapping|taxonomy|jobs|run))?$/.exec(sub);
   if (!match) throw C.httpError(404, "not_found");
   const id = match[1], envelope = await load(storageService, id, authContext);
   const ING = require("./catalogue-ingestion");
@@ -94,7 +94,12 @@ async function handleImport({ sub, req, cat, authContext, storageService, store,
     throw C.httpError(405,"method_not_allowed");
   }
   if (match[2] === "/jobs" && await ING.handle({suffix:match[2],req,cat,envelope,id,authContext,storageService,store,send,audit,privateFile,load}))return true;
-  if (!match[2] && req.method === "GET") { send(200, { id, name: envelope.name, ...(await preview(cat, envelope.extraction, new URL(req.url,"http://localhost").searchParams)) }); return true; }
+  if (!match[2] && req.method === "GET") { send(200, { id, name: envelope.name, ...(await preview(cat, envelope.extraction, new URL(req.url,"http://localhost").searchParams, actor)) }); return true; }
+  if (match[2] === "/taxonomy" && req.method === "POST") {
+    if(envelope.extraction.version!==2 || envelope.extraction.sheet_processing_version!==1) throw C.httpError(409,'ingestion_reextract_required');
+    await require('./ingestion-taxonomy').review({cat,extraction:envelope.extraction,actor,body:await readJsonBody(req,128*1024),audit,documentId:envelope.document_id,previewId:id});
+    send(200,{id,name:envelope.name,...await preview(cat,envelope.extraction,undefined,actor)});return true;
+  }
   if (match[2] === "/mapping" && req.method === "POST") {
     const body = await readJsonBody(req, 128 * 1024);
     if (!body || !Array.isArray(body.mapping)) throw C.httpError(400, "import_invalid_mapping");
@@ -105,7 +110,7 @@ async function handleImport({ sub, req, cat, authContext, storageService, store,
     const updated = { ...envelope, extraction, previous_preview: id };
     const updatedId = await privateFile(storageService, store, Buffer.from(JSON.stringify(updated)), ".json", envelope.document_id);
     await audit("catalogue_import_mapped", "office_document", envelope.document_id, { source_sha256: envelope.source_sha256, candidate_count: extraction.candidates.length, previous_preview: id, preview: updatedId });
-    send(200, { id: updatedId, name: envelope.name, ...(await preview(cat, extraction)) }); return true;
+    send(200, { id: updatedId, name: envelope.name, ...(await preview(cat, extraction, undefined, actor)) }); return true;
   }
   if (!match[2] || req.method !== "POST") throw C.httpError(405, "method_not_allowed");
   if (envelope.extraction.version === 2) throw C.httpError(400,"ingestion_job_required");

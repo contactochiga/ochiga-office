@@ -1,11 +1,14 @@
 "use strict";
 const C=require('./catalogue');
-const {normal,resolveTaxonomy}=require('./ingestion-evidence');
+const {normal}=require('./ingestion-evidence');
+const T=require('./ingestion-taxonomy');
 const {readJsonBody}=require('./http');
 const confirmedIdentity=v=>!!normal(v)&&!/(pending|unconfirmed|unknown|tbc|to be confirmed)/i.test(v);
 const GROUPS=['ready','missing','taxonomy','duplicate','verification'];
 const canonical=v=>Array.isArray(v)?v.map(canonical):v&&typeof v==='object'?Object.fromEntries(Object.keys(v).sort().map(k=>[k,canonical(v[k])])):v;
-async function analyse(cat,extraction){
+async function analyse(cat,extraction,actor=""){
+ const saved=T.decisions(actor?await cat.ingestionTaxonomyDecisions(actor):[]);
+ const resolveTaxonomy=(value,records,kind,model,context)=>T.resolve(value,records,kind,saved,model,context);
  const [categories,brands,products]=await Promise.all([cat.listCategories(),cat.listBrands(),cat.importIdentityIndex()]);
  const incomingModelKey=c=>(resolveTaxonomy(c.manufacturer,brands,'brand',c.model).id||normal(c.manufacturer))+':'+normal(c.model);
  const skuCounts=new Map(), incomingModels=new Map(), byName=new Map(),byModel=new Map();
@@ -22,7 +25,7 @@ async function analyse(cat,extraction){
   const insideModel=confirmedIdentity(c.manufacturer)&&confirmedIdentity(c.model)&&incomingModels.get(incomingModelKey(c))>1;
   const existing=found.filter(v=>c.variants.some(s=>s.sku===v.sku));
   const possible=[...new Map([...(byName.get(normal(c.name))||[]),...modelMatches].map(p=>[p.id,{id:p.id,name:p.name,slug:p.slug}])).values()];
-  const taxonomy=!category.id||brand.status==='ambiguous'||(!!c.manufacturer&&!brand.id);
+  const taxonomy=!category.id||brand.status==='ambiguous'||(!!c.manufacturer&&!brand.id&&brand.status!=='reviewed_unassigned');
   const specReview=(c.specification_evidence?.unresolved||[]).length>0;
   const groups=[];if(missing.length||specReview)groups.push('missing');if(taxonomy)groups.push('taxonomy');if(duplicates.length||modelMatches.length||insideModel||c.sheet_conflicts?.length)groups.push('duplicate');
   // Commercial exceptions never turn into a selling price, cost, inventory or certification.
@@ -31,10 +34,10 @@ async function analyse(cat,extraction){
    duplicate_skus:duplicates,existing_products:existing,possible_matches:possible,model_matches:modelMatches.map(p=>({id:p.id,name:p.name})),
    warnings:[...c.warnings,...(!c.image_references.length?['Images missing; add them to the draft later.']:[]),...(!c.supplier_references.length?['Supplier information and cost missing.']:[]),'Prices, supplier costs, stock and compatibility remain unverified.'],pricing_classification:'unapproved_source_reference'};
  });
- return {categories,brands,candidates,counts:Object.fromEntries(GROUPS.map(g=>[g,candidates.filter(c=>c.groups.includes(g)).length]))};
+ return {categories,brands,candidates,taxonomy_groups:T.batchGroups(candidates,saved),counts:Object.fromEntries(GROUPS.map(g=>[g,candidates.filter(c=>c.groups.includes(g)).length]))};
 }
-async function preview(cat,extraction,query=new URLSearchParams()){
- const data=await analyse(cat,extraction),group=GROUPS.includes(query.get('group'))?query.get('group'):null;
+async function preview(cat,extraction,query=new URLSearchParams(),actor=""){
+ const data=await analyse(cat,extraction,actor),group=GROUPS.includes(query.get('group'))?query.get('group'):null;
  const filtered=group?data.candidates.filter(c=>c.groups.includes(group)):data.candidates;
  const page=Math.min(Math.max(1,Number(query.get('page'))||1),Math.max(1,Math.ceil(filtered.length/25)));
  return {...extraction,...data,candidates:filtered.slice((page-1)*25,page*25),version:2,reextract_required:extraction.sheet_processing_version!==1,total:extraction.candidates.length,filtered:filtered.length,page,page_size:25,match_note:'Matches cover the registry (up to 50,000 products). Suggestions never create categories or brands.',warnings:extraction.warnings};
@@ -49,12 +52,13 @@ async function handle({suffix,req,cat,envelope,id,authContext,storageService,sto
   await cat.ingestionReceipts(actor,envelope.source_sha256);
   const body=await readJsonBody(req,2*1024*1024);
   if(body?.confirm_drafts_only!==true||!Array.isArray(body.items)||!body.items.length||body.items.length>1000)throw C.httpError(400,'import_confirmation_required');
-  const analysed=await analyse(cat,envelope.extraction),seen=new Set(),skus=new Set(),slugs=new Set(),items=[];
+  const analysed=await analyse(cat,envelope.extraction,actor),seen=new Set(),skus=new Set(),slugs=new Set(),items=[];
   for(const selected of body.items){
    const c=analysed.candidates.find(c=>c.id===selected.id);if(!c||seen.has(c.id))throw C.httpError(400,'invalid_import_selection');seen.add(c.id);
    const action=selected.action||'create';if(!['create','skip','propose_update'].includes(action))throw C.httpError(400,'invalid_import_action');
    if(action==='skip'){items.push({id:c.id,action,content:{name:c.name},source_rows:c.source_rows});continue;}
    const content=C.validateContent(selected.content||c.content),slug=C.validSlug(selected.slug||c.slug);
+   if(T.unknownManufacturer(c.manufacturer)&&content.brand_id)throw C.httpError(400,'ingestion_unknown_manufacturer');
    content.compatibility={facility:false,experience:false,core:false,edge:false,notes:''};
    if(!slug||content.media.length)throw C.httpError(400,'invalid_import_draft');
    if(action!=='skip'){
@@ -69,7 +73,7 @@ async function handle({suffix,req,cat,envelope,id,authContext,storageService,sto
    }
    const targets=[...c.existing_products.map(x=>x.product_id),...c.possible_matches.map(x=>x.id)];
    if(action==='propose_update'&&!targets.includes(selected.target_id))throw C.httpError(400,'ingestion_update_target_required');
-   items.push({id:c.id,action,slug,content,target_id:action==='propose_update'?selected.target_id:null,source_rows:c.source_rows,exceptions_reviewed:selected.exceptions_reviewed===true});
+   items.push({id:c.id,action,slug,content,target_id:action==='propose_update'?selected.target_id:null,source_rows:c.source_rows,taxonomy_review:{category:c.category_match,brand:c.brand_match},exceptions_reviewed:selected.exceptions_reviewed===true});
   }
   const manifest={...envelope,kind:'product_ingestion_job_v2',source_preview:id,items:canonical(items),extraction:envelope.extraction,created_at:new Date().toISOString()};
   const job=await privateFile(storageService,store,Buffer.from(JSON.stringify(manifest)),'.json',envelope.document_id);

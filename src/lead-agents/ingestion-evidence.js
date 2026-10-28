@@ -19,6 +19,11 @@ function resolveTaxonomy(value, records, kind, model = "", context = "") {
     if(kind==='category'&&['switches','relays'].includes(n)&&/residential smart home/i.test(context)){
       const rows=active.filter(r=>r.slug==='smart-home-automation');if(rows.length)return match(rows,'Reviewed contextual alias: residential smart-home collection');
     }
+    if(kind==='category') {
+      const pathOf=r=>{const names=[],seen=new Set();while(r&&!seen.has(r.id)){seen.add(r.id);names.unshift(r.name);r=active.find(p=>p.id===r.parent_id);}return normal(names.join(' > '));};
+      const full=active.filter(r=>pathOf(r)===n);if(full.length)return match(full,'Normalized canonical hierarchy match');
+      if(/building infrastructure/i.test(value)&&/automation and controls/.test(n))return match(active.filter(r=>r.slug==='control-panels-gateways'),'Building controls require staff confirmation; residential alias not applied',false);
+    }
     const exact=active.filter(r=>[normal(r.name),normal(r.slug)].includes(n));
     if(exact.length) return match(exact,'Normalized exact registry match');
     if(kind==='category') {
@@ -28,6 +33,10 @@ function resolveTaxonomy(value, records, kind, model = "", context = "") {
         const candidates=active.filter(r=>[normal(r.name),normal(r.slug),...(CATEGORY_ALIASES[r.slug]||[]).map(normal)].includes(segment));
         if(candidates.length) return match(candidates,`Reviewed category path/alias: ${segment}`);
       }
+      const leaf=segments[0]||n;
+      const suggested=/\b(locks?|cameras?)\b/.test(leaf)?['security-access-control']:/\b(hubs?|ir controllers)\b/.test(leaf)?['control-panels-gateways']:/electrical and power control/.test(leaf)?['control-panels-gateways','installation-accessories']:[];
+      const rows=active.filter(r=>suggested.includes(r.slug));
+      if(rows.length)return match(rows,'Specific leaf terms: suggestion requires staff confirmation',false);
     } else {
       // Compatibility statements must never identify the manufacturer.
       if(/\b(compatible|works with|powered by|supports)\b/i.test(value)) return {id:null,status:'ambiguous',reason:'Compatibility/provider text is not manufacturer evidence',suggestions:[]};
