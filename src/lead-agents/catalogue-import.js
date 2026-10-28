@@ -55,7 +55,7 @@ async function preview(cat, extraction) {
     const duplicates = c.variants.map((v) => v.sku).filter((s) => counts.get(s) > 1 || existing.some((v) => v.sku === s));
     if (duplicates.length) warnings.push(`Duplicate SKUs: ${[...new Set(duplicates)].join(", ")}. Resolve before saving.`);
     const content = { name: c.name, model: c.model, summary: c.summary, description: c.description, category_id: category?.id || "", brand_id: brand?.id || null, specifications: c.specifications, variants: c.variants, media: [] };
-    return { ...c, content, slug: slugOf(c.name), warnings, duplicate_skus: duplicates, possible_matches: products.filter((p) => sameName(p.name, c.name) || (c.model && sameName(p.model, c.model))).map((p) => ({ id: p.id, name: p.name, slug: p.slug })), pricing_classification: "unapproved_source_reference" };
+    return { ...c, content, slug: slugOf(c.name), warnings, duplicate_skus: duplicates, existing_products: existing.filter((v) => c.variants.some((s) => s.sku === v.sku)), possible_matches: products.filter((p) => sameName(p.name, c.name) || (c.model && sameName(p.model, c.model))).map((p) => ({ id: p.id, name: p.name, slug: p.slug })), pricing_classification: "unapproved_source_reference" };
   });
   return { ...extraction, candidates, categories, brands, match_note: "Exact SKU checks cover the catalogue. Name/model suggestions cover the latest 500 products." };
 }

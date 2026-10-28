@@ -10,12 +10,12 @@ export async function renderProductImport(host, token, ui) {
     .cat-import .import-actions{display:flex;gap:12px;align-items:center;flex-wrap:wrap}.cat-import label{display:block;font-size:13px;color:var(--text-secondary)}
     .cat-import input:not([type=checkbox]),.cat-import select,.cat-import textarea{width:100%;background:var(--cat-panel);color:var(--text-primary);border:1px solid var(--line-strong);border-radius:7px;padding:9px;margin:6px 0 12px}
     .cat-import textarea{min-height:90px;resize:vertical}.cat-import .import-grid{display:grid;grid-template-columns:1fr 1fr;gap:0 18px}.cat-import .wide{grid-column:1/-1}
-    .cat-import summary{cursor:pointer;padding:10px 0}.cat-import .import-warning{color:#e8bb70}.cat-import .import-status{white-space:pre-wrap;padding:10px 0}
-    .cat-import .import-ref{font-size:13px;overflow-wrap:anywhere}.cat-import .import-source{color:var(--text-tertiary);font-size:12px}.cat-import .import-sticky{position:sticky;bottom:0;padding:16px;background:var(--charcoal);border:1px solid var(--line);border-radius:10px}
+    .cat-import [data-save-feedback]{white-space:pre-wrap;overflow-wrap:anywhere;margin:10px 0}.cat-import [data-save-feedback]:empty{display:none}.cat-import [data-save-feedback][data-kind=error],.cat-import [data-validation]{color:#ffb9b9}.cat-import [aria-invalid=true]{border-color:#ffb9b9}.cat-import [data-save-links] a{display:block;padding:6px 0}.cat-import summary{cursor:pointer;padding:10px 0}.cat-import .import-warning{color:#e8bb70}.cat-import .import-status{white-space:pre-wrap;padding:10px 0}
+    .cat-import .import-ref{font-size:13px;overflow-wrap:anywhere}.cat-import .import-source{color:var(--text-tertiary);font-size:12px}.cat-import .import-sticky{position:static;padding:16px;background:var(--charcoal);border:1px solid var(--line);border-radius:10px}
     .cat-import .import-confirm{display:flex;gap:10px;align-items:flex-start;margin:12px 0}.cat-import .import-structured-row{display:grid;grid-template-columns:1fr 2fr 1fr auto;gap:8px;align-items:start}.cat-import .import-structured-row label{min-width:0}.cat-import pre{white-space:pre-wrap;overflow-wrap:anywhere;font-size:12px}
     @media(max-width:700px){.cat-import .import-grid{grid-template-columns:1fr}.cat-import .import-card{padding:12px}.cat-import .import-structured-row{grid-template-columns:1fr 1fr}.cat-import .import-sticky{position:static}}
   </style><h2>Import products</h2><p>Upload an XLSX or CSV catalogue, review the detected fields, then choose which drafts to create. Spreadsheet prices are references only. Nothing is approved or published.</p>
-  <div class="import-upload"><label for="product-import-file">Product catalogue · XLSX or UTF-8 CSV · up to 5 MB</label><input id="product-import-file" type="file" accept=".xlsx,.csv"/><div class="import-actions"><button class="cat-btn cat-btn-primary" data-extract>Extract & review</button><button class="cat-btn" data-back>Back to products</button></div></div>
+  <div class="import-upload"><label for="product-import-file">Product catalogue · XLSX or UTF-8 CSV · up to 5 MB</label><input id="product-import-file" type="file" accept=".xlsx,.csv"/><div class="import-actions"><button type="button" class="cat-btn cat-btn-primary" data-extract>Extract & review</button><button type="button" class="cat-btn" data-back>Back to products</button></div></div>
   <div class="import-status" role="status" aria-live="polite"></div><div data-preview></div></section>`);
   host.appendChild(root);
   const status = root.querySelector(".import-status"), fileInput = root.querySelector("input[type=file]"), extract = root.querySelector("[data-extract]"), preview = root.querySelector("[data-preview]");
@@ -58,15 +58,15 @@ export async function renderProductImport(host, token, ui) {
   function draw() {
     preview.innerHTML = `<h3>${state.candidates.length} candidate products · ${e(state.name)}</h3><p>${e(state.match_note)}</p><p class="import-warning">${state.warnings.map(e).join("<br>")}</p>
 
-    <div class="import-actions"><button class="cat-btn" data-all>Select all</button><button class="cat-btn" data-none>Clear selection</button></div><div data-candidates></div>
-    <div class="import-sticky"><label class="import-confirm"><input type="checkbox" data-confirm/>I have reviewed the selected products. Create drafts only; keep selling prices unapproved and public listings unchanged.</label><button class="cat-btn cat-btn-primary" data-save>Create selected drafts</button><span data-count></span></div>`;
+    <div class="import-actions"><button type="button" class="cat-btn" data-all>Select all</button><button type="button" class="cat-btn" data-none>Clear selection</button></div><div data-candidates></div>
+    <div class="import-sticky"><label class="import-confirm"><input type="checkbox" data-confirm/>I have reviewed the selected products. Create drafts only; keep selling prices unapproved and public listings unchanged.</label><button type="button" class="cat-btn cat-btn-primary" data-save>Create selected drafts</button><span data-count></span><div data-save-feedback role="status" aria-live="polite" aria-atomic="true" tabindex="-1"></div><div data-save-links></div></div>`;
     drawMapping();
     if (state.mapping_required) preview.querySelector(".import-sticky").hidden = true;
     const cards = preview.querySelector("[data-candidates]");
     const input = (name, label, value, wide = false, area = false) => `<label class="${wide ? "wide" : ""}">${e(label)}${area ? `<textarea data-field="${name}">${e(value)}</textarea>` : `<input data-field="${name}" value="${e(value)}"/>`}</label>`;
     state.candidates.forEach((c, index) => {
       const card = el(`<article class="import-card" data-index="${index}"><label class="import-confirm"><input type="checkbox" data-select/><strong>${e(c.name || "Unnamed product")}</strong></label><div class="import-source">${c.source_rows.map((r) => `${e(r.sheet)} · row ${r.row}`).join("; ")}</div>
-      <p class="import-warning">${c.warnings.map(e).join("<br>")}</p>${c.possible_matches.length ? `<p>Possible existing products: ${c.possible_matches.map((m) => `<a href="#/catalogue/products/${e(m.id)}">${e(m.name)}</a>`).join(", ")}</p>` : ""}
+      <p class="import-warning" data-warnings>${c.warnings.map(e).join("<br>")}</p><div data-validation role="alert"></div>${c.possible_matches.length ? `<p>Possible existing products: ${c.possible_matches.map((m) => `<a href="#/catalogue/products/${e(m.id)}">${e(m.name)}</a>`).join(", ")}</p>` : ""}
       ${c.brand_model_reference ? `<p class="import-ref"><strong>Original brand / model reference:</strong> ${e(c.brand_model_reference)} — confirm in the fields below.</p>` : ""}<details ${index === 0 ? "open" : ""}><summary>Review mapped product fields</summary><div class="import-grid">
       ${input("name", "Product name", c.content.name)}${input("slug", "Unique product slug", c.slug)}
       <label>Category · source: ${e(c.category || "missing")}<select data-field="category_id"><option value="">Choose category</option>${state.categories.filter((x) => x.status === "active").map((x) => `<option value="${e(x.id)}" ${x.id === c.content.category_id ? "selected" : ""}>${e(x.name)}</option>`).join("")}</select></label>
@@ -87,6 +87,11 @@ export async function renderProductImport(host, token, ui) {
         values.forEach(add); group.querySelector("[data-add]").onclick = () => add();
       }
       structured("specifications", c.content.specifications); structured("variants", c.content.variants);
+      const categorySelect = card.querySelector('[data-field="category_id"]');
+      categorySelect.onchange = () => {
+        card.querySelector('[data-warnings]').innerHTML = c.warnings.filter(w => !categorySelect.value || !w.startsWith("Choose an existing category")).map(e).join("<br>");
+        categorySelect.removeAttribute("aria-invalid");
+      };
       cards.appendChild(card);
     });
     const boxes = () => [...preview.querySelectorAll("[data-select]:not(:disabled)")];
@@ -94,32 +99,84 @@ export async function renderProductImport(host, token, ui) {
     preview.querySelector("[data-all]").onclick = () => { boxes().forEach((b) => { b.checked = true; }); count(); };
     preview.querySelector("[data-none]").onclick = () => { boxes().forEach((b) => { b.checked = false; }); count(); };
     boxes().forEach((b) => b.onchange = count); count();
-    preview.querySelector("[data-save]").onclick = async () => {
-      if (busy) return;
-      if (!preview.querySelector("[data-confirm]").checked) { status.textContent = "Confirm that you have reviewed the selected drafts first."; return; }
+    const save = preview.querySelector("[data-save]"), feedback = preview.querySelector("[data-save-feedback]"), links = preview.querySelector("[data-save-links]");
+    const savedIds = new Set(); let saveBlocked = false;
+    function report(text, kind = "info", productLinks = []) {
+      status.textContent = text; feedback.textContent = text; feedback.dataset.kind = kind;
+      links.innerHTML = productLinks.map(p => `<a href="#/catalogue/products/${e(p.product_id)}">${e(p.label || "Open saved draft")}</a>`).join("");
+      feedback.focus({ preventScroll: true }); feedback.scrollIntoView({ block: "nearest" });
+    }
+    save.onclick = async (event) => {
+      event.preventDefault(); event.stopPropagation();
+      if (busy || saveBlocked) return;
+      links.innerHTML = "";
+      if (!preview.querySelector("[data-confirm]").checked) { report("Confirm that you have reviewed the selected drafts first.", "error"); return; }
+      let controls = [], dispatched = false, timer;
       try {
-        const items = [...cards.children].filter((card) => card.querySelector("[data-select]").checked && !card.querySelector("[data-select]").disabled).map((card) => {
-          const c = state.candidates[Number(card.dataset.index)], content = { ...c.content };
-          card.querySelectorAll("[data-field]").forEach((field) => { if (field.dataset.field !== "slug") content[field.dataset.field] = ["variants", "specifications"].includes(field.dataset.field) ? JSON.parse(field.value) : field.value; });
-          for (const kind of ["specifications", "variants"]) content[kind] = [...card.querySelectorAll(`[data-${kind}] [data-rows] > div`)].map((row) => Object.fromEntries([...row.querySelectorAll("[data-part]")].map((field) => {
+        const errors = [], seenSkus = new Set(), existingLinks = [];
+        cards.querySelectorAll('[data-validation]').forEach(x => { x.textContent = ""; });
+        cards.querySelectorAll('[aria-invalid]').forEach(x => x.removeAttribute("aria-invalid"));
+        const items = [...cards.children].filter(card => card.querySelector("[data-select]").checked && !card.querySelector("[data-select]").disabled).map(card => {
+          const c = state.candidates[Number(card.dataset.index)], content = { ...c.content }, rowErrors = [];
+          const invalid = (field, text) => { rowErrors.push(text); field?.setAttribute("aria-invalid", "true"); };
+          card.querySelectorAll("[data-field]").forEach(field => { if (field.dataset.field !== "slug") content[field.dataset.field] = field.value; });
+          const slug = card.querySelector('[data-field="slug"]').value;
+          if (!content.name.trim()) invalid(card.querySelector('[data-field="name"]'), "Enter a product name.");
+          if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(slug) || slug.length > 80) invalid(card.querySelector('[data-field="slug"]'), "Enter a valid lowercase product slug.");
+          if (!state.categories.some(x => x.status === "active" && x.id === content.category_id)) invalid(card.querySelector('[data-field="category_id"]'), "Choose an existing category.");
+          for (const kind of ["specifications", "variants"]) content[kind] = [...card.querySelectorAll(`[data-${kind}] [data-rows] > div`)].map(row => Object.fromEntries([...row.querySelectorAll("[data-part]")].map(field => {
             if (field.dataset.part !== "options") return [field.dataset.part, field.value];
-            const pairs = field.value.split(";").map((v) => v.trim()).filter(Boolean).map((v) => { const at = v.indexOf("="); if (at < 1) throw new Error("Variant options use name=value, separated by semicolons."); return [v.slice(0,at).trim(), v.slice(at+1).trim()]; });
+            const pairs = field.value.split(";").map(v => v.trim()).filter(Boolean).map(v => { const at = v.indexOf("="); if (at < 1) { invalid(field, "Variant options use name=value, separated by semicolons."); return ["", ""]; } return [v.slice(0,at).trim(), v.slice(at+1).trim()]; });
             return ["options", Object.fromEntries(pairs)];
           })));
-          return { id: c.id, slug: card.querySelector('[data-field="slug"]').value, content };
+          if (!content.variants.length) invalid(null, "Add at least one variant and SKU.");
+          content.variants.forEach((v,i) => {
+            const field = card.querySelectorAll('[data-part="sku"]')[i], sku = v.sku.trim().toUpperCase();
+            if (!/^[A-Z0-9][A-Z0-9._-]{1,63}$/.test(sku)) invalid(field, "Enter a valid SKU (2–64 letters, numbers, dots, underscores or hyphens).");
+            if (seenSkus.has(sku)) invalid(field, `SKU ${sku} is repeated in the selection.`);
+            seenSkus.add(sku);
+            if (c.duplicate_skus.includes(sku)) {
+              invalid(field, `SKU ${sku} already exists or is repeated in this workbook. Open the existing product; do not recreate it.`);
+              (c.existing_products || []).filter(x => x.sku === sku).forEach(x => existingLinks.push({...x,label:`Open existing product · ${sku}`}));
+            }
+          });
+          content.specifications.forEach((spec,i) => { for (const part of ["key", "value"]) if (!spec[part].trim()) invalid(card.querySelectorAll(`[data-specifications] [data-part="${part}"]`)[i], `Specification ${i+1}: enter ${part}.`); });
+          if (rowErrors.length) { const text = `${content.name || c.name || "Unnamed product"}: ${rowErrors.join(" ")}`; card.querySelector('[data-validation]').textContent = text; errors.push(text); }
+          return { id:c.id, slug, content };
         });
-        if (!items.length) throw new Error("Select at least one product.");
-        busy = true; preview.querySelector("[data-save]").disabled = true; extract.disabled = true; status.textContent = "Creating selected drafts…";
-        const result = await ui.api(`${API}/${state.id}/drafts`, { method: "POST", body: { confirm_drafts_only: true, items } });
-        result.results.forEach((r) => {
-          const index = state.candidates.findIndex((c) => c.id === r.id), card = cards.children[index];
-          card.querySelector("[data-result]").innerHTML = r.product_id ? `<a href="#/catalogue/products/${e(r.product_id)}">Open created draft</a>${r.status === "draft_created_audit_failed" ? " · Audit failed: stop and contact an administrator." : ""}` : e(`Not created: ${r.error}`);
-          if (r.product_id) { card.querySelector("[data-select]").disabled = true; card.querySelector("[data-select]").checked = false; }
+        if (!items.length) errors.push("Select at least one product.");
+        if (errors.length) { report(`Nothing submitted. ${errors.join("\n")}`, "error", existingLinks); return; }
+        busy = true; root.setAttribute("aria-busy", "true");
+        controls = [...root.querySelectorAll("input,select,textarea,button")].map(node => ({node, disabled:node.disabled}));
+        controls.forEach(({node}) => { node.disabled = true; }); save.textContent = "Saving drafts…";
+        report(`Saving ${items.length} selected ${items.length === 1 ? "draft" : "drafts"}… Please wait. Do not submit again.`);
+        const controller = new AbortController(); timer = setTimeout(() => controller.abort(), 30000);
+        dispatched = true;
+        const result = await ui.api(`${API}/${state.id}/drafts`, { method:"POST", body:{confirm_drafts_only:true,items}, signal:controller.signal });
+        if (!result || !Array.isArray(result.results)) throw new Error("Invalid save response");
+        const productLinks = [];
+        result.results.forEach(r => {
+          const index = state.candidates.findIndex(c => c.id === r.id), card = cards.children[index];
+          if (!card) throw new Error("Unknown save result");
+          card.querySelector("[data-result]").innerHTML = r.product_id ? `<a href="#/catalogue/products/${e(r.product_id)}">Open created draft</a>` : e(`Not created: ${r.error}`);
+          if (r.product_id) { savedIds.add(r.id); card.querySelector("[data-select]").checked = false; productLinks.push({product_id:r.product_id,label:`Open saved draft · ${state.candidates[index].name}`}); }
         });
-        status.textContent = `${result.results.filter((r) => r.product_id).length} drafts created. ${result.results.length < result.requested || result.results.some((r) => r.status !== "draft_created") ? "The batch stopped; review the row results before continuing." : "No prices approved or products published."}`;
-        preview.querySelector("[data-confirm]").checked = false; count();
-      } catch (error) { status.textContent = error instanceof SyntaxError ? "Check the specification and variant JSON in the selected products." : message(error); }
-      finally { busy = false; preview.querySelector("[data-save]").disabled = false; extract.disabled = false; }
+        const complete = result.results.length === items.length && result.results.every(r => r.status === "draft_created");
+        saveBlocked = !complete;
+        report(`${productLinks.length} ${productLinks.length === 1 ? "draft" : "drafts"} saved. ${complete ? "Open the saved product below. No prices approved or products published." : "The batch stopped or an audit failed. Check the saved links and Products before retrying; re-extract to refresh duplicate checks."}`, complete ? "success" : "error", productLinks);
+        preview.querySelector("[data-confirm]").checked = false;
+      } catch (error) {
+        if (error.status === 401) { saveBlocked = true; report("Your session expired. Sign in to Office in another tab, then re-extract this file before saving. No automatic retry was made.", "error"); }
+        else if (error.status === 409) { report("A SKU or product slug already exists, or the catalogue changed. Open Products and check the existing draft. Re-extract to refresh duplicate matches before retrying.", "error"); saveBlocked = true; }
+        else if (dispatched && (!error.status || error.status >= 500)) { saveBlocked = true; report("Save could not be confirmed. A draft may already exist. Open Products and check the SKU before retrying; re-extract to refresh duplicate checks. No automatic retry was made.", "error"); }
+        else report(`Drafts were not saved. ${message(error)} Correct the highlighted fields or reported validation error and try again.`, "error");
+        if (saveBlocked) links.innerHTML += '<a href="#/catalogue">Check existing products before retrying</a>';
+      } finally {
+        clearTimeout(timer); busy = false; root.removeAttribute("aria-busy");
+        controls.forEach(({node,disabled}) => { node.disabled = disabled; });
+        [...cards.children].forEach((card,i) => { if (savedIds.has(state.candidates[i].id)) card.querySelector("[data-select]").disabled = true; });
+        save.disabled = saveBlocked; save.textContent = saveBlocked ? "Re-extract before another save" : "Create selected drafts"; count();
+      }
     };
   }
   extract.onclick = async () => {
