@@ -109,6 +109,9 @@ const PERMISSION_KEYS = Object.freeze([
   "commerce.orders.create",
   "commerce.orders.cancel",
   "commerce.orders.customer.read",
+  // Phase 5A: post-payment fulfilment lifecycle and its Office-managed configuration (explicit scopes, never role defaults).
+  "commerce.orders.fulfilment.manage",
+  "commerce.orders.fulfilment.configure",
 ]);
 
 // Keys that only super_admin holds by role (never via ochiga_admin's otherwise-full grant).

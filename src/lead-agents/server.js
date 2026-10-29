@@ -134,6 +134,7 @@ const { handleHardwareFinancialRequest } = require("./hardware-financial-api");
 const { handleHardwarePaymentsRequest } = require("./hardware-payments-api");
 const { handleHardwareCheckoutRequest } = require("./hardware-checkout-api");
 const { handleHardwareOrdersRequest } = require("./hardware-orders-api");
+const { handleHardwareFulfilmentRequest } = require("./hardware-fulfilment-api");
 const { handlePublicCatalogueRequest } = require("./catalogue-public-api");
 const signatureStats = require("./webhook-signature-stats");
 const inboundVisibility = require("./whatsapp-inbound-visibility");
@@ -2352,6 +2353,7 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
       if (await handleHardwarePaymentsRequest({ req, res, pathname, authContext, store, config })) return;
       if (await handleHardwareCheckoutRequest({ req, res, pathname, authContext, store })) return;
       if (await handleHardwareOrdersRequest({ req, res, pathname, authContext, store, config })) return;
+      if (await handleHardwareFulfilmentRequest({ req, res, pathname, authContext, store, config })) return;
       // Product catalogue (Office-managed GetOyi hardware): self-contained, staff-session-only module (catalogue-api.js)
       if (await handleCatalogueRequest({ req, res, ctx, pathname, authContext, store, eventBus, storageService, config, log })) return;
       // Public catalogue projection for GetOyi (read-only; catalogue.public.read scoped key only)
