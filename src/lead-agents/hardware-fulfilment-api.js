@@ -7,7 +7,9 @@ const PREFIX = "/api/lead-agents/admin/hardware-fulfilment";
 const ORDER_COLUMNS = "id,currency,payable_total_kobo,installation_requested,order_state,payment_state,fulfilment_state,reservation_state,created_at";
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const STATES = ["paid", "packed", "dispatched", "delivered", "installed", "closed"];
-const SETTINGS = ["delivery_fees", "installation_fees", "coverage_areas"];
+const BASE_SETTINGS = ["delivery_fees", "installation_fees", "coverage_areas"];
+// Phase 5C adds two Office-managed keys, offered only when service visits are enabled (the 5C migration accepts them).
+const settingKeys = () => (process.env.OFFICE_HARDWARE_SERVICE_ENABLED === "true" ? [...BASE_SETTINGS, "inspection_fees", "installation_checklist"] : BASE_SETTINGS);
 const ROLES = ["fulfilment", "delivery", "technician"];
 const fail = (status, code) => { const e = new Error(code); e.statusCode = status; e.code = code; throw e; };
 function need(auth, permission) {
@@ -45,6 +47,7 @@ async function handleHardwareFulfilmentRequest({ req, res, pathname, authContext
     const parts = pathname.slice(PREFIX.length).split("/").filter(Boolean);
 
     if (parts[0] === "settings") {
+      const SETTINGS = settingKeys();
       if (parts.length === 1 && req.method === "GET") {
         const rows = await Promise.all(SETTINGS.map((k) => store.client.get(`/hardware_fulfilment_settings?setting_key=eq.${k}&select=setting_key,version,value,actor,created_at&order=version.desc&limit=1`)));
         return send(200, { settings: Object.fromEntries(SETTINGS.map((k, i) => [k, rows[i].data[0] || { setting_key: k, version: 0, value: null }])), applied_to_pricing: false, public_booking: false });

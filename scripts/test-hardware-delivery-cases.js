@@ -237,4 +237,5 @@ module.exports = async (h) => {
     check("API-DISABLED", "delivery API is disabled unless its own flag is on (default)", g.status === 503 && JSON.parse(g.buf.toString()).error === "delivery_disabled");
   }
   await off.stop();
+  if (process.env.TEST_SERVICE === "true") await require("./test-hardware-service-cases")(h);
 };

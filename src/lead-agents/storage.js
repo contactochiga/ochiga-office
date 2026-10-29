@@ -19,6 +19,8 @@ const STORAGE_PURPOSES = Object.freeze([
   "product_image",
   // proof of delivery (hardware-delivery-api.js only; refused by the generic /admin/storage routes)
   "delivery_proof",
+  // inspection / installation photographs (hardware-service-api.js only; refused by the generic /admin/storage routes)
+  "service_visit_photo",
 ]);
 
 function parseDataUrl(value) {

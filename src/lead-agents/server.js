@@ -136,6 +136,7 @@ const { handleHardwareCheckoutRequest } = require("./hardware-checkout-api");
 const { handleHardwareOrdersRequest } = require("./hardware-orders-api");
 const { handleHardwareFulfilmentRequest } = require("./hardware-fulfilment-api");
 const { handleHardwareDeliveryRequest } = require("./hardware-delivery-api");
+const { handleHardwareServiceRequest } = require("./hardware-service-api");
 const { handlePublicCatalogueRequest } = require("./catalogue-public-api");
 const signatureStats = require("./webhook-signature-stats");
 const inboundVisibility = require("./whatsapp-inbound-visibility");
@@ -2275,6 +2276,7 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
         pathname === "/office/catalogue/catalogue.mjs" ||
         pathname === "/office/catalogue/import.mjs" ||
         pathname === "/office/catalogue/fulfilment.mjs" ||
+        pathname === "/office/catalogue/service.mjs" ||
         pathname === "/office/catalogue/ingestion.mjs" ||
         pathname === "/office/catalogue/ingestion-taxonomy.mjs" ||
         pathname === "/office/manifest.json" ||
@@ -2357,6 +2359,7 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
       if (await handleHardwareOrdersRequest({ req, res, pathname, authContext, store, config })) return;
       if (await handleHardwareFulfilmentRequest({ req, res, pathname, authContext, store, config })) return;
       if (await handleHardwareDeliveryRequest({ req, res, pathname, authContext, store, storageService, config })) return;
+      if (await handleHardwareServiceRequest({ req, res, pathname, authContext, store, storageService, config })) return;
       // Product catalogue (Office-managed GetOyi hardware): self-contained, staff-session-only module (catalogue-api.js)
       if (await handleCatalogueRequest({ req, res, ctx, pathname, authContext, store, eventBus, storageService, config, log })) return;
       // Public catalogue projection for GetOyi (read-only; catalogue.public.read scoped key only)
@@ -3375,6 +3378,11 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
       if (pathname === "/office/catalogue/fulfilment.mjs") {
         if (req.method !== "GET") { methodNotAllowed(res, "GET"); return; }
         await serveFile(res, path.join(process.cwd(), "public", "office", "catalogue", "fulfilment.mjs"));
+        return;
+      }
+      if (pathname === "/office/catalogue/service.mjs") {
+        if (req.method !== "GET") { methodNotAllowed(res, "GET"); return; }
+        await serveFile(res, path.join(process.cwd(), "public", "office", "catalogue", "service.mjs"));
         return;
       }
       if (pathname === "/office/catalogue/import.mjs") {
@@ -7118,6 +7126,11 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           json(res, 403, { error: "forbidden", message: "Proof of delivery is uploaded from the order's delivery record." }, { "x-request-id": ctx.requestId });
           return;
         }
+        // inspection / installation photographs are created only by the service-visit route
+        if (String(body.purpose || "").toLowerCase() === "service_visit_photo") {
+          json(res, 403, { error: "forbidden", message: "Visit photographs are uploaded from the inspection or installation record." }, { "x-request-id": ctx.requestId });
+          return;
+        }
         const storedFile = await storageService.putDataUrl(body);
         const file =
           typeof store.createOfficeFile === "function"
@@ -8552,7 +8565,7 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           return;
         }
         const filename = path.basename(decodeURIComponent(rawFilename));
-        const shareObject = (filename.startsWith("product_image_") || filename.startsWith("catalogue_import_") || filename.startsWith("delivery_proof_")) ? null : await storageService.getObject(filename);
+        const shareObject = (filename.startsWith("product_image_") || filename.startsWith("catalogue_import_") || filename.startsWith("delivery_proof_") || filename.startsWith("service_visit_photo_")) ? null : await storageService.getObject(filename);
         if (!shareObject) {
           notFound(res);
           return;
@@ -8571,7 +8584,7 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
         const filename = path.basename(decodeURIComponent(storageMatch[1]));
         // product gallery originals stay private and renditions are served only by the catalogue media route (catalogue.read)
         // proof-of-delivery files are served only by the delivery route (delivery or customer-data permission, audited)
-        if (filename.startsWith("product_image_") || filename.startsWith("catalogue_import_") || filename.startsWith("delivery_proof_")) {
+        if (filename.startsWith("product_image_") || filename.startsWith("catalogue_import_") || filename.startsWith("delivery_proof_") || filename.startsWith("service_visit_photo_")) {
           notFound(res);
           return;
         }

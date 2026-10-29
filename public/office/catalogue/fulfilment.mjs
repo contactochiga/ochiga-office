@@ -27,6 +27,7 @@ export const ERRORS = {
   invalid_fulfilment_setting: "The settings are not valid. Check codes, amounts, VAT and the reason (at least 8 characters).",
   forbidden: "You do not have permission for this action.",
   use_delivery_record: "Dispatch and delivery are recorded from the delivery record below.",
+  use_installation_record: "Installed is recorded by completing the installation visit.",
   delivery_disabled: "Delivery records are not enabled in this environment.",
   delivery_state_changed: "Someone else updated this delivery. The latest state has been reloaded.",
   invalid_delivery_transition: "That delivery step is not allowed from the current state.",
@@ -53,10 +54,15 @@ const pill = (ui, state) => `<span class="cat-pill ${ui.escapeHtml(state)}">${ui
 
 export async function renderFulfilment(host, token, ui, view = {}) {
   const { el, escapeHtml: esc } = ui;
-  const current = view.tab === "settings" ? "settings" : "queue";
+  const current = ["settings", "visits"].includes(view.tab) ? view.tab : "queue";
   host.innerHTML = "";
   const tabs = el(`<div class="crm-tabs" role="tablist" aria-label="Fulfilment"></div>`);
-  for (const [key, label] of [["queue", "Queue"], ["settings", "Fees & coverage"]]) {
+  // Phase 5C tab: only offered when the service API answers (it is off by default).
+  let service = null;
+  try { service = await import("./service.mjs"); if (!Array.isArray((await ui.api(`${service.SERVICE_API}/technicians`))?.technicians)) service = null; } catch { service = null; }
+  if (token !== ui.state.renderToken) return;
+  const tabList = [["queue", "Queue"], ...(service ? [["visits", "Inspections & installations"]] : []), ["settings", "Fees & coverage"]];
+  for (const [key, label] of tabList) {
     const b = el(`<button type="button" role="tab" data-tab="${key}" aria-selected="${key === current}" class="crm-tab ${key === current ? "active" : ""}">${esc(label)}</button>`);
     b.onclick = () => renderFulfilment(host, token, ui, { tab: key });
     tabs.appendChild(b);
@@ -66,11 +72,12 @@ export async function renderFulfilment(host, token, ui, view = {}) {
   host.appendChild(body);
   try {
     if (current === "settings") await renderSettings(body, token, ui);
+    else if (current === "visits" && service) await service.renderVisits(body, token, ui, view);
     else await renderQueue(body, token, ui, view);
   } catch (e) {
     if (token !== ui.state.renderToken) return;
     body.innerHTML = "";
-    body.appendChild(el(`<section class="cat-panel" role="status" data-fulfilment-error>${esc(message(e))}</section>`));
+    body.appendChild(el(`<section class="cat-panel" role="status" data-fulfilment-error>${esc(service && current === "visits" ? (service.SERVICE_ERRORS[e?.data?.error] || message(e)) : message(e))}</section>`));
   }
 }
 
@@ -124,7 +131,10 @@ export async function renderDetail(body, token, ui, id) {
   let delivery = null;
   if (lc) { try { const r = await ui.api(`${DELIVERY_API}/${encodeURIComponent(id)}`); delivery = r && Array.isArray(r.proofs) && Array.isArray(r.events) ? r : null; } catch { delivery = null; } }
   if (token !== ui.state.renderToken) return;
-  const nextSteps = lc ? lc.next.filter((to) => !(delivery && ["dispatched", "delivered"].includes(to))) : [];
+  let service = null;
+  if (lc) { try { const m = await import("./service.mjs"); if (Array.isArray((await ui.api(`${m.SERVICE_API}/technicians`))?.technicians)) service = m; } catch { service = null; } }
+  if (token !== ui.state.renderToken) return;
+  const nextSteps = lc ? lc.next.filter((to) => !(delivery && ["dispatched", "delivered"].includes(to)) && !(service && to === "installed")) : [];
   if (lc && canManage) {
     for (const to of nextSteps) {
       const b = el(`<button type="button" class="cat-btn" data-transition="${to}">${esc(ACTION_LABEL[to])}</button>`);
@@ -142,10 +152,14 @@ export async function renderDetail(body, token, ui, id) {
       actions.appendChild(b);
     }
     if (!lc.next.length) actions.appendChild(el(`<p data-terminal>This order is closed. No further steps.</p>`));
-    else if (!nextSteps.length) actions.appendChild(el(`<p data-delivery-next>The next step is recorded from the delivery record below.</p>`));
+    else if (!nextSteps.length) actions.appendChild(el(`<p data-delivery-next>${lc.next.includes("installed") && service ? "The next step is recorded by the installation visit below." : "The next step is recorded from the delivery record below."}</p>`));
   } else if (lc && !canManage) actions.appendChild(el(`<p data-readonly>You can view this order. Updating fulfilment needs the fulfilment permission.</p>`));
 
   if (delivery) renderDeliveryPanel(card, body, token, ui, id, lc, delivery, reload);
+  if (service) {
+    await service.renderOrderServicePanel(card, ui, id, lc, (visitId) => service.renderVisitDetail(body, token, ui, visitId));
+    if (token !== ui.state.renderToken) return;
+  }
   const box = card.querySelector("[data-assignments]");
   const roles = ["fulfilment", "delivery", ...(lc && lc.installation_required ? ["technician"] : [])];
   for (const role of roles) {
@@ -177,6 +191,9 @@ const SETTING_META = {
   delivery_fees: { title: "Delivery fees", list: "zones", columns: ["code", "label", "fee", "vat", "states"] },
   installation_fees: { title: "Installation fees", list: "services", columns: ["code", "label", "fee", "vat", "per"] },
   coverage_areas: { title: "Coverage areas", list: "areas", columns: ["state", "cities", "delivery", "installation", "inspection"] },
+  // Phase 5C (present only when the server offers them)
+  inspection_fees: { title: "Inspection fees", list: "services", columns: ["code", "label", "fee", "vat"] },
+  installation_checklist: { title: "Installation checklist", list: "items", columns: ["code", "label", "required"] },
 };
 const splitList = (s) => String(s || "").split(",").map((x) => x.trim()).filter(Boolean);
 export function toKobo(nairaText) {
@@ -197,7 +214,7 @@ async function renderSettings(body, token, ui) {
   body.innerHTML = "";
   body.appendChild(el(`<section class="cat-panel"><h2>Fees & coverage</h2><p>Office-managed configuration with version history. It is <b>not applied to order pricing yet</b> and there is <b>no public booking</b>. No values are provided by default.</p></section>`));
   const canConfigure = ui.hasPermission(CONFIGURE);
-  for (const key of Object.keys(SETTING_META)) {
+  for (const key of Object.keys(SETTING_META).filter((k) => k in data.settings)) {
     const meta = SETTING_META[key], s = data.settings[key] || { version: 0, value: null };
     const items = (s.value && s.value[meta.list]) || [];
     const card = el(`<section class="cat-panel" data-setting="${key}" style="margin-top:12px"><h3>${esc(meta.title)}</h3>
@@ -211,9 +228,10 @@ async function renderSettings(body, token, ui) {
       const cell = (name, value, attrs = "") => `<td><input class="cat-input" data-k="${name}" value="${esc(value ?? "")}" ${attrs} ${dis}></td>`;
       const check = (name, value) => `<td><input type="checkbox" data-k="${name}" ${value ? "checked" : ""} ${dis}></td>`;
       let html;
-      if (key === "coverage_areas") html = cell("state", item.state) + cell("cities", (item.cities || []).join(", "), 'placeholder="empty = whole state"') + check("delivery", item.delivery) + check("installation", item.installation) + check("inspection", item.inspection);
+      if (key === "installation_checklist") html = cell("code", item.code) + cell("label", item.label) + check("required", item.required);
+      else if (key === "coverage_areas") html = cell("state", item.state) + cell("cities", (item.cities || []).join(", "), 'placeholder="empty = whole state"') + check("delivery", item.delivery) + check("installation", item.installation) + check("inspection", item.inspection);
       else html = cell("code", item.code) + cell("label", item.label) + cell("fee", item.fee_kobo != null ? (item.fee_kobo / 100).toFixed(2) : "", 'inputmode="decimal" placeholder="₦"') + cell("vat", item.vat_rate_bp != null ? (item.vat_rate_bp / 100).toString() : "", 'inputmode="decimal" placeholder="%"')
-        + (key === "delivery_fees" ? cell("states", (item.states || []).join(", ")) : `<td><select class="cat-select" data-k="per" ${dis}><option value="order" ${item.per !== "unit" ? "selected" : ""}>per order</option><option value="unit" ${item.per === "unit" ? "selected" : ""}>per unit</option></select></td>`);
+        + (key === "inspection_fees" ? "" : key === "delivery_fees" ? cell("states", (item.states || []).join(", ")) : `<td><select class="cat-select" data-k="per" ${dis}><option value="order" ${item.per !== "unit" ? "selected" : ""}>per order</option><option value="unit" ${item.per === "unit" ? "selected" : ""}>per unit</option></select></td>`);
       const tr = el(`<tr data-row>${html}${canConfigure ? '<td><button type="button" class="cat-btn" data-remove>Remove</button></td>' : ""}</tr>`);
       tr.querySelector("[data-remove]")?.addEventListener("click", () => tr.remove());
       rows.appendChild(tr);
@@ -247,6 +265,12 @@ export function collect(key, meta, rows) {
   const list = [];
   for (const tr of rows.querySelectorAll("[data-row]")) {
     const v = (k) => tr.querySelector(`[data-k="${k}"]`);
+    if (key === "installation_checklist") {
+      const code = v("code").value.trim(), label = v("label").value.trim();
+      if (!code || !label) throw new Error("Each checklist item needs a code and a label.");
+      list.push({ code, label, required: v("required").checked });
+      continue;
+    }
     if (key === "coverage_areas") {
       const state = v("state").value.trim();
       if (!state) throw new Error("Each coverage area needs a state.");
@@ -257,9 +281,10 @@ export function collect(key, meta, rows) {
     if (fee === null) throw new Error("Fees must be naira amounts with at most two decimals.");
     if (vat === null) throw new Error("VAT must be a percentage between 0 and 100.");
     const item = { code: v("code").value.trim(), label: v("label").value.trim(), fee_kobo: fee, vat_rate_bp: vat };
-    if (key === "delivery_fees") item.states = splitList(v("states").value); else item.per = v("per").value;
+    if (key === "delivery_fees") item.states = splitList(v("states").value); else if (key === "installation_fees") item.per = v("per").value;
     list.push(item);
   }
+  if (key === "installation_checklist") return { items: list };
   return key === "coverage_areas" ? { areas: list } : { currency: "NGN", [meta.list]: list };
 }
 
