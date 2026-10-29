@@ -131,7 +131,7 @@ async function reloadSchema(restUrl) {
   await sleep(500);
 }
 
-async function startApp(gatewayUrl, reservations = false, payments = false) {
+async function startApp(gatewayUrl, reservations = false, payments = false, extraEnv = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "catalogue-pg-app-"));
   const port = await freePort();
   const logs = [];
@@ -144,6 +144,7 @@ async function startApp(gatewayUrl, reservations = false, payments = false) {
       LEAD_AGENTS_SCOPED_API_KEYS: JSON.stringify([{client:"hardware-backend",key_sha256:sha("isolated-payments-"+RUN),scopes:["commerce.payment.confirm"]}, { client: "getoyi", key_sha256: sha(SITE_KEY), scopes: ["intake.submit"] }, { client: "checkout", key_sha256: sha("isolated-checkout-"+RUN), scopes: ["commerce.checkout.submit"] }, { client: "getoyi-catalogue", key_sha256: sha(CATALOGUE_KEY), scopes: ["catalogue.public.read"] }]),
       GETOYI_REVALIDATE_URL: process.env.__REVALIDATE_URL || "", GETOYI_REVALIDATE_SECRET: REVALIDATE_SECRET, GETOYI_PUBLIC_BASE_URL: "https://getoyi.example",
       OPENAI_API_KEY: "sk-fixture-not-real", OPENAI_BASE_URL: "http://127.0.0.1:9/v1", LEAD_AGENTS_RATE_LIMIT_MAX_REQUESTS: "100000", LEAD_AGENTS_OFFICE_RATE_LIMIT_MAX_REQUESTS: "100000", LEAD_AGENTS_LOGIN_RATE_LIMIT_MAX_ATTEMPTS: "1000",
+      ...extraEnv,
     },
   });
   proc.stdout.on("data", (d) => logs.push(String(d))); proc.stderr.on("data", (d) => logs.push(String(d)));

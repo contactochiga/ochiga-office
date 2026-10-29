@@ -753,5 +753,5 @@ module.exports = async ({
   );
   release(unverified);
   if(process.env.TEST_FINANCIAL==='true') await require('./test-hardware-financial-cases')({run,one,psql,check,bsql,rpc,asyncSql,backend,ROOT,make,auth,service,providerResults,deps,quote});
-  if(process.env.TEST_FULFILMENT==='true') await require('./test-hardware-fulfilment-cases')({run,one,psql,check,make,auth,service,ROOT,vid,guest,concurrentSql,release});
+  if(process.env.TEST_FULFILMENT==='true') await require('./test-hardware-fulfilment-cases')({run,one,psql,check,make,auth,service,ROOT,vid,guest,concurrentSql,release,startApp,gatewayUrl,reloadSchema,restUrl});
 };

@@ -2,7 +2,9 @@
 // Phase 5A fulfilment lifecycle cases on the disposable Postgres stack, using orders paid through the real Phase 4 path
 // (HardwarePayments.initialize + reconcile with a mocked provider, then hardware_payment_confirm). Run with TEST_FULFILMENT=true.
 const fs = require("fs"), path = require("path"), crypto = require("crypto");
-module.exports = async ({ run, one, psql, check, make, auth, service, ROOT, vid, guest, concurrentSql, release }) => {
+module.exports = async ({ run, one, psql, check, make, auth, service, ROOT, vid, guest, concurrentSql, release, startApp, gatewayUrl, reloadSchema, restUrl }) => {
+  const { hashPassword } = require("../src/lead-agents/auth");
+  const PASSWORD = "Fulfilment-Local-" + crypto.randomUUID();
   const migration = fs.readFileSync(path.join(ROOT, "db/phase5a/20261030090000_hardware_fulfilment_lifecycle.sql"), "utf8");
   const rb = psql("begin;" + migration + "rollback;");
   check("F-M0", "fulfilment migration transaction rolls back cleanly", rb.status === 0 && one("select to_regclass('hardware_fulfilments') is null") === "t", rb.err);
@@ -16,7 +18,7 @@ module.exports = async ({ run, one, psql, check, make, auth, service, ROOT, vid,
     technician: [],
     refunder: ["commerce.orders.read", "commerce.orders.refund.request"],
   };
-  for (const [n, sc] of Object.entries(users)) run(`insert into admin_users(email,password_hash,role,status,permission_scopes) values('${n}@fulfilment.test','fixture-not-a-hash','ochiga_staff','active',array[${sc.map((x) => `'${x}'`).join(",") || "''"}]::text[])`);
+  for (const [n, sc] of Object.entries(users)) run(`insert into admin_users(email,password_hash,role,status,permission_scopes) values('${n}@fulfilment.test','${hashPassword(PASSWORD)}','ochiga_staff','active',array[${sc.map((x) => `'${x}'`).join(",") || "''"}]::text[])`);
   run(`insert into admin_users(email,password_hash,role,status,permission_scopes) values('former@fulfilment.test','fixture-not-a-hash','ochiga_staff','disabled','{}')`);
   const F = "fulfiller@fulfilment.test";
   const q = (s) => "'" + String(s).replace(/'/g, "''") + "'";
@@ -156,4 +158,149 @@ module.exports = async ({ run, one, psql, check, make, auth, service, ROOT, vid,
   check("F-DBFN", "fulfilment functions are invoker, path-pinned and service-only", one("select count(*) from pg_proc p where pronamespace='public'::regnamespace and proname like 'hardware_fulfilment_%' and (prosecdef or proconfig is distinct from array['search_path=public, pg_temp'] or has_function_privilege('anon',p.oid,'EXECUTE') or has_function_privilege('authenticated',p.oid,'EXECUTE'))") === "0");
   check("F-NO-PAYMENT-WRITE", "no fulfilment function writes payment, reservation or inventory tables",
     one("select count(*) from pg_proc where pronamespace='public'::regnamespace and proname like 'hardware_fulfilment_%' and prosrc ~* '(update|insert into|delete from)\\s+(hardware_orders|hardware_payment_|hardware_reservation|catalogue_variants|catalogue_inventory_changes)'") === "0");
+
+  // ---- UI <-> API integration: the real Office screen (jsdom) against the real server and this database ----
+  const { createRequire } = require("module");
+  const { JSDOM } = createRequire(path.join(ROOT, "../oyi-phase4e/package.json"))("jsdom");
+  const dom = new JSDOM("<main></main>", { url: "http://localhost/" });
+  globalThis.document = dom.window.document; globalThis.window = dom.window;
+  const mod = await import(path.join(ROOT, "public/office/catalogue/fulfilment.mjs"));
+  await reloadSchema(restUrl);
+  const app = await startApp(gatewayUrl, true, true, { OFFICE_HARDWARE_FULFILMENT_ENABLED: "true" });
+  const cookies = {};
+  for (const n of ["fulfiller", "viewer", "configurer"]) {
+    const r = await fetch(app.url + "/api/lead-agents/admin/session/login", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ email: n + "@fulfilment.test", password: PASSWORD }) });
+    if (r.status !== 200) throw Error("login " + n + " " + r.status);
+    cookies[n] = r.headers.getSetCookie().find((h) => h.startsWith("lead_agents_admin=")).split(";")[0];
+  }
+  const scopesOf = { fulfiller: users.fulfiller, viewer: users.viewer, configurer: users.configurer };
+  const makeUi = (who, baseUrl = app.url) => {
+    const dialogs = [];
+    const ui = {
+      state: { renderToken: 1 }, dialogs,
+      hasPermission: (p) => scopesOf[who].includes(p),
+      el: (html) => { const tpl = document.createElement("template"); tpl.innerHTML = html.trim(); return tpl.content.firstElementChild; },
+      escapeHtml: (s) => String(s).replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;"),
+      openDialog: (title, fields, onSubmit) => dialogs.push({ title, fields, onSubmit }),
+      api: async (p, opts = {}) => {
+        const send = () => fetch(baseUrl + p, { method: opts.method || "GET", headers: { "content-type": "application/json", cookie: cookies[who], origin: baseUrl }, body: opts.body ? JSON.stringify(opts.body) : undefined });
+        // A reused keep-alive socket can be closed by the server at the same moment (ECONNRESET). Retry reads once;
+        // writes are never retried, so a reset write surfaces as a failure.
+        let r;
+        try { r = await send(); } catch (e) { if ((opts.method || "GET") !== "GET" || e?.cause?.code !== "ECONNRESET") throw e; r = await send(); }
+        const data = await r.json().catch(() => null);
+        if (!r.ok) { const e = new Error((data && data.error) || "failed"); e.status = r.status; e.data = data; throw e; }
+        return data;
+      },
+    };
+    return ui;
+  };
+  const host = () => { const m = document.createElement("main"); document.body.appendChild(m); return m; };
+  const E = await paid(false), G = await paid(true);
+  {
+    const ui = makeUi("fulfiller"), h = host();
+    await mod.renderFulfilment(h, 1, ui);
+    check("UI-QUEUE", "queue lists the paid order with status Paid", !!h.querySelector(`[data-order="${E}"]`) && h.querySelector(`[data-order="${E}"]`).textContent.includes("Paid"));
+    h.querySelector(`[data-order="${E}"]`).click(); await new Promise((r) => setTimeout(r, 300));
+    for (let i = 0; i < 20 && !h.querySelector(`[data-detail="${E}"]`); i++) await new Promise((r) => setTimeout(r, 100));
+    const buttons = [...h.querySelectorAll(`[data-detail="${E}"] [data-transition]`)].map((b) => b.dataset.transition);
+    check("UI-NEXT-ONLY", "only the next allowed step is offered", buttons.join() === "packed", buttons);
+    check("UI-NO-TECH", "no technician assignment for a delivery-only order", !h.querySelector(`[data-detail="${E}"] [data-assignment="technician"]`));
+    h.querySelector('[data-transition="packed"]').click();
+    check("UI-CONFIRM", "a confirmation prompt is required before the step", ui.dialogs.length === 1 && ui.dialogs[0].title === "Confirm: Mark packed" && one(`select count(*) from hardware_fulfilment_events where order_id='${E}'`) === "0");
+    await ui.dialogs[0].onSubmit({ reason: "Boxed <b>safely</b>" });
+    check("UI-PACKED", "confirmed step is recorded in the database by the signed-in actor",
+      one(`select state||':'||row_version from hardware_fulfilments where order_id='${E}'`) === "packed:1" && one(`select actor from hardware_fulfilment_events where order_id='${E}'`) === "fulfiller@fulfilment.test");
+    const item = h.querySelector(`[data-detail="${E}"] [data-event="1"]`);
+    check("UI-HISTORY", "history shows time, transition, responsible staff and scope; text is escaped",
+      !!item && item.textContent.includes("Paid → Packed") && item.textContent.includes("fulfiller@fulfilment.test") && item.textContent.includes("commerce.orders.fulfilment.manage") && !item.querySelector("b") && item.textContent.includes("<b>safely</b>"));
+    // Concurrent update: a second staff screen still shows the old version.
+    const stale = makeUi("fulfiller"), h2 = host();
+    await mod.renderDetail(h2, 1, stale, E);
+    const ui3 = makeUi("fulfiller"), h3 = host();
+    await mod.renderDetail(h3, 1, ui3, E);
+    const replayScreen = makeUi("fulfiller"), h4 = host();
+    await mod.renderDetail(h4, 1, replayScreen, E);
+    h3.querySelector('[data-transition="dispatched"]').click(); await ui3.dialogs[0].onSubmit({ reason: "" });
+    h4.querySelector('[data-transition="dispatched"]').click(); await replayScreen.dialogs[0].onSubmit({ reason: "" });
+    check("UI-REPLAY", "a second screen submitting the same step is an idempotent replay (no duplicate event)",
+      one(`select count(*) from hardware_fulfilment_events where order_id='${E}'`) === "2");
+    ui3.dialogs.length = 0; h3.querySelector('[data-transition="delivered"]').click(); await ui3.dialogs[0].onSubmit({ reason: "" });
+    h2.querySelector('[data-transition="dispatched"]').click(); await stale.dialogs[0].onSubmit({ reason: "" });
+    check("UI-CONCURRENT", "an outdated screen cannot apply its step; it reloads with an explanation and the current next step",
+      one(`select count(*) from hardware_fulfilment_events where order_id='${E}'`) === "3" && h2.textContent.includes("Someone else updated this order") && [...h2.querySelectorAll("[data-transition]")].map((b) => b.dataset.transition).join() === "closed");
+    // Close requires a reason.
+    ui3.dialogs.length = 0; h3.querySelector('[data-transition="closed"]').click();
+    let refused = false; try { await ui3.dialogs[0].onSubmit({ reason: " " }); } catch (e) { refused = /closing reason/i.test(e.message); }
+    check("UI-CLOSE-REASON", "closing without a reason is refused before any request", refused && one(`select state from hardware_fulfilments where order_id='${E}'`) === "delivered");
+    await ui3.dialogs[0].onSubmit({ reason: "Delivered and accepted" });
+    check("UI-CLOSED", "order closed via the UI; terminal message shown", one(`select state from hardware_fulfilments where order_id='${E}'`) === "closed" && !!h3.querySelector("[data-terminal]"));
+  }
+  {
+    const ui = makeUi("fulfiller"), h = host();
+    await mod.renderDetail(h, 1, ui, G);
+    check("UI-TECH", "technician assignment offered when installation was requested", !!h.querySelector('[data-assign="technician"]'));
+    h.querySelector('[data-assign="technician"]').click();
+    await ui.dialogs[0].onSubmit({ assignee: "  Technician@Fulfilment.test ", reason: "Crew A" });
+    check("UI-ASSIGN", "assignment recorded with normalized staff email, shown with actor", one(`select assignee||':'||actor from hardware_fulfilment_assignments where order_id='${G}' and assignment_role='technician'`) === "technician@fulfilment.test:fulfiller@fulfilment.test"
+      && h.querySelector('[data-assignment="technician"]').textContent.includes("technician@fulfilment.test"));
+    ui.dialogs.length = 0; h.querySelector('[data-assign="delivery"]').click();
+    await ui.dialogs[0].onSubmit({ assignee: "outsider@example.invalid", reason: "" });
+    check("UI-ASSIGN-REFUSED", "non-staff assignee refused with a clear message", h.textContent.includes("must be an active staff account") && one(`select count(*) from hardware_fulfilment_assignments where order_id='${G}' and assignment_role='delivery'`) === "0");
+    for (const [v, to] of [[0, "packed"], [1, "dispatched"], [2, "delivered"]]) run(`select hardware_fulfilment_transition('${F}','${G}',${v},'${to}','')`);
+    await mod.renderDetail(h, 1, ui, G);
+    check("UI-INSTALL-STEP", "delivered installation order offers Installed, not Close", [...h.querySelectorAll("[data-transition]")].map((b) => b.dataset.transition).join() === "installed");
+  }
+  {
+    const ui = makeUi("viewer"), h = host();
+    await mod.renderFulfilment(h, 1, ui);
+    await mod.renderDetail(h.querySelector("[data-fulfilment-body]"), 1, ui, G);
+    check("UI-VIEWER", "read-only staff see status and history but no controls", h.querySelectorAll("[data-transition],[data-assign]").length === 0 && !!h.querySelector("[data-readonly]"));
+    let forged = null; try { await ui.api(`/api/lead-agents/admin/hardware-fulfilment/${G}/transition`, { method: "POST", body: { expected_row_version: 3, to: "installed" } }); } catch (e) { forged = e.data && e.data.error; }
+    check("UI-VIEWER-API", "a forged request from a read-only session is refused by the API", forged === "forbidden" && one(`select state from hardware_fulfilments where order_id='${G}'`) === "delivered");
+    const hs = host(); await mod.renderFulfilment(hs, 1, ui, { tab: "settings" });
+    check("UI-SETTINGS-READONLY", "settings are read-only without the configuration permission", hs.querySelectorAll("[data-save],[data-add]").length === 0 && [...hs.querySelectorAll("input")].every((i) => i.disabled));
+  }
+  {
+    const ui = makeUi("configurer"), h = host();
+    await mod.renderFulfilment(h, 1, ui, { tab: "settings" });
+    const card = h.querySelector('[data-setting="installation_fees"]');
+    card.querySelector("[data-add]").click();
+    const row = card.querySelector("[data-row]");
+    const set = (k, v) => { row.querySelector(`[data-k="${k}"]`).value = v; };
+    set("code", "standard-install"); set("label", "Synthetic installation"); set("fee", "12.5"); set("vat", "7.5");
+    card.querySelector("[data-save]").click();
+    let short = false; try { await ui.dialogs[0].onSubmit({ reason: "short" }); } catch (e) { short = /at least 8/.test(e.message); }
+    await ui.dialogs[0].onSubmit({ reason: "Local UI configuration test" });
+    const stored = JSON.parse(one("select value from hardware_fulfilment_settings where setting_key='installation_fees' order by version desc limit 1"));
+    check("UI-SETTINGS-SAVE", "configuration saved as a new version with naira converted to integer kobo", short && stored.services[0].fee_kobo === 1250 && stored.services[0].vat_rate_bp === 750 && stored.services[0].per === "order");
+    const h2 = host(); await mod.renderFulfilment(h2, 1, ui, { tab: "settings" });
+    const c2 = h2.querySelector('[data-setting="installation_fees"]');
+    c2.querySelector('[data-row] [data-k="fee"]').value = "12.555";
+    c2.querySelector("[data-save]").click();
+    check("UI-SETTINGS-INVALID", "invalid amount refused in the browser without a request", c2.querySelector("[data-status]").textContent.includes("two decimals") && one("select max(version) from hardware_fulfilment_settings where setting_key='installation_fees'") === "1");
+    const hA = host(), hB = host(), uA = makeUi("configurer"), uB = makeUi("configurer");
+    await mod.renderFulfilment(hA, 1, uA, { tab: "settings" }); await mod.renderFulfilment(hB, 1, uB, { tab: "settings" });
+    const lastState = (hh) => [...hh.querySelectorAll('[data-setting="coverage_areas"] [data-k="state"]')].at(-1);
+    const covBefore = Number(one("select max(version) from hardware_fulfilment_settings where setting_key='coverage_areas'"));
+    hA.querySelector('[data-setting="coverage_areas"] [data-add]').click(); lastState(hA).value = "Kano";
+    hB.querySelector('[data-setting="coverage_areas"] [data-add]').click(); lastState(hB).value = "Abuja";
+    hA.querySelector('[data-setting="coverage_areas"] [data-save]').click(); await uA.dialogs[0].onSubmit({ reason: "First editor change" });
+    hB.querySelector('[data-setting="coverage_areas"] [data-save]').click(); await uB.dialogs[0].onSubmit({ reason: "Second editor change" });
+    check("UI-SETTINGS-CONCURRENT", "a second editor cannot overwrite a newer settings version",
+      Number(one("select max(version) from hardware_fulfilment_settings where setting_key='coverage_areas'")) === covBefore + 1
+      && one("select value::text from hardware_fulfilment_settings where setting_key='coverage_areas' order by version desc limit 1").includes("Kano")
+      && !one("select string_agg(value::text,'') from hardware_fulfilment_settings where setting_key='coverage_areas'").includes("Abuja"));
+  }
+  await app.stop();
+  const off = await startApp(gatewayUrl, true, true, {});
+  {
+    const offCookie = await fetch(off.url + "/api/lead-agents/admin/session/login", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ email: "fulfiller@fulfilment.test", password: PASSWORD }) });
+    cookies.fulfiller = offCookie.headers.getSetCookie().find((h) => h.startsWith("lead_agents_admin=")).split(";")[0];
+    const ui = makeUi("fulfiller", off.url), h = host();
+    await mod.renderFulfilment(h, 1, ui);
+    check("UI-DISABLED", "with the feature flag off (default) the screen shows a disabled notice and no controls",
+      h.textContent.includes("not enabled in this environment") && h.querySelectorAll("[data-transition],[data-assign],[data-save]").length === 0);
+  }
+  await off.stop();
 };
