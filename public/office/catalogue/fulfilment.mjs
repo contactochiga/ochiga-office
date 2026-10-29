@@ -2,6 +2,12 @@
 // The database and API remain the authority: buttons only offer what the API reports as the next step, every write sends
 // the expected version, and refusals from the server are shown as-is. No guest, booking or payment control exists here.
 const API = "/api/lead-agents/admin/hardware-fulfilment";
+const DELIVERY_API = "/api/lead-agents/admin/hardware-delivery";
+const DELIVERY = "commerce.orders.delivery.manage";
+export const DELIVERY_LABEL = { scheduled: "Scheduled", out_for_delivery: "Out for delivery", failed: "Delivery failed", on_hold: "On hold", delivered: "Delivered" };
+const FAIL_REASONS = ["recipient_unavailable", "address_issue", "refused", "access_denied", "damaged_in_transit", "other"];
+const HOLD_REASONS = ["cancellation_requested", "address_verification", "customer_request", "stock_issue", "refund_review", "other"];
+const RELATIONSHIPS = ["customer", "household_member", "colleague", "security_or_reception", "other"];
 export const STATES = ["paid", "packed", "dispatched", "delivered", "installed", "closed"];
 export const STATE_LABEL = { paid: "Paid", packed: "Packed", dispatched: "Dispatched", delivered: "Delivered", installed: "Installed", closed: "Closed" };
 const ACTION_LABEL = { packed: "Mark packed", dispatched: "Mark dispatched", delivered: "Mark delivered", installed: "Mark installed", closed: "Close order" };
@@ -20,6 +26,25 @@ export const ERRORS = {
   fulfilment_closed: "This order is closed.",
   invalid_fulfilment_setting: "The settings are not valid. Check codes, amounts, VAT and the reason (at least 8 characters).",
   forbidden: "You do not have permission for this action.",
+  use_delivery_record: "Dispatch and delivery are recorded from the delivery record below.",
+  delivery_disabled: "Delivery records are not enabled in this environment.",
+  delivery_state_changed: "Someone else updated this delivery. The latest state has been reloaded.",
+  invalid_delivery_transition: "That delivery step is not allowed from the current state.",
+  invalid_delivery_details: "Check the delivery details: a method is required, couriers need a name, tracking links must use https.",
+  invalid_delivery_date: "Choose a delivery date from today up to 90 days ahead.",
+  delivery_assignee_required: "Assign a delivery staff member before dispatching (or use a courier with a tracking reference).",
+  tracking_reference_required: "Courier deliveries need a tracking reference before dispatch.",
+  order_not_packed: "Mark the order packed before dispatching it.",
+  delivery_attempts_exhausted: "Three delivery attempts have failed. A manager decision is required before another attempt.",
+  invalid_failure_reason: "Choose a reason. Refused, damaged and other need a note of at least 8 characters.",
+  invalid_delivery_exception: "Choose an exception and add a note of at least 8 characters.",
+  proof_of_delivery_required: "Upload at least one proof-of-delivery photo first.",
+  invalid_acknowledgement: "Enter the recipient's name (at least 2 characters) and their relationship.",
+  duplicate_proof: "This photo was already uploaded for this delivery.",
+  proof_limit_reached: "This delivery already has the maximum of 10 proofs.",
+  unsupported_proof_type: "Proof must be a JPEG, PNG or WebP photo.",
+  proof_too_large: "The photo is too large (maximum 8 MB).",
+  unreadable_proof_image: "The photo could not be read.",
 };
 const message = (e) => ERRORS[e?.data?.error] || ERRORS[e?.message] || "The action could not be completed.";
 const naira = (kobo) => (Number.isFinite(kobo) ? `₦${(kobo / 100).toLocaleString("en-NG", { minimumFractionDigits: 2 })}` : "—");
@@ -96,8 +121,12 @@ export async function renderDetail(body, token, ui, id) {
   };
   const canManage = ui.hasPermission(MANAGE);
   const actions = card.querySelector("[data-actions]");
+  let delivery = null;
+  if (lc) { try { const r = await ui.api(`${DELIVERY_API}/${encodeURIComponent(id)}`); delivery = r && Array.isArray(r.proofs) && Array.isArray(r.events) ? r : null; } catch { delivery = null; } }
+  if (token !== ui.state.renderToken) return;
+  const nextSteps = lc ? lc.next.filter((to) => !(delivery && ["dispatched", "delivered"].includes(to))) : [];
   if (lc && canManage) {
-    for (const to of lc.next) {
+    for (const to of nextSteps) {
       const b = el(`<button type="button" class="cat-btn" data-transition="${to}">${esc(ACTION_LABEL[to])}</button>`);
       b.onclick = () => ui.openDialog(`Confirm: ${ACTION_LABEL[to]}`, [
         { name: "reason", label: to === "closed" ? "Closing reason (required, recorded)" : `Note (optional, recorded). Moves ${STATE_LABEL[lc.state]} → ${STATE_LABEL[to]}.`, type: "textarea" },
@@ -113,8 +142,10 @@ export async function renderDetail(body, token, ui, id) {
       actions.appendChild(b);
     }
     if (!lc.next.length) actions.appendChild(el(`<p data-terminal>This order is closed. No further steps.</p>`));
+    else if (!nextSteps.length) actions.appendChild(el(`<p data-delivery-next>The next step is recorded from the delivery record below.</p>`));
   } else if (lc && !canManage) actions.appendChild(el(`<p data-readonly>You can view this order. Updating fulfilment needs the fulfilment permission.</p>`));
 
+  if (delivery) renderDeliveryPanel(card, body, token, ui, id, lc, delivery, reload);
   const box = card.querySelector("[data-assignments]");
   const roles = ["fulfilment", "delivery", ...(lc && lc.installation_required ? ["technician"] : [])];
   for (const role of roles) {
@@ -230,4 +261,68 @@ export function collect(key, meta, rows) {
     list.push(item);
   }
   return key === "coverage_areas" ? { areas: list } : { currency: "NGN", [meta.list]: list };
+}
+
+// ---- Phase 5B delivery record (shown only when the delivery API is enabled) ----
+const human = (s) => String(s || "").replaceAll("_", " ");
+function renderDeliveryPanel(card, body, token, ui, id, lc, data, reload) {
+  const { el, escapeHtml: esc } = ui;
+  const d = data.delivery, can = ui.hasPermission(DELIVERY);
+  const panel = el(`<div data-delivery><h4>Delivery</h4><p data-delivery-state>${d ? `${esc(DELIVERY_LABEL[d.state] || d.state)} · ${esc(human(d.method))}${d.courier_name ? " · " + esc(d.courier_name) : ""}${d.tracking_reference ? " · tracking " + esc(d.tracking_reference) : ""}${d.scheduled_for ? " · " + esc(d.scheduled_for) : ""} · attempts ${d.attempt_count}` : "No delivery record yet."}</p>
+    ${d && d.state === "delivered" ? `<p data-recipient>Received by ${esc(d.recipient_name)} (${esc(human(d.recipient_relationship))}) on ${esc(when(d.delivered_at))}</p>` : ""}
+    <p class="cat-muted">Customer notifications and public tracking are off.</p><div data-delivery-actions></div><h5>Proof of delivery</h5><ul data-proofs></ul><h5>Delivery history</h5><ol data-delivery-history></ol></div>`);
+  card.querySelector("[data-history]").before(panel);
+  const status = card.querySelector("[data-status]");
+  const act = (label, attr, fields, run) => {
+    const b = el(`<button type="button" class="cat-btn" data-delivery-action="${attr}">${esc(label)}</button>`);
+    b.onclick = () => ui.openDialog(`Confirm: ${label}`, fields, async (form) => {
+      b.disabled = true;
+      try { await run(form); await reload(`${label} recorded.`); }
+      catch (e) { const code = e?.data?.error || e?.message; if (code === "delivery_state_changed") return reload(message(e)); status.textContent = message(e); b.disabled = false; }
+    });
+    panel.querySelector("[data-delivery-actions]").appendChild(b);
+  };
+  const post = (action, payload) => ui.api(`${DELIVERY_API}/${encodeURIComponent(id)}/${action}`, { method: "POST", body: { expected_row_version: d ? d.row_version : 0, ...payload } });
+  const detailFields = (cur = {}) => [
+    { name: "method", label: "Method", type: "select", value: cur.method || "own_fleet", options: [{ value: "own_fleet", label: "Own delivery staff" }, { value: "courier", label: "Courier" }, { value: "customer_pickup", label: "Customer pickup" }] },
+    { name: "courier_name", label: "Courier company (couriers only)", value: cur.courier_name || "" },
+    { name: "tracking_reference", label: "Tracking reference (optional)", value: cur.tracking_reference || "" },
+    { name: "tracking_url", label: "Tracking link (https, optional, staff use only)", value: cur.tracking_url || "" },
+    { name: "scheduled_for", label: "Planned date", type: "date", value: cur.scheduled_for || "" },
+    { name: "instructions", label: "Delivery instructions (optional)", type: "textarea", value: cur.instructions || "" },
+  ];
+  const clean = (f) => Object.fromEntries(Object.entries(f).map(([k, v]) => [k, String(v || "").trim()]).filter(([, v]) => v));
+  if (can && lc && lc.state !== "closed") {
+    if (!d && ["paid", "packed"].includes(lc.state)) act("Schedule delivery", "schedule", detailFields(), (f) => post("schedule", clean(f)));
+    if (d && d.state === "scheduled") {
+      act("Edit delivery details", "edit", detailFields(d), (f) => post("schedule", clean(f)));
+      act("Dispatch", "dispatch", [{ name: "note", label: lc.state === "packed" ? "Hands the order to delivery and marks it Dispatched." : "Starts the next delivery attempt.", type: "textarea" }], () => post("dispatch", {}));
+    }
+    if (d && d.state === "out_for_delivery") {
+      act("Delivery failed", "fail", [{ name: "reason_code", label: "Reason", type: "select", value: "recipient_unavailable", options: FAIL_REASONS.map((r) => ({ value: r, label: human(r) })) }, { name: "note", label: "Note (required for refused, damaged and other)", type: "textarea" }], (f) => post("fail", { reason_code: f.reason_code, note: String(f.note || "") }));
+      act("Mark delivered", "complete", [{ name: "recipient_name", label: "Received by (name)" }, { name: "recipient_relationship", label: "Relationship", type: "select", value: "customer", options: RELATIONSHIPS.map((r) => ({ value: r, label: human(r) })) }, { name: "note", label: "Note (optional)", type: "textarea" }],
+        (f) => post("complete", { recipient_name: String(f.recipient_name || "").trim(), recipient_relationship: f.recipient_relationship, note: String(f.note || "") }));
+    }
+    if (d && d.state === "failed") act("Reschedule", "reschedule", [{ name: "scheduled_for", label: "New date", type: "date" }, { name: "note", label: "Note (optional)", type: "textarea" }], (f) => post("reschedule", { scheduled_for: String(f.scheduled_for || ""), note: String(f.note || "") }));
+    if (d && ["scheduled", "failed"].includes(d.state)) act("Put on hold", "hold", [{ name: "exception", label: "Exception", type: "select", value: "customer_request", options: HOLD_REASONS.map((r) => ({ value: r, label: human(r) })) }, { name: "note", label: "Note (at least 8 characters)", type: "textarea" }], (f) => post("hold", { exception: f.exception, note: String(f.note || "") }));
+    if (d && d.state === "on_hold") act("Release hold", "release", [{ name: "note", label: "Why the hold is released (at least 8 characters)", type: "textarea" }], (f) => post("release", { note: String(f.note || "") }));
+    if (d && ["out_for_delivery", "delivered"].includes(d.state)) {
+      const up = el(`<label data-proof-upload>Add proof photo <select class="cat-select" data-proof-kind><option value="photo">Photo</option><option value="signature">Signature</option></select> <input type="file" accept="image/jpeg,image/png,image/webp" data-proof-file></label>`);
+      up.querySelector("[data-proof-file]").onchange = (ev) => {
+        const file = ev.target.files && ev.target.files[0]; if (!file) return;
+        const reader = new FileReader();
+        reader.onload = () => uploadProof(ui, id, d.row_version, up.querySelector("[data-proof-kind]").value, String(reader.result)).then(() => reload("Proof added.")).catch((e) => { if ((e?.data?.error || e?.message) === "delivery_state_changed") return reload(message(e)); status.textContent = message(e); });
+        reader.readAsDataURL(file);
+      };
+      panel.querySelector("[data-delivery-actions]").appendChild(up);
+    }
+  }
+  const list = panel.querySelector("[data-proofs]");
+  if (!data.proofs.length) list.appendChild(el(`<li data-no-proofs>No proof uploaded yet.</li>`));
+  for (const p of data.proofs) list.appendChild(el(`<li data-proof="${esc(p.id)}">${esc(human(p.kind))} · ${esc(when(p.created_at))} by ${esc(p.actor)}${data.can_view_proofs ? ` · <a href="${DELIVERY_API}/${encodeURIComponent(id)}/proofs/${esc(p.id)}" target="_blank" rel="noopener noreferrer">View</a>` : ""}</li>`));
+  const hist = panel.querySelector("[data-delivery-history]");
+  for (const ev of data.events) hist.appendChild(el(`<li data-delivery-event="${ev.row_version}">${esc(when(ev.created_at))} — ${esc(human(ev.event_type))}${ev.to_state !== ev.from_state ? ` (${esc(DELIVERY_LABEL[ev.from_state] || "—")} → ${esc(DELIVERY_LABEL[ev.to_state])})` : ""} by ${esc(ev.actor)}${ev.detail && ev.detail.reason_code ? ` — ${esc(human(ev.detail.reason_code))}` : ""}${ev.detail && ev.detail.exception ? ` — ${esc(human(ev.detail.exception))}` : ""}${ev.reason ? ` — “${esc(ev.reason)}”` : ""}</li>`));
+}
+export function uploadProof(ui, id, rowVersion, kind, dataUrl) {
+  return ui.api(`${DELIVERY_API}/${encodeURIComponent(id)}/proofs`, { method: "POST", body: { expected_row_version: rowVersion, kind, data_url: dataUrl } });
 }

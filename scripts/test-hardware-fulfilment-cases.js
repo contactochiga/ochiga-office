@@ -303,4 +303,5 @@ module.exports = async ({ run, one, psql, check, make, auth, service, ROOT, vid,
       h.textContent.includes("not enabled in this environment") && h.querySelectorAll("[data-transition],[data-assign],[data-save]").length === 0);
   }
   await off.stop();
+  if (process.env.TEST_DELIVERY === "true") await require("./test-hardware-delivery-cases")({ run, one, psql, check, paid, ROOT, vid, concurrentSql, startApp, gatewayUrl, reloadSchema, restUrl, hashPassword, PASSWORD, F, mod, make, release });
 };

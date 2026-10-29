@@ -56,7 +56,8 @@
     "office:payments:test": "TEST_CHECKOUT=true TEST_RESERVATIONS=true TEST_PAYMENTS=true node scripts/test-hardware-orders-postgres.js",
     "office:payment-start-diagnostics:test": "node scripts/test-hardware-payment-upstream-diagnostics.js",
     "office:financial:test": "TEST_FINANCIAL=true TEST_CHECKOUT=true TEST_RESERVATIONS=true TEST_PAYMENTS=true node scripts/test-hardware-orders-postgres.js",
-    "office:fulfilment:test": "TEST_FULFILMENT=true TEST_CHECKOUT=true TEST_RESERVATIONS=true TEST_PAYMENTS=true TEST_FINANCIAL=true node scripts/test-hardware-orders-postgres.js && node scripts/test-hardware-fulfilment-http.js && node scripts/test-hardware-fulfilment-ui.mjs"
+    "office:fulfilment:test": "TEST_FULFILMENT=true TEST_CHECKOUT=true TEST_RESERVATIONS=true TEST_PAYMENTS=true TEST_FINANCIAL=true node scripts/test-hardware-orders-postgres.js && node scripts/test-hardware-fulfilment-http.js && node scripts/test-hardware-fulfilment-ui.mjs",
+    "office:delivery:test": "TEST_DELIVERY=true TEST_FULFILMENT=true TEST_CHECKOUT=true TEST_RESERVATIONS=true TEST_PAYMENTS=true TEST_FINANCIAL=true node scripts/test-hardware-orders-postgres.js && node scripts/test-hardware-delivery-http.js"
   },
   "dependencies": {
     "@sanity/client": "^6.29.1",

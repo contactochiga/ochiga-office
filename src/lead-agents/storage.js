@@ -17,6 +17,8 @@ const STORAGE_PURPOSES = Object.freeze([
   "content_featured_image",
   // catalogue gallery (catalogue-api.js only; refused by the generic /admin/storage routes)
   "product_image",
+  // proof of delivery (hardware-delivery-api.js only; refused by the generic /admin/storage routes)
+  "delivery_proof",
 ]);
 
 function parseDataUrl(value) {
