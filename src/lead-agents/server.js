@@ -133,6 +133,7 @@ const { handleCatalogueRequest } = require("./catalogue-api");
 const { handleHardwareFinancialRequest } = require("./hardware-financial-api");
 const { handleHardwarePaymentsRequest } = require("./hardware-payments-api");
 const { handleHardwareCheckoutRequest } = require("./hardware-checkout-api");
+const { handleHardwareOrderProgressRequest } = require("./hardware-order-progress-api");
 const { handleHardwareOrdersRequest } = require("./hardware-orders-api");
 const { handleHardwareFulfilmentRequest } = require("./hardware-fulfilment-api");
 const { handleHardwareDeliveryRequest } = require("./hardware-delivery-api");
@@ -2004,6 +2005,8 @@ const SCOPED_ROUTES = Object.freeze({
   "commerce.checkout.submit": ["quote", "submit", "status", "payment-quote", "payment-start"].map(action => ({method: "POST", path: "/api/commerce/checkout/" + action})),
   "intake.submit": [{ method: "POST", path: "/api/office/intake" }],
   "catalogue.public.read": [{ method: "GET", prefix: "/api/public/catalogue/" }],
+  // Phase 5D: customer order progress only (read-only; separate key from checkout, payments and the catalogue)
+  "orders.public.status": [{ method: "POST", path: "/api/public/orders/progress" }],
 });
 
 function scopedRouteAllowed(authContext, method, pathname) {
@@ -2356,6 +2359,7 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
       if (await handleHardwareFinancialRequest({ req, res, pathname, authContext, store, config })) return;
       if (await handleHardwarePaymentsRequest({ req, res, pathname, authContext, store, config })) return;
       if (await handleHardwareCheckoutRequest({ req, res, pathname, authContext, store })) return;
+      if (await handleHardwareOrderProgressRequest({ req, res, pathname, authContext, store })) return;
       if (await handleHardwareOrdersRequest({ req, res, pathname, authContext, store, config })) return;
       if (await handleHardwareFulfilmentRequest({ req, res, pathname, authContext, store, config })) return;
       if (await handleHardwareDeliveryRequest({ req, res, pathname, authContext, store, storageService, config })) return;

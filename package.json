@@ -58,7 +58,8 @@
     "office:financial:test": "TEST_FINANCIAL=true TEST_CHECKOUT=true TEST_RESERVATIONS=true TEST_PAYMENTS=true node scripts/test-hardware-orders-postgres.js",
     "office:fulfilment:test": "TEST_FULFILMENT=true TEST_CHECKOUT=true TEST_RESERVATIONS=true TEST_PAYMENTS=true TEST_FINANCIAL=true node scripts/test-hardware-orders-postgres.js && node scripts/test-hardware-fulfilment-http.js && node scripts/test-hardware-fulfilment-ui.mjs",
     "office:delivery:test": "TEST_DELIVERY=true TEST_FULFILMENT=true TEST_CHECKOUT=true TEST_RESERVATIONS=true TEST_PAYMENTS=true TEST_FINANCIAL=true node scripts/test-hardware-orders-postgres.js && node scripts/test-hardware-delivery-http.js",
-    "office:service:test": "TEST_SERVICE=true TEST_DELIVERY=true TEST_FULFILMENT=true TEST_CHECKOUT=true TEST_RESERVATIONS=true TEST_PAYMENTS=true TEST_FINANCIAL=true node scripts/test-hardware-orders-postgres.js && node scripts/test-hardware-service-http.js"
+    "office:service:test": "TEST_SERVICE=true TEST_DELIVERY=true TEST_FULFILMENT=true TEST_CHECKOUT=true TEST_RESERVATIONS=true TEST_PAYMENTS=true TEST_FINANCIAL=true node scripts/test-hardware-orders-postgres.js && node scripts/test-hardware-service-http.js",
+    "office:progress:test": "TEST_PROGRESS=true TEST_SERVICE=true TEST_DELIVERY=true TEST_FULFILMENT=true TEST_CHECKOUT=true TEST_RESERVATIONS=true TEST_PAYMENTS=true TEST_FINANCIAL=true node scripts/test-hardware-orders-postgres.js && node scripts/test-hardware-progress-http.js && node scripts/test-catalogue-public-contract.js"
   },
   "dependencies": {
     "@sanity/client": "^6.29.1",

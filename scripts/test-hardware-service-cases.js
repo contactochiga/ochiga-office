@@ -243,4 +243,5 @@ module.exports = async (h) => {
     one("select count(*) from pg_proc where pronamespace='public'::regnamespace and proname like 'hardware_service_%' and prosrc ~* '(update|insert into|delete from)\\s+(hardware_orders|hardware_payment_|hardware_reservation|hardware_refund|catalogue_variants|catalogue_inventory_changes|hardware_fulfilments)'") === "0");
 
   if (process.env.TEST_SERVICE_API !== "false") await require("./test-hardware-service-api-cases")({ ...h, S, T1, T2, CFG, DL, lagos, contact, T, ver, st, fs5a, fver, deliver, request, schedule, call, ok, err, q, J, checklist });
+  if (process.env.TEST_PROGRESS === "true") await require("./test-hardware-progress-cases")({ ...h, DL, O, O2, T1, T2 });
 };
