@@ -49,11 +49,13 @@
     "office:knowledge-positioning:test": "node scripts/test-knowledge-positioning.js",
     "office:import:test": "node scripts/test-product-import.js && node scripts/test-product-import-postgres.js",
     "office:import:local": "node scripts/product-import-local.js",
-    "office:ingestion:test": "node scripts/test-ingestion-v2.js && node scripts/test-ingestion-v2-postgres.js && node scripts/test-ingestion-v2-edges.js && node scripts/test-ingestion-multisheet.js && node scripts/test-ingestion-taxonomy.js"
+    "office:ingestion:test": "node scripts/test-ingestion-v2.js && node scripts/test-ingestion-v2-postgres.js && node scripts/test-ingestion-v2-edges.js && node scripts/test-ingestion-multisheet.js && node scripts/test-ingestion-taxonomy.js",
+    "office:api-routing:test": "node scripts/test-office-api-routing.mjs"
   },
   "dependencies": {
     "@sanity/client": "^6.29.1",
     "@vercel/analytics": "^2.0.1",
+    "@vercel/functions": "^3.10.4",
     "axios": "^1.13.4",
     "csv-parse": "7.0.3",
     "dotenv": "^17.2.4",
