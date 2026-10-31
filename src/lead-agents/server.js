@@ -130,6 +130,14 @@ const { appendAuditRecord } = require("./audit");
 const { PERMISSION_KEYS, ROLE_PERMISSIONS, hasPermission } = require("./permissions");
 const relationshipWorkspace = require("./relationship-workspace");
 const { handleCatalogueRequest } = require("./catalogue-api");
+const { handleHardwareFinancialRequest } = require("./hardware-financial-api");
+const { handleHardwarePaymentsRequest } = require("./hardware-payments-api");
+const { handleHardwareCheckoutRequest } = require("./hardware-checkout-api");
+const { handleHardwareOrderProgressRequest } = require("./hardware-order-progress-api");
+const { handleHardwareOrdersRequest } = require("./hardware-orders-api");
+const { handleHardwareFulfilmentRequest } = require("./hardware-fulfilment-api");
+const { handleHardwareDeliveryRequest } = require("./hardware-delivery-api");
+const { handleHardwareServiceRequest } = require("./hardware-service-api");
 const { handlePublicCatalogueRequest } = require("./catalogue-public-api");
 const signatureStats = require("./webhook-signature-stats");
 const inboundVisibility = require("./whatsapp-inbound-visibility");
@@ -1992,8 +2000,13 @@ async function respondToIntakeResult({ res, ctx, config, envelope, result, minim
 // The ONLY routes a scoped integration key may call, per scope (method + exact path). Everything else answers 403 before any handler runs.
 // (`prefix` entries allow the read-only public catalogue's sub-paths; the handler itself re-checks the scope.)
 const SCOPED_ROUTES = Object.freeze({
+  "commerce.payment.operations": [{method:"POST",path:"/api/commerce/payments/operations"}],
+  "commerce.payment.confirm": [{method:"POST",path:"/api/commerce/payments/confirm"}],
+  "commerce.checkout.submit": ["quote", "submit", "status", "payment-quote", "payment-start"].map(action => ({method: "POST", path: "/api/commerce/checkout/" + action})),
   "intake.submit": [{ method: "POST", path: "/api/office/intake" }],
   "catalogue.public.read": [{ method: "GET", prefix: "/api/public/catalogue/" }],
+  // Phase 5D: customer order progress only (read-only; separate key from checkout, payments and the catalogue)
+  "orders.public.status": [{ method: "POST", path: "/api/public/orders/progress" }],
 });
 
 function scopedRouteAllowed(authContext, method, pathname) {
@@ -2266,6 +2279,8 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
         pathname === "/office/catalogue/catalogue.mjs" ||
         pathname === "/office/catalogue/packages.mjs" ||
         pathname === "/office/catalogue/import.mjs" ||
+        pathname === "/office/catalogue/fulfilment.mjs" ||
+        pathname === "/office/catalogue/service.mjs" ||
         pathname === "/office/catalogue/ingestion.mjs" ||
         pathname === "/office/catalogue/ingestion-taxonomy.mjs" ||
         pathname === "/office/manifest.json" ||
@@ -2342,6 +2357,14 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
         );
       }
 
+      if (await handleHardwareFinancialRequest({ req, res, pathname, authContext, store, config })) return;
+      if (await handleHardwarePaymentsRequest({ req, res, pathname, authContext, store, config })) return;
+      if (await handleHardwareCheckoutRequest({ req, res, pathname, authContext, store })) return;
+      if (await handleHardwareOrderProgressRequest({ req, res, pathname, authContext, store })) return;
+      if (await handleHardwareOrdersRequest({ req, res, pathname, authContext, store, config })) return;
+      if (await handleHardwareFulfilmentRequest({ req, res, pathname, authContext, store, config })) return;
+      if (await handleHardwareDeliveryRequest({ req, res, pathname, authContext, store, storageService, config })) return;
+      if (await handleHardwareServiceRequest({ req, res, pathname, authContext, store, storageService, config })) return;
       // Product catalogue (Office-managed GetOyi hardware): self-contained, staff-session-only module (catalogue-api.js)
       if (await handleCatalogueRequest({ req, res, ctx, pathname, authContext, store, eventBus, storageService, config, log })) return;
       // Public catalogue projection for GetOyi (read-only; catalogue.public.read scoped key only)
@@ -3361,6 +3384,16 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
       if (pathname === "/office/catalogue/ingestion.mjs") {
         if (req.method !== "GET") { methodNotAllowed(res, "GET"); return; }
         await serveFile(res, path.join(process.cwd(), "public", "office", "catalogue", "ingestion.mjs"));
+        return;
+      }
+      if (pathname === "/office/catalogue/fulfilment.mjs") {
+        if (req.method !== "GET") { methodNotAllowed(res, "GET"); return; }
+        await serveFile(res, path.join(process.cwd(), "public", "office", "catalogue", "fulfilment.mjs"));
+        return;
+      }
+      if (pathname === "/office/catalogue/service.mjs") {
+        if (req.method !== "GET") { methodNotAllowed(res, "GET"); return; }
+        await serveFile(res, path.join(process.cwd(), "public", "office", "catalogue", "service.mjs"));
         return;
       }
       if (pathname === "/office/catalogue/import.mjs") {
@@ -7099,6 +7132,16 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           json(res, 403, { error: "forbidden", message: "Product media and import files are uploaded from Products." }, { "x-request-id": ctx.requestId });
           return;
         }
+        // proof-of-delivery photos are created only by the delivery route (image re-encoding, delivery permission, order link)
+        if (String(body.purpose || "").toLowerCase() === "delivery_proof") {
+          json(res, 403, { error: "forbidden", message: "Proof of delivery is uploaded from the order's delivery record." }, { "x-request-id": ctx.requestId });
+          return;
+        }
+        // inspection / installation photographs are created only by the service-visit route
+        if (String(body.purpose || "").toLowerCase() === "service_visit_photo") {
+          json(res, 403, { error: "forbidden", message: "Visit photographs are uploaded from the inspection or installation record." }, { "x-request-id": ctx.requestId });
+          return;
+        }
         const storedFile = await storageService.putDataUrl(body);
         const file =
           typeof store.createOfficeFile === "function"
@@ -8533,7 +8576,7 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           return;
         }
         const filename = path.basename(decodeURIComponent(rawFilename));
-        const shareObject = (filename.startsWith("product_image_") || filename.startsWith("catalogue_import_")) ? null : await storageService.getObject(filename);
+        const shareObject = (filename.startsWith("product_image_") || filename.startsWith("catalogue_import_") || filename.startsWith("delivery_proof_") || filename.startsWith("service_visit_photo_")) ? null : await storageService.getObject(filename);
         if (!shareObject) {
           notFound(res);
           return;
@@ -8551,7 +8594,8 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
         authorizePermission(authContext, "view_storage");
         const filename = path.basename(decodeURIComponent(storageMatch[1]));
         // product gallery originals stay private and renditions are served only by the catalogue media route (catalogue.read)
-        if (filename.startsWith("product_image_") || filename.startsWith("catalogue_import_")) {
+        // proof-of-delivery files are served only by the delivery route (delivery or customer-data permission, audited)
+        if (filename.startsWith("product_image_") || filename.startsWith("catalogue_import_") || filename.startsWith("delivery_proof_") || filename.startsWith("service_visit_photo_")) {
           notFound(res);
           return;
         }
