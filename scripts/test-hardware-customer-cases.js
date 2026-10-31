@@ -41,7 +41,11 @@ module.exports=async h=>{
  const history=await call('history',{id:U,grant});
  check('CA-HISTORY','verified mailbox history includes owned order and strips contact/private fields',history.status===200&&history.body.orders.some(o=>o.order_id===U)&&history.body.orders.length<=50&&!JSON.stringify(history.body).includes(email)&&!JSON.stringify(history.body).includes('guest_hash'));
  check('CA-IDOR' ,'grant cannot access another order',(await call('progress',{id:V,grant})).status===404);
- check('CA-NOFINANCE','access key cannot start payment',(await fetch(app.url+'/api/commerce/checkout/payment-start',{method:'POST',headers:{'x-api-key':key,'content-type':'application/json'},body:JSON.stringify({id:U,customer_grant:grant,accepted_total_kobo:10000})})).status===403);
+ const expiredGrant=psql(`begin;update hardware_customer_grants set expires_at=now()-interval '1 second' where token_hash='${sha(grant)}';select hardware_customer_access_progress(${q(c)},'${U}','${sha(grant)}');rollback;`);
+ check('CA-GRANT-EXPIRY','expired bearer grant is rejected without changing historical order state',expiredGrant.status!==0&&expiredGrant.err.includes('order_not_found')&&(await call('progress',{id:U,grant})).status===200);
+ const otherClient=psql(`select hardware_customer_access_progress('other-client','${U}','${sha(grant)}')`);
+ check('CA-CLIENT','grant cannot cross the checkout client boundary',otherClient.status!==0&&otherClient.err.includes('order_not_found'));
+ check('CA-NOFINANCE' ,'access key cannot start payment',(await fetch(app.url+'/api/commerce/checkout/payment-start',{method:'POST',headers:{'x-api-key':key,'content-type':'application/json'},body:JSON.stringify({id:U,customer_grant:grant,accepted_total_kobo:10000})})).status===403);
  check('CA-PAYMENT-OFF','checkout grant never bypasses disabled initialization',(await fetch(app.url+'/api/commerce/checkout/payment-start',{method:'POST',headers:{'x-api-key':other,'content-type':'application/json'},body:JSON.stringify({id:U,customer_grant:grant,accepted_total_kobo:10000})})).status===503);
  const bh=await req(),hi=bh.body.challenge;
  const concurrent=await concurrentSql([1,2,3,4].map(()=>`select hardware_customer_access_verify(${q(c)},'${hi}',${q(codeHash(hi,codeFor(hi)))},${q(crypto.randomBytes(32).toString('hex'))})`));
@@ -73,5 +77,27 @@ module.exports=async h=>{
  check('CE-DEADLINE','expired provider dedupe window stops resend',one("select count(*) from hardware_customer_email_outbox where first_attempt_at<now()-interval '24 hours' and state<>'review'")==='0');
  process.env.OFFICE_HARDWARE_CUSTOMER_EMAIL_ENABLED='false';
  check('CE-OFF','disabled email worker claims nothing',(await drainCustomerEmail({store,config})).disabled===true);
- await app.stop();release(U);release(V);
+
+ // One existing-workflow purchase-to-delivery rehearsal with a MOCK provider, not Paystack evidence.
+ const journey=await h.paid(false);
+ const fver=()=>Number(one(`select coalesce((select row_version from hardware_fulfilments where order_id='${journey}'),0)`));
+ const journeyBefore=one(`select payment_state||'/'||reservation_state||'/'||payable_total_kobo from hardware_orders where id='${journey}'`);
+ run(`select hardware_fulfilment_transition('${h.F}','${journey}',${fver()},'packed','')`);
+ run(`select hardware_delivery_schedule('${h.DL}','${journey}',0,'{"method":"courier","courier_name":"Synthetic Courier","tracking_reference":"SYN-CUSTOMER"}'::jsonb)`);
+ run(`select hardware_delivery_dispatch('${h.DL}','${journey}',1)`);
+ const file='delivery_proof_test_'+crypto.randomBytes(6).toString('hex');
+ run(`insert into office_files(id,storage_driver,storage_key,filename,mime_type,size,purpose,resource_type,resource_id) values('${file}','supabase','${file}.webp','${file}.webp','image/webp',10,'delivery_proof','hardware_order','${journey}')`);
+ run(`select hardware_delivery_add_proof('${h.DL}','${journey}',2,'${file}','photo','${sha(file)}',10)`);
+ run(`select hardware_delivery_complete('${h.DL}','${journey}',3,'Synthetic Receiver','customer','')`);
+ run(`select hardware_fulfilment_transition('${h.F}','${journey}',${fver()},'closed','Synthetic acceptance')`);
+ const kinds=JSON.parse(run(`select jsonb_agg(kind order by created_at,event_key) from hardware_customer_email_outbox where order_id='${journey}'`));
+ check('CE-JOURNEY','creation, delivery quote, verified mock payment, dispatch, delivery and completion each queue once',['created','delivery_confirmed','paid','packed','dispatched','delivered','closed'].every(k=>kinds.filter(x=>x===k).length===1),kinds);
+ check('CE-FINANCIAL-PRESERVE','notification and delivery lifecycle preserve allocated stock/payment totals',journeyBefore===one(`select payment_state||'/'||reservation_state||'/'||payable_total_kobo from hardware_orders where id='${journey}'`)&&journeyBefore.startsWith('paid/allocated/'));
+ const money=JSON.parse(run(`select jsonb_build_object('goods',goods_total_kobo,'goods_tax',goods_tax_kobo,'delivery',delivery_total_kobo,'payable',payable_total_kobo) from hardware_orders where id='${journey}'`));
+ check('CE-AMOUNTS','authoritative total equals goods plus approved delivery; tax remains inside gross',money.goods+money.delivery===money.payable&&money.goods_tax<=money.goods&&one(`select amount_kobo from hardware_payment_confirmations where order_id='${journey}'`)===String(money.payable));
+ await app.stop();
+ const disabled=await startApp(gatewayUrl,true,false,{...env,OFFICE_HARDWARE_CUSTOMER_ACCESS_ENABLED:'false'});
+ const disabledResponse=await fetch(disabled.url+'/api/public/orders/access/request',{method:'POST',headers:{'x-api-key':key,'content-type':'application/json'},body:JSON.stringify({reference:U,email})});
+ check('CA-DISABLED','new access surface remains disabled without its own switch',disabledResponse.status===503&&(await disabledResponse.json()).error==='access_disabled');
+ await disabled.stop();release(U);release(V);
 };

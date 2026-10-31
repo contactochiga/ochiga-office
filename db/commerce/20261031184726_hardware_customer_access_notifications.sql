@@ -112,9 +112,10 @@ declare oid uuid; k text; event_key text;begin
  elsif tg_table_name='hardware_payment_confirmations' then oid:=new.order_id;k:=case when new.outcome='paid' then 'paid' else 'under_review' end;event_key:=new.reference;
  elsif tg_table_name='hardware_financial_observations' then oid:=new.order_id;k:=case when new.state='provider_failed' then 'payment_failed' when new.state in ('disputed','amount_mismatch','refund_processed','refund_escalated') then 'under_review' end;event_key:=new.event_id::text;
  elsif tg_table_name='hardware_fulfilment_events' then oid:=new.order_id;k:=case when new.to_state in ('packed','dispatched','delivered','installed','closed') then new.to_state end;event_key:=new.id::text;
+ -- Installation completion is emitted once by the linked fulfilment 'installed' event.
  elsif tg_table_name='hardware_service_visit_events' then
  select order_id into oid from hardware_service_visits where id=new.visit_id and kind='installation';
- k:=case when new.event_type in ('requested','scheduled','rescheduled','started','completed','cancelled') then 'installation_'||new.event_type end;event_key:=new.id::text;
+ k:=case when new.event_type in ('requested','scheduled','rescheduled','started','cancelled') then 'installation_'||new.event_type end;event_key:=new.id::text;
  end if;
  if oid is not null and k is not null then perform hardware_customer_email_enqueue(oid,tg_table_name||':'||event_key,k);end if;
  if oid is not null and k in ('cancelled','under_review') then
