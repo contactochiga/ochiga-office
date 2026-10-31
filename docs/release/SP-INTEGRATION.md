@@ -11,7 +11,7 @@ Kind-aware containment also rejects package/service/unknown kinds from hardware 
 
 ## Rollback anchor
 
-Supported pre-SP rollback commit: **c9d67cb**, branch `codex/sp-office-rollback` (contains c804d31 security patch). This does not add package creation/UI; it understands enough of the future kind field to reject non-products from all old hardware routes and product previews. Its real HTTP boundary tests pass 16/16. Enable `OFFICE_CATALOGUE_ROLLBACK_READ_ONLY=true` when invoking this rollback to freeze catalogue mutations even for super-admin; retain both website switches OFF. See PACKAGE-ROLLBACK.md. Never use b256550 after package data exists.
+Supported pre-SP rollback commit: **ba0e0d6**, branch `codex/sp-office-rollback` (contains 30f2900 security patch). This does not add package creation/UI; it understands enough of the future kind field to reject non-products from all old hardware routes and product previews. Its real HTTP boundary tests pass 16/16. Enable `OFFICE_CATALOGUE_ROLLBACK_READ_ONLY=true` when invoking this rollback to freeze catalogue mutations even for super-admin; retain both website switches OFF. See PACKAGE-ROLLBACK.md. Never use b256550 after package data exists.
 
 The same 16-check boundary suite passes on the integrated SP candidate. No production runtime or schema was changed during this proof.
 
