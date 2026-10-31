@@ -23,7 +23,8 @@
     "deploymentEnabled": {
       "codex/office-redirects-security": false,
       "codex/sp-office-release": false,
-      "codex/sp-office-rollback": false
+      "codex/sp-office-rollback": false,
+      "codex/commerce-production-integration": false
     }
   }
 }
