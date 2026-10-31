@@ -259,6 +259,7 @@ module.exports = async ({
     );
   }
   if (process.env.TEST_RESERVATIONS === "true") await require('./test-hardware-reservations-cases')({psql,one,check,app,restUrl,reloadSchema,ROOT,pid,vid,RUN,concurrentSql,startApp,gatewayUrl,PG,sh,sleep});
+  if (process.env.TEST_DELIVERY_FIRST === "true") await require("./test-hardware-delivery-first")({psql,one,check,ROOT,vid,RUN,startApp,gatewayUrl,reloadSchema,restUrl,concurrentSql});
   if (process.env.TEST_CHECKOUT_WEB === "true")
     await require("./test-hardware-checkout-web")({ app, RUN });
   psql(`update catalogue_variants set stock_on_hand=0 where id='${vid}'`);

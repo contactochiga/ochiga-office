@@ -63,6 +63,11 @@
       "position": 12,
       "file": "db/commerce/20261031132537_hardware_commerce_kind_boundary.sql",
       "sha256": "60de8bfb3e4fb026d0fc347431c1ae36ca157651872c0bbdfaec0974b2f7fbed"
+    },
+    {
+      "position": 13,
+      "file": "db/commerce/20261031182434_hardware_staff_delivery_first.sql",
+      "sha256": "a67bb55560094519500a0ff0ca6a7a9143e3e3775e375f741636bd60a7aa6b7b"
     }
   ]
 }

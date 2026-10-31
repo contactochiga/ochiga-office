@@ -73,7 +73,7 @@ async function handleHardwarePaymentsRequest({
       );
     }
     if (
-      process.env.OFFICE_HARDWARE_PAYMENTS_ENABLED !== "true" ||
+      (process.env.OFFICE_HARDWARE_PAYMENTS_ENABLED !== "true" && process.env.OFFICE_HARDWARE_STAFF_DELIVERY_FIRST !== "true") ||
       process.env.OFFICE_HARDWARE_ORDERS_ENABLED !== "true"
     )
       return send(503, { error: "payments_disabled" });

@@ -70,19 +70,22 @@ async function handleHardwareCheckoutRequest({
     );
     const rpc = async (name, body) =>
       (await store.client.post("/rpc/" + name, body)).data;
-    if (["payment-quote","payment-start"].includes(action)) {
+    const deliveryFirst = process.env.OFFICE_HARDWARE_STAFF_DELIVERY_FIRST === "true";
+    if (["payment-quote","payment-prepare","payment-start"].includes(action)) {
       // Eligibility is read-only; the execution switch protects initialization only.
       if(action==="payment-start" && process.env.OFFICE_HARDWARE_PAYMENTS_ENABLED!=="true")fail(503,"payments_disabled");
+      if(action==="payment-prepare" && (!deliveryFirst || process.env.OFFICE_HARDWARE_RESERVATIONS_ENABLED!=="true"))fail(503,"payment_preparation_disabled");
       if(!/^[0-9a-f]{64}$/.test(b.guest_hash||"")||!/^[0-9a-f-]{36}$/.test(b.id||""))fail(400,"invalid_checkout");
       const args={p_client:authContext.client,p_guest_hash:b.guest_hash,p_order:b.id};
       if(action==="payment-quote") {
-        const payment = await rpc("hardware_payment_quote",args);
+        const payment = await rpc(deliveryFirst ? "hardware_checkout_payment_readiness" : "hardware_payment_quote",args);
         const eligibility_code = PAYMENT_QUOTE_CODES.has(payment?.eligibility_code)
           ? payment.eligibility_code
           : payment?.eligible === true ? "eligible" : "catalogue_or_price_ineligible";
         return send(200,{payment:{...payment,eligibility_code}});
       }
       if(!Number.isSafeInteger(b.accepted_total_kobo)||b.accepted_total_kobo<1)fail(400,"invalid_payment_total");
+      if(action==="payment-prepare")return send(200,{payment:await rpc("hardware_checkout_prepare_payment",{...args,p_accepted_total:b.accepted_total_kobo})});
       const authorization=await rpc("hardware_payment_authorize",{...args,p_accepted_total:b.accepted_total_kobo});
       return send(200,{payment:await initializeHardwarePayment(authorization)});
     }
@@ -151,7 +154,7 @@ async function handleHardwareCheckoutRequest({
         quote: {
           ...q,
           reservation_ttl_seconds:
-            process.env.OFFICE_HARDWARE_RESERVATIONS_ENABLED === "true"
+            process.env.OFFICE_HARDWARE_RESERVATIONS_ENABLED === "true" && !deliveryFirst
               ? 900
               : null,
           lines: q.lines.map((l) => ({
@@ -168,7 +171,7 @@ async function handleHardwareCheckoutRequest({
       });
     }
     const order = await rpc(
-      process.env.OFFICE_HARDWARE_RESERVATIONS_ENABLED === "true"
+      process.env.OFFICE_HARDWARE_RESERVATIONS_ENABLED === "true" && !deliveryFirst
         ? "hardware_reservation_checkout"
         : "hardware_checkout_submit",
       {

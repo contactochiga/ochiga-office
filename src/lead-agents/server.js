@@ -2002,7 +2002,7 @@ async function respondToIntakeResult({ res, ctx, config, envelope, result, minim
 const SCOPED_ROUTES = Object.freeze({
   "commerce.payment.operations": [{method:"POST",path:"/api/commerce/payments/operations"}],
   "commerce.payment.confirm": [{method:"POST",path:"/api/commerce/payments/confirm"}],
-  "commerce.checkout.submit": ["quote", "submit", "status", "payment-quote", "payment-start"].map(action => ({method: "POST", path: "/api/commerce/checkout/" + action})),
+  "commerce.checkout.submit": ["quote", "submit", "status", "payment-quote", "payment-prepare", "payment-start"].map(action => ({method: "POST", path: "/api/commerce/checkout/" + action})),
   "intake.submit": [{ method: "POST", path: "/api/office/intake" }],
   "catalogue.public.read": [{ method: "GET", prefix: "/api/public/catalogue/" }],
   // Phase 5D: customer order progress only (read-only; separate key from checkout, payments and the catalogue)
