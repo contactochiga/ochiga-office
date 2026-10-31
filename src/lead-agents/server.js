@@ -2277,6 +2277,7 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
         pathname === "/office/shared/oyi-core/presence.mjs" ||
         pathname === "/office/shared/oyi-core/responseNormalizer.mjs" ||
         pathname === "/office/catalogue/catalogue.mjs" ||
+        pathname === "/office/catalogue/packages.mjs" ||
         pathname === "/office/catalogue/import.mjs" ||
         pathname === "/office/catalogue/fulfilment.mjs" ||
         pathname === "/office/catalogue/service.mjs" ||
@@ -3368,6 +3369,12 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
         return;
       }
 
+      if (pathname === "/office/catalogue/packages.mjs") {
+        if (req.method !== "GET") { methodNotAllowed(res, "GET"); return; }
+        res.setHeader("cache-control", "no-store");
+        await serveFile(res, path.join(process.cwd(), "public", "office", "catalogue", "packages.mjs"));
+        return;
+      }
       if (pathname === "/office/catalogue/ingestion-taxonomy.mjs") {
         if (req.method !== "GET") { methodNotAllowed(res, "GET"); return; }
         res.setHeader("cache-control", "no-store");

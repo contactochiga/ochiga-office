@@ -352,6 +352,7 @@ export async function renderCatalogueRoute(outlet, rest, token, ui) {
   const [section, id] = rest;
   const tabs = [
     { key: "", label: "Products", permission: "catalogue.read" },
+    { key: "packages", label: "Packages", permission: "catalogue.read" },
     { key: "orders", label: "Orders & payments", permission: "commerce.orders.read" },
     { key: "fulfilment", label: "Fulfilment", permission: "commerce.orders.read" },
     { key: "merchandising", label: "Hardware campaigns", permission: "catalogue.read" },
@@ -383,6 +384,7 @@ export async function renderCatalogueRoute(outlet, rest, token, ui) {
     else if (section === "orders") { const { renderHardwareFinancial } = await import("./hardware-financial.mjs"); await renderHardwareFinancial(host, token, ui); }
     else if (section === "fulfilment") { const { renderFulfilment } = await import("./fulfilment.mjs"); await renderFulfilment(host, token, ui); }
     else if (section === "merchandising") { const { renderMerchandising } = await import("./merchandising.mjs"); await renderMerchandising(host, token, ui); }
+    else if (section === "packages") { const { renderPackages } = await import("./packages.mjs"); await renderPackages(host, token, ui, id || null); }
     else if (section === "prices") await renderPriceQueue(host, token, ui);
     else if (section === "taxonomy") await renderTaxonomy(host, token, ui);
     else if (section === "suppliers") await renderSuppliers(host, token, ui);
