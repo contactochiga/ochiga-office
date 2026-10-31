@@ -11,7 +11,7 @@ Kind-aware containment also rejects package/service/unknown kinds from hardware 
 
 ## Rollback anchor
 
-Supported pre-SP rollback commit: **ba0e0d6**, branch `codex/sp-office-rollback` (contains 30f2900 security patch). This does not add package creation/UI; it understands enough of the future kind field to reject non-products from all old hardware routes and product previews. Its real HTTP boundary tests pass 16/16. Enable `OFFICE_CATALOGUE_ROLLBACK_READ_ONLY=true` when invoking this rollback to freeze catalogue mutations even for super-admin; retain both website switches OFF. See PACKAGE-ROLLBACK.md. Never use b256550 after package data exists.
+Supported pre-SP rollback commit: **c95cc73**, branch `codex/sp-office-rollback` (ba0e0d6 plus the scoped Zod fix). This does not add package creation/UI; it understands enough of the future kind field to reject non-products from all old hardware routes and product previews. Its real HTTP boundary tests pass 16/16. Both ba0e0d6 and its security-patched successor pass an additional 19-check read-only HTTP proof against persisted synthetic data: 11 catalogue records, five packages, two released packages and their images; history is unchanged. Enable `OFFICE_CATALOGUE_ROLLBACK_READ_ONLY=true` when invoking this rollback to freeze catalogue mutations even for super-admin; retain both website switches OFF. See PACKAGE-ROLLBACK.md. Never use b256550 after package data exists.
 
 The same 16-check boundary suite passes on the integrated SP candidate. No production runtime or schema was changed during this proof.
 
@@ -25,7 +25,7 @@ The isolated PostgreSQL suite verifies schema apply/reapply, privilege/RLS/searc
 
 ## Release blockers and order
 
-- Separate inherited zod advisory remains open (see REDIRECT-SECURITY-PATCH.md); no waiver.
+- Zod advisory remediated with a scoped 4.6.6 override; full dependency audit is now zero. Actual config compatibility 19/19, routing 30/30 and redirect safety 10/10. See REDIRECT-SECURITY-PATCH.md.
 - Human engineering review and fresh production read-only schema/baseline gate required.
 - Gate A legal, retention, final visual and hosting approval remain open. PR #4 stays at 34f0859.
 - Real offering images, exact compatibility, deployment/installation scope, independent prices and production publish/withdrawal acceptance remain separate.
@@ -33,3 +33,5 @@ The isolated PostgreSQL suite verifies schema apply/reapply, privilege/RLS/searc
 Order after separate authorization: dependency patch → capture/build the kind-aware rollback anchor → apply ONLY package migration with pre/post gates → deploy integrated Office → approve/deploy GetOyi PR #4 with catalogue OFF → deploy SP4 with both switches OFF → authenticated manual/product/gallery/preview/CRM smoke. No new live enquiry without authorization. Public catalogue and package activation are separate later decisions. Render auto-deploys its production branch; merging/pushing that branch is a deployment action.
 
 Review branches disable Vercel Git auto-deploy; Render previews are off and its deployment branch is untouched. Do not manually deploy draft commits.
+
+Security follow-up was cherry-picked without rewriting published branch history. A read-only `git merge-tree` check confirms clean integration with the updated #89; identical dependency changes are shared, not a second upgrade. After #89 is released, retarget #90 to production and verify the diff again. The accepted SP source and migration hashes remain unchanged.
