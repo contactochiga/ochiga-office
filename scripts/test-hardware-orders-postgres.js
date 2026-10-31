@@ -251,6 +251,7 @@ async function main() {
  const hist=one('select count(*) from hardware_order_events');const reapplied=psql(migration);check('M2','reapply preserves history',reapplied.status===0&&one('select count(*) from hardware_order_events')===hist,reapplied.err);
  check('ISOLATION','no stock reservations consumed',one(`select stock_reserved from catalogue_variants where id='${vid}'`)==='0');
  if(process.env.TEST_CHECKOUT==='true') await require('./test-hardware-checkout-cases')({psql,one,check,app,restUrl,reloadSchema,ROOT,pid,vid,RUN,FULL_KEY,SITE_KEY,CATALOGUE_KEY,concurrentSql,startApp,gatewayUrl,PG,sh,sleep});
+ if(process.env.TEST_COMMERCE==='true') await require('./test-commerce-integration-cases')({psql,one,check,app,ROOT,pid,vid,request});
  console.log(JSON.stringify({suite:'hardware-orders-stage4a',checks,failed:failures}));
 }
 main().catch(e=>{console.error(e);failures++}).finally(async()=>{for(const f of cleanup){try{await f()}catch{}}process.exit(failures?1:0)});

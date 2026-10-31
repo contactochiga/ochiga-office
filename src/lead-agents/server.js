@@ -2280,6 +2280,7 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
         pathname === "/office/catalogue/packages.mjs" ||
         pathname === "/office/catalogue/import.mjs" ||
         pathname === "/office/catalogue/fulfilment.mjs" ||
+        pathname === "/office/catalogue/hardware-financial.mjs" ||
         pathname === "/office/catalogue/service.mjs" ||
         pathname === "/office/catalogue/ingestion.mjs" ||
         pathname === "/office/catalogue/ingestion-taxonomy.mjs" ||
@@ -3384,6 +3385,11 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
       if (pathname === "/office/catalogue/ingestion.mjs") {
         if (req.method !== "GET") { methodNotAllowed(res, "GET"); return; }
         await serveFile(res, path.join(process.cwd(), "public", "office", "catalogue", "ingestion.mjs"));
+        return;
+      }
+      if (pathname === "/office/catalogue/hardware-financial.mjs") {
+        if (req.method !== "GET") { methodNotAllowed(res, "GET"); return; }
+        await serveFile(res, path.join(process.cwd(), "public", "office", "catalogue", "hardware-financial.mjs"));
         return;
       }
       if (pathname === "/office/catalogue/fulfilment.mjs") {
