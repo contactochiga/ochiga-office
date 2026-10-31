@@ -26,6 +26,14 @@ const PARTNERSHIP_RELATIONSHIP_TYPES = {
   strategic_partner: "strategic_partner",
 };
 
+// Catalogue enquiry context is descriptive evidence, never authority to price, publish or order.
+function packageReference(envelope) {
+  const p = envelope.metadata && envelope.metadata.package;
+  if (!p || typeof p.slug !== "string" || !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(p.slug) || p.slug.length > 80 || !Number.isSafeInteger(p.version) || p.version < 1) return null;
+  const size = typeof p.size === "string" && /^[A-Z0-9][A-Z0-9._-]{1,63}$/.test(p.size) ? p.size : "";
+  return { slug:p.slug, version:p.version, size };
+}
+
 function normalizeBusinessUnit(value) {
   const normalized = normalizeText(value).toLowerCase();
   return BUSINESS_UNITS.has(normalized) ? normalized : "corporate";
@@ -159,6 +167,7 @@ function leadInputFromIntake(envelope) {
     source_channel: envelope.source_channel,
     location: envelope.organization.location,
     unit_count: Number.isFinite(Number(envelope.organization.unit_count)) ? Number(envelope.organization.unit_count) : undefined,
+    ...(packageReference(envelope) ? { interest_package: `${packageReference(envelope).slug}@v${packageReference(envelope).version}${packageReference(envelope).size ? `:${packageReference(envelope).size}` : ""}` } : {}),
     project_type: envelope.inquiry_type,
     property_type: envelope.organization.type,
     pain_points: normalizeText(envelope.payload.message || envelope.payload.notes || envelope.payload.requirement),
@@ -399,7 +408,7 @@ async function runOfficeIntakeCrm(store, envelope, lead, context, { intakeKey } 
         // submission from the same person would otherwise overwrite.
         metadata: envelope.business_unit === "development"
           ? { development: buildOpportunityDevelopmentEvidence(envelope) }
-          : undefined,
+          : packageReference(envelope) ? { catalogue_package: packageReference(envelope) } : undefined,
       }),
       context,
       intakeKey
@@ -605,6 +614,7 @@ async function fileIntakeSubmission(store, envelope, { client = "", actor, log =
         inquiry_type: envelope.inquiry_type,
         campaign: envelope.campaign,
         consent: envelope.consent,
+        ...(packageReference(envelope) ? { catalogue_package: packageReference(envelope) } : {}),
         ...timelineMetadata(lead),
         crm_contact_id: crm?.contact?.id || null,
       },

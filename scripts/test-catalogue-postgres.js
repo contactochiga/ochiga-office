@@ -14,6 +14,7 @@ const path = require("path");
 const { spawn, spawnSync } = require("child_process");
 const { hashPassword } = require("../src/lead-agents/auth");
 const { runCatalogueScenarios, startRevalidator, testUsers } = require("./catalogue-scenarios");
+const { runPackageScenarios } = require("./package-scenarios");
 
 const ROOT = path.resolve(__dirname, "..");
 const PG_IMAGE = process.env.PG_IMAGE || "public.ecr.aws/supabase/postgres:17.6.1.131";
@@ -53,7 +54,7 @@ const TABLES = ["catalogue_merchandising", "catalogue_merchandising_versions", "
 const APPEND_ONLY = ["catalogue_merchandising_versions", "catalogue_merchandising_events", "catalogue_product_versions", "catalogue_reviews", "catalogue_publication_events", "catalogue_price_changes", "catalogue_price_decisions", "catalogue_inventory_changes", "catalogue_variant_costs", "catalogue_media", "catalogue_media_derivatives", "catalogue_public_events", "catalogue_slug_redirects"];
 const MEDIA_ROLLBACK = path.join(ROOT, "db", "rollback", "20261104_catalogue_media.down.sql");
 const PUBLIC_ROLLBACK = path.join(ROOT, "db", "rollback", "20261105_catalogue_public_release.down.sql");
-const FN_TOTAL = "29"; // 11 foundation + 5 media + 12 public release + 1 merchandising
+const FN_TOTAL = "36"; // 11 foundation + 5 media + 12 public release + 1 merchandising + 2 ingestion (20261107) + 5 packages (20261109)
 const inList = (list) => list.map((t) => `'${t}'`).join(",");
 
 async function setup() {
@@ -173,9 +174,14 @@ async function main() {
   check("M10", "catalogue migration applies on top of every shipped migration and the hardened schema", m1.status === 0, m1.err.slice(0, 400));
   const followups = CATALOGUE_FOLLOWUPS.map((f) => ({ f, r: applyFile(path.join(ROOT, "db", f)) }));
   check("M10b", `catalogue follow-up migrations apply after 20261102 (${CATALOGUE_FOLLOWUPS.join(", ") || "none"})`, followups.every((x) => x.r.status === 0), followups.map((x) => x.f + ": " + x.r.err.slice(0, 200)));
+  const packageDown = path.join(ROOT, "db", "rollback", "20261109_catalogue_packages.down.sql");
+  const emptyDown = applyFile(packageDown);
+  check("PKRB1", "empty package migration rolls back without losing product schema", emptyDown.status === 0 && one("select count(*) from information_schema.columns where table_name='catalogue_products' and column_name='kind'") === "0", emptyDown.err.slice(0,200));
+  const packageReapply = applyFile(path.join(ROOT,"db","20261109_catalogue_packages.sql"));
+  check("PKRB2", "package migration re-applies after safe empty rollback", packageReapply.status === 0, packageReapply.err.slice(0,200));
   const m2 = applyFile(MIGRATION);
-  CATALOGUE_FOLLOWUPS.forEach((f) => applyFile(path.join(ROOT, "db", f)));
-  check("M11", "…and is idempotent (second apply clean, seed not duplicated)", m2.status === 0 && one("select count(*) from catalogue_categories") === "6", { err: m2.err.slice(0, 300), categories: one("select count(*) from catalogue_categories") });
+  const repeated = CATALOGUE_FOLLOWUPS.map((f) => applyFile(path.join(ROOT, "db", f)));
+  check("M11", "…and is idempotent (second apply clean, seed not duplicated)", m2.status === 0 && repeated.every(r => r.status === 0) && one("select count(*) from catalogue_categories") === "6", { err: m2.err.slice(0, 300), categories: one("select count(*) from catalogue_categories") });
 
   // ------------------------------------------------------------------------------------------------ privilege boundary
   const tl = inList(TABLES), al = inList(APPEND_ONLY);
@@ -188,7 +194,7 @@ async function main() {
   const fnRows = JSON.parse(one(`select coalesce(json_agg(json_build_object('fn', p.oid::regprocedure::text, 'secdef', p.prosecdef, 'config', p.proconfig,
       'anon', has_function_privilege('anon',p.oid,'EXECUTE'), 'authenticated', has_function_privilege('authenticated',p.oid,'EXECUTE'), 'service', has_function_privilege('service_role',p.oid,'EXECUTE'),
       'public', exists (select 1 from aclexplode(coalesce(p.proacl, acldefault('f',p.proowner))) a where a.grantee=0))), '[]') from pg_proc p where p.pronamespace='public'::regnamespace and p.proname like 'catalogue\\_%'`));
-  check("AT02b", "29 catalogue functions including merchandising: all SECURITY INVOKER, search_path pinned to public, pg_temp, EXECUTE for service_role only (no PUBLIC/anon/authenticated)",
+  check("AT02b", "36 catalogue functions including merchandising, ingestion and packages: all SECURITY INVOKER, search_path pinned to public, pg_temp, EXECUTE for service_role only (no PUBLIC/anon/authenticated)",
     fnRows.length === Number(FN_TOTAL) && fnRows.every((f) => !f.secdef && JSON.stringify(f.config) === JSON.stringify(["search_path=public, pg_temp"]) && !f.anon && !f.authenticated && !f.public && f.service), fnRows.filter((f) => f.secdef || f.anon || f.authenticated || f.public || !f.service || JSON.stringify(f.config) !== JSON.stringify(["search_path=public, pg_temp"])));
   const rls = one(`select count(*) filter (where relrowsecurity) || '/' || count(*) from pg_class where relnamespace='public'::regnamespace and relname in (${tl})`);
   const policies = one(`select count(*) from pg_policy p join pg_class c on c.oid=p.polrelid where c.relname in (${tl})`);
@@ -210,6 +216,33 @@ async function main() {
 
   // ------------------------------------------------------------------------------------------------ the shared acceptance scenarios, on Postgres
   const { productId } = await runCatalogueScenarios({ base: app.url, users, fullKey: FULL_KEY, scopedKey: SITE_KEY, check, label: "PG-", storageDir, catalogueKey: CATALOGUE_KEY, revalidator });
+
+  // Solutions & Packages (20261109): the shared package scenarios, then the same rules with the application bypassed
+  {
+    const { packageId, tag } = await runPackageScenarios({ base: app.url, users, fullKey: FULL_KEY, check, catalogueKey: CATALOGUE_KEY, revalidator, label: "PG-" });
+    const sr = (sql) => psql(`set role service_role; ${sql}`, { stop: true });
+    const kindChange = sr(`update catalogue_products set kind = 'product' where id = '${packageId}';`);
+    check("PG-PKDB1", "database: a catalogue item's kind is fixed at creation (kind_immutable), also for service_role", kindChange.status !== 0 && /kind_immutable/.test(kindChange.err), kindChange.err.slice(0, 200));
+    const cat = one("select id from catalogue_categories order by sort limit 1");
+    const bad = JSON.stringify({ category_id: cat, brand_id: null, name: "Bypass", model: "", summary: "", description: "", specifications: [], compatibility: { facility: false, experience: false, core: false, edge: false, notes: "" }, media: [], documents: [],
+      variants: [{ sku: `BYP-${tag}`, name: "Size", options: {}, pricing: "fixed" }],
+      package: { solution_types: ["residential"], scope: { hardware: "x", software_deployment: "x", installation: "quoted_separately", installation_note: "" }, configuration: { custom: false, per_unit_label: "" }, components: [{ sku: `MISSING-${tag}`, role: "required", basis: "fixed", quantity: 1, quantities: {}, note: "", snapshot: null }] } });
+    const made = sr(`select catalogue_create_item('package', 'bypass-${tag.toLowerCase()}', '${cat}', null, '${bad.replace(/'/g, "''")}'::jsonb, 'sql@fixture.test');`);
+    const bypassId = one(`select id from catalogue_products where slug = 'bypass-${tag.toLowerCase()}'`);
+    const submit = sr(`select catalogue_transition('${bypassId}', 1, 'submit', 'sql@fixture.test', '', null);`);
+    const direct = sr(`update catalogue_products set workflow_status = 'in_review', review_version = current_version where id = '${bypassId}';`);
+    check("PG-PKDB2", "database: with the application bypassed, a package with an unknown component cannot be submitted (catalogue_transition) nor forced into review by a direct UPDATE (package_components_invalid)",
+      made.status === 0 && submit.status !== 0 && /package_components_invalid/.test(submit.err) && direct.status !== 0 && /package_components_invalid/.test(direct.err), { made: made.err.slice(0, 200), submit: submit.err.slice(0, 200), direct: direct.err.slice(0, 200) });
+    const svcIssues = one(`select catalogue_public_requirements(id)::text from catalogue_products where kind = 'service' and publication_status = 'published' limit 1`);
+    const productIssues = one(`select catalogue_public_requirements('${productId}')::text`);
+    check("PG-PKDB3", "database: catalogue_public_requirements refuses services on their own and leaves the product rules unchanged (the scenario product's requirements carry no package code)",
+      /service_not_listed/.test(svcIssues) && !/package|consultation|service/.test(productIssues), { svcIssues, productIssues });
+    const beforeRollback = one("select count(*) from catalogue_product_versions");
+    const refusedRollback = applyFile(packageDown);
+    check("PKRB3", "rollback with package history refuses atomically and preserves guards and history", refusedRollback.status !== 0 && /rollback refused/.test(refusedRollback.err) && one("select catalogue_packages_schema_version()") === "1" && one("select count(*) from catalogue_product_versions") === beforeRollback, refusedRollback.err.slice(0,200));
+    const noCosts = one("select count(*) from pg_proc where proname in ('catalogue_package_issues','catalogue_package_guard','catalogue_create_item') and prosrc ilike '%catalogue_variant_costs%'");
+    check("PG-PKDB4", "database: the package functions never read supplier costs", noCosts === "0", noCosts);
+  }
 
   // Phase 3: execute real database workflow; no production connection is used.
   {
@@ -474,6 +507,8 @@ async function main() {
         rbPub.status === 0 && pubAfter.status === 503 && staffRead.status === 200 && staffJson.public.available === false && one("select count(*) from catalogue_public_listings") === listings && /append_only/.test(c(`delete from catalogue_public_listings where product_id='${pp}';`).err),
         { rb: rbPub.err.slice(0, 200), pubAfter: pubAfter.status, staffRead: staffRead.status, pub: staffJson.public });
       const rePub = applyFile(path.join(ROOT, "db", "20261105_catalogue_public_release.sql"));
+      // migrations are re-applied in order: a later follow-up (20261109 packages) redefines catalogue_public_requirements
+      CATALOGUE_FOLLOWUPS.filter((f) => f > "20261105").forEach((f) => applyFile(path.join(ROOT, "db", f)));
       await reloadSchema(restUrl);
       check("M43", "re-applying 20261105 restores the functions and the slug trigger with every row intact", rePub.status === 0 && one("select count(*) from pg_proc where pronamespace='public'::regnamespace and proname like 'catalogue\\_%'") === FN_TOTAL && one("select count(*) from pg_trigger where tgname='catalogue_products_slug_redirect_check'") === "1" && one("select count(*) from catalogue_public_listings") === listings, rePub.err.slice(0, 200));
     }
