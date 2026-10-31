@@ -4,7 +4,7 @@ Base: production b256550. No Phase 4/5 or package functionality.
 
 - Lockfile-only follow-redirects 1.16.1 → 1.16.2; Axios remains 1.20.0. Compatible with Axios's ^1.16.0 range.
 - GHSA-mrwp-f3q8-3g9p: cross-realm custom sensitive-header handling. Real loopback redirect test covers both realms, sensitive/header retention and Axios.
-- `scripts/validate-deployment-config.js` contained two obsolete assertions for unconditional production API rewrites. Production b256550 already replaced them with middleware. The validator now runs the existing 31-check production/preview routing test instead; the isolation fix is preserved.
+- `scripts/validate-deployment-config.js` contained two obsolete assertions for unconditional production API rewrites. Production b256550 already replaced them with middleware. The validator now runs the existing 30-check production/preview routing test instead; the isolation fix is preserved.
 - Vercel auto-deploy disabled only for the three named review/rollback branches. Production branch behaviour unchanged. No deployment is authorized by this PR.
 
 ## Security disposition
@@ -17,7 +17,7 @@ The focused test uses synthetic loopback headers, never provider/production cred
 
 - Exact installed resolution: Axios 1.20.0 / follow-redirects 1.16.2.
 - `node scripts/test-redirect-header-safety.js`: 10/10.
-- `npm run validate:release`: record final completed result in PR.
+- `npm run validate:release`: PASS on the committed patch (including 30/30 routing checks).
 - Dependency audit finding above must remain explicit; this is not a zero-vulnerability release.
 
 No merge or deployment without a separate decision. Roll back this patch to b256550 only before package schema/content rollout; package rollout defines a newer kind-aware rollback anchor.
