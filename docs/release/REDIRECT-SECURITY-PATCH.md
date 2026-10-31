@@ -9,15 +9,20 @@ Base: production b256550. No Phase 4/5 or package functionality.
 
 ## Security disposition
 
-Fresh `npm audit --omit=dev` clears follow-redirects but reports FOUR High affected packages for ONE separate advisory: GHSA-mrhx-c7xc-m3w5, zod <4.6.6, via @vercel/functions → @vercel/oidc → @vercel/cli-config → zod@4.1.11. This chain exists in production b256550 (preview-isolation dependency) and was absent from the older SP branch's dependency graph. Not introduced by this patch and NOT waived. The CLI-config package pins zod; audit suggests downgrading @vercel/functions to 3.6.1. Do not do that blindly: it may undo runtime compatibility. Review a compatible upstream fix or narrowly tested zod override separately. Release remains blocked on remediation or explicitly reviewed security disposition.
+GHSA-mrhx-c7xc-m3w5 affects zod <4.6.6 through @vercel/functions@3.10.4 → @vercel/oidc@4.0.4 → @vercel/cli-config@0.3.4 → zod@4.1.11. The advisory concerns excessive collection-validation error accumulation and memory exhaustion. Reference: https://github.com/advisories/GHSA-mrhx-c7xc-m3w5.
 
-The focused test uses synthetic loopback headers, never provider/production credentials. No production database or financial test is required for this dependency-only patch. Frozen commerce baselines are unchanged.
+Office uses the functions package's `rewrite` export, not its OIDC credential flow. The rewrite require-cache probe loads zero Zod/OIDC/cli-config modules. CLI-config's relevant schemas validate local configuration/authentication files, not Office request bodies; no remotely reachable vulnerable collection parser was demonstrated. This is a reachability assessment, not a waiver.
 
-## Required evidence before merge
+The narrow fix overrides only @vercel/cli-config's Zod to exact 4.6.6. The latest cli-config 0.3.5 still pins 4.1.11, so a parent upgrade would not fix the advisory. All other resolved dependencies remain unchanged, including @vercel/functions 3.10.4, Axios 1.20.0 and follow-redirects 1.16.2. No major-version upgrade or downgrade. Remove the override only after a verified upstream fixed dependency is available.
 
-- Exact installed resolution: Axios 1.20.0 / follow-redirects 1.16.2.
-- `node scripts/test-redirect-header-safety.js`: 10/10.
-- `npm run validate:release`: PASS on the committed patch (including 30/30 routing checks).
-- Dependency audit finding above must remain explicit; this is not a zero-vulnerability release.
+## Focused validation (2026-10-31)
+
+- Full `npm audit --json`: ZERO advisories, including development dependencies.
+- `test-vercel-config-compatibility.js`: 19/19 — actual cli-config config/auth parsing, file round trips, invalid types, BOM, passthrough and bounded-heap oversized-collection rejection. Synthetic temporary files only; no real credentials.
+- Redirect header safety: 10/10; API routing: 30/30.
+- Deployment validation and Office asset build: PASS.
+- Existing full release and SP PostgreSQL results are reused; no SQL, application permissions or financial source changed by this patch.
+
+The tests never read provider credentials or production databases. No resident-wallet or Phase 4/5 changes. Review branches retain disabled Vercel auto-deployment; no deployment is authorized.
 
 No merge or deployment without a separate decision. Roll back this patch to b256550 only before package schema/content rollout; package rollout defines a newer kind-aware rollback anchor.
