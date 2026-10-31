@@ -16,7 +16,7 @@ The focused test uses synthetic loopback headers, never provider/production cred
 ## Required evidence before merge
 
 - Exact installed resolution: Axios 1.20.0 / follow-redirects 1.16.2.
-- `node scripts/test-redirect-credentials.js`: 10/10.
+- `node scripts/test-redirect-header-safety.js`: 10/10.
 - `npm run validate:release`: record final completed result in PR.
 - Dependency audit finding above must remain explicit; this is not a zero-vulnerability release.
 
