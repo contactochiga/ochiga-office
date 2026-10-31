@@ -18,5 +18,12 @@
       "source": "/office.js",
       "destination": "/office/office.js"
     }
-  ]
+  ],
+  "git": {
+    "deploymentEnabled": {
+      "codex/office-redirects-security": false,
+      "codex/sp-office-release": false,
+      "codex/sp-office-rollback": false
+    }
+  }
 }
