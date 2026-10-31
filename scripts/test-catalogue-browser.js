@@ -87,7 +87,8 @@ async function main() {
     // 1. writer: empty workspace, Add product dialog -> split view with the new product selected in the table and open in the editor
     await as("writer", "catalogue");
     await waitFor(`!!document.querySelector('.cat-split .cat-empty') && document.querySelectorAll('.cat-stat').length === 4`, "empty workspace with 4 statistics cards");
-    assert.ok(await click("button", "Add product"));
+    assert.ok(await click(".cat-add-menu summary", "Add product"));
+    assert.ok(await click("[data-add-product]", "Add manually"));
     await waitFor(`!!document.querySelector('.dialog-card [name="slug"]')`, "add product dialog");
     await fillDialog({ name: "Oyi Smart Lock", slug: "oyi-smart-lock", model: "SL-100", sku: "SL-100-BLK", variant_name: "Black" });
     await waitFor(`${edTitle} === 'Oyi Smart Lock' && !!document.querySelector('.cat-tr.selected')`, "split view: product selected in table and open in editor");

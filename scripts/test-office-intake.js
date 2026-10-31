@@ -32,7 +32,11 @@ async function main() {
   const duplicate = await findExistingIntakeLead(store, "idem-website-1");
   assert.equal(duplicate.id, lead.id);
 
-  console.log("office intake contract smoke passed");
+  const packageEnvelope = normalizeOfficeIntakeEnvelope({ ...envelope, metadata: {package:{slug:"synthetic-package",version:3,size:"SIZE-A",cost:999}} });
+  assert.equal(leadInputFromIntake(packageEnvelope).interest_package, "synthetic-package@v3:SIZE-A");
+  const invalidPackage = normalizeOfficeIntakeEnvelope({ ...envelope, metadata: {package:{slug:"../private",version:3}} });
+  assert.equal(leadInputFromIntake(invalidPackage).interest_package, undefined);
+  console.log("office intake contract smoke passed (including bounded package reference)");
 }
 
 main().catch((error) => {

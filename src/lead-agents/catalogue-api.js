@@ -13,6 +13,7 @@ const { catalogueStoreFor } = require("./catalogue-store");
 const C = require("./catalogue");
 const M = require("./catalogue-media");
 const PUB = require("./catalogue-public");
+const PK = require("./catalogue-packages");
 const { refreshPublic } = require("./catalogue-public-api");
 
 const P = C.CATALOGUE_PERMISSIONS;
@@ -83,6 +84,34 @@ async function publicState(cat, product, config) {
   };
 }
 
+// component sku -> { variant, product, content (its PUBLISHED version) } for package checks, snapshots and readiness
+async function packageLookup(cat, content) {
+  const skus = ((content && content.package && content.package.components) || []).map((c) => c.sku);
+  const lookup = new Map();
+  if (!skus.length) return lookup;
+  const variants = await cat.variantsBySkus(skus);
+  const products = new Map((await cat.productsByIds(variants.map((v) => v.product_id))).map((p) => [p.id, p]));
+  const published = [...products.values()].filter((p) => p.published_version != null).map((p) => [p.id, p.published_version]);
+  const versions = new Map((published.length ? await cat.versionsFor(published) : []).map((v) => [v.product_id, v.content]));
+  variants.forEach((v) => { const p = products.get(v.product_id); if (p) lookup.set(v.sku, { variant: v, product: { ...p, kind: PK.kindOf(p) }, content: versions.get(p.id) || null }); });
+  return lookup;
+}
+
+// latest landed cost per component variant (catalogue.cost.read only; never leaves Office)
+async function componentCosts(cat, lookup) {
+  const costs = new Map();
+  for (const { variant } of lookup.values()) {
+    const list = await cat.listCosts(variant.id);
+    const latest = [...list].sort((a, b) => String(b.valid_from || b.created_at).localeCompare(String(a.valid_from || a.created_at)))[0];
+    if (latest && Number.isSafeInteger(Number(latest.landed_cost_kobo))) costs.set(variant.id, Number(latest.landed_cost_kobo));
+  }
+  return costs;
+}
+
+function packageRefusal(issues) {
+  return C.httpError(409, "package_components_invalid", { current: { issues: issues.map((i) => ({ ...i, label: PK.ISSUE_LABELS[i.code] || i.code })) } });
+}
+
 async function productDetail(cat, product, authContext, config) {
   const [version, versions, reviews, events, variants, media, publicInfo] = await Promise.all([
     cat.getVersion(product.id, product.current_version),
@@ -106,7 +135,16 @@ async function productDetail(cat, product, authContext, config) {
     publication_events: events,
     variants: variants.map((v) => C.internalVariant(v, authContext)),
     permissions: Object.fromEntries(Object.entries(P).map(([name, key]) => [name, hasPermission(authContext, key)])),
+    kind: PK.kindOf(product),
+    ...(PK.kindOf(product) === "package" && version ? { package_readiness: await packageReadinessFor(cat, version.content, variants, authContext) } : {}),
   };
+}
+
+async function packageReadinessFor(cat, content, sizeRecords, authContext) {
+  const lookup = await packageLookup(cat, content);
+  const costs = hasPermission(authContext, P.costRead) ? await componentCosts(cat, lookup) : null;
+  const view = PK.packageReadiness(content, lookup, { sizeRecords, costs });
+  return { ...view, issues: view.issues.map((i) => ({ ...i, label: PK.ISSUE_LABELS[i.code] || i.code })) };
 }
 
 async function referencesExist(cat, content) {
@@ -341,7 +379,8 @@ async function handleCatalogueRequest({ req, res, ctx, pathname, authContext, st
         // browse mode (catalogue table): statistics over the whole catalogue, then filter, sort and paginate on the server
         if (url.searchParams.get("view") === "cards") {
           const { products, contents, variants, truncated } = await cat.listProductCards();
-          const cards = products.map((p) => C.productCard(p, contents.get(p.id) || {}, variants.get(p.id) || []));
+          const kindFilter = url.searchParams.get("kind") || "product";
+          const cards = products.filter((p) => kindFilter === "all" || PK.kindOf(p) === kindFilter).map((p) => ({ ...C.productCard(p, contents.get(p.id) || {}, variants.get(p.id) || []), kind: PK.kindOf(p) }));
           const query = Object.fromEntries(["q", "category_id", "brand_id", "status", "availability", "sort", "dir", "page", "page_size"].map((k) => [k, url.searchParams.get(k) || undefined]));
           return send(200, { ...C.browseCards(cards, query), truncated }), true;
         }
@@ -353,11 +392,16 @@ async function handleCatalogueRequest({ req, res, ctx, pathname, authContext, st
         need(P.write);
         const slug = C.validSlug(body.slug);
         if (!slug) throw C.badRequest("slug must be lowercase letters, digits and single hyphens (max 80)");
-        const content = C.validateContent(body.content);
+        const kind = PK.validKind(body.kind);
+        if (kind !== "product" && !(await cat.packagesAvailable())) throw C.httpError(503, "packages_unavailable");
+        let content = PK.validateItemContent(kind, body.content);
         if (content.media.length) throw C.badRequest("add images after the product is created");
         await referencesExist(cat, content);
-        const product = await cat.createProduct({ slug, categoryId: content.category_id, brandId: content.brand_id, content, actor });
-        await audit("catalogue_product_created", "catalogue_product", product.id, { slug, version: 1 });
+        if (kind === "package") content = PK.snapshotComponents(content, await packageLookup(cat, content));
+        const product = kind === "product"
+          ? await cat.createProduct({ slug, categoryId: content.category_id, brandId: content.brand_id, content, actor })
+          : await cat.createItem({ kind, slug, categoryId: content.category_id, brandId: content.brand_id, content, actor });
+        await audit("catalogue_product_created", "catalogue_product", product.id, { slug, version: 1, ...(kind !== "product" ? { kind } : {}) });
         return send(201, await productDetail(cat, product, authContext, config)), true;
       }
       return send(405, { error: "method_not_allowed" }), true;
@@ -373,9 +417,12 @@ async function handleCatalogueRequest({ req, res, ctx, pathname, authContext, st
         const expected = expectedRowVersion(body);
         const slug = body.slug === undefined ? product.slug : C.validSlug(body.slug);
         if (!slug) throw C.badRequest("slug must be lowercase letters, digits and single hyphens (max 80)");
-        const content = C.validateContent(body.content);
+        const kind = PK.kindOf(product);
+        let content = PK.validateItemContent(kind, body.content);
         await referencesExist(cat, content);
         if (content.media.length && !(await cat.mediaAvailable())) throw C.httpError(503, "media_unavailable");
+        // a saved package version records what each component is NOW (re-saving is how a changed component is accepted for re-review)
+        if (kind === "package") content = PK.snapshotComponents(content, await packageLookup(cat, content));
         const published = product.published_version ? await cat.getVersion(id, product.published_version) : null;
         const materiality = C.materialityOf(published ? published.content : null, content);
         const updated = await cat.saveVersion({ id, expectedRowVersion: expected, slug, categoryId: content.category_id, brandId: content.brand_id, content, materiality, actor });
@@ -443,6 +490,7 @@ async function handleCatalogueRequest({ req, res, ctx, pathname, authContext, st
 
       if (action === "duplicate") {
         need(P.write);
+        if (PK.kindOf(product) !== "product") throw C.httpError(409, "duplicate_not_supported_for_kind");
         const slug = C.validSlug(body.slug);
         if (!slug) throw C.badRequest("slug for the copy is required");
         const source = await cat.getVersion(id, product.current_version);
@@ -470,6 +518,11 @@ async function handleCatalogueRequest({ req, res, ctx, pathname, authContext, st
         // an approved current version is published normally; recording an "override" for it would misstate the audit trail
         if (product.workflow_status === "approved" && product.approved_version === product.current_version) throw C.httpError(400, "override_not_needed");
         overrideReason = C.validateOverrideReason(body.override_reason);
+      }
+      if (PK.kindOf(product) === "package" && ["submit", "approve", "publish"].includes(action)) {
+        const version = await cat.getVersion(id, product.current_version);
+        const issues = PK.packageIssues(version && version.content, await packageLookup(cat, version && version.content));
+        if (issues.length) throw packageRefusal(issues);
       }
       const dbAction = action === "request-changes" ? "request_changes" : action;
       const updated = await cat.transition({ id, expectedRowVersion: expected, action: dbAction, actor, note, overrideReason });
@@ -523,6 +576,13 @@ async function handleCatalogueRequest({ req, res, ctx, pathname, authContext, st
       if (method !== "POST") return send(405, { error: "method_not_allowed" }), true;
       need(P.write);
       const input = C.validatePriceRequest(body);
+      // a package size sold by consultation is never priced (owner decision: deployments and custom configurations are consultation-led)
+      const owner = await cat.getProduct(variant.product_id);
+      if (owner && PK.kindOf(owner) === "package") {
+        const version = await cat.getVersion(owner.id, owner.current_version);
+        const size = version && (version.content.variants || []).find((v) => v.sku === variant.sku);
+        if (size && size.pricing === "consultation") throw C.httpError(409, "consultation_size_not_priced");
+      }
       const change = await cat.requestPriceChange({ variantId: variant.id, price: input.price_ngn_kobo, vatTreatment: input.vat_treatment, vatRateBp: input.vat_rate_bp, actor, note: input.note });
       await audit("catalogue_price_change_requested", "catalogue_variant", variant.id, { price_change_id: change.id, sku: variant.sku, old_price_ngn_kobo: change.old_price_ngn_kobo, new_price_ngn_kobo: change.new_price_ngn_kobo, vat_treatment: change.new_vat_treatment });
       return send(201, { price_change: await cat.getPriceChange(change.id) }), true;

@@ -9,6 +9,7 @@
 
 const crypto = require("crypto");
 const { httpError } = require("./catalogue");
+const PK = require("./catalogue-packages");
 // suppliers keep the CORPORATE_COLLECTIONS record shape (office_suppliers); written here so a failed write is an error, never "schema_pending"
 const { normalizeCorporateRecord } = require("./office-operating-system");
 
@@ -61,6 +62,11 @@ class SupabaseCatalogueStore {
     if (data.code === "PGRST202" || data.code === "42883" || data.code === "42P01" || data.code === "PGRST205" || data.code === "PGRST200") {
       // Optional ingestion migration must never disable manual creation or V1.
       if (/catalogue_ingestion_/.test(JSON.stringify(data))) throw httpError(503, "ingestion_unavailable");
+      if (/catalogue_(create_item|package)/.test(JSON.stringify(data))) {
+        this.packagesCapability = false;
+        this.packagesCheckedAt = Date.now();
+        throw httpError(503, "packages_unavailable");
+      }
       // a missing media object (20261104 not installed or rolled back) disables media only, never the rest of the catalogue
       if (/catalogue_(public|slug_redirect|preview|change_slug|create_preview|revoke_preview)/.test(JSON.stringify(data))) {
         this.publicCapability = false;
@@ -343,6 +349,28 @@ class SupabaseCatalogueStore {
     for (let i = 0; i < list.length; i += 100) out.push(...await this.get(`/catalogue_variants?product_id=in.(${list.slice(i, i + 100).join(",")})&order=sku.asc`));
     return out;
   }
+  // ---- Solutions & Packages (20261109)
+  async packagesAvailable() {
+    if (this.packagesCapability !== undefined && Date.now() - (this.packagesCheckedAt || 0) < 60_000) return this.packagesCapability;
+    this.packagesCheckedAt = Date.now();
+    try {
+      const response = await this.client.post("/rpc/catalogue_packages_schema_version", {});
+      this.packagesCapability = Number(response.data) >= 1;
+    } catch {
+      this.packagesCapability = false;
+    }
+    return this.packagesCapability;
+  }
+  createItem({ kind, slug, categoryId, brandId, content, actor }) {
+    return this.rpc("catalogue_create_item", { p_kind: kind, p_slug: slug, p_category_id: categoryId, p_brand_id: brandId, p_content: content, p_actor: actor });
+  }
+  async variantsBySkus(skus) {
+    const list = [...new Set(skus)].filter(Boolean);
+    const out = [];
+    // SKUs may contain . _ - : quoted for PostgREST's in() list
+    for (let i = 0; i < list.length; i += 100) out.push(...await this.get(`/catalogue_variants?sku=in.(${list.slice(i, i + 100).map((x) => encodeURIComponent(`"${x}"`)).join(",")})`));
+    return out;
+  }
 
   listSuppliers() { return this.get("/office_suppliers?order=name.asc"); }
   async getSupplier(id) { return (await this.get(`/office_suppliers?id=eq.${encodeURIComponent(id)}`))[0] || null; }
@@ -496,12 +524,38 @@ class FileCatalogueStore {
     for (const v of content.variants || []) { const owner = this.s.variants.find((x) => x.sku === v.sku); if (owner) throw httpError(409, "sku_taken", { current: { sku: v.sku } }); }
     const at = nowIso();
     if ((content.media || []).length) throw httpError(409, "media_not_available");
-    const product = { id: crypto.randomUUID(), slug, category_id: categoryId, brand_id: brandId || null, workflow_status: "draft", publication_status: "never_published", row_version: 1, current_version: 1, review_version: null, approved_version: null, published_version: null, published_at: null, first_published_at: null, archived_at: null, last_publish_error: null, created_by: actor, updated_by: actor, created_at: at, updated_at: at };
+    const product = { id: crypto.randomUUID(), kind: "product", slug, category_id: categoryId, brand_id: brandId || null, workflow_status: "draft", publication_status: "never_published", row_version: 1, current_version: 1, review_version: null, approved_version: null, published_version: null, published_at: null, first_published_at: null, archived_at: null, last_publish_error: null, created_by: actor, updated_by: actor, created_at: at, updated_at: at };
     this.s.products.push(product);
     this.s.versions.push({ product_id: product.id, version: 1, content: clone(content), materiality: "initial", author: actor, created_at: at });
     this.registerVariants(product.id, content.variants);
     await this.persist();
     return clone(product);
+  }
+
+  // Solutions & Packages: same rules as catalogue_create_item / catalogue_package_issues / catalogue_package_guard (20261109)
+  async createItem({ kind, slug, categoryId, brandId, content, actor }) {
+    if (!PK.KINDS.includes(kind)) throw httpError(400, "invalid_kind");
+    const created = await this.createProduct({ slug, categoryId, brandId, content, actor });
+    this.s.products.find((x) => x.id === created.id).kind = kind;
+    await this.persist();
+    return clone({ ...created, kind });
+  }
+  async packagesAvailable() { return true; }
+  async variantsBySkus(skus) { const set = new Set(skus); return clone(this.s.variants.filter((v) => set.has(v.sku))); }
+  packageLookup(content) {
+    const lookup = new Map();
+    for (const comp of (content && content.package && content.package.components) || []) {
+      const variant = this.s.variants.find((v) => v.sku === comp.sku);
+      if (!variant) continue;
+      const product = this.s.products.find((x) => x.id === variant.product_id);
+      const published = product && product.published_version != null ? this.s.versions.find((v) => v.product_id === product.id && v.version === product.published_version) : null;
+      lookup.set(comp.sku, { variant, product: { ...product, kind: product.kind || "product" }, content: published ? published.content : null });
+    }
+    return lookup;
+  }
+  packageIssuesOf(p, version) {
+    const v = this.s.versions.find((x) => x.product_id === p.id && x.version === version);
+    return PK.packageIssues(v ? v.content : null, this.packageLookup(v && v.content));
   }
 
   async saveVersion({ id, expectedRowVersion, slug, categoryId, brandId, content, materiality, actor }) {
@@ -532,6 +586,10 @@ class FileCatalogueStore {
     const review = (version, decision, text) => this.s.reviews.push({ id: crypto.randomUUID(), product_id: id, version, decision, actor, note: text || "", created_at: at });
     const event = (version, kind, extra = {}) => this.s.events.push({ id: crypto.randomUUID(), product_id: id, version, action: kind, actor, override: false, override_reason: "", refresh_outcome: "not_applicable", error: "", created_at: at, ...extra });
     const bump = (patch) => Object.assign(p, patch, { row_version: p.row_version + 1, updated_by: actor, updated_at: at });
+    if (p && p.kind === "package" && ["submit", "approve", "publish"].includes(action)) {
+      const issues = this.packageIssuesOf(p, p.current_version);
+      if (issues.length) throw httpError(409, "package_components_invalid", { current: { issues } });
+    }
 
     if (action === "submit") {
       if (!matches || !["draft", "changes_requested"].includes(p.workflow_status) || p.publication_status === "archived") this.stateChanged(p);
@@ -701,6 +759,7 @@ class FileCatalogueStore {
   requirementsOf(p) {
     if (!p) throw httpError(404, "product_not_found");
     if (p.publication_status === "archived") return ["archived"];
+    if (p.kind === "service") return ["service_not_listed"];
     if (p.publication_status !== "published" || p.published_version == null) return ["not_published_internally"];
     const v = this.s.versions.find((x) => x.product_id === p.id && x.version === p.published_version);
     const issues = [];
@@ -714,6 +773,15 @@ class FileCatalogueStore {
     }
     const listed = new Set((v.content.variants || []).map((x) => x.sku));
     const active = this.s.variants.filter((x) => x.product_id === p.id && x.status === "active" && listed.has(x.sku));
+    if (p.kind === "package") {
+      const fixed = new Set((v.content.variants || []).filter((x) => x.pricing === "fixed").map((x) => x.sku));
+      const consult = new Set((v.content.variants || []).filter((x) => x.pricing === "consultation").map((x) => x.sku));
+      if (!active.length) issues.push("no_active_variant");
+      else if (active.some((x) => fixed.has(x.sku) && (x.price_ngn_kobo == null || x.vat_treatment == null))) issues.push("price_not_approved");
+      if (this.s.variants.some((x) => x.product_id === p.id && consult.has(x.sku) && x.price_ngn_kobo != null)) issues.push("consultation_size_priced");
+      if (this.packageIssuesOf(p, p.published_version).length) issues.push("package_components_invalid");
+      return issues;
+    }
     if (!active.length) issues.push("no_active_variant");
     else if (active.some((x) => x.price_ngn_kobo == null || x.vat_treatment == null)) issues.push("price_not_approved");
     return issues;
