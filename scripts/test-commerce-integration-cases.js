@@ -36,4 +36,11 @@ module.exports = async ({ psql, one, check, app, ROOT, vid, request }) => {
   const asset = await fetch(app.url + "/office/catalogue/hardware-financial.mjs");
   check("CI-ASSET", "real Office route serves Orders & payments module", asset.status === 200 && (asset.headers.get("content-type") || "").includes("javascript") && (await asset.text()).includes("renderHardwareFinancial"));
   check("CI-METHOD", "financial screen asset rejects POST", (await fetch(app.url + "/office/catalogue/hardware-financial.mjs", {method: "POST"})).status === 405);
+  const gate = fs.readFileSync(path.join(ROOT, "release/commerce/security-gate.sql"), "utf8");
+  const result = psql(gate);
+  check("CI-GATE", "supplemental gate passes exact definitions and private tables", result.status === 0 && !result.out.includes("FAIL") && result.out.split("\n").length === 3, result);
+  for (const tamper of ["alter function hardware_checkout_quote(jsonb) security definer", "grant execute on function hardware_order_create(text,text,jsonb) to anon", "alter table hardware_orders disable row level security"]) {
+    const r = psql("begin;" + tamper + ";" + gate + "rollback;");
+    check("CI-TAMPER", "supplemental gate rejects " + tamper, r.status === 0 && r.out.includes("FAIL"), r);
+  }
 };
