@@ -133,6 +133,8 @@ const { handleCatalogueRequest } = require("./catalogue-api");
 const { handleHardwareFinancialRequest } = require("./hardware-financial-api");
 const { handleHardwarePaymentsRequest } = require("./hardware-payments-api");
 const { handleHardwareCheckoutRequest } = require("./hardware-checkout-api");
+const { handleHardwareCustomerAccess } = require("./hardware-customer-access");
+const { startCustomerEmailWorker } = require("./hardware-customer-email");
 const { handleHardwareOrderProgressRequest } = require("./hardware-order-progress-api");
 const { handleHardwareOrdersRequest } = require("./hardware-orders-api");
 const { handleHardwareFulfilmentRequest } = require("./hardware-fulfilment-api");
@@ -2006,6 +2008,7 @@ const SCOPED_ROUTES = Object.freeze({
   "intake.submit": [{ method: "POST", path: "/api/office/intake" }],
   "catalogue.public.read": [{ method: "GET", prefix: "/api/public/catalogue/" }],
   // Phase 5D: customer order progress only (read-only; separate key from checkout, payments and the catalogue)
+  "orders.customer.access": ["request","verify","progress","history","revoke"].map(action=>({method:"POST",path:"/api/public/orders/access/"+action})),
   "orders.public.status": [{ method: "POST", path: "/api/public/orders/progress" }],
 });
 
@@ -2361,6 +2364,7 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
       if (await handleHardwareFinancialRequest({ req, res, pathname, authContext, store, config })) return;
       if (await handleHardwarePaymentsRequest({ req, res, pathname, authContext, store, config })) return;
       if (await handleHardwareCheckoutRequest({ req, res, pathname, authContext, store })) return;
+      if (await handleHardwareCustomerAccess({ req, res, pathname, authContext, store })) return;
       if (await handleHardwareOrderProgressRequest({ req, res, pathname, authContext, store })) return;
       if (await handleHardwareOrdersRequest({ req, res, pathname, authContext, store, config })) return;
       if (await handleHardwareFulfilmentRequest({ req, res, pathname, authContext, store, config })) return;
@@ -9212,6 +9216,10 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
   if ((config.communicationOutboxWorker ?? config.environment === "production") && config.officeBackendBaseUrl && config.officeBackendApiKey && typeof store.listDueCommunicationDeliveries === "function") {
     communicationOutboxWorkerHandle = communicationOutbox.startOutboxWorker({ store, config, log });
     server.on("close", () => communicationOutboxWorkerHandle.stop());
+  }
+  if (process.env.OFFICE_HARDWARE_CUSTOMER_EMAIL_ENABLED === "true") {
+    const customerEmailWorker = startCustomerEmailWorker({store,config});
+    server.on("close",()=>customerEmailWorker.stop());
   }
   return server;
 }

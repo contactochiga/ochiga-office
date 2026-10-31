@@ -1,5 +1,6 @@
 "use strict";
 const { json, readJsonBody } = require("./http");
+const { sha: customerGrantHash } = require("./hardware-customer-access");
 const { initializeHardwarePayment } = require("./hardware-payments-api");
 const PREFIX = "/api/commerce/checkout/";
 const PAYMENT_QUOTE_CODES = new Set([
@@ -62,14 +63,18 @@ async function handleHardwareCheckoutRequest({
       b = await readJsonBody(req, 32 * 1024);
     only(
       b,
-      action.startsWith("payment-") ? ["guest_hash","id","accepted_total_kobo"] : action === "quote"
+      action.startsWith("payment-") ? ["guest_hash","id","accepted_total_kobo","customer_grant"] : action === "quote"
         ? ["lines"]
         : action === "submit"
           ? ["guest_hash", "idempotency_key", "order", "quote_hash"]
-          : ["guest_hash", "id", "idempotency_key"],
+          : ["guest_hash", "id", "idempotency_key", "customer_grant"],
     );
     const rpc = async (name, body) =>
       (await store.client.post("/rpc/" + name, body)).data;
+    if (b.customer_grant !== undefined) {
+      if (process.env.OFFICE_HARDWARE_CUSTOMER_ACCESS_ENABLED !== "true" || !["status","payment-quote","payment-prepare","payment-start"].includes(action) || !/^[0-9a-f]{64}$/.test(b.customer_grant) || !/^[0-9a-f-]{36}$/.test(b.id || "")) fail(403,"order_access_denied");
+      b.guest_hash = await rpc("hardware_customer_access_owner", {p_client:authContext.client,p_order:b.id,p_token_hash:customerGrantHash(b.customer_grant)});
+    }
     const deliveryFirst = process.env.OFFICE_HARDWARE_STAFF_DELIVERY_FIRST === "true";
     if (["payment-quote","payment-prepare","payment-start"].includes(action)) {
       // Eligibility is read-only; the execution switch protects initialization only.

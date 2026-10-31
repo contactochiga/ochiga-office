@@ -88,5 +88,6 @@ module.exports = async (h) => {
     && (await raw(app.url, "/api/public/orders/progress", KEY.catalogue, { guest_hash: gP, id: P })).status === 403);
   check("OP-HTTP-GET-REFUSED", "only POST is routed for the status key", (await raw(app.url, "/api/public/orders/progress", KEY.status, undefined, "GET")).status === 403);
   await app.stop();
+  if(process.env.TEST_CUSTOMER_ACCESS === "true") await require("./test-hardware-customer-cases")(h);
   h.release(U); // free the unpaid order's stock hold so later Phase 4 stock checks start from the expected state
 };
