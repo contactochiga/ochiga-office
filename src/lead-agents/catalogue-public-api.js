@@ -21,12 +21,14 @@ const MERCH = require("./catalogue-merchandising");
 
 const PREFIX = "/api/public/catalogue";
 const PUBLIC_SCOPE = "catalogue.public.read";
+// Forward-compatible rollback boundary: old rows have no kind; unknown/new kinds fail closed.
+const hardwareOnly = (p) => p && (p.kind == null || p.kind === "product");
 
 // ---------------------------------------------------------------------------------------------------------------- projection
 async function publicViews(cat, listings) {
   if (!listings.length) return [];
   const products = new Map((await cat.productsByIds(listings.map((l) => l.product_id))).map((p) => [p.id, p]));
-  const visible = listings.filter((l) => l.status === "public" && products.get(l.product_id) && products.get(l.product_id).publication_status === "published");
+  const visible = listings.filter((l) => l.status === "public" && products.get(l.product_id) && products.get(l.product_id).publication_status === "published" && hardwareOnly(products.get(l.product_id)));
   if (!visible.length) return [];
   const [versions, variants, categories, brands] = await Promise.all([
     cat.versionsFor(visible.map((l) => [l.product_id, l.public_version])),
@@ -55,7 +57,7 @@ async function currentlyPublic(cat, productId) {
   const listing = await cat.getPublicListing(productId);
   if (!listing || listing.status !== "public") return null;
   const product = await cat.getProduct(productId);
-  if (!product || product.publication_status !== "published") return null;
+  if (!hardwareOnly(product) || product.publication_status !== "published") return null;
   return { listing, product };
 }
 
@@ -69,7 +71,7 @@ async function usableGrant(cat, store, config, token) {
   if (grant.revoked_at) throw fail(410, "preview_revoked");
   if (Date.parse(grant.expires_at) <= Date.now()) throw fail(410, "preview_expired");
   const product = await cat.getProduct(grant.product_id);
-  if (!product || product.publication_status === "archived") throw fail(410, "preview_revoked");
+  if (!hardwareOnly(product) || product.publication_status === "archived") throw fail(410, "preview_revoked");
   // the staff member who opened it must still be an active catalogue reader
   const staff = typeof store.getAdminUserByEmail === "function" ? await store.getAdminUserByEmail(grant.staff).catch(() => null) : null;
   if (!staff || staff.status === "inactive" || !hasPermission({ type: "session", role: staff.role, permissionScopes: staff.permission_scopes || [] }, "catalogue.read")) throw fail(410, "preview_revoked");

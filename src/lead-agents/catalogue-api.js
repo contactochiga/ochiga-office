@@ -156,6 +156,8 @@ async function handleCatalogueRequest({ req, res, ctx, pathname, authContext, st
     const need = (permission) => C.requireCataloguePermission(authContext, permission);
     // the cheapest refusal first: no staff session, no catalogue
     need(P.read);
+    // Rollback containment: authenticated reads remain available; all catalogue writes are frozen.
+    if (process.env.OFFICE_CATALOGUE_ROLLBACK_READ_ONLY === "true" && method !== "GET") return send(503, { error: "catalogue_rollback_read_only" }), true;
     const cat = catalogueStoreFor(store);
     if (!(await cat.available())) return send(503, { error: "catalogue_unavailable", message: "The catalogue database objects are not installed." }), true;
     const actor = actorOf(authContext);
