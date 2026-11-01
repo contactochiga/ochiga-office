@@ -9,6 +9,11 @@ function message(row,origin){
  const link=url.origin+'/hardware/orders/find';
  const ref=row.order_id; // Full identifier avoids collisions; no grant or payment reference in URL.
  if(row.kind==='access_code')return {to:row.recipient,subject:'Your Oyi order verification code',text:`Your verification code is ${codeFor(row.payload.challenge_id)}. It expires ten minutes after your request.\n\nOrder: ${ref}\nEnter it at ${link}. If you did not request this, ignore this message.`};
+ if(row.kind==='refund_completed'){
+  const k=row.payload.refund_kobo;
+  if(row.payload.version!==1||row.payload.refund_status!=='processed'||!Number.isSafeInteger(k)||k<=0)throw Error('unsupported_email');
+  return {to:row.recipient,subject:'Your Oyi refund is complete',text:`Your payment provider has confirmed a refund of NGN ${(k/100).toFixed(2)}.\nOrder: ${ref}\n\nView your order at ${link}. Your original order and payment history remain available. This does not schedule a return or installation.`};
+ }
  if(!LABELS[row.kind]||row.payload.version!==1)throw Error('unsupported_email');
  const k=row.payload.total_kobo,amount=Number.isSafeInteger(k)?`\nConfirmed total (including applicable tax and delivery): NGN ${(k/100).toFixed(2)}.`:'';
  return {to:row.recipient,subject:LABELS[row.kind],text:`${LABELS[row.kind]}.\nOrder: ${ref}${amount}\n\nVerify your email to view the authoritative order status at ${link}.\nInstallation, when requested, remains a separately assessed service. This email does not authorize a payment or confirm an appointment.`};

@@ -6,7 +6,7 @@
 const { json, readJsonBody } = require("./http");
 const PATH = "/api/public/orders/progress";
 const SCOPE = "orders.public.status";
-const KINDS = new Set(["order_request", "paid_order", "under_review", "cancelled"]);
+const KINDS = new Set(["order_request", "paid_order", "under_review", "cancelled", "refunded"]);
 const STAGE_KEYS = new Set(["received", "payment", "packed", "dispatched", "delivered", "installation", "completed"]);
 const STATUSES = new Set(["done", "pending", "not_paid", "cancelled"]);
 const NOTES = new Set(["being_arranged", "on_its_way", "being_rearranged", "requested", "in_progress"]);
@@ -22,6 +22,11 @@ function customerView(p) {
     order_id: str(p.order_id, 36),
     reference: str(p.reference, 16),
     kind: KINDS.has(p.kind) ? p.kind : "order_request",
+    ...(p.refund && ['processed','pending','under_review'].includes(p.refund.state) ? {refund: {
+      state: p.refund.state, currency: 'NGN',
+      amount_kobo: p.refund.state==='processed' && int(p.refund.amount_kobo)>0 ? int(p.refund.amount_kobo) : null,
+      at: iso(p.refund.at),
+    }} : {}),
     created_at: iso(p.created_at),
     installation_requested: p.installation_requested === true,
     delivery_area: { state: str(p.delivery_area?.state, 60), city: str(p.delivery_area?.city, 60) },

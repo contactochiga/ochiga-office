@@ -19,7 +19,7 @@ export async function renderHardwareFinancial(host, token, ui) {
   );
   for (const o of orders) {
     const card = el(
-      `<section class="cat-panel" style="padding:16px;margin-top:12px"><h3>Order ${esc(o.id)}</h3><p>${o.payable_total_kobo == null ? "Delivery charge not confirmed" : `₦${(o.payable_total_kobo / 100).toLocaleString("en-NG")}`} · ${esc(o.payment_state)} · ${esc(o.financial_state || "No recovery observations")}</p><div data-actions></div><p role="status"></p><details><summary>Immutable payment history</summary><ol>${(o.history || []).map((h) => `<li>${esc(h.created_at)} — ${esc(h.event_type)} ${esc(h.detail?.note || "")}</li>`).join("")}</ol></details></section>`,
+      `<section class="cat-panel" style="padding:16px;margin-top:12px"><h3>Order ${esc(o.id)}</h3><p>${o.payable_total_kobo == null ? "Delivery charge not confirmed" : `₦${(o.payable_total_kobo / 100).toLocaleString("en-NG")}`} · ${esc(o.payment_state)} · ${esc(o.refund_status?.state === "processed" ? "Refund complete — provider verified" : o.financial_state || "No recovery observations")}</p><div data-actions></div><p role="status"></p><details><summary>Immutable payment history</summary><ol>${(o.history || []).map((h) => `<li>${esc(h.created_at)} — ${esc(h.event_type)} ${esc(h.detail?.note || "")}</li>`).join("")}</ol></details></section>`,
     );
     host.appendChild(card);
     const actions = card.querySelector("[data-actions]");

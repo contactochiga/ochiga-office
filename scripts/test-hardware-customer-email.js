@@ -12,6 +12,10 @@ let n=0;const check=(ok,s)=>{assert(ok,s);n++;console.log('PASS '+s);};
  for(const kind of ['created','cancelled','delivery_confirmed','paid','payment_failed','under_review','packed','dispatched','delivered','installed','closed','installation_requested','installation_scheduled','installation_rescheduled','installation_started','installation_completed','installation_cancelled']){
  const m=message({...row,kind},'https://getoyi.example');check(m.text.includes('107.50')&&m.text.includes('/hardware/orders/find')&&!m.html,'safe deterministic template '+kind);
  }
+ const refund=message({...row,kind:'refund_completed',payload:{version:1,refund_status:'processed',refund_kobo:10000}},'https://getoyi.example');
+ check(refund.text.includes('100.00')&&refund.subject.includes('refund'),'refund completion uses verified refund amount');
+ for(const bad of [{version:1,refund_status:'pending',refund_kobo:10000},{version:1,refund_status:'processed',refund_kobo:null}])assert.throws(()=>message({...row,kind:'refund_completed',payload:bad},'https://getoyi.example'));
+ check(true,'pending or missing amount cannot produce completion email');
  assert.throws(()=>message(row,'http://customer.invalid'));check(true,'unencrypted non-local customer destination refused');
  process.env.OFFICE_HARDWARE_CUSTOMER_EMAIL_ENABLED='true';let finished;
  const store={client:{post:async(u,p)=>u.endsWith('_claim')?{data:row}:(finished=p,{data:true})}};
