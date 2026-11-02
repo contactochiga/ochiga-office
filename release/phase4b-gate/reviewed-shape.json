@@ -1,0 +1,225 @@
+{
+  "functions": [
+    {
+      "acl": [
+        [
+          "postgres",
+          "EXECUTE",
+          false
+        ],
+        [
+          "service_role",
+          "EXECUTE",
+          false
+        ]
+      ],
+      "owner": "postgres",
+      "signature": "hardware_checkout_get(text,text,uuid)",
+      "definition": "CREATE OR REPLACE FUNCTION public.hardware_checkout_get(p_client text, p_guest_hash text, p_id uuid)\n RETURNS jsonb\n LANGUAGE sql\n SET search_path TO 'public', 'pg_temp'\nAS $function$\n select jsonb_build_object('id',o.id,'order_state',o.order_state,'payment_eligible',false,'goods_total_kobo',o.goods_total_kobo,'goods_tax_kobo',o.goods_tax_kobo,'delivery_total_kobo',o.delivery_total_kobo,'payable_total_kobo',o.payable_total_kobo)\n from hardware_orders o join hardware_checkout_receipts r on r.order_id=o.id where o.id=p_id and r.client=p_client and r.guest_hash=p_guest_hash\n$function$\n"
+    },
+    {
+      "acl": [
+        [
+          "postgres",
+          "EXECUTE",
+          false
+        ],
+        [
+          "service_role",
+          "EXECUTE",
+          false
+        ]
+      ],
+      "owner": "postgres",
+      "signature": "hardware_checkout_quote(jsonb)",
+      "definition": "CREATE OR REPLACE FUNCTION public.hardware_checkout_quote(p_lines jsonb)\n RETURNS jsonb\n LANGUAGE plpgsql\n SET search_path TO 'public', 'pg_temp'\nAS $function$\ndeclare v catalogue_variants%rowtype; p catalogue_products%rowtype; item jsonb; content jsonb; lines jsonb:='[]'; line jsonb; pc uuid;\n q integer; pos integer:=0; gross bigint; tax bigint; total bigint:=0; taxes bigint:=0; result jsonb;\nbegin\n if jsonb_typeof(p_lines) is distinct from 'array' or jsonb_array_length(p_lines) not between 1 and 50 then raise exception 'invalid_order_lines' using errcode='PT400'; end if;\n -- Lock products before variants, matching catalogue edit order; requests use stable ID ordering.\n perform cp.id from catalogue_products cp where cp.id in\n (select cv.product_id from catalogue_variants cv join jsonb_array_elements(p_lines) x on cv.id::text=x->>'variant_id') order by cp.id for share;\n for item in select value from jsonb_array_elements(p_lines) order by value->>'variant_id' loop\n if jsonb_typeof(item) is distinct from 'object' or item-array['variant_id','quantity']<>'{}'::jsonb\n or jsonb_typeof(item->'quantity') is distinct from 'number' or (item->>'quantity') !~ '^[0-9]{1,4}$' then raise exception 'invalid_order_lines' using errcode='PT400'; end if;\n q:=(item->>'quantity')::integer; if q not between 1 and 1000 then raise exception 'invalid_quantity' using errcode='PT400'; end if;\n begin select * into v from catalogue_variants where id=(item->>'variant_id')::uuid for share;\n exception when invalid_text_representation then raise exception 'invalid_variant' using errcode='PT400'; end;\n if v.id is null or v.status<>'active' or v.sourcing='discontinued' then raise exception 'variant_unavailable' using errcode='PT409'; end if;\n if exists(select 1 from jsonb_array_elements(lines) x where x->>'variant_id'=v.id::text) then raise exception 'duplicate_variant' using errcode='PT400'; end if;\n select * into p from catalogue_products where id=v.product_id for share;\n perform 1 from catalogue_public_listings where product_id=p.id and status='public' and public_version=p.published_version for share;\n if not found then raise exception 'product_unavailable' using errcode='PT409'; end if;\n if v.sourcing<>'in_stock' or v.stock_on_hand-v.stock_reserved<q then raise exception 'stock_unavailable' using errcode='PT409'; end if;\n if p.publication_status<>'published' or p.published_version is null or not exists(select 1 from catalogue_reviews r where r.product_id=p.id and r.version=p.published_version and r.decision='approved') then raise exception 'product_not_approved' using errcode='PT409'; end if;\n select pv.content into content from catalogue_product_versions pv where product_id=p.id and version=p.published_version;\n if not exists(select 1 from jsonb_array_elements(content->'variants') x where x->>'sku'=v.sku) then raise exception 'variant_not_published' using errcode='PT409'; end if;\n select x.id into pc from catalogue_price_changes x where x.variant_id=v.id and x.new_price_ngn_kobo=v.price_ngn_kobo\n and x.new_vat_treatment=v.vat_treatment and x.new_vat_rate_bp=v.vat_rate_bp\n and exists(select 1 from catalogue_price_decisions a where a.price_change_id=x.id and a.decision='approved' and a.actor<>x.requested_by)\n and exists(select 1 from catalogue_price_decisions b where b.price_change_id=x.id and b.decision='published') order by x.requested_at desc,x.id limit 1;\n if pc is null or v.price_ngn_kobo is null or v.price_ngn_kobo not between 1 and 900000000 then raise exception 'price_not_verified' using errcode='PT409'; end if;\n gross:=v.price_ngn_kobo*q; tax:=round(gross::numeric*v.vat_rate_bp/(10000+v.vat_rate_bp))::bigint;\n total:=total+gross; taxes:=taxes+tax; pos:=pos+1;\n line:=jsonb_build_object('position',pos,'product_id',p.id,'product_version',p.published_version,'variant_id',v.id,'variant_row_version',v.row_version,'price_change_id',pc,\n 'sku',v.sku,'product_name',content->>'name','variant_name',(select x->>'name' from jsonb_array_elements(content->'variants') x where x->>'sku'=v.sku limit 1),\n 'variant_options',coalesce((select x->'options' from jsonb_array_elements(content->'variants') x where x->>'sku'=v.sku limit 1),'{}'::jsonb),\n 'quantity',q,'unit_price_kobo',v.price_ngn_kobo,'vat_treatment',v.vat_treatment,'vat_rate_bp',v.vat_rate_bp,'gross_kobo',gross,'tax_kobo',tax,\n 'sourcing',v.sourcing,'availability_at_creation',case when v.sourcing='in_stock' and v.stock_on_hand-v.stock_reserved>=q then 'in_stock' else 'confirmation_required' end);\n lines:=lines||jsonb_build_array(line);\n end loop;\n if total>900000000000 then raise exception 'order_total_limit' using errcode='PT400'; end if;\n\n result:=jsonb_build_object('lines',lines,'goods_total_kobo',total,'goods_tax_kobo',taxes,'delivery_total_kobo',null,'payable_total_kobo',null,'payment_eligible',false);\n return result||jsonb_build_object('quote_hash',encode(sha256(convert_to(result::text,'UTF8')),'hex'));\nend $function$\n"
+    },
+    {
+      "acl": [
+        [
+          "postgres",
+          "EXECUTE",
+          false
+        ],
+        [
+          "service_role",
+          "EXECUTE",
+          false
+        ]
+      ],
+      "owner": "postgres",
+      "signature": "hardware_checkout_submit(text,text,text,jsonb,text)",
+      "definition": "CREATE OR REPLACE FUNCTION public.hardware_checkout_submit(p_client text, p_guest_hash text, p_key text, p_request jsonb, p_quote_hash text)\n RETURNS jsonb\n LANGUAGE plpgsql\n SET search_path TO 'public', 'pg_temp'\nAS $function$\ndeclare r hardware_checkout_receipts%rowtype; h text; actor text; quote jsonb; customer jsonb; d jsonb; cid uuid; opid uuid; oid uuid;\nbegin\n if p_client is null or p_client !~ '^[a-zA-Z0-9_-]{1,80}$' or p_guest_hash is null or p_guest_hash !~ '^[0-9a-f]{64}$' or p_key is null or p_key !~ '^[A-Za-z0-9_-]{16,128}$'\n or jsonb_typeof(p_request) is distinct from 'object' or p_request-array['customer','delivery','installation_requested','lines']<>'{}' then raise exception 'invalid_checkout' using errcode='PT400'; end if;\n h:=encode(sha256(convert_to(p_request::text,'UTF8')),'hex'); actor:='checkout:'||p_client;\n perform pg_advisory_xact_lock(hashtextextended(p_client||':'||p_guest_hash||':'||p_key,0));\n select * into r from hardware_checkout_receipts where client=p_client and guest_hash=p_guest_hash and idempotency_key=p_key;\n if found then\n if r.request_hash<>h then raise exception 'idempotency_conflict' using errcode='PT409'; end if;\n return jsonb_build_object('id',r.order_id,'replayed',true,'payment_eligible',false); end if;\n customer:=p_request->'customer'; d:=p_request->'delivery';\n if jsonb_typeof(customer) is distinct from 'object' or customer-array['name','email','phone']<>'{}'\n or exists(select 1 from jsonb_each(customer) x where jsonb_typeof(x.value)<>'string')\n or coalesce(length(trim(customer->>'name')),0) not between 2 and 160\n or coalesce(customer->>'email','') !~ '^[^[:space:]@]+@[^[:space:]@]+\\.[^[:space:]@]+$' or length(customer->>'email')>254\n or coalesce(customer->>'phone','') !~ '^[+0-9 ()-]{7,30}$' then raise exception 'invalid_customer' using errcode='PT400'; end if;\n if jsonb_typeof(d) is distinct from 'object' or d-array['country','state','city','address','postcode']<>'{}' or d->>'country' is distinct from 'NG'\n or coalesce(d->>'state','')<>all(array['Abia','Adamawa','Akwa Ibom','Anambra','Bauchi','Bayelsa','Benue','Borno','Cross River','Delta','Ebonyi','Edo','Ekiti','Enugu','FCT','Gombe','Imo','Jigawa','Kaduna','Kano','Katsina','Kebbi','Kogi','Kwara','Lagos','Nasarawa','Niger','Ogun','Ondo','Osun','Oyo','Plateau','Rivers','Sokoto','Taraba','Yobe','Zamfara'])\n or exists(select 1 from jsonb_each(d) x where jsonb_typeof(x.value)<>'string' or length(x.value#>>'{}')>500)\n or coalesce(length(trim(d->>'city')),0) not between 1 and 120 or coalesce(length(trim(d->>'address')),0) not between 5 and 500\n or jsonb_typeof(p_request->'installation_requested') is distinct from 'boolean' then raise exception 'delivery_restricted' using errcode='PT400'; end if;\n quote:=hardware_checkout_quote(p_request->'lines');\n if p_quote_hash is distinct from quote->>'quote_hash' then raise exception 'price_changed' using errcode='PT409'; end if;\n -- Unverified guest contact details never merge into or overwrite an existing CRM customer by email.\n insert into crm_contacts(name,email,phone,source,metadata) values(trim(customer->>'name'),lower(trim(customer->>'email')),trim(customer->>'phone'),'getoyi_checkout',jsonb_build_object('identity_verified',false)) returning id into cid;\n insert into crm_opportunities(contact_id,business_unit,inquiry_type,pipeline,source,metadata) values(cid,'getoyi','hardware_order','corporate','getoyi_checkout',jsonb_build_object('payment_eligible',false,'installation_requested',p_request->'installation_requested')) returning id into opid;\n insert into hardware_orders(contact_id,opportunity_id,created_by,idempotency_key,request_hash,goods_total_kobo,goods_tax_kobo,installation_requested)\n values(cid,opid,actor,encode(sha256(convert_to(p_guest_hash||':'||p_key,'UTF8')),'hex'),h,(quote->>'goods_total_kobo')::bigint,(quote->>'goods_tax_kobo')::bigint,(p_request->>'installation_requested')::boolean) returning id into oid;\n insert into hardware_order_private values(oid,customer,d);\n insert into hardware_order_lines select oid,x.* from jsonb_to_recordset(quote->'lines') as x(position integer,product_id uuid,product_version integer,variant_id uuid,variant_row_version integer,price_change_id uuid,sku text,product_name text,variant_name text,variant_options jsonb,quantity integer,unit_price_kobo bigint,vat_treatment text,vat_rate_bp integer,gross_kobo bigint,tax_kobo bigint,sourcing text,availability_at_creation text);\n insert into hardware_order_events(order_id,event_type,row_version,actor,metadata) values(oid,'created',1,actor,jsonb_build_object('payment_eligible',false,'source','getoyi_checkout'));\n insert into audit_events(actor_email,action,target_type,target_id,metadata) values(actor,'hardware_order_created','hardware_order',oid::text,jsonb_build_object('row_version',1,'payment_eligible',false,'source','getoyi_checkout'));\n insert into crm_activities(contact_id,opportunity_id,related_type,related_id,activity_type,title,source,actor,metadata) values(cid,opid,'hardware_order',oid::text,'hardware_order_created','Hardware order awaiting confirmation','getoyi_checkout',actor,jsonb_build_object('order_id',oid,'payment_eligible',false));\n insert into hardware_checkout_receipts(client,guest_hash,idempotency_key,request_hash,order_id) values(p_client,p_guest_hash,p_key,h,oid);\n return jsonb_build_object('id',oid,'replayed',false,'payment_eligible',false);\nend $function$\n"
+    }
+  ],
+  "relations": [
+    {
+      "acl": [
+        [
+          "postgres",
+          "DELETE",
+          false
+        ],
+        [
+          "postgres",
+          "INSERT",
+          false
+        ],
+        [
+          "postgres",
+          "MAINTAIN",
+          false
+        ],
+        [
+          "postgres",
+          "REFERENCES",
+          false
+        ],
+        [
+          "postgres",
+          "SELECT",
+          false
+        ],
+        [
+          "postgres",
+          "TRIGGER",
+          false
+        ],
+        [
+          "postgres",
+          "TRUNCATE",
+          false
+        ],
+        [
+          "postgres",
+          "UPDATE",
+          false
+        ],
+        [
+          "service_role",
+          "DELETE",
+          false
+        ],
+        [
+          "service_role",
+          "INSERT",
+          false
+        ],
+        [
+          "service_role",
+          "SELECT",
+          false
+        ],
+        [
+          "service_role",
+          "UPDATE",
+          false
+        ]
+      ],
+      "rls": true,
+      "kind": "r",
+      "name": "hardware_checkout_receipts",
+      "owner": "postgres",
+      "columns": [
+        {
+          "acl": null,
+          "name": "client",
+          "type": "text",
+          "default": null,
+          "identity": "",
+          "not_null": true,
+          "generated": ""
+        },
+        {
+          "acl": null,
+          "name": "guest_hash",
+          "type": "text",
+          "default": null,
+          "identity": "",
+          "not_null": true,
+          "generated": ""
+        },
+        {
+          "acl": null,
+          "name": "idempotency_key",
+          "type": "text",
+          "default": null,
+          "identity": "",
+          "not_null": true,
+          "generated": ""
+        },
+        {
+          "acl": null,
+          "name": "request_hash",
+          "type": "text",
+          "default": null,
+          "identity": "",
+          "not_null": true,
+          "generated": ""
+        },
+        {
+          "acl": null,
+          "name": "order_id",
+          "type": "uuid",
+          "default": null,
+          "identity": "",
+          "not_null": true,
+          "generated": ""
+        },
+        {
+          "acl": null,
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "default": "now()",
+          "identity": "",
+          "not_null": true,
+          "generated": ""
+        }
+      ],
+      "policies": 0,
+      "triggers": [
+        [
+          "checkout_receipts_immutable",
+          "CREATE TRIGGER checkout_receipts_immutable BEFORE DELETE OR UPDATE ON public.hardware_checkout_receipts FOR EACH ROW EXECUTE FUNCTION hardware_order_immutable()",
+          "O"
+        ],
+        [
+          "checkout_receipts_no_truncate",
+          "CREATE TRIGGER checkout_receipts_no_truncate BEFORE TRUNCATE ON public.hardware_checkout_receipts FOR EACH STATEMENT EXECUTE FUNCTION hardware_order_immutable()",
+          "O"
+        ]
+      ],
+      "force_rls": false,
+      "constraints": [
+        [
+          "hardware_checkout_receipts_guest_hash_check",
+          "CHECK ((guest_hash ~ '^[0-9a-f]{64}$'::text))",
+          true,
+          false,
+          false
+        ],
+        [
+          "hardware_checkout_receipts_order_id_fkey",
+          "FOREIGN KEY (order_id) REFERENCES hardware_orders(id) ON DELETE RESTRICT",
+          true,
+          false,
+          false
+        ],
+        [
+          "hardware_checkout_receipts_order_id_key",
+          "UNIQUE (order_id)",
+          true,
+          false,
+          false
+        ],
+        [
+          "hardware_checkout_receipts_pkey",
+          "PRIMARY KEY (client, guest_hash, idempotency_key)",
+          true,
+          false,
+          false
+        ]
+      ]
+    }
+  ]
+}

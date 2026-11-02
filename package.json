@@ -50,6 +50,16 @@
     "office:import:test": "node scripts/test-product-import.js && node scripts/test-product-import-postgres.js",
     "office:import:local": "node scripts/product-import-local.js",
     "office:ingestion:test": "node scripts/test-ingestion-v2.js && node scripts/test-ingestion-v2-postgres.js && node scripts/test-ingestion-v2-edges.js && node scripts/test-ingestion-multisheet.js && node scripts/test-ingestion-taxonomy.js",
+    "office:orders:test": "node scripts/test-hardware-orders-boundary.js && node scripts/test-hardware-orders-postgres.js",
+    "office:checkout:test": "TEST_CHECKOUT=true node scripts/test-hardware-orders-postgres.js",
+    "office:reservations:test": "TEST_CHECKOUT=true TEST_RESERVATIONS=true node scripts/test-hardware-orders-postgres.js",
+    "office:payments:test": "TEST_CHECKOUT=true TEST_RESERVATIONS=true TEST_PAYMENTS=true node scripts/test-hardware-orders-postgres.js",
+    "office:payment-start-diagnostics:test": "node scripts/test-hardware-payment-upstream-diagnostics.js",
+    "office:financial:test": "TEST_FINANCIAL=true TEST_CHECKOUT=true TEST_RESERVATIONS=true TEST_PAYMENTS=true node scripts/test-hardware-orders-postgres.js",
+    "office:fulfilment:test": "TEST_FULFILMENT=true TEST_CHECKOUT=true TEST_RESERVATIONS=true TEST_PAYMENTS=true TEST_FINANCIAL=true node scripts/test-hardware-orders-postgres.js && node scripts/test-hardware-fulfilment-http.js && node scripts/test-hardware-fulfilment-ui.mjs",
+    "office:delivery:test": "TEST_DELIVERY=true TEST_FULFILMENT=true TEST_CHECKOUT=true TEST_RESERVATIONS=true TEST_PAYMENTS=true TEST_FINANCIAL=true node scripts/test-hardware-orders-postgres.js && node scripts/test-hardware-delivery-http.js",
+    "office:service:test": "TEST_SERVICE=true TEST_DELIVERY=true TEST_FULFILMENT=true TEST_CHECKOUT=true TEST_RESERVATIONS=true TEST_PAYMENTS=true TEST_FINANCIAL=true node scripts/test-hardware-orders-postgres.js && node scripts/test-hardware-service-http.js",
+    "office:progress:test": "TEST_PROGRESS=true TEST_SERVICE=true TEST_DELIVERY=true TEST_FULFILMENT=true TEST_CHECKOUT=true TEST_RESERVATIONS=true TEST_PAYMENTS=true TEST_FINANCIAL=true node scripts/test-hardware-orders-postgres.js && node scripts/test-hardware-progress-http.js && node scripts/test-catalogue-public-contract.js",
     "office:api-routing:test": "node scripts/test-office-api-routing.mjs"
   },
   "dependencies": {

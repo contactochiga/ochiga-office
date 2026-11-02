@@ -1,0 +1,83 @@
+{
+  "schema": 1,
+  "automatic_application": false,
+  "target": "Office only; never Oyi resident-wallet database",
+  "prerequisite": "Verified current production Phase 0\u20133 and Ingestion V2 schema; no filename-sort execution",
+  "steps": [
+    {
+      "position": 1,
+      "file": "db/20261109_catalogue_packages.sql",
+      "sha256": "308fb5bc066384c46f838884710ae425ece546a168344a63038de2f3f372007d"
+    },
+    {
+      "position": 2,
+      "file": "db/20261107_hardware_orders.sql",
+      "sha256": "21b29e994f184efbb4b105617c0578b07ff85dab286484e07538d30925b27c62"
+    },
+    {
+      "position": 3,
+      "file": "db/20261108_hardware_checkout.sql",
+      "sha256": "9047cc4eb0faf4f5f7e0913848a77ca66f7e363386a900fa4cc8c76a28491d65"
+    },
+    {
+      "position": 4,
+      "file": "db/phase4c/20261026090615_hardware_reservations.sql",
+      "sha256": "e144d9ffd4a547079b340f1a6ef608cd9266bd2ad0398520b53ae81ba5860da5"
+    },
+    {
+      "position": 5,
+      "file": "db/phase4d/20261026094828_hardware_payment_confirmation.sql",
+      "sha256": "46380b7d0b8782c0707a0b4508701e18664a7c5e06a9a3d163d8e5ae519567b8"
+    },
+    {
+      "position": 6,
+      "file": "db/phase4e/20261026102637_hardware_financial_operations.sql",
+      "sha256": "cb988ee116a0fd0e452f4ce88a9345bda98e4923a8e0a011b514e8051fa8a63f"
+    },
+    {
+      "position": 7,
+      "file": "db/phase4f/20261026143000_hardware_payment_quote_reasons.sql",
+      "sha256": "0bce3a273dae1ef3b417c55b9bad03d4f444379789ccfde9be8182b0deb1c4e3"
+    },
+    {
+      "position": 8,
+      "file": "db/phase5a/20261030090000_hardware_fulfilment_lifecycle.sql",
+      "sha256": "6c38cdd509e8ae7800696a8bdba49fce2ee2f158d141d97044809c4746716539"
+    },
+    {
+      "position": 9,
+      "file": "db/phase5b/20261031090000_hardware_delivery.sql",
+      "sha256": "ccfa3ca35b4a1618ae3579e87842a446b123aeeb17f695f75b232a1e6129ffe8"
+    },
+    {
+      "position": 10,
+      "file": "db/phase5c/20261101090000_hardware_service_visits.sql",
+      "sha256": "a0e33cf7f819bbf8fcfe3d628ddd4842a3f10dbe0b9d887565c173bac786dd2f"
+    },
+    {
+      "position": 11,
+      "file": "db/phase5d/20261102090000_hardware_order_progress.sql",
+      "sha256": "800e5eac3fb17804c65b508f0f0c23e8d69f2452cf289101770890eaaa2201ef"
+    },
+    {
+      "position": 12,
+      "file": "db/commerce/20261031132537_hardware_commerce_kind_boundary.sql",
+      "sha256": "60de8bfb3e4fb026d0fc347431c1ae36ca157651872c0bbdfaec0974b2f7fbed"
+    },
+    {
+      "position": 13,
+      "file": "db/commerce/20261031182434_hardware_staff_delivery_first.sql",
+      "sha256": "a67bb55560094519500a0ff0ca6a7a9143e3e3775e375f741636bd60a7aa6b7b"
+    },
+    {
+      "position": 14,
+      "file": "db/commerce/20261031184726_hardware_customer_access_notifications.sql",
+      "sha256": "b7084c4e1f39ca93364116e3d1d4af81d0392f1ee0d0068bfc33cb9784b35d87"
+    },
+    {
+      "position": 15,
+      "file": "db/commerce/20261101120350_hardware_refund_customer_completion.sql",
+      "sha256": "d7064c89ef5b49f85d21ec44d11f514c07eac86d5a35ad59b54823b97cd1ede7"
+    }
+  ]
+}

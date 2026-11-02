@@ -10,7 +10,9 @@ async function sendOfficeEmail(config, message) {
       headers: {
         authorization: `Bearer ${config.resendApiKey}`,
         "content-type": "application/json",
+        ...(message.idempotencyKey ? {"Idempotency-Key": message.idempotencyKey} : {}),
       },
+      ...(message.idempotencyKey ? {signal: AbortSignal.timeout(15000), redirect: "error"} : {}),
       body: JSON.stringify({
         from: config.officeEmailFrom,
         to,
@@ -23,6 +25,7 @@ async function sendOfficeEmail(config, message) {
     if (!response.ok) {
       const error = new Error(payload.message || "email_delivery_failed");
       error.statusCode = 502;
+      error.providerStatus = response.status;
       throw error;
     }
     return { delivered: true, provider, payload };

@@ -1,0 +1,6 @@
+{
+  "db/phase4e/20261026102637_hardware_financial_operations.sql": "cb988ee116a0fd0e452f4ce88a9345bda98e4923a8e0a011b514e8051fa8a63f",
+  "release/phase4e/shape.sql": "83241dc919c6fc24953adffde29dd6c0a58c6fee89a5dc6fae193cc9d8e353e9",
+  "release/phase4e/reviewed.json": "30011ac6c51831bedd9e583d111b2edf12f4ff198918536604f079d3de42fbfc",
+  "release/phase4e/rollback.sql": "e87902e2dccbb7c530996ef5d062ffd4bbf0ccf8ab487c46bc76dbdf40aeba33"
+}
