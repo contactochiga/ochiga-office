@@ -31,6 +31,9 @@ try:
  raw=call('docker','exec','-i',name,'pg_restore','--no-owner','--file=-',input=dump.read_bytes()).stdout
  sql(raw.decode());ok(True,'accepted synthetic snapshot restored in network-none disposable database')
  before=sql("select md5(jsonb_agg(to_jsonb(x) order by reference)::text) from hardware_payment_confirmations x")
+ crm_query="select jsonb_build_array((select md5(jsonb_agg(to_jsonb(x) order by id)::text) from crm_contacts x),(select md5(jsonb_agg(to_jsonb(x) order by id)::text) from crm_opportunities x),(select md5(jsonb_agg(to_jsonb(x) order by id)::text) from crm_activities x),(select md5(jsonb_agg(to_jsonb(x) order by id)::text) from hardware_orders x))"
+ stock_query="select jsonb_build_array((select md5(jsonb_agg(to_jsonb(x) order by id)::text) from catalogue_variants x),(select md5(jsonb_agg(to_jsonb(x) order by id)::text) from hardware_reservations x))"
+ crm_before=sql(crm_query);stock_before=sql(stock_query)
  sql('begin;'+M.read_text()+'rollback;');ok(sql("select to_regprocedure('hardware_refund_customer_status(uuid)') is null")=='t','transactional migration rollback')
  sql('begin;'+M.read_text()+'commit;');sql('begin;'+D.read_text()+'commit;');ok(sql("select to_regprocedure('hardware_refund_customer_status(uuid)') is null")=='t','pre-use down migration restores previous functions')
  sql('begin;'+M.read_text()+'commit;');ok(sql('begin;'+M.read_text()+'commit;',True).returncode!=0,'duplicate migration fails atomically without replacing historical functions')
@@ -64,6 +67,8 @@ try:
  ok(sql("update hardware_financial_observations set state='refund_pending' where event_id=900000002",True).returncode!=0,'financial evidence immutable')
  ok(sql('begin;'+D.read_text()+'commit;',True).returncode!=0,'post-use destructive down migration refused')
  ok(sql("select md5(jsonb_agg(to_jsonb(x) order by reference)::text) from hardware_payment_confirmations x")==before,'accepted payment rows byte-equivalent')
+ ok(sql(crm_query)==crm_before,'refund preserves CRM contacts opportunities activities and order ownership without duplicates')
+ ok(sql(stock_query)==stock_before,'refund does not duplicate allocation or restock delivered goods')
  ok(hashlib.sha256(dump.read_bytes()).hexdigest()==original,'historical snapshot unchanged')
  print(f'RESULT {n}/{n} PASS; no provider or email traffic')
 finally:call('docker','rm','-f',name,check=False)

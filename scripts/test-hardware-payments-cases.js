@@ -42,7 +42,8 @@ module.exports = async ({
   );
   if (rb.status) throw Error(rb.err);
   run("begin;" + migration + "commit;");
-  const backend = path.resolve(ROOT, process.env.TEST_FINANCIAL==='true'?"../backend-phase4e":"../backend-phase4d");
+  // Integration rehearsals must exercise the reviewed Backend candidate, not an older sibling.
+  const backend = path.resolve(ROOT, process.env.TEST_BACKEND_ROOT || (process.env.TEST_FINANCIAL==='true'?"../backend-phase4e":"../backend-phase4d"));
   const br = sh("docker", [
     "exec",
     PG,

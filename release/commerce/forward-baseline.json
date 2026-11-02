@@ -1,0 +1,12 @@
+{
+  "project_id": "metbajilbqclwjfsxfps",
+  "observed_date": "2026-11-02",
+  "evidence": "Fresh read-only migration registry confirms version/name; exact source hash retained from accepted production migration evidence. Commerce foundation tables absent. Recheck before release.",
+  "installed": {
+    "db/20261109_catalogue_packages.sql": {
+      "version": "20261102114627",
+      "name": "catalogue_packages_20261109",
+      "sha256": "308fb5bc066384c46f838884710ae425ece546a168344a63038de2f3f372007d"
+    }
+  }
+}

@@ -166,6 +166,11 @@ function concurrentSql(statements, user = "postgres") {
 async function main() {
  const {restUrl,gatewayUrl}=await setup();
  for(const f of [MIGRATION,...CATALOGUE_FOLLOWUPS.map(f=>path.join(ROOT,'db',f))]) {const r=applyFile(f);if(r.status)throw Error(r.err)}
+ if (process.env.TEST_FORWARD_MANIFEST_ONLY === 'true') {
+   await require('./test-forward-manifest-cases')({psql,one,check,ROOT});
+   console.log(JSON.stringify({suite:'forward-manifest',checks,failed:failures}));
+   return;
+ }
  const migration=fs.readFileSync(path.join(ROOT,'db/20261107_hardware_orders.sql'),'utf8');
  const before=psql('begin;'+migration+'rollback;');
  check('M1','transaction rollback removes all new order objects',before.status===0&&one("select to_regclass('hardware_orders') is null")==='t',before.err);
