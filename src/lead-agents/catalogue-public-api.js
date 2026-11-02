@@ -8,6 +8,8 @@
 //   GET /media/<sha256>.webp                a WebP rendition referenced by a PUBLIC version (content-addressed; never an original)
 //   GET /preview/<token>                    a signed, short-lived staff preview of one version (any workflow state)
 //   GET /preview/<token>/media/<sha256>.webp
+//   GET /packages[?solution=<type>]         public package cards (Solutions & Packages, 20261109)
+//   GET /packages/<slug>                    one public package: sizes (fixed price or by consultation), scope, components (public names only)
 // A product is public only while its listing is 'public' AND it is still internally published: withdrawal, internal unpublish and
 // archive all take effect on the next request. Everything returned is built by catalogue-public.js from an allow-list.
 // Also exports the GetOyi refresh dispatcher used by the staff routes.
@@ -18,6 +20,7 @@ const { hasPermission } = require("./permissions");
 const { catalogueStoreFor } = require("./catalogue-store");
 const PUB = require("./catalogue-public");
 const MERCH = require("./catalogue-merchandising");
+const PK = require("./catalogue-packages");
 
 const PREFIX = "/api/public/catalogue";
 const PUBLIC_SCOPE = "catalogue.public.read";
@@ -26,7 +29,8 @@ const PUBLIC_SCOPE = "catalogue.public.read";
 async function publicViews(cat, listings) {
   if (!listings.length) return [];
   const products = new Map((await cat.productsByIds(listings.map((l) => l.product_id))).map((p) => [p.id, p]));
-  const visible = listings.filter((l) => l.status === "public" && products.get(l.product_id) && products.get(l.product_id).publication_status === "published");
+  // products only: packages have their own projection (publicPackageViews); services are never listed
+  const visible = listings.filter((l) => l.status === "public" && products.get(l.product_id) && products.get(l.product_id).publication_status === "published" && PK.kindOf(products.get(l.product_id)) === "product");
   if (!visible.length) return [];
   const [versions, variants, categories, brands] = await Promise.all([
     cat.versionsFor(visible.map((l) => [l.product_id, l.public_version])),
@@ -45,6 +49,52 @@ async function publicViews(cat, listings) {
       mediaRows: mediaRows.filter((m) => m.product_id === l.product_id),
       category: categories.find((x) => x.id === c.category_id && x.status === "active") || null,
       brand: brands.find((x) => x.id === c.brand_id && x.status === "active") || null,
+      releasedAt: l.released_at,
+    });
+  });
+}
+
+// Public package views. Components resolve to their products' PUBLISHED versions (names, model, brand only); a component links to its
+// product page only while that product is itself public.
+async function publicPackageViews(cat, listings, { preview = false } = {}) {
+  if (!listings.length || !(await cat.packagesAvailable())) return [];
+  const owners = new Map((await cat.productsByIds(listings.map((l) => l.product_id))).map((p) => [p.id, p]));
+  // a staff preview shows any version of the package; the public projection only live, internally published packages
+  const visible = listings.filter((l) => l.status === "public" && owners.get(l.product_id) && PK.kindOf(owners.get(l.product_id)) === "package" && (preview || owners.get(l.product_id).publication_status === "published"));
+  if (!visible.length) return [];
+  const [versions, sizeRecords, categories, brands, allListings] = await Promise.all([
+    cat.versionsFor(visible.map((l) => [l.product_id, l.public_version])),
+    cat.variantsForProducts(visible.map((l) => l.product_id)),
+    cat.listCategories(),
+    cat.listBrands(),
+    cat.listPublicListings(),
+  ]);
+  const content = new Map(versions.map((v) => [v.product_id, v.content]));
+  const skus = versions.flatMap((v) => ((v.content.package && v.content.package.components) || []).map((c) => c.sku));
+  const compVariants = skus.length ? await cat.variantsBySkus(skus) : [];
+  const compProducts = new Map((await cat.productsByIds(compVariants.map((v) => v.product_id))).map((p) => [p.id, p]));
+  const compPublished = [...compProducts.values()].filter((p) => p.published_version != null);
+  const compContent = new Map((compPublished.length ? await cat.versionsFor(compPublished.map((p) => [p.id, p.published_version])) : []).map((v) => [v.product_id, v.content]));
+  const publicSlug = new Map(allListings.filter((l) => l.status === "public").map((l) => [l.product_id, l.slug]));
+  const lookup = new Map();
+  compVariants.forEach((v) => {
+    const p = compProducts.get(v.product_id);
+    if (!p) return;
+    const c = compContent.get(p.id) || null;
+    lookup.set(v.sku, {
+      variant: v, product: { ...p, kind: PK.kindOf(p) }, content: c,
+      brand: c ? brands.find((b) => b.id === c.brand_id && b.status === "active") || null : null,
+      public_slug: PK.kindOf(p) === "product" && p.publication_status === "published" ? publicSlug.get(p.id) || null : null,
+    });
+  });
+  const mediaRows = await cat.mediaWithRenditions(versions.flatMap((v) => (v.content.media || []).map((m) => m.media_id)));
+  return visible.filter((l) => content.has(l.product_id)).map((l) => {
+    const c = content.get(l.product_id);
+    return PK.publicPackage({
+      slug: l.slug, version: l.public_version, content: c, lookup,
+      sizeRecords: sizeRecords.filter((v) => v.product_id === l.product_id),
+      images: PUB.publicImages(c, mediaRows.filter((m) => m.product_id === l.product_id)),
+      category: categories.find((x) => x.id === c.category_id && x.status === "active") || null,
       releasedAt: l.released_at,
     });
   });
@@ -137,15 +187,37 @@ async function handlePublicCatalogueRequest({ req, res, ctx, pathname, authConte
       const redirect = await cat.getSlugRedirect(slug);
       if (redirect) {
         const live = await currentlyPublic(cat, redirect.product_id);
-        if (live && live.listing.slug !== slug) return send(200, { redirect_to: live.listing.slug }), true;
+        if (live && live.listing.slug !== slug && PK.kindOf(live.product) === "product") return send(200, { redirect_to: live.listing.slug }), true;
       }
       return send(404, { error: "not_found" }), true;
     }
-    if ((m = sub.match(/^\/media\/([0-9a-f]{64})\.webp$/))) {
+    if (sub === "/packages") {
+      let views = await publicPackageViews(cat, await cat.listPublicListings());
+      const solution = String(url.searchParams.get("solution") || "");
+      if (solution) views = views.filter((v) => v.solution_types.includes(solution));
+      views.sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" }));
+      return send(200, { packages: views.map(PK.publicPackageCard), total: views.length }), true;
+    }
+    if ((m = sub.match(/^\/packages\/([a-z0-9-]{1,80})$/))) {
+      const slug = m[1];
+      const listing = await cat.getPublicListingBySlug(slug);
+      if (listing) {
+        const [view] = await publicPackageViews(cat, [listing]);
+        if (view) return send(200, { package: view }), true;
+        return send(404, { error: "not_found" }), true;
+      }
+      const redirect = await cat.getSlugRedirect(slug);
+      if (redirect) {
+        const live = await currentlyPublic(cat, redirect.product_id);
+        if (live && live.listing.slug !== slug && PK.kindOf(live.product) === "package") return send(200, { redirect_to: live.listing.slug }), true;
+      }
+      return send(404, { error: "not_found" }), true;
+    }
+    if ((m = sub.match(/^\/(?:packages\/)?media\/([0-9a-f]{64})\.webp$/))) {
       for (const r of await cat.renditionBySha(m[1])) {
         if (r.status !== "active") continue;
         const live = await currentlyPublic(cat, r.product_id);
-        if (!live) continue;
+        if (!live || PK.kindOf(live.product) !== (sub.startsWith("/packages/media/") ? "package" : "product")) continue;
         const version = await cat.getVersion(r.product_id, live.listing.public_version);
         if (!version || !PUB.referencedMediaIds(version.content).has(r.media_id)) continue;
         if (await serveRendition({ res, storageService, filename: r.filename, publicCache: true, requestId: ctx.requestId })) return true;
@@ -159,6 +231,12 @@ async function handlePublicCatalogueRequest({ req, res, ctx, pathname, authConte
       const [variants, mediaRows, categories, brands] = await Promise.all([
         cat.listVariants(product.id), cat.mediaWithRenditions((version.content.media || []).map((x) => x.media_id)), cat.listCategories(), cat.listBrands(),
       ]);
+      if (PK.kindOf(product) === "package") {
+        const [packageView] = await publicPackageViews(cat, [{ product_id: product.id, status: "public", public_version: grant.version, slug: product.slug, released_at: null }], { preview: true });
+        const fallbackView = packageView || null;
+        await appendAuditRecord({ store, authContext, action: "catalogue_preview_viewed", resourceType: "catalogue_product", resourceId: product.id, metadata: { grant_id: grant.id, version: grant.version, staff: grant.staff, kind: "package" }, req });
+        return send(200, { preview: { version: grant.version, expires_at: grant.expires_at, status: product.publication_status === "published" && product.published_version === grant.version ? "published_internally" : "not_published" }, package: fallbackView }), true;
+      }
       const view = PUB.publicProduct({
         slug: product.slug, content: version.content, variants, mediaRows,
         category: categories.find((x) => x.id === version.content.category_id) || null, brand: brands.find((x) => x.id === version.content.brand_id) || null, releasedAt: null,

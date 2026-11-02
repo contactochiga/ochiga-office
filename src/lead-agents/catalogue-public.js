@@ -23,6 +23,10 @@ const REQUIREMENT_LABELS = Object.freeze({
   media_unavailable: "An image or its renditions are missing",
   no_active_variant: "At least one active variant is required",
   price_not_approved: "Every active variant needs an approved, published price",
+  // Solutions & Packages (20261109)
+  service_not_listed: "Services are package components and are never listed on their own",
+  consultation_size_priced: "A by-consultation size must not carry a price",
+  package_components_invalid: "The package's components need attention (see the package readiness panel)",
 });
 
 const mediaPath = (sha) => `media/${sha}.webp`;
