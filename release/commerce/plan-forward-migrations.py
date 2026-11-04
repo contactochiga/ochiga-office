@@ -18,7 +18,7 @@ def plan(manifest, installed, root=ROOT):
     if manifest.get("automatic_application") is not False:
         raise ValueError("automatic_application_forbidden")
     steps = manifest["steps"]
-    if [s["position"] for s in steps] != list(range(1, 16)):
+    if [s["position"] for s in steps] != list(range(1, 17)):
         raise ValueError("unexpected_step_order")
     names = [s["file"] for s in steps]
     if len(set(names)) != len(names):

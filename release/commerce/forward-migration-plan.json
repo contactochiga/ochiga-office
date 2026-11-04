@@ -107,6 +107,13 @@
       "sha256": "d7064c89ef5b49f85d21ec44d11f514c07eac86d5a35ad59b54823b97cd1ede7",
       "action": "PENDING_SEPARATE_AUTHORIZATION",
       "installed_version": null
+    },
+    {
+      "position": 16,
+      "file": "db/commerce/20261104090000_hardware_refund_lock_compat.sql",
+      "sha256": "529c7ab83c826b6b117235a4fa961e48f0217e9122c4e8964d3c5b9ae2f00d42",
+      "action": "PENDING_SEPARATE_AUTHORIZATION",
+      "installed_version": null
     }
   ]
 }
