@@ -21,7 +21,7 @@ class PlanTests(unittest.TestCase):
         out = module.plan(self.manifest, self.state)
         self.assertFalse(out["execution_enabled"])
         self.assertEqual(out["steps"][0]["action"], "SKIP_VERIFIED_INSTALLED")
-        self.assertEqual(sum(s["action"] == "PENDING_SEPARATE_AUTHORIZATION" for s in out["steps"]), 14)
+        self.assertEqual(sum(s["action"] == "PENDING_SEPARATE_AUTHORIZATION" for s in out["steps"]), 15)
 
     def test_resume_same_inventory_same_plan(self):
         self.assertEqual(module.plan(self.manifest, self.state), module.plan(self.manifest, self.state))

@@ -78,6 +78,11 @@
       "position": 15,
       "file": "db/commerce/20261101120350_hardware_refund_customer_completion.sql",
       "sha256": "d7064c89ef5b49f85d21ec44d11f514c07eac86d5a35ad59b54823b97cd1ede7"
+    },
+    {
+      "position": 16,
+      "file": "db/20261110_catalogue_packages_hardening.sql",
+      "sha256": "e648d8193c8198c54850525a61c559dc89a2ac5d96acb547265d966ace7e10f6"
     }
   ]
 }
