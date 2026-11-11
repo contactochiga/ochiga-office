@@ -26,7 +26,9 @@ const PARTNERSHIP_RELATIONSHIP_TYPES = {
   strategic_partner: "strategic_partner",
 };
 
-// Catalogue enquiry context is descriptive evidence, never authority to price, publish or order.
+// Catalogue enquiry context is descriptive evidence, never authority to price, publish or order. It is recorded ONLY as catalogue_package
+// metadata on the opportunity and the intake timeline: it never sets leads.interest_package, which drives the lead recommender, the
+// opportunity summary and the default package name of proposals and deployments (those semantics change only after a separate review).
 function packageReference(envelope) {
   const p = envelope.metadata && envelope.metadata.package;
   if (!p || typeof p.slug !== "string" || !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(p.slug) || p.slug.length > 80 || !Number.isSafeInteger(p.version) || p.version < 1) return null;
@@ -167,7 +169,6 @@ function leadInputFromIntake(envelope) {
     source_channel: envelope.source_channel,
     location: envelope.organization.location,
     unit_count: Number.isFinite(Number(envelope.organization.unit_count)) ? Number(envelope.organization.unit_count) : undefined,
-    ...(packageReference(envelope) ? { interest_package: `${packageReference(envelope).slug}@v${packageReference(envelope).version}${packageReference(envelope).size ? `:${packageReference(envelope).size}` : ""}` } : {}),
     project_type: envelope.inquiry_type,
     property_type: envelope.organization.type,
     pain_points: normalizeText(envelope.payload.message || envelope.payload.notes || envelope.payload.requirement),
