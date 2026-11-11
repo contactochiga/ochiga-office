@@ -25,7 +25,8 @@
       "codex/sp-office-release": false,
       "codex/sp-office-rollback": false,
       "codex/commerce-production-integration": false,
-      "codex/office-forward-commerce": false
+      "codex/office-forward-commerce": false,
+      "codex/sp-packages": false
     }
   }
 }

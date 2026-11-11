@@ -128,6 +128,36 @@ async function runPackageScenarios({ base, users, fullKey, check, catalogueKey, 
       { status: created.status, kind: created.json && created.json.kind, snap });
   }
 
+  // malformed component shapes through the normal API path: refused with the catalogue_package_issues codes, never normalized and
+  // never persisted (no new item on create; no new version on edit)
+  {
+    const sizesOne = (k) => [{ sku: `${k.toUpperCase()}-${tag}`, name: "Size", pricing: "fixed" }]; // own size SKU per case (SKUs are unique)
+    const badQuantities = [[2], "2", 2, null, true];
+    const badComponents = ["not-an-object", [GW.sku], null, 7];
+    const badCounts = [{ quantity: [3] }, { quantity: true }, { quantities: { [`KN2-${tag}`]: [2] } }, { quantities: { [`KN3-${tag}`]: null } }, { quantities: { [`KN4-${tag}`]: false } }];
+    const created = [];
+    for (const [i, q] of badQuantities.entries()) created.push({ want: "quantities_invalid", r: await A.writerA.post("/products", { kind: "package", slug: `kq${i}-${slugTag}`, content: packageContent("x", sizesOne(`kq${i}`), [comp(GW.sku, "required", { quantities: q })]) }) });
+    for (const [i, c] of badComponents.entries()) created.push({ want: "component_invalid", r: await A.writerA.post("/products", { kind: "package", slug: `kc${i}-${slugTag}`, content: packageContent("x", sizesOne(`kc${i}`), [comp(LOCK.sku, "required"), c]) }) });
+    for (const [i, over] of badCounts.entries()) created.push({ want: null, r: await A.writerA.post("/products", { kind: "package", slug: `kn${i}-${slugTag}`, content: packageContent("x", sizesOne(`kn${i}`), [comp(GW.sku, "required", over)]) }) });
+    const coded = created.every(({ want, r }) => r.status === 400 && r.json.error === "invalid_catalogue_input"
+      && (want ? (r.json.issues || []).some((i) => i.code === want && i.label) : !(r.json.issues || []).length));
+    const pkgs = (await A.writerA.get("/products?view=cards&kind=package")).json.products;
+    const persisted = pkgs.filter((c) => /^k[qcn]\d+-/.test(c.slug));
+    const before = await detail(sl.id);
+    const editContent = structuredClone(before.content);
+    editContent.package.components[1].quantities = [2];
+    const edit = await A.writerA.patch(`/products/${sl.id}`, { expected_row_version: before.product.row_version, content: editContent });
+    editContent.package.components[1] = "not-an-object";
+    const edit2 = await A.writerA.patch(`/products/${sl.id}`, { expected_row_version: before.product.row_version, content: editContent });
+    const after = await detail(sl.id);
+    check(id("PK01B"), "malformed per-size quantities (array, string, number, null, boolean) and malformed components (string, array, null, number) are refused through the API with issues quantities_invalid / component_invalid, malformed counts are not coerced, and nothing is persisted (no item, no new version)",
+      coded && persisted.length === 0 && edit.status === 400 && (edit.json.issues || []).some((i) => i.code === "quantities_invalid" && i.sku === LOCK.sku)
+        && edit2.status === 400 && (edit2.json.issues || []).some((i) => i.code === "component_invalid")
+        && after.product.row_version === before.product.row_version && after.product.current_version === before.product.current_version
+        && after.content.package.components[1].quantities[SL.VILLA] === 4,
+      { statuses: created.map(({ r }) => [r.status, (r.json.issues || []).map((i) => i.code)]), persisted: persisted.map((c) => c.slug), edit: [edit.status, edit.json.issues], edit2: [edit2.status, edit2.json.issues], rv: [before.product.row_version, after.product.row_version] });
+  }
+
   // readiness: resolved components, availability, margin for cost holders only
   {
     const writerView = await detail(sl.id, "writerA");
