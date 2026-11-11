@@ -21,7 +21,9 @@ class PlanTests(unittest.TestCase):
         out = module.plan(self.manifest, self.state)
         self.assertFalse(out["execution_enabled"])
         self.assertEqual(out["steps"][0]["action"], "SKIP_VERIFIED_INSTALLED")
-        self.assertEqual(sum(s["action"] == "PENDING_SEPARATE_AUTHORIZATION" for s in out["steps"]), 15)
+        # derived from the manifest: every step except the installed package baseline (step 1) is pending, in manifest order
+        self.assertEqual([s["file"] for s in out["steps"] if s["action"] == "PENDING_SEPARATE_AUTHORIZATION"],
+                         [s["file"] for s in self.manifest["steps"][1:]])
 
     def test_resume_same_inventory_same_plan(self):
         self.assertEqual(module.plan(self.manifest, self.state), module.plan(self.manifest, self.state))
