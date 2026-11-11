@@ -33,7 +33,7 @@ module.exports = async ({psql,one,check,ROOT}) => {
     }
   }
   const before=fingerprint();
-  check('FM-RESUME','all receipts resume without executing any migration',manifest.steps.every(s=>apply(s)==='skip')&&applications===14&&before===fingerprint());
+  check('FM-RESUME','all receipts resume without executing any migration',manifest.steps.every(s=>apply(s)==='skip')&&applications===manifest.steps.length-1&&before===fingerprint());
   run("begin;update forward_rehearsal.receipts set sha256=repeat('0',64) where position=15;commit;");
   let refused=false;try{apply(manifest.steps[14]);}catch(e){refused=e.message==='installed_hash_mismatch';}
   check('FM-DRIFT','checksum drift refuses resume',refused&&before===fingerprint());

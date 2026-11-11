@@ -8,9 +8,9 @@ The merge preserves deployed catalogue/packages/public projection, CRM intake an
 
 ## Ordered database release
 
-`migration-manifest.json` is the source of truth:15 reviewed hashes. `forward-baseline.json` records a read-only2November check on Office project metbajilbqclwjfsxfps. Package step1 was already installed as20261102114627, catalogue_packages_20261109; the accepted package SQL hash remains unchanged. Order, financial-observation and customer-outbox tables are absent. Do NOT rerun package migration.
+`migration-manifest.json` is the source of truth:16 reviewed hashes. Step 16 (`db/20261110_catalogue_packages_hardening.sql`) is a follow-up that replaces only `catalogue_package_issues` and requires step 1; it is not an edit of the installed step 1, and its rollback is `db/rollback/20261110_catalogue_packages_hardening.down.sql`. `forward-baseline.json` records a read-only2November check on Office project metbajilbqclwjfsxfps. Package step1 was already installed as20261102114627, catalogue_packages_20261109; the accepted package SQL hash remains unchanged. Order, financial-observation and customer-outbox tables are absent. Do NOT rerun package migration.
 
-`python3 release/commerce/plan-forward-migrations.py release/commerce/forward-baseline.json` produces a NON-EXECUTABLE plan: skip step1,14 pending separately authorized steps. This planner does not access credentials, databases or provider APIs. An inventory is reviewed evidence, not an authentication mechanism; refresh it before release.
+`python3 release/commerce/plan-forward-migrations.py release/commerce/forward-baseline.json` produces a NON-EXECUTABLE plan: skip step1,15 pending separately authorized steps. This planner does not access credentials, databases or provider APIs. An inventory is reviewed evidence, not an authentication mechanism; refresh it before release.
 
 Remaining order: orders → checkout → reservations → verified payments → financial operations → quote eligibility → fulfilment → delivery → service visits → customer progress → product-kind boundary → staff delivery before payment → customer access/notifications → refund completion. Preserve the exact manifest order, prerequisite extensions (including btree_gist/expiry scheduler prerequisites) and database roles. Do not sort filenames or run a blanket db push.
 
