@@ -23,7 +23,8 @@
     "deploymentEnabled": {
       "codex/office-redirects-security": false,
       "codex/sp-office-release": false,
-      "codex/sp-office-rollback": false
+      "codex/sp-office-rollback": false,
+      "codex/office-intake-package-fix": false
     }
   }
 }
