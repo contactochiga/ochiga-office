@@ -676,6 +676,7 @@ async function handleCatalogueRequest({ req, res, ctx, pathname, authContext, st
     send(status, {
       error: (error && error.code) || (status >= 500 ? "internal_server_error" : (error && error.message) || "request_failed"),
       ...(error && error.details ? { details: error.details } : {}),
+      ...(error && status === 400 && Array.isArray(error.issues) ? { issues: error.issues } : {}),
       ...(error && error.current ? { current: error.current } : {}),
       ...(error && error.permission ? { permission: error.permission } : {}),
       ...(error && error.code === "override_reason_too_short" ? { message: error.message } : {}),

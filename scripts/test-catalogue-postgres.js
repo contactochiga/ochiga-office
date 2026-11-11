@@ -178,7 +178,9 @@ async function main() {
   const emptyDown = applyFile(packageDown);
   check("PKRB1", "empty package migration rolls back without losing product schema", emptyDown.status === 0 && one("select count(*) from information_schema.columns where table_name='catalogue_products' and column_name='kind'") === "0", emptyDown.err.slice(0,200));
   const packageReapply = applyFile(path.join(ROOT,"db","20261109_catalogue_packages.sql"));
-  check("PKRB2", "package migration re-applies after safe empty rollback", packageReapply.status === 0, packageReapply.err.slice(0,200));
+  // migrations are re-applied in order: 20261110 hardening redefines catalogue_package_issues
+  const laterReapply = CATALOGUE_FOLLOWUPS.filter((f) => f > "20261109_catalogue_packages.sql").map((f) => applyFile(path.join(ROOT, "db", f)));
+  check("PKRB2", "package migration re-applies after safe empty rollback (later follow-ups re-applied in order)", packageReapply.status === 0 && laterReapply.every((r) => r.status === 0), packageReapply.err.slice(0,200));
   const m2 = applyFile(MIGRATION);
   const repeated = CATALOGUE_FOLLOWUPS.map((f) => applyFile(path.join(ROOT, "db", f)));
   check("M11", "…and is idempotent (second apply clean, seed not duplicated)", m2.status === 0 && repeated.every(r => r.status === 0) && one("select count(*) from catalogue_categories") === "6", { err: m2.err.slice(0, 300), categories: one("select count(*) from catalogue_categories") });
@@ -242,6 +244,28 @@ async function main() {
     check("PKRB3", "rollback with package history refuses atomically and preserves guards and history", refusedRollback.status !== 0 && /rollback refused/.test(refusedRollback.err) && one("select catalogue_packages_schema_version()") === "1" && one("select count(*) from catalogue_product_versions") === beforeRollback, refusedRollback.err.slice(0,200));
     const noCosts = one("select count(*) from pg_proc where proname in ('catalogue_package_issues','catalogue_package_guard','catalogue_create_item') and prosrc ilike '%catalogue_variant_costs%'");
     check("PG-PKDB4", "database: the package functions never read supplier costs", noCosts === "0", noCosts);
+    // 20261110 hardening: malformed component content (application bypassed) is a reported issue, never a raw error
+    const malformed = JSON.stringify({ ...JSON.parse(bad), variants: [{ sku: `MAL-${tag}`, name: "Size", options: {}, pricing: "fixed" }],
+      package: { ...JSON.parse(bad).package, components: ["not-an-object", { sku: `BYP-${tag}`, role: "required", basis: "fixed", quantity: 1, quantities: [2], note: "", snapshot: null }] } });
+    sr(`select catalogue_create_item('package', 'malformed-${tag.toLowerCase()}', '${cat}', null, '${malformed.replace(/'/g, "''")}'::jsonb, 'sql@fixture.test');`);
+    const malId = one(`select id from catalogue_products where slug = 'malformed-${tag.toLowerCase()}'`);
+    const malIssues = sr(`select catalogue_package_issues('${malId}', 1)::text;`);
+    const malSubmit = sr(`select catalogue_transition('${malId}', 1, 'submit', 'sql@fixture.test', '', null);`);
+    check("PG-PKDB5", "database (20261110): a non-object component and non-object quantities are reported issues (component_invalid; the other entry is a package size -> component_is_package), and submission is refused cleanly with package_components_invalid",
+      malIssues.status === 0 && /component_invalid/.test(malIssues.out) && malSubmit.status !== 0 && /package_components_invalid/.test(malSubmit.err), { issues: malIssues.out.slice(0, 300), err: malIssues.err.slice(0, 200), submit: malSubmit.err.slice(0, 200) });
+    const comp = one("select sku from catalogue_variants v join catalogue_products p on p.id = v.product_id where p.kind = 'product' and p.publication_status = 'published' limit 1");
+    const qty = JSON.stringify({ ...JSON.parse(bad), variants: [{ sku: `QTY-${tag}`, name: "Size", options: {}, pricing: "fixed" }],
+      package: { ...JSON.parse(bad).package, components: [{ sku: comp, role: "required", basis: "fixed", quantity: 1, quantities: [2], note: "", snapshot: null }] } });
+    sr(`select catalogue_create_item('package', 'qty-${tag.toLowerCase()}', '${cat}', null, '${qty.replace(/'/g, "''")}'::jsonb, 'sql@fixture.test');`);
+    const qtyId = one(`select id from catalogue_products where slug = 'qty-${tag.toLowerCase()}'`);
+    const qtyIssues = sr(`select catalogue_package_issues('${qtyId}', 1)::text;`);
+    const hardDown = applyFile(path.join(ROOT, "db", "rollback", "20261110_catalogue_packages_hardening.down.sql"));
+    const rawAgain = sr(`select catalogue_package_issues('${qtyId}', 1)::text;`);
+    const hardUp = applyFile(path.join(ROOT, "db", "20261110_catalogue_packages_hardening.sql"));
+    const fixedAgain = sr(`select catalogue_package_issues('${qtyId}', 1)::text;`);
+    check("PG-PKDB6", "database (20261110): non-object quantities on a real component are reported (quantities_invalid); the rollback restores the 20261109 behaviour (raw jsonb_each error) and re-applying restores the hardening",
+      qtyIssues.status === 0 && /quantities_invalid/.test(qtyIssues.out) && hardDown.status === 0 && rawAgain.status !== 0 && /cannot (call jsonb_each|extract elements) on a non-object|non-object/.test(rawAgain.err) && hardUp.status === 0 && /quantities_invalid/.test(fixedAgain.out),
+      { qty: qtyIssues.out.slice(0, 200), raw: rawAgain.err.slice(0, 200), again: fixedAgain.out.slice(0, 200) });
   }
 
   // Phase 3: execute real database workflow; no production connection is used.

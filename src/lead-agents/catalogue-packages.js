@@ -31,6 +31,8 @@ const ISSUE_LABELS = Object.freeze({
   installation_scope_invalid: "Say whether installation is quoted separately or included",
   no_components: "Add at least one component",
   component_unknown: "A component SKU does not exist",
+  component_invalid: "A component entry is malformed",
+  quantities_invalid: "A component's per-size quantities are malformed",
   component_is_package: "A package cannot contain another package",
   component_archived: "A component's product is archived",
   component_not_published: "A component's product is not published internally",
@@ -42,6 +44,12 @@ const ISSUE_LABELS = Object.freeze({
 });
 
 function str(value) { return typeof value === "string" ? value.replace(/\r\n/g, "\n").trim() : ""; }
+const isPlainObject = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
+// a count is a JSON number or a string of digits; booleans, null, arrays and objects are NaN (no Number([3]) === 3 coercion)
+function count(value) {
+  if (typeof value === "number") return value;
+  return typeof value === "string" && /^\s*\d+\s*$/.test(value) ? Number(value) : NaN;
+}
 
 function validKind(kind) {
   const k = str(kind || "product").toLowerCase();
@@ -85,11 +93,14 @@ function validatePackageContent(input = {}) {
 
   const list = Array.isArray(raw.components) ? raw.components : null;
   const components = [];
+  const issues = [];
   if (!list || !list.length) errors.push("add at least one component");
   else if (list.length > LIMITS.components) errors.push(`at most ${LIMITS.components} components`);
   else {
     const seen = new Set();
     list.forEach((item, index) => {
+      // malformed shapes are refused with the same issue codes as catalogue_package_issues, never normalized into a valid value
+      if (!isPlainObject(item)) { errors.push(`components[${index}] must be an object`); issues.push({ code: "component_invalid", index }); return; }
       const sku = str(item && item.sku).toUpperCase();
       if (!sku) errors.push(`components[${index}].sku is required`);
       if (seen.has(sku)) errors.push(`component ${sku} appears twice`);
@@ -100,15 +111,21 @@ function validatePackageContent(input = {}) {
       const basis = str(item && item.basis || "fixed").toLowerCase();
       if (!BASES.includes(basis)) errors.push(`components[${index}].basis must be fixed or per_unit`);
       if (basis === "per_unit" && !configuration.per_unit_label) errors.push(`components[${index}] is per unit: set configuration.per_unit_label (e.g. "per door")`);
-      const quantity = Number(item?.quantity == null ? 1 : item.quantity);
+      const quantity = item.quantity == null ? 1 : count(item.quantity);
       if (!Number.isInteger(quantity) || quantity < 1 || quantity > LIMITS.quantity) errors.push(`components[${index}].quantity must be 1-${LIMITS.quantity}`);
       const quantities = {};
-      const rawQ = item && item.quantities && typeof item.quantities === "object" && !Array.isArray(item.quantities) ? item.quantities : {};
-      Object.entries(rawQ).forEach(([size, n]) => {
+      // absent -> no per-size quantities; anything present must be an object (null, arrays, strings and numbers are refused)
+      const hasQ = Object.prototype.hasOwnProperty.call(item, "quantities") && item.quantities !== undefined;
+      if (hasQ && !isPlainObject(item.quantities)) {
+        errors.push(`components[${index}].quantities must be an object of size SKU to quantity`);
+        issues.push({ code: "quantities_invalid", index, ...(sku ? { sku } : {}) });
+      }
+      Object.entries(hasQ && isPlainObject(item.quantities) ? item.quantities : {}).forEach(([size, value]) => {
         const key = str(size).toUpperCase();
+        const n = count(value);
         if (!sizes.has(key)) errors.push(`components[${index}].quantities names ${key || "an empty size"}, which is not a size of this package`);
-        if (!Number.isInteger(Number(n)) || Number(n) < 0 || Number(n) > LIMITS.quantity) errors.push(`components[${index}].quantities.${key} must be 0-${LIMITS.quantity}`);
-        quantities[key] = Number(n);
+        if (!Number.isInteger(n) || n < 0 || n > LIMITS.quantity) errors.push(`components[${index}].quantities.${key} must be 0-${LIMITS.quantity}`);
+        quantities[key] = n;
       });
       const note = str(item && item.note);
       if (note.length > LIMITS.note) errors.push(`components[${index}].note is longer than ${LIMITS.note} characters`);
@@ -116,7 +133,11 @@ function validatePackageContent(input = {}) {
       components.push({ sku, role, basis, quantity, quantities, note, snapshot: snap ? { product_version: snap.product_version ?? null, price_kobo: snap.price_kobo ?? null } : null });
     });
   }
-  if (errors.length) throw C.badRequest("invalid package content", errors);
+  if (errors.length) {
+    const error = C.badRequest("invalid package content", errors);
+    if (issues.length) error.issues = issues.map((i) => ({ ...i, label: ISSUE_LABELS[i.code] }));
+    throw error;
+  }
   return { ...base, package: { solution_types: solutionTypes, scope, configuration, components } };
 }
 
@@ -147,6 +168,8 @@ function packageIssues(content, lookup) {
   if (!INSTALLATION.includes(pkg.scope && pkg.scope.installation)) issues.push({ code: "installation_scope_invalid" });
   if (!Array.isArray(pkg.components) || !pkg.components.length) return [...issues, { code: "no_components" }];
   for (const comp of pkg.components) {
+    // malformed entries (application bypassed) are issues, as in 20261110_catalogue_packages_hardening.sql
+    if (!comp || typeof comp !== "object" || Array.isArray(comp)) { issues.push({ code: "component_invalid" }); continue; }
     const hit = lookup.get(comp.sku);
     if (!hit) { issues.push({ code: "component_unknown", sku: comp.sku }); continue; }
     const { variant, product, content: published } = hit;
@@ -160,6 +183,8 @@ function packageIssues(content, lookup) {
     if (String(snap.product_version ?? "") !== String(product.published_version ?? "") || String(snap.price_kobo ?? "") !== String(variant.price_ngn_kobo ?? "")) {
       issues.push({ code: "component_changed", sku: comp.sku });
     }
+    // as in SQL: a missing key is coalesced to {}, but a present JSON null is not an object
+    if (Object.prototype.hasOwnProperty.call(comp, "quantities") && !isPlainObject(comp.quantities)) { issues.push({ code: "quantities_invalid", sku: comp.sku }); continue; }
     Object.keys(comp.quantities || {}).filter((k) => !sizes.has(k)).forEach((size) => issues.push({ code: "quantity_size_unknown", sku: comp.sku, size }));
   }
   return issues;
