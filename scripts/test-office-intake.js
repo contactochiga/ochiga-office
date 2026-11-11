@@ -1,6 +1,7 @@
 const assert = require("assert");
 const { createTempStore } = require("../src/lead-agents/testing");
 const {
+  fileIntakeSubmission,
   findExistingIntakeLead,
   leadInputFromIntake,
   normalizeOfficeIntakeEnvelope,
@@ -33,9 +34,24 @@ async function main() {
   assert.equal(duplicate.id, lead.id);
 
   const packageEnvelope = normalizeOfficeIntakeEnvelope({ ...envelope, metadata: {package:{slug:"synthetic-package",version:3,size:"SIZE-A",cost:999}} });
-  assert.equal(leadInputFromIntake(packageEnvelope).interest_package, "synthetic-package@v3:SIZE-A");
+  // package context never changes the lead's interest_package (recommender, opportunity summary, proposal/deployment defaults)
+  assert.equal(leadInputFromIntake(packageEnvelope).interest_package, undefined);
+  assert.equal(leadInputFromIntake(envelope).interest_package, leadInputFromIntake(packageEnvelope).interest_package);
   const invalidPackage = normalizeOfficeIntakeEnvelope({ ...envelope, metadata: {package:{slug:"../private",version:3}} });
   assert.equal(leadInputFromIntake(invalidPackage).interest_package, undefined);
+  // full filing path: the package reference is kept as catalogue_package evidence on the opportunity and the intake timeline, while the
+  // lead's interest_package (recommender, opportunity summary, proposal/deployment defaults) is exactly what it would be without it
+  const packageFiling = normalizeOfficeIntakeEnvelope({ ...envelope, idempotency_key: "idem-website-package", contact: { ...envelope.contact, email: "pkg@example.com" },
+    metadata: { package: { slug: "synthetic-package", version: 3, size: "SIZE-A" } } });
+  await fileIntakeSubmission(store, packageFiling, { actor: "website" });
+  const state = store.state;
+  const pkgLead = state.leads.find((l) => l.email === "pkg@example.com");
+  const pkgOpp = state.crm_opportunities.find((o) => o.metadata && o.metadata.catalogue_package);
+  const pkgEvent = state.timeline_events.find((e) => e.metadata && e.metadata.catalogue_package);
+  assert.ok(pkgLead && !String(pkgLead.interest_package || "").includes("synthetic-package"), "lead interest_package untouched by package context");
+  assert.deepEqual(pkgOpp && pkgOpp.metadata.catalogue_package, { slug: "synthetic-package", version: 3, size: "SIZE-A" });
+  assert.deepEqual(pkgEvent && pkgEvent.metadata.catalogue_package, { slug: "synthetic-package", version: 3, size: "SIZE-A" });
+  assert.ok(!String(pkgOpp.summary || pkgOpp.name || "").includes("synthetic-package@"), "opportunity summary does not carry the package reference");
   console.log("office intake contract smoke passed (including bounded package reference)");
 }
 
