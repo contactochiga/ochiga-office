@@ -84,6 +84,8 @@ const { executeGovernedOfficeToolProposals } = require("./office-tool-governance
 const { listDocumentTemplates, renderDocumentFromTemplate } = require("./office-document-templates");
 const { sanityConfigured, saveDraftToSanity, publishToSanity, unpublishFromSanity, syncDevelopmentProjectToSanity, slugify } = require("./sanity-adapter");
 const contentIntegrity = require("./content-integrity");
+// The only audit metadata an article's history exposes (what the content routes write); everything else -- ip, user agent, contract fields -- is never returned.
+const CONTENT_HISTORY_DETAIL_KEYS = Object.freeze(["title", "fields", "note", "reason", "refused_action", "previous_status", "previous_scheduled_publish_at", "scheduled_publish_at", "sanity_document_id", "live_url", "via", "content_fingerprint"]);
 const { fetchBackendPortfolioProjection } = require("./backend-portfolio-gateway");
 const { fetchBackendFinancialSummary } = require("./backend-financial-gateway");
 const {
@@ -2066,7 +2068,8 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
   // An item refused because it is not (provably) the approved version goes back to review -- off the schedule, approval removed -- with an audit record and a
   // review notification, so it is neither stuck in "approved" nor retried by the scheduler. action names what was refused (publish / schedule / scheduled_publish).
   async function returnRefusedContentToReview(item, authContext, action, reason) {
-    const updated = await store.updateContentItem(item.id, contentIntegrity.returnToReviewPatch(item));
+    const record = contentIntegrity.withdrawalRecord({ reason, action, actor: authContext?.email || "", previousStatus: item.workflow_status });
+    const updated = await store.updateContentItem(item.id, contentIntegrity.returnToReviewPatch(item, record));
     await appendAudit(store, authContext, "content_approval_withdrawn", "office_content_item", item.id, { title: item.title, reason, refused_action: action, previous_status: item.workflow_status, previous_scheduled_publish_at: item.scheduled_publish_at || null });
     await notifyRecipients(store, eventBus, { actorEmail: authContext?.email, type: "content_submitted", summary: `"${item.title}" needs approval again before it can be published`, relatedType: "content", relatedId: item.id });
     return updated;
@@ -8323,6 +8326,35 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
         return;
       }
 
+      // Editorial history of ONE article: only audit events whose target is this exact content item, gated like reading the article itself (content.write).
+      // Only workflow fields are returned -- the request ip / user agent and any other audit metadata stay server-side.
+      const contentHistoryMatch = pathname.match(/^\/api\/lead-agents\/admin\/content\/([^/]+)\/history$/);
+      if (contentHistoryMatch) {
+        if (req.method !== "GET") {
+          methodNotAllowed(res, "GET");
+          return;
+        }
+        authorizePermission(authContext, "content.write");
+        const contentId = contentHistoryMatch[1];
+        const item = await store.getContentItemById(contentId);
+        if (!item) {
+          notFound(res);
+          return;
+        }
+        const events = await store.listAuditEventsForTarget("office_content_item", item.id, 100);
+        const history = events
+          .filter((event) => event.target_type === "office_content_item" && event.target_id === item.id)
+          .map((event) => ({
+            id: event.id,
+            action: event.action,
+            actor_email: event.actor_email || "",
+            created_at: event.created_at,
+            details: Object.fromEntries(CONTENT_HISTORY_DETAIL_KEYS.filter((key) => event.metadata && event.metadata[key] !== undefined).map((key) => [key, event.metadata[key]])),
+          }));
+        json(res, 200, { history }, { "x-request-id": ctx.requestId });
+        return;
+      }
+
       const contentItemMatch = pathname.match(/^\/api\/lead-agents\/admin\/content\/([^/]+)$/);
       if (contentItemMatch) {
         const contentId = contentItemMatch[1];
@@ -8356,7 +8388,7 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           if (approvalWithdrawn) {
             patch.workflow_status = "draft";
             patch.scheduled_publish_at = null;
-            patch.metadata = contentIntegrity.withoutApproval(before.metadata);
+            patch.metadata = contentIntegrity.withApprovalWithdrawn(before.metadata, contentIntegrity.withdrawalRecord({ reason: "edited_after_approval", action: "edit", actor: authContext?.email || "", previousStatus: before.workflow_status }));
           }
           const item = await store.updateContentItem(contentId, patch);
           if (!item) {
@@ -8451,7 +8483,7 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
             return;
           }
           const approval = contentIntegrity.buildApproval(item, authContext?.email || "");
-          const updated = await store.updateContentItem(contentId, { workflow_status: "approved", approved_by: authContext?.email || "", metadata: { ...(item.metadata || {}), approval } });
+          const updated = await store.updateContentItem(contentId, { workflow_status: "approved", approved_by: authContext?.email || "", metadata: contentIntegrity.withApproval(item.metadata, approval) });
           await appendAudit(store, authContext, "content_approved", "office_content_item", contentId, { title: item.title, content_fingerprint: approval.fingerprint });
           json(res, 200, { item: updated }, { "x-request-id": ctx.requestId });
           return;

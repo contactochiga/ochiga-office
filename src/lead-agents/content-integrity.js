@@ -83,9 +83,27 @@ const REFUSAL_MESSAGES = Object.freeze({
   content_changed_since_approval: "This article changed after it was approved, so it was not published. It has been returned to review; a reviewer must approve it again.",
 });
 
-// The patch that returns a refused item to review: no schedule, no approval.
-function returnToReviewPatch(item) {
-  return { workflow_status: "in_review", scheduled_publish_at: null, metadata: withoutApproval(item && item.metadata) };
+// Why the last approval stopped applying, kept on the item (metadata.last_approval_withdrawal) so the editor can explain it after a reload. Cleared by the next
+// approval. action: "edit" | "publish" | "schedule" | "scheduled_publish".
+function withdrawalRecord({ reason, action, actor, previousStatus, now = new Date() }) {
+  return { reason: reason || "", action: action || "", actor: actor || "", previous_status: previousStatus || "", at: now.toISOString() };
+}
+
+// metadata after a withdrawal: approval removed, withdrawal recorded.
+function withApprovalWithdrawn(metadata, record) {
+  return { ...withoutApproval(metadata), last_approval_withdrawal: record };
+}
+
+// metadata after an approval: the new approval recorded, any earlier withdrawal cleared.
+function withApproval(metadata, approval) {
+  const next = { ...(metadata && typeof metadata === "object" ? metadata : {}), approval };
+  delete next.last_approval_withdrawal;
+  return next;
+}
+
+// The patch that returns a refused item to review: no schedule, no approval, the withdrawal recorded.
+function returnToReviewPatch(item, record) {
+  return { workflow_status: "in_review", scheduled_publish_at: null, metadata: withApprovalWithdrawn(item && item.metadata, record) };
 }
 
 module.exports = {
@@ -97,6 +115,9 @@ module.exports = {
   approvalRecord,
   buildApproval,
   withoutApproval,
+  withdrawalRecord,
+  withApprovalWithdrawn,
+  withApproval,
   returnToReviewPatch,
   verifyApprovedVersion,
   editWithdrawsApproval,

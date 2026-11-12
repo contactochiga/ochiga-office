@@ -301,6 +301,40 @@ async function main() {
     ok((await call(writer, "POST", `/${own}/approve`, {})).status === 403, "a writer still cannot approve their own draft");
     ok((await call(writer, "POST", `/${a12}/publish`, {})).status === 403 && (await call(reviewer, "POST", `/${a12}/schedule`, { scheduled_publish_at: new Date(Date.now() + 86_400_000).toISOString() })).status === 403, "staff without content.publish still cannot publish or schedule");
     ok((await call(publisher, "POST", `/${a1}/unpublish`, {})).status === 200 && (await item(a1)).workflow_status === "unpublished", "unpublish is unchanged");
+
+    // 14. metadata.last_approval_withdrawal: recorded on every withdrawal path, cleared by the next approval; the fingerprint is unaffected.
+    const w2 = (await item(a2)).metadata.last_approval_withdrawal;
+    ok(w2 && w2.reason === "edited_after_approval" && w2.action === "edit" && w2.actor === "writer@ochiga.local" && w2.previous_status === "approved" && !Number.isNaN(Date.parse(w2.at)), "an edit after approval records reason, action, actor, previous status and time");
+    const w6 = (await item(legacy)).metadata.last_approval_withdrawal;
+    ok(w6 && w6.reason === "no_approval_record" && w6.action === "publish" && w6.actor === "publisher@ochiga.local", "a refused publish records the withdrawal");
+    const w7 = (await item(a7b)).metadata.last_approval_withdrawal;
+    ok(w7 && w7.action === "scheduled_publish" && w7.actor === "scheduler" && w7.reason === "content_changed_since_approval", "a refused scheduled publish records the withdrawal (actor: scheduler)");
+    ok((await item(legacySched)).metadata.last_approval_withdrawal?.action === "schedule", "a refused schedule records the withdrawal");
+    ok(!(await item(a5)).metadata.last_approval_withdrawal && (await item(a5)).metadata.approval, "re-approval clears the withdrawal record and stores the new approval");
+    await call(writer, "POST", `/${a2}/submit-review`, {});
+    const shownA2 = await call(reviewer, "GET", `/${a2}`);
+    await call(reviewer, "POST", `/${a2}/approve`, { content_fingerprint: shownA2.data.item.content_fingerprint });
+    ok(!(await item(a2)).metadata.last_approval_withdrawal && (await item(a2)).workflow_status === "approved", "an edited article that is resubmitted and approved has its withdrawal record cleared");
+    ok(integrity.verifyApprovedVersion(await item(a2)).ok, "the withdrawal record never affects the approval fingerprint");
+
+    // 15. GET /content/:id/history: only this article's events, only workflow fields, content permission required.
+    const hist = await call(writer, "GET", `/${a2}/history`);
+    const actions = hist.data.history.map((h) => h.action);
+    ok(hist.status === 200 && ["content_created", "content_submitted_for_review", "content_approved", "content_edited", "content_approval_withdrawn"].every((a) => actions.includes(a)), "history lists the article's workflow events");
+    ok(hist.data.history.every((h) => store.state.audit_events.some((e) => e.id === h.id && e.target_type === "office_content_item" && e.target_id === a2)), "every history entry belongs to this exact article");
+    ok(!actions.includes("content_published") && !hist.data.history.some((h) => JSON.stringify(h).includes(a1)), "events of other articles are not included");
+    const raw = JSON.stringify(hist.data);
+    ok(!/"ip"|user_agent|audit_contract_version|estate_id/.test(raw) && hist.data.history.every((h) => Object.keys(h).sort().join(",") === "action,actor_email,created_at,details,id"), "no ip, user agent or other audit metadata is exposed; only the allow-listed shape");
+    ok(hist.data.history.every((h, i, all) => i === 0 || String(all[i - 1].created_at) >= String(h.created_at)), "history is newest first");
+    const wEntry = hist.data.history.find((h) => h.action === "content_approval_withdrawn");
+    ok(wEntry.details.reason === "edited_after_approval" && wEntry.details.previous_status === "approved", "a withdrawal entry carries its reason and previous status");
+    await store.appendAuditEvent({ action: "lead_updated", target_type: "lead", target_id: a2, actor_email: "x@ochiga.local", metadata: { ip: "10.0.0.1" } });
+    ok(!(await call(writer, "GET", `/${a2}/history`)).data.history.some((h) => h.action === "lead_updated"), "an unrelated record type that happens to share the id is excluded");
+    ok((await call(writer, "GET", `/does-not-exist/history`)).status === 404, "unknown article: 404");
+    ok((await call(writer, "POST", `/${a2}/history`, {})).status === 405, "history is read-only (405 for POST)");
+    await store.ensureAdminUser({ email: "finance@ochiga.local", password_hash: hashPassword("finance-pass-123"), role: "finance_operator", display_name: "Finance", status: "active" });
+    const finance = await login("finance@ochiga.local", "finance-pass-123");
+    ok((await call(finance, "GET", `/${a2}/history`)).status === 403 && (await call(finance, "GET", `/${a2}`)).status === 403, "a user without content.write cannot read an article's history (same gate as the article)");
   } finally {
     await new Promise((resolve) => server.close(resolve));
     setSanityClientFactoryForTests(null);

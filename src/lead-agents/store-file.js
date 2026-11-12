@@ -1739,6 +1739,14 @@ class FileLeadAgentsStore {
       .slice(0, limit);
   }
 
+  // Audit events of ONE record (exact target type + id), newest first.
+  async listAuditEventsForTarget(targetType, targetId, limit = 100) {
+    return this.state.audit_events
+      .filter((event) => event.target_type === targetType && event.target_id === targetId)
+      .sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)))
+      .slice(0, limit);
+  }
+
   async listOfficePackages() {
     return [...this.state.office_packages].sort((a, b) => String(a.name).localeCompare(String(b.name)));
   }
