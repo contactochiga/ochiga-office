@@ -2,7 +2,9 @@
 // against the real Office server (temporary file store, in-memory Sanity fake, fixture posts only). Skips (exit 0) when Chrome is not installed.
 // Writes screenshots to OFFICE_CONTENT_SHOTS if set. Covers layout (desktop, tablet, phone), deep links, search and filters, editor functions,
 // unsaved-changes protection, every workflow outcome (approval withdrawal, stale approval, failed publish + retry, schedule validation, stale
-// review), permissions, Overview / Calendar / Table views, and that no engagement numbers are shown for unconnected channels.
+// review), permissions, Overview / Calendar / Table views, and that no engagement numbers are shown for unconnected channels. Edit / Preview / History are
+// checked by what is actually rendered at every width, the writer of a post is not offered Approve on it, the header names the creator (Office has no
+// last-editor record), a legacy image link is flagged, and no Content control sits under the floating Oyi orb.
 "use strict";
 
 const assert = require("node:assert/strict");
@@ -113,7 +115,11 @@ async function main() {
   await approve(pFail);
   const pSchedule = await create("Theta to schedule");
   await approve(pSchedule);
+  const pOwnReview = await create("Kappa writer's own post in review");
+  await api("writer", "POST", `/content/${pOwnReview}/submit-review`, {});
+  const pLegacyLink = (await store.createContentItem({ title: "Lambda legacy image link", body: "Lambda body", slug: "lambda", featured_image_url: "/legacy/old-cover.jpg", created_by: "writer@ochiga.local" })).id; // saved before uploads were required
   const pDraft = await create("Iota newest draft", { featured_image_url: image, excerpt: "Newest draft excerpt" });
+  const TOTAL = 11;
 
   const userDir = fs.mkdtempSync(path.join(os.tmpdir(), "content-ws-chrome-"));
   const chrome = spawn(CHROME, ["--headless=new", `--remote-debugging-port=${PORT}`, `--user-data-dir=${userDir}`, "--no-first-run", "--disable-gpu", "--hide-scrollbars", "about:blank"], { stdio: "ignore" });
@@ -156,6 +162,24 @@ async function main() {
       await evalJs(`[...document.querySelectorAll('.portfolio-overflow-item')].find((b) => b.textContent.trim() === ${JSON.stringify(label)} && b.offsetParent).click()`);
     };
     const notice = () => text(".content-notice:not([data-notice-key])");
+    // what is on screen, not the hidden attribute: rendered (display not none, a box) and the topmost element at its centre inside it
+    const rendered = (sel) => evalJs(`(() => { const e = document.querySelector(${JSON.stringify(sel)}); if (!e) return false; const r = e.getBoundingClientRect(); return getComputedStyle(e).display !== 'none' && r.width > 0 && r.height > 0; })()`);
+    const modeCheck = async (label) => {
+      for (const mode of ["preview", "history", "edit"]) {
+        await evalJs(`document.querySelector('.content-mode[data-mode=${mode}]').click()`);
+        await sleep(150);
+        const shown = { edit: await rendered(".content-form"), preview: await rendered(".content-preview-pane"), history: await rendered(".content-history-pane") };
+        const atCentre = await evalJs(`(() => { const s = document.querySelector('.content-scroll').getBoundingClientRect(); const e = document.elementFromPoint(s.left + s.width / 2, s.top + 40); return e?.closest('[data-panel]')?.dataset.panel || (e?.closest('.content-scroll') ? 'scroll' : 'outside'); })()`);
+        ok(Object.entries(shown).every(([m, v]) => v === (m === mode)) && (atCentre === mode || (mode !== "edit" && atCentre === "scroll")), `${label}: ${mode} shows only the ${mode} panel on screen (${JSON.stringify(shown)}, at centre: ${atCentre})`);
+      }
+    };
+    // controls the floating Oyi orb covers (the details pane scrolled to its end, where its last controls are)
+    const underOrb = async () => {
+      await evalJs(`(() => { const d = document.querySelector('.content-details-pane'); if (d) d.scrollTop = d.scrollHeight; })()`);
+      await sleep(100);
+      return evalJs(`(() => { const orb = document.getElementById('oyiBar'); if (!orb || !orb.offsetParent) return ['orb not shown']; const o = orb.getBoundingClientRect();
+        return [...document.querySelectorAll('.content-page button, .content-page a, .content-page summary, .content-page select, .content-page input:not([type=hidden])')].filter((e) => { const r = e.getBoundingClientRect(); return e.offsetParent && r.width && r.height && getComputedStyle(e).visibility !== 'hidden' && r.left < o.right && r.right > o.left && r.top < o.bottom && r.bottom > o.top && e.closest('.content-actionbar, .content-details-pane, .content-hero-actions, .content-list'); }).map((e) => e.textContent.trim().slice(0, 30) || e.className); })()`);
+    };
     const select = async (postId) => { await evalJs(`location.hash = '#/content/${postId}'`); await waitFor(`document.querySelector('.content-form [name=title]') && document.querySelector('.content-row.active')?.dataset.contentId === '${postId}'`, `post ${postId} selected`); };
 
     await send("Page.enable"); await send("Runtime.enable"); await send("Network.enable");
@@ -168,7 +192,7 @@ async function main() {
     ok(await evalJs(`document.querySelector('.content-tabs .crm-tab.active').textContent.trim() === 'Posts' && [...document.querySelectorAll('.content-tab-soon')].every((t) => t.disabled)`), "Posts is active; Comments and Analytics are disabled");
     ok(await evalJs(`!!document.querySelector('.content-new-post') && document.querySelector('.content-new-post').textContent.trim() === 'New Post'`), "a simple New Post button");
     ok(await evalJs(`['.content-list-pane', '.content-main-pane', '.content-details-pane'].every((s) => document.querySelector(s).getBoundingClientRect().width > 200)`), "three visible panes at desktop width");
-    ok(await evalJs(`document.querySelectorAll('.content-row').length`) === 9 && (await text("#contentCount")) === "(9)", "every post is listed, with the count");
+    ok(await evalJs(`document.querySelectorAll('.content-row').length`) === TOTAL && (await text("#contentCount")) === `(${TOTAL})`, "every post is listed, with the count");
     ok(await evalJs(`document.querySelector('.content-row.active').dataset.contentId`) === pDraft && (await evalJs(`document.querySelector('.content-form [name=title]').value`)) === "Iota newest draft", "without a post in the URL the most recently updated post is selected");
     ok(await evalJs(`document.querySelector('.content-row[data-content-id="${pDraft}"] img.content-thumb')?.naturalWidth === 1 && !!document.querySelector('.content-row[data-content-id="${pPublished}"] .content-thumb-empty')`), "real featured-image thumbnails; a placeholder when a post has none");
     ok(await evalJs(`!!document.querySelector('.content-row[data-content-id="${pPublished}"] .content-web-live') && !!document.querySelector('.content-row[data-content-id="${pScheduled}"] .content-web-pending') && !document.querySelector('.content-row[data-content-id="${pDraft}"] .content-web')`), "website state icon only for live / scheduled posts");
@@ -179,16 +203,18 @@ async function main() {
     await waitFor(`document.querySelectorAll('#contentDetails .content-history-item').length > 0`, "recent activity");
     ok(/Created/.test(await text("#contentDetails .content-activity")), "compact recent activity in the details pane");
     await shot("content-posts-desktop.png");
+    const coveredDesktop = await underOrb();
+    ok(coveredDesktop.length === 0, `desktop: no Content control is under the Oyi orb (${JSON.stringify(coveredDesktop)})`);
 
     // 2. Search and filters
     await evalJs(`(() => { const s = document.querySelector('#contentSearch'); s.value = 'gamma'; s.dispatchEvent(new Event('input')); })()`);
     await waitFor(`document.querySelectorAll('.content-row').length === 1`, "search");
-    ok((await text("#contentCount")) === "(1 of 9)" && (await text(".content-row-title")) === "Gamma scheduled post", "search narrows the list and the count shows 'n of total'");
+    ok((await text("#contentCount")) === `(1 of ${TOTAL})` && (await text(".content-row-title")) === "Gamma scheduled post", "search narrows the list and the count shows 'n of total'");
     await evalJs(`(() => { const s = document.querySelector('#contentSearch'); s.value = ''; s.dispatchEvent(new Event('input')); const f = document.querySelector('#contentStatusFilter'); f.value = 'approved'; f.dispatchEvent(new Event('change')); })()`);
     await waitFor(`document.querySelectorAll('.content-row').length === 4`, "status filter");
     ok(await evalJs(`[...document.querySelectorAll('.content-row .badge')].every((b) => b.textContent.trim() === 'Approved')`), "status filter shows only that status");
     await evalJs(`(() => { const f = document.querySelector('#contentStatusFilter'); f.value = ''; f.dispatchEvent(new Event('change')); const t = document.querySelector('#contentTimeFilter'); t.value = '7d'; t.dispatchEvent(new Event('change')); })()`);
-    await waitFor(`document.querySelectorAll('.content-row').length === 9`, "time filter (all recent)");
+    await waitFor(`document.querySelectorAll('.content-row').length === ${TOTAL}`, "time filter (all recent)");
     ok(true, "time filter keeps posts updated within the period");
     await evalJs(`(() => { const t = document.querySelector('#contentTimeFilter'); t.value = ''; t.dispatchEvent(new Event('change')); })()`);
 
@@ -205,8 +231,8 @@ async function main() {
     ok((await evalJs(`document.querySelector('textarea[name=body]').value`)).startsWith("# **Iota** newest"), "Bold wraps the selection");
     ok((await text(".content-save-state")) === "Unsaved changes" && (await evalJs(`document.querySelector('.content-primary-action').disabled && !document.querySelector('.content-save-btn').disabled`)), "an edit marks unsaved changes; workflow actions wait for Save");
     await evalJs(`document.querySelector('.content-mode[data-mode=preview]').click()`);
-    ok(await evalJs(`!!document.querySelector('.content-preview-pane h2 strong') && document.querySelector('.content-form').hidden`), "Preview renders the unsaved editor content");
-    await evalJs(`document.querySelector('.content-mode[data-mode=edit]').click()`);
+    ok(await evalJs(`!!document.querySelector('.content-preview-pane h2 strong')`) && !(await rendered(".content-form")) && (await rendered(".content-preview-pane")), "Preview renders the unsaved editor content, and the form is not on screen");
+    await modeCheck("desktop");
     await evalJs(`document.querySelector('.content-tool-full').click()`);
     ok(await evalJs(`document.querySelector('.content-page').classList.contains('content-focus') && getComputedStyle(document.querySelector('.content-list-pane')).display === 'none'`), "Full screen hides the list and details");
     await evalJs(`document.querySelector('.content-tool-full').click()`);
@@ -230,6 +256,11 @@ async function main() {
     await evalJs(`document.querySelector('.content-save-btn').click()`);
     await waitFor(`/Saved/.test(document.querySelector('.content-save-state').textContent)`, "saved removal");
     ok((await store.getContentItemById(pDraft)).featured_image_url === "", "the removal is saved");
+
+    // 5b. A legacy image link is flagged where the image is shown
+    await select(pLegacyLink);
+    ok(/not an Office upload, so it is not sent to the website/.test(await text(".content-hero-legacy")) && (await rendered(".content-hero-legacy")), "a cover saved as a link says it is not sent to the website and to upload it");
+    ok(/^Created by writer@ochiga\.local · last updated /.test(await text(".content-head-sub")), "the header names the creator as 'Created by' (no last-editor attribution is claimed)");
 
     // 6. Edit after approval: withdrawal notice now and after a reload
     await select(pApprovedEdit);
@@ -301,6 +332,21 @@ async function main() {
     await evalJs(`document.querySelector('.content-actionbar .portfolio-overflow-trigger').click()`);
     ok(!(await evalJs(`[...document.querySelectorAll('.portfolio-overflow-item')].some((b) => /Schedule|Unpublish|Publish/.test(b.textContent) && b.offsetParent)`)), "nor Schedule or Unpublish in the menu");
     await evalJs(`document.body.click()`);
+    await select(pOwnReview);
+    ok(!(await evalJs(`document.querySelector('.content-primary-action')`)) && /Another reviewer must approve your post/.test(await text(".content-actionbar")), "the writer (a reviewer too) is not offered Approve on their own post, and is told why");
+    await evalJs(`document.querySelector('.content-actionbar .portfolio-overflow-trigger').click()`);
+    ok(!(await evalJs(`[...document.querySelectorAll('.portfolio-overflow-item')].some((b) => /Request changes/.test(b.textContent) && b.offsetParent)`)), "nor Request changes on their own post");
+    await evalJs(`document.body.click()`);
+    await asUser("reviewer");
+    await open(`content/${pOwnReview}`, `document.querySelector('.content-primary-action')?.textContent === 'Approve'`, "another reviewer sees Approve");
+    ok(true, "another reviewer is offered Approve on it");
+    await asUser("super");
+    const superOwn = (await api("super", "POST", "/content", { title: "Mu publisher's own post", body: "Mu body" })).data.item.id;
+    await api("super", "POST", `/content/${superOwn}/submit-review`, {});
+    await open(`content/${superOwn}`, `document.querySelector('.content-head-badge')?.textContent.trim() === 'In Review'`, "publisher's own post");
+    ok((await evalJs(`document.querySelector('.content-primary-action')?.textContent`)) === "Approve", "a writer who also holds content.publish keeps Approve on their own post (the server allows it)");
+    await asUser("writer");
+    await open("content", `!!document.querySelector('.content-page .content-form')`, "writer posts");
     await select(pDraft);
     ok((await evalJs(`document.querySelector('.content-primary-action').textContent`)) === "Submit for review", "a draft's primary action is Submit for review");
     await asUser("super");
@@ -336,8 +382,13 @@ async function main() {
     await evalJs(`document.querySelector('.content-details-toggle').click()`);
     ok(await evalJs(`getComputedStyle(document.querySelector('.content-details-pane')).position === 'absolute'`), "Details opens as a slide-over");
     await shot("content-tablet-details.png");
+    const coveredSlideOver = await underOrb();
+    ok(coveredSlideOver.length === 0, `tablet: no control in the details slide-over is under the Oyi orb (${JSON.stringify(coveredSlideOver)})`);
     await evalJs(`document.querySelector('.content-details-close').click()`);
     ok(await evalJs(`getComputedStyle(document.querySelector('.content-details-pane')).display === 'none' && document.querySelector('.content-details-toggle').getAttribute('aria-expanded') === 'false'`), "the slide-over has its own Close (it covers the Details button)");
+    const coveredTablet = await underOrb();
+    ok(coveredTablet.length === 0, `tablet: no action-bar control is under the Oyi orb (${JSON.stringify(coveredTablet)})`);
+    await modeCheck("tablet");
     await viewport(390, 844, true);
     await open("content", `!!document.querySelector('.content-list-pane')`, "phone list");
     ok(await evalJs(`getComputedStyle(document.querySelector('.content-main-pane')).display === 'none' && document.querySelector('.content-list-pane').getBoundingClientRect().width >= 350`), "on a phone the list is shown first, full width");
@@ -346,6 +397,9 @@ async function main() {
     await waitFor(`getComputedStyle(document.querySelector('.content-main-pane')).display !== 'none' && document.querySelector('.content-form [name=title]')?.value === 'Gamma scheduled post'`, "phone editor");
     ok(await evalJs(`getComputedStyle(document.querySelector('.content-list-pane')).display === 'none' && getComputedStyle(document.querySelector('.content-head .rel-back')).display !== 'none'`), "choosing a post opens the editor alone, with a back button");
     ok(await evalJs(`document.documentElement.scrollWidth <= window.innerWidth + 1`), "no horizontal page scroll on a phone");
+    const coveredPhone = await underOrb();
+    ok(coveredPhone.length === 0, `phone: no action-bar control is under the Oyi orb (${JSON.stringify(coveredPhone)})`);
+    await modeCheck("phone");
     await shot("content-phone-editor.png");
     await evalJs(`document.querySelector('.content-head .rel-back').click()`);
     await waitFor(`getComputedStyle(document.querySelector('.content-list-pane')).display !== 'none'`, "back to list");

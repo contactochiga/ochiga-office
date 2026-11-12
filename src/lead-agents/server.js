@@ -84,6 +84,7 @@ const { executeGovernedOfficeToolProposals } = require("./office-tool-governance
 const { listDocumentTemplates, renderDocumentFromTemplate } = require("./office-document-templates");
 const { sanityConfigured, saveDraftToSanity, publishToSanity, unpublishFromSanity, syncDevelopmentProjectToSanity, slugify } = require("./sanity-adapter");
 const contentIntegrity = require("./content-integrity");
+const contentImages = require("./content-images");
 // The only audit metadata an article's history exposes (what the content routes write); everything else -- ip, user agent, contract fields -- is never returned.
 const CONTENT_HISTORY_DETAIL_KEYS = Object.freeze(["title", "fields", "note", "reason", "refused_action", "previous_status", "previous_scheduled_publish_at", "scheduled_publish_at", "sanity_document_id", "live_url", "via", "content_fingerprint"]);
 const { fetchBackendPortfolioProjection } = require("./backend-portfolio-gateway");
@@ -408,6 +409,13 @@ function parseDataUrl(value) {
     mimeType,
     buffer: isBase64 ? Buffer.from(body, "base64") : Buffer.from(decodeURIComponent(body), "utf8"),
   };
+}
+
+// A cover URL Office can send to Sanity without fetching anything (content-images.js). Legacy values that are not re-submitted stay untouched.
+function coverImageUrlRefusal(value, kind) {
+  const source = contentImages.classifyCoverImageUrl(value, kind, { sanityProjectId: process.env.SANITY_PROJECT_ID, sanityDataset: process.env.SANITY_DATASET });
+  if (source.kind !== "unsupported") return null;
+  return { error: "Upload the image in Office. Image links from other sites are not accepted, because Office does not download images from links.", reason: "cover_image_not_uploaded" };
 }
 
 function extensionForAudioMime(mimeType) {
@@ -2052,7 +2060,7 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
     if (!sanityConfigured()) return { ok: false, status: 503, reason: "sanity_not_configured", error: "Sanity is not configured (SANITY_PROJECT_ID/SANITY_DATASET/SANITY_API_WRITE_TOKEN)." };
     let draftResult;
     try {
-      draftResult = await saveDraftToSanity(item);
+      draftResult = await saveDraftToSanity(item, { readStoredImage: readOfficeCoverImage });
     } catch (err) {
       draftResult = { ok: false, reason: err.message || "draft_save_failed" };
     }
@@ -2111,6 +2119,8 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
     contentSchedulerTimer = setInterval(() => runContentSchedulerTick(), intervalMs);
   }
   const storageService = createStorageService(config);
+  // Covers reach Sanity only from Office storage (content-images.js); no cover URL is ever fetched.
+  const readOfficeCoverImage = (filename) => contentImages.readStoredCoverImage(storageService, filename);
   const digitalTwinRuntime = createDigitalTwinRuntime();
   const planStudioRuntime = createPlanStudioRuntime({
     storePath: path.join(process.cwd(), "data", "plan-studio-store.json"),
@@ -7146,7 +7156,22 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           json(res, 403, { error: "forbidden", message: "Product media and import files are uploaded from Products." }, { "x-request-id": ctx.requestId });
           return;
         }
-        const storedFile = await storageService.putDataUrl(body);
+        // Cover images go to the public site, so they are checked from their content (JPEG/PNG/WebP, 10 MB) and stored under the detected type.
+        let storedFile;
+        if (Object.values(contentImages.COVER_IMAGE_PURPOSES).includes(body.purpose)) {
+          let parsed = null;
+          let image;
+          try {
+            parsed = parseDataUrl(body.data_url || body.dataUrl || "");
+            image = await contentImages.validateCoverImage(parsed ? parsed.buffer : null);
+          } catch (err) {
+            json(res, err.statusCode || 400, { error: err.message, reason: err.code }, { "x-request-id": ctx.requestId });
+            return;
+          }
+          storedFile = await storageService.putBuffer({ ...body, buffer: parsed.buffer, mime_type: image.mime_type, extension: image.extension, metadata: { width: image.width, height: image.height } });
+        } else {
+          storedFile = await storageService.putDataUrl(body);
+        }
         const file =
           typeof store.createOfficeFile === "function"
             ? await store.createOfficeFile(storedFile)
@@ -8197,6 +8222,11 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
             json(res, 400, { error: "name and slug are required" }, { "x-request-id": ctx.requestId });
             return;
           }
+          const imageRefusal = coverImageUrlRefusal(body.cover_image_url, "development");
+          if (imageRefusal) {
+            json(res, 400, imageRefusal, { "x-request-id": ctx.requestId });
+            return;
+          }
           const project = await store.createDevelopmentProject({ ...body, created_by: authContext?.email || "office" });
           await appendAudit(store, authContext, "development_project_created", "office_development_project", project.id, { name: project.name });
           json(res, 201, { project }, { "x-request-id": ctx.requestId });
@@ -8239,6 +8269,14 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           ].forEach((field) => {
             if (body[field] !== undefined) patch[field] = body[field];
           });
+          if (patch.cover_image_url !== undefined) {
+            const current = await store.getDevelopmentProjectById(projectId);
+            const imageRefusal = current && patch.cover_image_url !== current.cover_image_url ? coverImageUrlRefusal(patch.cover_image_url, "development") : null;
+            if (imageRefusal) {
+              json(res, 400, imageRefusal, { "x-request-id": ctx.requestId });
+              return;
+            }
+          }
           const project = await store.updateDevelopmentProject(projectId, patch);
           if (!project) {
             notFound(res);
@@ -8265,7 +8303,7 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           notFound(res);
           return;
         }
-        const syncResult = await syncDevelopmentProjectToSanity(project, { baseUrl: config.officePublicBaseUrl });
+        const syncResult = await syncDevelopmentProjectToSanity(project, { readStoredImage: readOfficeCoverImage });
         const updated = syncResult.ok
           ? await store.updateDevelopmentProject(projectId, { sanity_document_id: syncResult.document_id, published: true })
           : project;
@@ -8314,8 +8352,13 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
             json(res, 400, { error: "title is required" }, { "x-request-id": ctx.requestId });
             return;
           }
+          const imageRefusal = coverImageUrlRefusal(body.featured_image_url, "content");
+          if (imageRefusal) {
+            json(res, 400, imageRefusal, { "x-request-id": ctx.requestId });
+            return;
+          }
           const item = await store.createContentItem({ ...body, slug: body.slug || slugify(body.title), created_by: authContext?.email || "office" });
-          const sanityResult = await saveDraftToSanity(item).catch(() => ({ ok: false }));
+          const sanityResult = await saveDraftToSanity(item, { readStoredImage: readOfficeCoverImage }).catch(() => ({ ok: false }));
           const updated = sanityResult.ok
             ? await store.updateContentItem(item.id, { sanity_document_id: sanityResult.document_id, metadata: { ...item.metadata, sanity_warnings: sanityResult.warnings } })
             : item;
@@ -8383,6 +8426,12 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
             notFound(res);
             return;
           }
+          // a changed cover must be an Office upload; an unchanged legacy link is left as it is (and reported when it is synced)
+          const imageRefusal = patch.featured_image_url !== undefined && patch.featured_image_url !== before.featured_image_url ? coverImageUrlRefusal(patch.featured_image_url, "content") : null;
+          if (imageRefusal) {
+            json(res, 400, imageRefusal, { "x-request-id": ctx.requestId });
+            return;
+          }
           // Approval covers one exact version: changing an approved or scheduled article withdraws the approval and takes it off the schedule, so the change
           // cannot be published (by hand or by the scheduler) without a new review. A save that changes nothing keeps the approval.
           const approvalWithdrawn = contentIntegrity.editWithdrawsApproval(before, { ...before, ...patch });
@@ -8396,7 +8445,7 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
             notFound(res);
             return;
           }
-          const sanityResult = await saveDraftToSanity(item).catch(() => ({ ok: false }));
+          const sanityResult = await saveDraftToSanity(item, { readStoredImage: readOfficeCoverImage }).catch(() => ({ ok: false }));
           if (sanityResult.ok) await store.updateContentItem(contentId, { sanity_document_id: sanityResult.document_id, metadata: { ...item.metadata, sanity_warnings: sanityResult.warnings } });
           await appendAudit(store, authContext, "content_edited", "office_content_item", contentId, { fields: contentIntegrity.CONTENT_FIELDS.filter((field) => field in patch) });
           if (approvalWithdrawn) {

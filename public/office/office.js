@@ -7871,8 +7871,10 @@ function contentShowItem(item, { notice } = {}) {
   if (!page) return;
   page.querySelector(".content-head-title").textContent = item.title || "Untitled";
   page.querySelector(".content-head-badge").innerHTML = badge(titleCase(item.workflow_status), CONTENT_STATUS_TONE[item.workflow_status] || "default");
-  const sub = [`Last updated ${fmtRelative(item.updated_at)}`];
-  if (item.created_by) sub.push(`created by ${item.created_by}`);
+  // Office records who created a post, not who last edited it, so the header names the creator and only the time of the last change.
+  const sub = [];
+  if (item.created_by) sub.push(`Created by ${item.created_by}`);
+  sub.push(`${item.created_by ? "last" : "Last"} updated ${fmtRelative(item.updated_at)}`);
   if (item.workflow_status === "scheduled" && item.scheduled_publish_at) sub.push(`scheduled for ${fmtDateTime(item.scheduled_publish_at)}`);
   page.querySelector(".content-head-sub").textContent = sub.join(" · ");
   const withdrawal = contentWithdrawal(item);
@@ -7941,7 +7943,7 @@ function renderContentEditorPane(main, item) {
               <button type="button" class="btn btn-ghost btn-sm content-hero-replace">${hasImage ? "Replace" : "Add image"}</button>
               <button type="button" class="btn btn-ghost btn-sm content-hero-remove"${hasImage ? "" : " hidden"}>Remove</button>
             </div>
-            <input type="file" accept="image/*" class="featured-image-input" hidden />
+            <input type="file" accept="image/jpeg,image/png,image/webp" class="featured-image-input" hidden />
             <span class="featured-image-status content-hero-status"></span>
             <input type="hidden" name="featured_image_url" value="${escapeHtml(item.featured_image_url || "")}" />
           </div>
@@ -8010,6 +8012,7 @@ function renderContentEditorPane(main, item) {
   const imageStatus = form.querySelector(".featured-image-status");
   const imageUrlField = form.querySelector('input[name="featured_image_url"]');
   const showImage = (url) => {
+    imageStatus.classList.remove("content-hero-legacy");
     imageUrlField.value = url;
     heroImg.hidden = !url;
     heroEmpty.hidden = Boolean(url);
@@ -8018,7 +8021,12 @@ function renderContentEditorPane(main, item) {
     removeBtn.hidden = !url;
     markDirty();
   };
-  heroImg.addEventListener("error", () => { if (heroImg.getAttribute("src")) { heroImg.hidden = true; heroEmpty.hidden = false; imageStatus.textContent = "The image could not be loaded."; } });
+  // a cover saved as a link (before uploads were required) is never downloaded by the server, so say so where the image is shown
+  if (contentImageIsLegacyLink(item.featured_image_url)) {
+    imageStatus.textContent = "This image is a link, not an Office upload, so it is not sent to the website (any cover already there is kept). Use Replace to upload it.";
+    imageStatus.classList.add("content-hero-legacy");
+  }
+  heroImg.addEventListener("error", () => { if (heroImg.getAttribute("src")) { heroImg.hidden = true; heroEmpty.hidden = false; imageStatus.textContent = imageStatus.classList.contains("content-hero-legacy") ? `The linked image could not be loaded. ${imageStatus.textContent}` : "The image could not be loaded."; } });
   replaceBtn.addEventListener("click", () => imageInput.click());
   removeBtn.addEventListener("click", () => { showImage(""); imageStatus.textContent = "Removed — Save to keep this change."; });
   imageInput.addEventListener("change", async () => {
@@ -8045,6 +8053,12 @@ function renderContentEditorPane(main, item) {
     toggle.setAttribute("aria-expanded", String(open));
     toggle.textContent = open ? "Hide details" : "Details";
   });
+}
+
+// Covers reach the website only as Office uploads or images already in Sanity (content-images.js on the server); anything else is a legacy link.
+function contentImageIsLegacyLink(url) {
+  const value = String(url || "");
+  return Boolean(value) && !value.startsWith("/api/lead-agents/admin/storage/content_featured_image_") && !value.startsWith("https://cdn.sanity.io/images/");
 }
 
 function contentShowMode(mode) {
@@ -8118,12 +8132,17 @@ async function contentSave() {
 
 // ---- Posts workspace: workflow actions ---------------------------------------------------------------------------------------------------------
 
+// The server's separation of duties: the writer of a post cannot approve it or request changes on it, unless they also hold content.publish.
+function contentIsOwnReviewBlocked(item) {
+  return normalizeEmailForCompare(item.created_by) === normalizeEmailForCompare(currentEmail()) && !hasPermission("content.publish");
+}
+
 // The same transitions and permission checks as before (and as the server enforces): one status-aware primary action, the rest in "⋯".
 function contentWorkflowActions(item) {
   const actions = [];
   const status = item.workflow_status;
   if (status === "draft" && hasPermission("content.write")) actions.push({ key: "submit-review", label: "Submit for review", primary: true, run: () => contentRunAction("submit-review") });
-  if (status === "in_review" && hasPermission("content.review")) {
+  if (status === "in_review" && hasPermission("content.review") && !contentIsOwnReviewBlocked(item)) {
     // the version on screen; the server refuses the approval if the post changed since it was loaded
     actions.push({ key: "approve", label: "Approve", primary: true, run: () => contentRunAction("approve", item.content_fingerprint ? { content_fingerprint: item.content_fingerprint } : {}) });
     actions.push({ key: "request-changes", label: "Request changes…", run: () => openDialog("Request Changes", [{ name: "note", label: "Note for the writer", type: "textarea" }], (data) => contentRunAction("request-changes", data)) });
@@ -8166,6 +8185,9 @@ function contentRenderActions() {
       { label: "View live article", hidden: !live, onClick: () => window.open(item.sanity_live_url, "_blank", "noopener") },
     ],
   }));
+  if (item.workflow_status === "in_review" && hasPermission("content.review") && contentIsOwnReviewBlocked(item)) {
+    host.appendChild(el(`<span class="content-actionbar-note content-own-review-note">Another reviewer must approve your post</span>`));
+  }
   if (item.workflow_status === "published") {
     host.appendChild(el(`<span class="content-actionbar-note" title="Republishing an edited post needs a reviewed new revision, which is planned.">Edits are not republished yet</span>`));
   }
