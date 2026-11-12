@@ -231,6 +231,9 @@ async function apiUpdateContent(id, patch) {
 async function apiContentAction(id, action, body) {
   return api(`/api/lead-agents/admin/content/${encodeURIComponent(id)}/${action}`, { method: "POST", body: body || {} });
 }
+async function apiContentSanityStatus(id) {
+  return api(`/api/lead-agents/admin/content/${encodeURIComponent(id)}/sanity-status`);
+}
 async function apiContentHistory(id) {
   return api(`/api/lead-agents/admin/content/${encodeURIComponent(id)}/history`);
 }
@@ -7734,8 +7737,8 @@ function renderContentWorkspace(outlet) {
           <h2>Posts <span id="contentCount" class="rel-faint"></span><button type="button" class="rel-table-link" id="contentTableLink" title="Open the table view">Table view</button></h2>
           <input type="search" id="contentSearch" class="rel-search" placeholder="Search posts, authors, categories or tags…" aria-label="Search posts" />
           <div class="rel-facets">
-            <select id="contentStatusFilter" class="rel-select" aria-label="Filter by status">${CONTENT_STATUS_FILTERS.map(([value, label]) => `<option value="${value}">${escapeHtml(label)}</option>`).join("")}</select>
-            <select id="contentTimeFilter" class="rel-select" aria-label="Filter by last update">${CONTENT_TIME_FILTERS.map(([value, label]) => `<option value="${value}">${escapeHtml(label)}</option>`).join("")}</select>
+            <select id="contentStatusFilter" class="rel-select content-select" aria-label="Filter by status">${CONTENT_STATUS_FILTERS.map(([value, label]) => `<option value="${value}">${escapeHtml(label)}</option>`).join("")}</select>
+            <select id="contentTimeFilter" class="rel-select content-select" aria-label="Filter by last update">${CONTENT_TIME_FILTERS.map(([value, label]) => `<option value="${value}">${escapeHtml(label)}</option>`).join("")}</select>
           </div>
         </div>
         <div class="rel-list content-list" id="contentList" role="list"></div>
@@ -7869,7 +7872,9 @@ function contentShowItem(item, { notice } = {}) {
   setSelectedObject("content", item.id, item.title, contentOyiContext(item));
   const page = contentState.page;
   if (!page) return;
-  page.querySelector(".content-head-title").textContent = item.title || "Untitled";
+  const headTitle = page.querySelector(".content-head-title");
+  headTitle.textContent = item.title || "Untitled";
+  headTitle.title = item.title || "";
   page.querySelector(".content-head-badge").innerHTML = badge(titleCase(item.workflow_status), CONTENT_STATUS_TONE[item.workflow_status] || "default");
   // Office records who created a post, not who last edited it, so the header names the creator and only the time of the last change.
   const sub = [];
@@ -8071,6 +8076,9 @@ function contentShowMode(mode) {
     btn.setAttribute("aria-selected", String(active));
   });
   page.querySelectorAll("[data-panel]").forEach((panel) => { panel.hidden = panel.dataset.panel !== mode; });
+  // the action bar follows the view (Save and editing notes only while editing); a transient notice about the last action is cleared
+  page.querySelectorAll(".content-notice:not([data-notice-key])").forEach((node) => node.remove());
+  contentRenderActions();
   if (mode === "preview") {
     // the preview shows what is in the editor right now, saved or not (as before)
     const formData = Object.fromEntries(new FormData(contentState.editor.form).entries());
@@ -8162,12 +8170,22 @@ function contentRenderActions() {
   if (!host || !item) return;
   host.innerHTML = "";
   const { dirty, busy } = contentState;
+  const editing = (contentState.mode || "edit") === "edit";
   const actions = contentWorkflowActions(item);
   const primary = actions.find((a) => a.primary);
-  const saveBtn = el(`<button type="button" class="btn btn-sm ${dirty || !primary ? "btn-primary" : "btn-ghost"} content-save-btn">Save</button>`);
-  saveBtn.disabled = busy || !dirty;
-  saveBtn.addEventListener("click", () => contentSave());
-  host.appendChild(saveBtn);
+  // Preview and History are views of the post: no Save there; unsaved edits are pointed back to the editor instead
+  contentState.page?.querySelector(".content-save-state")?.toggleAttribute("hidden", !editing);
+  if (editing) {
+    const saveBtn = el(`<button type="button" class="btn btn-sm ${dirty || !primary ? "btn-primary" : "btn-ghost"} content-save-btn">Save</button>`);
+    saveBtn.disabled = busy || !dirty;
+    saveBtn.addEventListener("click", () => contentSave());
+    host.appendChild(saveBtn);
+  } else if (dirty) {
+    host.appendChild(el(`<span class="content-actionbar-note content-unsaved-note">Unsaved changes</span>`));
+    const back = el(`<button type="button" class="btn btn-sm btn-primary content-back-to-edit">Back to Edit</button>`);
+    back.addEventListener("click", () => contentShowMode("edit"));
+    host.appendChild(back);
+  }
   if (primary) {
     const btn = el(`<button type="button" class="btn btn-sm ${dirty ? "btn-ghost" : "btn-primary"} content-primary-action" data-action="${primary.key}">${escapeHtml(primary.label)}</button>`);
     btn.disabled = busy || dirty;
@@ -8180,15 +8198,17 @@ function contentRenderActions() {
     ariaLabel: "More actions for this post",
     items: [
       ...actions.filter((a) => !a.primary).map((a) => ({ label: a.label, danger: a.danger, onClick: () => (contentState.dirty ? contentNotice("warn", "Save your changes before changing this post's workflow.") : a.run()) })),
-      { label: "Preview", onClick: () => contentShowMode("preview") },
-      { label: "History", onClick: () => contentShowMode("history") },
+      { label: "Edit", hidden: editing, onClick: () => contentShowMode("edit") },
+      { label: "Preview", hidden: contentState.mode === "preview", onClick: () => contentShowMode("preview") },
+      { label: "History", hidden: contentState.mode === "history", onClick: () => contentShowMode("history") },
       { label: "View live article", hidden: !live, onClick: () => window.open(item.sanity_live_url, "_blank", "noopener") },
     ],
   }));
   if (item.workflow_status === "in_review" && hasPermission("content.review") && contentIsOwnReviewBlocked(item)) {
+    // workflow information, so it stays in every view
     host.appendChild(el(`<span class="content-actionbar-note content-own-review-note">Another reviewer must approve your post</span>`));
   }
-  if (item.workflow_status === "published") {
+  if (item.workflow_status === "published" && editing) {
     host.appendChild(el(`<span class="content-actionbar-note" title="Republishing an edited post needs a reviewed new revision, which is planned.">Edits are not republished yet</span>`));
   }
 }
@@ -8291,12 +8311,86 @@ function openContentScheduleDialog(item) {
 
 // ---- Posts workspace: details pane -------------------------------------------------------------------------------------------------------------
 
+// The warning the image method before 12 Nov 2026 recorded when it could not fetch a cover; that method is gone, so this note is historical.
+const CONTENT_RETIRED_IMAGE_WARNING = "Featured image could not be uploaded to Sanity";
+
+// Sanity notes under "Publish to": the warnings stored at the last sync, labelled with when and at which step they were recorded (records from before
+// 12 Nov 2026 carry no date), plus an on-demand, read-only check of what Sanity holds now -- so a note from an earlier sync is never shown as current.
+function contentSanityNotes(item) {
+  const meta = item.metadata || {};
+  const warnings = Array.isArray(meta.sanity_warnings) ? meta.sanity_warnings : [];
+  const box = el(`<div class="content-sanity-notes"></div>`);
+  if (warnings.length) {
+    let when = meta.sanity_warnings_at
+      ? `Recorded ${meta.sanity_warnings_context === "publish" ? "when this version was published" : "at the last save"}, ${fmtDateTime(meta.sanity_warnings_at)}`
+      : "Recorded at an earlier Sanity sync (before 12 Nov 2026; date not kept)";
+    if (item.workflow_status === "published" && meta.sanity_warnings_context !== "publish") when += ", before this version was published";
+    const list = el(`<div class="content-sanity-recorded"><div class="content-sanity-when">${escapeHtml(when)}</div></div>`);
+    warnings.forEach((w) => {
+      const retired = String(w).startsWith(CONTENT_RETIRED_IMAGE_WARNING);
+      list.appendChild(el(`<div class="content-warning${retired ? " content-warning-retired" : ""}">${escapeHtml(w)}${retired ? `<span class="content-note-tag">Earlier image method, replaced 12 Nov 2026</span>` : ""}</div>`));
+    });
+    box.appendChild(list);
+  }
+  if (item.sanity_document_id || item.workflow_status === "published") {
+    const result = el(`<div class="content-sanity-current" aria-live="polite"></div>`);
+    const check = el(`<button type="button" class="btn btn-ghost btn-sm content-sanity-check">Check Sanity now</button>`);
+    check.addEventListener("click", async () => {
+      check.disabled = true;
+      result.textContent = "Checking Sanity…";
+      try {
+        const { status } = await apiContentSanityStatus(item.id);
+        if (contentState.item?.id !== item.id) return;
+        result.innerHTML = "";
+        result.appendChild(contentSanityStatusList(item, status));
+      } catch (err) {
+        result.textContent = err.message || "Sanity could not be checked.";
+      } finally {
+        check.disabled = false;
+      }
+    });
+    box.appendChild(check);
+    box.appendChild(result);
+  }
+  return box;
+}
+
+// What Sanity holds now, as plain findings. Only the ones that need action are amber.
+function contentSanityStatusList(item, status) {
+  const list = el(`<div class="content-sanity-findings"></div>`);
+  const add = (ok, text) => list.appendChild(el(`<div class="content-finding ${ok ? "content-finding-ok" : "content-finding-warn"}">${escapeHtml(text)}</div>`));
+  if (!status.configured) {
+    add(false, "Sanity is not configured for Office.");
+    return list;
+  }
+  const live = item.workflow_status === "published";
+  const doc = live ? status.published : status.draft;
+  const docName = live ? "live article" : "Sanity draft";
+  if (live) add(status.published.exists, status.published.exists ? "The live article is in Sanity." : "No live article was found in Sanity.");
+  else add(true, status.draft.exists ? "A Sanity draft exists for this post." : "There is no Sanity draft for this post yet.");
+  if (doc.exists) {
+    if (doc.has_cover) add(true, `The ${docName} has a cover image.`);
+    else if (status.cover_source === "office") add(false, `The ${docName} has no cover image. The cover uploaded in Office will be sent the next time this post is ${live ? "published" : "saved"}${live ? " (republishing needs approval)" : ""}.`);
+    else if (status.cover_source === "unsupported") add(false, `The ${docName} has no cover image, and the image here is a link Office does not send. Upload it in Office.`);
+    else if (status.cover_source === "sanity_asset") add(false, `The ${docName} has no cover image yet; the Sanity image set here will be referenced the next time it is ${live ? "published" : "saved"}.`);
+    else add(true, `The ${docName} has no cover image (none is set in Office).`);
+  }
+  [["author", "Author"], ["category", "Category"]].forEach(([key, label]) => {
+    const ref = status[key];
+    if (!ref) return;
+    if (!ref.found) add(false, `${label} "${ref.name}" does not exist in Sanity. Create it in Sanity Studio, or clear the ${label} field.`);
+    else if (doc.exists && !doc[`has_${key}`]) add(false, `${label} "${ref.name}" exists in Sanity, but the ${docName} does not reference it yet; it is added the next time this post is ${live ? "published" : "saved"}.`);
+    else add(true, `${label} "${ref.name}" is linked in Sanity.`);
+  });
+  list.appendChild(el(`<div class="content-sanity-when">Checked ${escapeHtml(fmtDateTime(status.checked_at))}. Read-only: nothing was changed.</div>`));
+  return list;
+}
+
 function renderContentDetailsPane(item) {
   const host = contentState.page?.querySelector("#contentDetails");
   if (!host) return;
   host.innerHTML = "";
   const site = contentWebsiteState(item);
-  const warnings = Array.isArray(item.metadata?.sanity_warnings) ? item.metadata.sanity_warnings : [];
   const publishTo = el(`
     <details class="rel-section content-section" open>
       <summary>Publish to</summary>
@@ -8307,7 +8401,7 @@ function renderContentDetailsPane(item) {
           <span class="content-dest-state">${escapeHtml(site.label)}</span>
         </div>
         ${site.tone === "live" && item.sanity_live_url ? `<a class="content-live-link" href="${escapeHtml(item.sanity_live_url)}" target="_blank" rel="noopener">Open live article →</a>` : ""}
-        ${warnings.map((w) => `<div class="content-warning">${escapeHtml(w)}</div>`).join("")}
+        <div class="content-sanity-slot"></div>
         ${CONTENT_SOCIAL_DESTINATIONS.map((d) => `
           <div class="content-dest content-dest-disabled" aria-disabled="true" data-destination="${d.key}">
             <span class="rel-src sm ${d.cls}"><b>${escapeHtml(d.glyph)}</b></span>
@@ -8361,6 +8455,7 @@ function renderContentDetailsPane(item) {
     if (toggle) { toggle.setAttribute("aria-expanded", "false"); toggle.textContent = "Details"; }
   });
   host.appendChild(close);
+  publishTo.querySelector(".content-sanity-slot").replaceWith(contentSanityNotes(item));
   [publishTo, workflow, performance, comments, activity].forEach((node) => host.appendChild(node));
   const activityBody = activity.querySelector(".content-activity");
   contentHistory(item).then((history) => {
@@ -9032,7 +9127,7 @@ function wireBodyToolbar(toolbar, textarea, { onFullscreen } = {}) {
     textarea.focus();
     changed();
   };
-  const style = el(`<select class="content-style-select" aria-label="Paragraph style">${CONTENT_PARAGRAPH_STYLES.map(([value, label]) => `<option value="${value}">${label}</option>`).join("")}</select>`);
+  const style = el(`<select class="content-style-select content-select" aria-label="Paragraph style">${CONTENT_PARAGRAPH_STYLES.map(([value, label]) => `<option value="${value}">${label}</option>`).join("")}</select>`);
   const syncStyle = () => {
     const { start, end } = lineBounds();
     const match = textarea.value.slice(start, end).match(/^(#{1,3})\s/);

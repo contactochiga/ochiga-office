@@ -57,6 +57,7 @@ function createFakeSanity() {
   const published = [];
   const uploads = [];
   const hooks = { failGetDocument: false };
+  const counters = { writes: 0 };
   let rev = 0;
   const client = {
     fetch: async () => null,
@@ -68,6 +69,7 @@ function createFakeSanity() {
       },
     },
     async createOrReplace(doc) {
+      counters.writes += 1;
       const stored = { ...doc, _rev: `rev-${++rev}` };
       docs.set(doc._id, stored);
       if (!String(doc._id).startsWith("drafts.")) published.push(stored);
@@ -83,7 +85,7 @@ function createFakeSanity() {
       return docs.get(doc._id);
     },
   };
-  return { client, docs, published, uploads, hooks };
+  return { client, docs, published, uploads, hooks, counters };
 }
 
 const png = (w = 40, h = 20, color = { r: 200, g: 40, b: 30 }) => sharp({ create: { width: w, height: h, channels: 3, background: color } }).png().toBuffer();
@@ -290,6 +292,26 @@ async function main() {
     const sanityCdnUrl = "https://cdn.sanity.io/images/test-project/test/0123456789abcdef0123456789abcdef01234567-1200x630.jpg";
     const cdnPost = await request(writer, "POST", "/content", { title: "Sanity CDN cover", body: "Body", featured_image_url: sanityCdnUrl });
     ok(cdnPost.status === 201 && coverRef(draftOf(cdnPost.data.item.id)) === "image-0123456789abcdef0123456789abcdef01234567-1200x630-jpg" && cdnPost.data.sanity.warnings.length === 0, "legacy: an image already in this Sanity project is referenced by asset id, without downloading it");
+
+    // --- stored warnings say when and at which step they were recorded; a read-only check reports what Sanity holds now ---
+    const legacyItem = await store.getContentItemById(legacyCovered.id);
+    ok(legacyItem.metadata.sanity_warnings_context === "publish" && !Number.isNaN(Date.parse(legacyItem.metadata.sanity_warnings_at)) && legacyItem.metadata.sanity_warnings.some((w) => w.startsWith("Featured image not sent")), "warnings: publishing stores the warnings that applied to the live version, with the time and step");
+    ok((await store.getContentItemById(bareEdit.data.item.id)).metadata.sanity_warnings_context === "draft_sync", "warnings: a save stores its warnings as a draft sync");
+    const anonStatus = await request(null, "GET", `/content/${legacyCovered.id}/sanity-status`);
+    ok(anonStatus.status === 401 || anonStatus.status === 403, "sanity status: not available without a session");
+    const writesBefore = sanity.counters.writes;
+    const uploadsBeforeStatus = sanity.uploads.length;
+    const statusRes = await request(writer, "GET", `/content/${legacyCovered.id}/sanity-status`);
+    const st = statusRes.data && statusRes.data.status;
+    ok(statusRes.status === 200 && st.configured && st.published.exists && st.published.has_cover && st.cover_source === "unsupported", "sanity status: reports the live article and its kept cover, and that the Office image is a legacy link");
+    ok(sanity.counters.writes === writesBefore && sanity.uploads.length === uploadsBeforeStatus, "sanity status: read-only (no Sanity write or upload)");
+    const withAuthor = (await request(writer, "POST", "/content", { title: "Has author", body: "Body", author: "Nobody In Sanity", category: "Nowhere" })).data.item;
+    const authorStatus = (await request(writer, "GET", `/content/${withAuthor.id}/sanity-status`)).data.status;
+    ok(authorStatus.author.found === false && authorStatus.category.found === false && authorStatus.draft.exists && !authorStatus.published.exists, "sanity status: an author or category missing from Sanity is reported as current");
+    sanity.hooks.failGetDocument = true;
+    const statusFail = await request(writer, "GET", `/content/${withAuthor.id}/sanity-status`);
+    sanity.hooks.failGetDocument = false;
+    ok(statusFail.status === 502 && statusFail.data.reason === "sanity_read_failed", "sanity status: a Sanity read error is reported as such, not as 'missing'");
 
     // --- a Sanity read error never drops the cover ---
     sanity.hooks.failGetDocument = true;
