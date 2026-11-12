@@ -123,9 +123,10 @@ async function findReference(client, type, fieldName, value) {
 }
 
 // The cover already on the Sanity document (draft first, then published), so an image that cannot be sent never removes what the site shows.
+// A read error is thrown (the save then fails and nothing is published), never taken as "no cover".
 async function existingCoverImage(client, documentIds) {
   for (const id of documentIds) {
-    const doc = await client.getDocument(id).catch(() => null);
+    const doc = await client.getDocument(id);
     if (doc && doc.coverImage && doc.coverImage.asset) return doc.coverImage;
   }
   return null;
@@ -149,12 +150,19 @@ async function resolveCoverImage(client, imageUrl, kind, { readStoredImage, docu
     if (typeof readStoredImage !== "function") {
       problem = "Office storage is not available to this sync";
     } else {
+      let file = null;
       try {
-        const file = await readStoredImage(source.filename);
-        const asset = await client.assets.upload("image", file.buffer, { filename: file.filename, contentType: file.mime_type });
-        return { image: { _type: "image", asset: { _type: "reference", _ref: asset._id } } };
+        file = await readStoredImage(source.filename);
       } catch (err) {
-        problem = COVER_PROBLEMS[err && err.code] || "Sanity did not accept the upload";
+        problem = COVER_PROBLEMS[err && err.code] || "Office storage could not be read";
+      }
+      if (file) {
+        try {
+          const asset = await client.assets.upload("image", file.buffer, { filename: file.filename, contentType: file.mime_type });
+          return { image: { _type: "image", asset: { _type: "reference", _ref: asset._id } } };
+        } catch {
+          problem = "Sanity did not accept the upload";
+        }
       }
     }
   } else {

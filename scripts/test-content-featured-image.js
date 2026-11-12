@@ -30,6 +30,21 @@ const ok = (cond, name) => { assert.ok(cond, name); checks += 1; console.log("PA
 const realFetch = globalThis.fetch;
 const outbound = [];
 let ownOrigin = "";
+// Node's http/https clients too (axios and most libraries use them): anything not addressed to this test's own server is recorded and refused.
+const http = require("node:http");
+const https = require("node:https");
+for (const mod of [http, https]) {
+  for (const name of ["request", "get"]) {
+    const original = mod[name];
+    mod[name] = function guarded(...args) {
+      const first = args[0];
+      const target = typeof first === "string" || first instanceof URL ? String(first) : `${first && (first.protocol || "")}//${first && (first.hostname || first.host || "")}:${first && first.port || ""}${first && first.path || ""}`;
+      if (ownOrigin && target.startsWith(ownOrigin)) return original.apply(this, args);
+      outbound.push(target);
+      throw new Error(`test: outbound request blocked (${target})`);
+    };
+  }
+}
 globalThis.fetch = async (input, init) => {
   const url = String(input && input.url ? input.url : input);
   if (ownOrigin && url.startsWith(ownOrigin)) return realFetch(input, init);
@@ -41,6 +56,7 @@ function createFakeSanity() {
   const docs = new Map();
   const published = [];
   const uploads = [];
+  const hooks = { failGetDocument: false };
   let rev = 0;
   const client = {
     fetch: async () => null,
@@ -57,14 +73,17 @@ function createFakeSanity() {
       if (!String(doc._id).startsWith("drafts.")) published.push(stored);
       return stored;
     },
-    async getDocument(id) { return docs.has(id) ? { ...docs.get(id) } : undefined; },
+    async getDocument(id) {
+      if (hooks.failGetDocument) throw new Error("sanity read failed");
+      return docs.has(id) ? { ...docs.get(id) } : undefined;
+    },
     async delete(id) { docs.delete(id); },
     async createIfNotExists(doc) {
       if (!docs.has(doc._id)) docs.set(doc._id, { ...doc, _rev: `rev-${++rev}` });
       return docs.get(doc._id);
     },
   };
-  return { client, docs, published, uploads };
+  return { client, docs, published, uploads, hooks };
 }
 
 const png = (w = 40, h = 20, color = { r: 200, g: 40, b: 30 }) => sharp({ create: { width: w, height: h, channels: 3, background: color } }).png().toBuffer();
@@ -102,6 +121,7 @@ async function unitChecks() {
   ]) ok(c(url).kind === "unsupported", `classify: refused URL (${label})`);
   const sanityCdn = c("https://cdn.sanity.io/images/test-project/test/0123456789abcdef0123456789abcdef01234567-1200x630.jpg?w=800");
   ok(sanityCdn.kind === "sanity_asset" && sanityCdn.assetId === "image-0123456789abcdef0123456789abcdef01234567-1200x630-jpg", "classify: this project's Sanity image maps to its asset id");
+  ok(c("https://cdn.sanity.io/images/test-project/test/0123456789ABCDEF0123456789abcdef01234567-1200x630.JPG").kind === "unsupported", "classify: a mis-cased Sanity URL is refused (it would reference an asset that does not exist)");
 
   const good = await png();
   const info = await images.validateCoverImage(good);
@@ -203,6 +223,8 @@ async function main() {
     const noData = await request(writer, "POST", "/storage", { purpose: "content_featured_image", data_url: "not a data url" });
     ok(noData.status === 400, "upload: a missing image is refused (400)");
     ok(JSON.stringify(await storedFiles()) === JSON.stringify(before), "upload: nothing is stored for a refused file");
+    const recased = await upload(publisher, Buffer.from("<html><body>not an image</body></html>".padEnd(80, " ")), "image/png", "Content Featured Image");
+    ok(recased.status === 415 && JSON.stringify(await storedFiles()) === JSON.stringify(before), "upload: a re-cased cover purpose gets the same validation (refused, nothing stored)");
     const devUp = await upload(writer, cover, "image/png", "development_cover_image");
     ok(devUp.status === 403, "upload: development covers still need development.manage");
 
@@ -268,6 +290,12 @@ async function main() {
     const sanityCdnUrl = "https://cdn.sanity.io/images/test-project/test/0123456789abcdef0123456789abcdef01234567-1200x630.jpg";
     const cdnPost = await request(writer, "POST", "/content", { title: "Sanity CDN cover", body: "Body", featured_image_url: sanityCdnUrl });
     ok(cdnPost.status === 201 && coverRef(draftOf(cdnPost.data.item.id)) === "image-0123456789abcdef0123456789abcdef01234567-1200x630-jpg" && cdnPost.data.sanity.warnings.length === 0, "legacy: an image already in this Sanity project is referenced by asset id, without downloading it");
+
+    // --- a Sanity read error never drops the cover ---
+    sanity.hooks.failGetDocument = true;
+    const readFail = await request(writer, "PATCH", `/content/${legacyCovered.id}`, { title: "Legacy with Sanity cover (edited again)", featured_image_url: legacyCovered.featured_image_url });
+    sanity.hooks.failGetDocument = false;
+    ok(readFail.status === 200 && readFail.data.sanity.ok === false && coverRef(publishedOf(legacyCovered.id)) === "image-existing-live-cover-800x400-jpg" && !draftOf(legacyCovered.id), "sanity read error: the save stays local and no coverless draft is written");
 
     // --- an uploaded file that is gone from storage ---
     const missingPost = (await request(writer, "POST", "/content", { title: "Cover deleted from storage", body: "Body", featured_image_url: up2.data.file.url })).data.item;

@@ -56,9 +56,10 @@ function classifyCoverImageUrl(value, kind, { sanityProjectId, sanityDataset } =
     if (match && match[1] === purpose) return { kind: "office", filename };
     return { kind: "unsupported", detail: "office_file_not_a_cover" };
   }
-  const sanity = url.match(/^https:\/\/cdn\.sanity\.io\/images\/([a-z0-9-]+)\/([a-z0-9_-]+)\/([a-f0-9]{40}-\d+x\d+)\.(jpg|png|webp|gif|svg)(\?.*)?$/i);
+  // lowercase only: Sanity asset ids are lowercase, and a mis-cased id would reference an asset that does not exist
+  const sanity = url.match(/^https:\/\/cdn\.sanity\.io\/images\/([a-z0-9-]+)\/([a-z0-9_-]+)\/([a-f0-9]{40}-\d+x\d+)\.(jpg|png|webp|gif|svg)(\?.*)?$/);
   if (sanity && sanityProjectId && sanity[1] === sanityProjectId && sanity[2] === sanityDataset) {
-    return { kind: "sanity_asset", assetId: `image-${sanity[3]}-${sanity[4].toLowerCase()}` };
+    return { kind: "sanity_asset", assetId: `image-${sanity[3]}-${sanity[4]}` };
   }
   let host = "";
   try {

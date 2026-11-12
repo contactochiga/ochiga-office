@@ -7150,7 +7150,9 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           content_featured_image: "content.write",
           development_cover_image: "development.manage",
         };
-        authorizePermission(authContext, PURPOSE_PERMISSION[body.purpose] || "manage_storage");
+        // the purpose as storage will record it (storage.js sanitizePurpose), so a re-cased or re-spaced purpose gets the same checks
+        const purposeKey = String(body.purpose || "document").toLowerCase().replace(/[^a-z0-9_-]+/g, "_");
+        authorizePermission(authContext, PURPOSE_PERMISSION[purposeKey] || "manage_storage");
         // product gallery images are created only by the catalogue media route (content validation, processing, catalogue permission)
         if (String(body.purpose || "").toLowerCase() === "product_image" || String(body.purpose || "").toLowerCase() === "catalogue_import") {
           json(res, 403, { error: "forbidden", message: "Product media and import files are uploaded from Products." }, { "x-request-id": ctx.requestId });
@@ -7158,7 +7160,7 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
         }
         // Cover images go to the public site, so they are checked from their content (JPEG/PNG/WebP, 10 MB) and stored under the detected type.
         let storedFile;
-        if (Object.values(contentImages.COVER_IMAGE_PURPOSES).includes(body.purpose)) {
+        if (Object.values(contentImages.COVER_IMAGE_PURPOSES).includes(purposeKey)) {
           let parsed = null;
           let image;
           try {
