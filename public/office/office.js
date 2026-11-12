@@ -231,6 +231,9 @@ async function apiUpdateContent(id, patch) {
 async function apiContentAction(id, action, body) {
   return api(`/api/lead-agents/admin/content/${encodeURIComponent(id)}/${action}`, { method: "POST", body: body || {} });
 }
+async function apiContentHistory(id) {
+  return api(`/api/lead-agents/admin/content/${encodeURIComponent(id)}/history`);
+}
 async function apiListDemos() {
   return api("/api/lead-agents/admin/demos");
 }
@@ -1361,6 +1364,8 @@ function navigate(path) {
   else window.location.hash = target;
 }
 window.addEventListener("hashchange", () => {
+  // leaving a Content post with unsaved changes asks first; "Cancel" keeps the post open
+  if (contentNavigationBlocked()) return;
   resetOyiTransientModesForNavigation();
   state.segments = currentSegmentsFromHash();
   renderRouteSafely();
@@ -1432,8 +1437,11 @@ async function renderRoute() {
   } else if (topKey === "documents") {
     await renderDocumentsRoute(outlet, rest, token);
   } else if (topKey === "content") {
-    outlet.innerHTML = "";
-    outlet.appendChild(skeletonPanel(4));
+    // the Posts workspace stays mounted while switching posts (renderContentRoute changes the selection in place)
+    if (!contentWorkspaceMounted(outlet)) {
+      outlet.innerHTML = "";
+      outlet.appendChild(skeletonPanel(4));
+    }
     await renderContentRoute(outlet, rest, token);
   } else if (topKey === "reports") {
     // Reports moved into the Documents workspace as a tab (reusing the
@@ -7515,60 +7523,999 @@ function documentFileIcon() {
 // ---------------------------------------------------------------
 const CONTENT_STATUS_TONE = { draft: "default", in_review: "amber", approved: "amber", scheduled: "amber", published: "green", unpublished: "red" };
 
-async function renderContentRoute(outlet, rest, token) {
-  const contentId = rest[0];
-  if (contentId) await renderContentEditor(outlet, contentId, token);
-  else await renderContentList(outlet, token);
+// ---------------------------------------------------------------
+// Content Workspace (Content Modernization, Slice 2). The same three-pane workspace as Messages and the CRM Relationship Workspace -- post
+// list · single-column editor · contextual details -- built from this file's own primitives (KPIGroup, homePanel, buildOverflowMenu,
+// openDialog, badge). Its layout classes are its own (.content-*) because Messages' live refresh and the CRM workspace's selection code
+// query their pane classes document-wide; the purely visual rel-* classes (list head, search, facets, sections, facts) are reused.
+//
+// Only real Office data is shown. Website publishing through the existing Sanity integration is the one working destination; Instagram,
+// Facebook and LinkedIn are listed as not connected, and no views/comments/reactions/shares are displayed until an integration supplies
+// them. The approval workflow, permissions and Sanity publishing are unchanged: every action goes through the same content routes.
+// ---------------------------------------------------------------
+const CONTENT_TABS = [
+  { key: "overview", label: "Overview", route: "content/overview" },
+  { key: "posts", label: "Posts", route: "content" },
+  { key: "calendar", label: "Calendar", route: "content/calendar" },
+  { key: "comments", label: "Comments", soon: "Comments need the website, Facebook and Instagram integrations." },
+  { key: "analytics", label: "Analytics", soon: "Analytics need a connected analytics source." },
+];
+const CONTENT_STATUS_FILTERS = [["", "All status"], ["draft", "Draft"], ["in_review", "In review"], ["approved", "Approved"], ["scheduled", "Scheduled"], ["published", "Published"], ["unpublished", "Unpublished"]];
+const CONTENT_TIME_FILTERS = [["", "All time", 0], ["7d", "Updated in the last 7 days", 7], ["30d", "Updated in the last 30 days", 30], ["90d", "Updated in the last 90 days", 90]];
+const CONTENT_SOCIAL_DESTINATIONS = [
+  { key: "instagram", label: "Instagram", cls: "rel-src-ig", glyph: "IG" },
+  { key: "facebook", label: "Facebook Page", cls: "rel-src-fb", glyph: "f" },
+  { key: "linkedin", label: "LinkedIn", cls: "rel-src-li", glyph: "in" },
+];
+const CONTENT_WITHDRAWAL_REASON = {
+  edited_after_approval: "it was edited after it was approved",
+  content_changed_since_approval: "its content no longer matched the approved version",
+  no_approval_record: "it had no recorded approval for its current version",
+};
+const CONTENT_WITHDRAWAL_ACTION = { edit: "when it was saved", publish: "when it was published", schedule: "when it was scheduled", scheduled_publish: "at its scheduled publish time" };
+const CONTENT_HISTORY_LABELS = {
+  content_created: "Created",
+  content_edited: "Edited",
+  content_submitted_for_review: "Submitted for review",
+  content_changes_requested: "Changes requested",
+  content_approved: "Approved",
+  content_approval_withdrawn: "Approval withdrawn",
+  content_scheduled: "Scheduled",
+  content_published: "Published",
+  content_unpublished: "Unpublished",
+};
+const CONTENT_GLOBE_SVG = `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><circle cx="8" cy="8" r="6"/><path d="M2 8h12M8 2c2.2 2.2 2.2 9.8 0 12M8 2C5.8 4.2 5.8 11.8 8 14"/></svg>`;
+const CONTENT_DOC_SVG = `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" aria-hidden="true"><path d="M4 2h5l3 3v9H4z"/><path d="M9 2v3h3M6 8h4M6 10.5h4"/></svg>`;
+
+const contentState = { items: [], q: "", status: "", time: "", activeId: null, explicit: false, item: null, mode: "edit", dirty: false, busy: false, hash: "", page: null, editor: null, historyCache: new Map(), calendarMonth: null };
+
+// ---- shared helpers --------------------------------------------------------------------------------------------------------------------------
+
+function contentWithdrawal(item) {
+  const record = item && item.metadata ? item.metadata.last_approval_withdrawal : null;
+  return record && ["draft", "in_review"].includes(item.workflow_status) ? record : null;
+}
+function contentWithdrawalSentence(record) {
+  const why = CONTENT_WITHDRAWAL_REASON[record.reason] || "it no longer matched the approved version";
+  const when = CONTENT_WITHDRAWAL_ACTION[record.action] || "";
+  const by = record.at ? ` (${fmtRelative(record.at)}${record.actor ? `, ${record.actor}` : ""})` : "";
+  return `Approval withdrawn${when ? ` ${when}` : ""}${by}: ${why}. A reviewer must approve the current version before it can be published.`;
+}
+// When this post went live. Recorded from Slice 2 on (metadata.published_at); a scheduler publish also has its scheduled time. Older posts
+// have no recorded date -- updated_at moves on every edit, so it is never used as a publish date.
+function contentPublishedAt(item) {
+  if (!item) return null;
+  if (item.metadata && item.metadata.published_at) return item.metadata.published_at;
+  if (item.published_by === "scheduler" && item.scheduled_publish_at) return item.scheduled_publish_at;
+  return null;
+}
+function contentWebsiteState(item) {
+  if (item.workflow_status === "published") {
+    const at = contentPublishedAt(item);
+    return { tone: "live", label: "Live", detail: at ? `Published ${fmtDateTime(at)}` : "Publish date not recorded" };
+  }
+  if (item.workflow_status === "scheduled") return { tone: "pending", label: "Scheduled", detail: `Publishes ${fmtDateTime(item.scheduled_publish_at)}` };
+  if (item.workflow_status === "unpublished") return { tone: "off", label: "Unpublished", detail: "Removed from the website" };
+  return { tone: "off", label: "Not published", detail: item.sanity_document_id ? "Draft synced to Sanity" : "Not synced to Sanity yet" };
+}
+function contentMatchesFilters(item) {
+  if (contentState.status && item.workflow_status !== contentState.status) return false;
+  const days = (CONTENT_TIME_FILTERS.find(([key]) => key === contentState.time) || [])[2];
+  if (days && !(item.updated_at && Date.now() - new Date(item.updated_at).getTime() <= days * 86400000)) return false;
+  const q = contentState.q.trim().toLowerCase();
+  if (!q) return true;
+  return [item.title, item.excerpt, item.author, item.category, item.slug, ...(item.tags || [])].some((value) => String(value || "").toLowerCase().includes(q));
+}
+function contentThumb(item, className = "content-thumb") {
+  const empty = el(`<span class="${className} content-thumb-empty">${CONTENT_DOC_SVG}</span>`);
+  if (!item.featured_image_url) return empty;
+  const img = el(`<img class="${className}" src="${escapeHtml(item.featured_image_url)}" alt="" loading="lazy" />`);
+  img.addEventListener("error", () => img.replaceWith(empty));
+  return img;
+}
+function contentConfirmDiscard() {
+  if (!contentState.dirty) return true;
+  if (!window.confirm("This post has unsaved changes. Leave without saving them?")) return false;
+  contentState.dirty = false;
+  return true;
+}
+// Called first by the hashchange handler: leaving a post with unsaved changes asks first; "Cancel" puts the post's URL back (replaceState does
+// not fire another hashchange) and the navigation is dropped.
+function contentNavigationBlocked() {
+  if (!contentState.dirty || !contentState.page || !document.body.contains(contentState.page)) return false;
+  if (contentConfirmDiscard()) return false;
+  history.replaceState(null, "", contentState.hash);
+  return true;
+}
+window.addEventListener("beforeunload", (event) => {
+  if (contentState.dirty && contentState.page && document.body.contains(contentState.page)) {
+    event.preventDefault();
+    event.returnValue = "";
+  }
+});
+function contentWorkspaceMounted(outlet) {
+  return Boolean(contentState.page && outlet.contains(contentState.page));
+}
+function contentHistory(item, { refresh = false } = {}) {
+  const key = `${item.id}|${item.updated_at || ""}`;
+  if (refresh || !contentState.historyCache.has(key)) contentState.historyCache.set(key, apiContentHistory(item.id).then((data) => data.history || []));
+  return contentState.historyCache.get(key);
+}
+function contentHistoryDetail(entry) {
+  const d = entry.details || {};
+  if (entry.action === "content_edited" && Array.isArray(d.fields) && d.fields.length) return `Changed: ${d.fields.map(titleCase).join(", ")}`;
+  if (entry.action === "content_approval_withdrawn") return `${titleCase(d.reason || "")}${d.refused_action ? ` · ${titleCase(d.refused_action)}` : ""}`;
+  if (entry.action === "content_scheduled" && d.scheduled_publish_at) return `For ${fmtDateTime(d.scheduled_publish_at)}`;
+  if (entry.action === "content_published") return d.via === "scheduler" ? "Published by the scheduler" : d.live_url || "";
+  if (entry.action === "content_changes_requested" && d.note) return d.note;
+  return "";
+}
+function contentHistoryRow(entry) {
+  const detail = contentHistoryDetail(entry);
+  return el(`
+    <div class="content-history-item content-history-${escapeHtml(entry.action)}">
+      <div class="content-history-top"><b>${escapeHtml(CONTENT_HISTORY_LABELS[entry.action] || titleCase(entry.action))}</b><span>${escapeHtml(fmtRelative(entry.created_at))}</span></div>
+      <div class="content-history-sub">${escapeHtml(entry.actor_email || "Office")}${detail ? ` · ${escapeHtml(detail)}` : ""}</div>
+    </div>
+  `);
 }
 
-async function renderContentList(outlet, token) {
-  setTopbar("Content", "");
-  setSelectedObject(null);
+// ---- route + tabs ------------------------------------------------------------------------------------------------------------------------------
+
+async function renderContentRoute(outlet, rest, token) {
+  const [sub = ""] = rest;
+  const tabKey = ["overview", "calendar", "table"].includes(sub) ? sub : "posts";
+  const postId = tabKey === "posts" && sub ? sub : null;
+  setTopbar("Content", tabKey === "table" ? "Posts" : titleCase(tabKey));
+  // Already showing the Posts workspace: change the selected post in place (no rebuild), like the CRM leads workspace.
+  if (tabKey === "posts" && contentWorkspaceMounted(outlet)) {
+    await contentSelect(postId, token);
+    return;
+  }
   let items;
   try {
-    const data = await apiListContent();
-    items = data.items || [];
+    items = (await apiListContent()).items || [];
   } catch (err) {
     if (token !== state.renderToken) return;
     outlet.innerHTML = "";
-    outlet.appendChild(el(`<div class="view-heading"><h1>Content</h1></div>`));
+    outlet.appendChild(renderContentTabs(tabKey === "table" ? "posts" : tabKey));
     outlet.appendChild(errorPanel(err.message || "Could not load content."));
     return;
   }
   if (token !== state.renderToken) return;
-
+  contentState.items = items;
+  contentState.page = null;
+  contentState.dirty = false;
   outlet.innerHTML = "";
-  outlet.appendChild(el(`
-    <div class="view-heading">
-      <h1>Content</h1>
-      <p>Draft, review, and publish Ochiga Insights articles.</p>
+  outlet.appendChild(renderContentTabs(tabKey === "table" ? "posts" : tabKey));
+  if (tabKey !== "posts") {
+    setSelectedObject(null);
+    contentState.activeId = null;
+    contentState.item = null;
+    const body = el(`<div class="crm-body content-tab-body"></div>`);
+    outlet.appendChild(body);
+    if (tabKey === "overview") renderContentOverview(body, items);
+    else if (tabKey === "calendar") renderContentCalendar(body, items);
+    else renderContentTable(body, items);
+    return;
+  }
+  renderContentWorkspace(outlet);
+  await contentSelect(postId, token);
+}
+
+function renderContentTabs(active) {
+  const tabs = el(`<div class="crm-tabs content-tabs"></div>`);
+  CONTENT_TABS.forEach((tab) => {
+    if (tab.soon) {
+      tabs.appendChild(el(`<button type="button" class="crm-tab content-tab-soon" disabled aria-disabled="true" title="${escapeHtml(`Coming soon. ${tab.soon}`)}">${escapeHtml(tab.label)} <span class="content-soon">Soon</span></button>`));
+      return;
+    }
+    const btn = el(`<button type="button" class="crm-tab ${tab.key === active ? "active" : ""}" data-content-tab="${tab.key}">${escapeHtml(tab.label)}</button>`);
+    // navigating to the URL already shown fires no hashchange, so the unsaved-changes check is made here too
+    btn.addEventListener("click", () => { if (contentConfirmDiscard()) navigate(tab.route); });
+    tabs.appendChild(btn);
+  });
+  if (hasPermission("content.write")) {
+    tabs.appendChild(el(`<div class="crm-tabs-spacer"></div>`));
+    const newBtn = el(`<button type="button" class="btn btn-primary btn-sm crm-tabs-action content-new-post">New Post</button>`);
+    newBtn.addEventListener("click", () => { if (contentConfirmDiscard()) openNewContentDialog(); });
+    tabs.appendChild(newBtn);
+  }
+  return tabs;
+}
+
+// ---- Posts workspace: list pane ----------------------------------------------------------------------------------------------------------------
+
+function renderContentWorkspace(outlet) {
+  const page = el(`
+    <div class="content-page">
+      <div class="content-list-pane">
+        <div class="rel-list-head">
+          <h2>Posts <span id="contentCount" class="rel-faint"></span><button type="button" class="rel-table-link" id="contentTableLink" title="Open the table view">Table view</button></h2>
+          <input type="search" id="contentSearch" class="rel-search" placeholder="Search posts, authors, categories or tags…" aria-label="Search posts" />
+          <div class="rel-facets">
+            <select id="contentStatusFilter" class="rel-select" aria-label="Filter by status">${CONTENT_STATUS_FILTERS.map(([value, label]) => `<option value="${value}">${escapeHtml(label)}</option>`).join("")}</select>
+            <select id="contentTimeFilter" class="rel-select" aria-label="Filter by last update">${CONTENT_TIME_FILTERS.map(([value, label]) => `<option value="${value}">${escapeHtml(label)}</option>`).join("")}</select>
+          </div>
+        </div>
+        <div class="rel-list content-list" id="contentList" role="list"></div>
+      </div>
+      <div class="content-main-pane" id="contentMain"></div>
+      <div class="content-details-pane" id="contentDetails" aria-label="Post details"></div>
+    </div>
+  `);
+  const search = page.querySelector("#contentSearch");
+  search.value = contentState.q;
+  page.querySelector("#contentStatusFilter").value = contentState.status;
+  page.querySelector("#contentTimeFilter").value = contentState.time;
+  let timer = null;
+  search.addEventListener("input", () => { clearTimeout(timer); timer = setTimeout(() => { contentState.q = search.value; drawContentList(); }, 200); });
+  page.querySelector("#contentStatusFilter").addEventListener("change", (e) => { contentState.status = e.target.value; drawContentList(); });
+  page.querySelector("#contentTimeFilter").addEventListener("change", (e) => { contentState.time = e.target.value; drawContentList(); });
+  page.querySelector("#contentTableLink").addEventListener("click", () => navigate("content/table"));
+  outlet.appendChild(page);
+  contentState.page = page;
+  drawContentList();
+}
+
+function drawContentList() {
+  const page = contentState.page;
+  if (!page) return;
+  const list = page.querySelector("#contentList");
+  const rows = contentState.items.filter(contentMatchesFilters);
+  const filtered = rows.length !== contentState.items.length;
+  page.querySelector("#contentCount").textContent = filtered ? `(${rows.length} of ${contentState.items.length})` : `(${contentState.items.length})`;
+  list.innerHTML = "";
+  if (!rows.length) {
+    list.appendChild(el(`<div class="rel-empty">${contentState.items.length ? "No posts match these filters." : "No posts yet. Start with New Post."}</div>`));
+    return;
+  }
+  rows.forEach((item) => list.appendChild(contentRow(item)));
+}
+
+function contentRow(item) {
+  const site = contentWebsiteState(item);
+  const when = item.workflow_status === "scheduled" && item.scheduled_publish_at ? fmtRelative(item.scheduled_publish_at) : fmtRelative(item.updated_at);
+  const row = el(`
+    <div class="content-row${item.id === contentState.activeId ? " active" : ""}" role="listitem" tabindex="0" data-content-id="${escapeHtml(item.id)}">
+      <div class="content-row-main">
+        <div class="content-row-top"><span class="content-row-title">${escapeHtml(item.title || "Untitled")}</span><span class="rel-row-time">${escapeHtml(when)}</span></div>
+        <div class="content-row-meta">
+          ${site.tone !== "off" ? `<span class="content-web content-web-${site.tone}" title="Website: ${escapeHtml(site.label)}">${CONTENT_GLOBE_SVG}</span>` : ""}
+          ${badge(titleCase(item.workflow_status), CONTENT_STATUS_TONE[item.workflow_status] || "default")}
+          ${contentWithdrawal(item) ? `<span class="rel-chip content-chip-warn">Needs re-approval</span>` : ""}
+        </div>
+      </div>
+    </div>
+  `);
+  row.prepend(contentThumb(item));
+  row.appendChild(buildOverflowMenu({
+    ariaLabel: `Actions for ${item.title || "this post"}`,
+    triggerLabel: "⋮",
+    items: [
+      { label: "Open", onClick: () => contentOpen(item.id) },
+      { label: "View live article", hidden: !(item.workflow_status === "published" && item.sanity_live_url), onClick: () => window.open(item.sanity_live_url, "_blank", "noopener") },
+    ],
+  }));
+  row.addEventListener("click", () => contentOpen(item.id));
+  row.addEventListener("keydown", (e) => { if (e.key === "Enter") contentOpen(item.id); });
+  return row;
+}
+
+function contentOpen(id) {
+  if (id === contentState.activeId && contentState.explicit) {
+    contentState.page?.classList.add("content-item-open");
+    return;
+  }
+  navigate(`content/${encodeURIComponent(id)}`);
+}
+
+function contentMarkActive() {
+  contentState.page?.querySelectorAll(".content-row").forEach((row) => row.classList.toggle("active", row.dataset.contentId === contentState.activeId));
+}
+
+// ---- Posts workspace: selection ----------------------------------------------------------------------------------------------------------------
+
+async function contentSelect(postId, token) {
+  const page = contentState.page;
+  const explicit = Boolean(postId);
+  // No post in the URL: show the most recently updated post (as the CRM workspace selects the latest lead); on a phone the list stays in front.
+  const id = postId || (contentState.items.filter(contentMatchesFilters)[0] || contentState.items[0] || {}).id || null;
+  contentState.activeId = id;
+  contentState.explicit = explicit;
+  contentState.dirty = false;
+  contentState.mode = "edit";
+  contentState.hash = window.location.hash;
+  page.classList.toggle("content-item-open", explicit);
+  page.classList.remove("content-details-open", "content-focus");
+  contentMarkActive();
+  const main = page.querySelector("#contentMain");
+  const details = page.querySelector("#contentDetails");
+  if (!id) {
+    setSelectedObject(null);
+    contentState.item = null;
+    main.innerHTML = "";
+    main.appendChild(emptyPanel({ kicker: "Content", title: "No posts yet", body: hasPermission("content.write") ? "Create the first post with New Post." : "Posts will appear here once they are written." }));
+    details.innerHTML = "";
+    return;
+  }
+  main.innerHTML = "";
+  main.appendChild(skeletonPanel(4));
+  details.innerHTML = "";
+  let item;
+  try {
+    item = (await apiGetContent(id)).item;
+  } catch (err) {
+    if (token !== state.renderToken || contentState.activeId !== id) return;
+    main.innerHTML = "";
+    main.appendChild(errorPanel(err.message || "This post could not be found."));
+    return;
+  }
+  if (token !== state.renderToken || contentState.activeId !== id) return;
+  renderContentEditorPane(main, item);
+  contentShowItem(item);
+}
+
+// Draws everything that depends on the post's server state (list row, header, action bar, details, persistent withdrawal note) without
+// touching the form, so a save or a workflow action never discards what is typed.
+function contentShowItem(item, { notice } = {}) {
+  contentState.item = item;
+  const listItem = { ...item };
+  delete listItem.content_fingerprint;
+  const index = contentState.items.findIndex((i) => i.id === item.id);
+  if (index >= 0) contentState.items[index] = listItem;
+  else contentState.items.unshift(listItem);
+  drawContentList();
+  setSelectedObject("content", item.id, item.title, contentOyiContext(item));
+  const page = contentState.page;
+  if (!page) return;
+  page.querySelector(".content-head-title").textContent = item.title || "Untitled";
+  page.querySelector(".content-head-badge").innerHTML = badge(titleCase(item.workflow_status), CONTENT_STATUS_TONE[item.workflow_status] || "default");
+  const sub = [`Last updated ${fmtRelative(item.updated_at)}`];
+  if (item.created_by) sub.push(`created by ${item.created_by}`);
+  if (item.workflow_status === "scheduled" && item.scheduled_publish_at) sub.push(`scheduled for ${fmtDateTime(item.scheduled_publish_at)}`);
+  page.querySelector(".content-head-sub").textContent = sub.join(" · ");
+  const withdrawal = contentWithdrawal(item);
+  if (withdrawal) contentNotice("warn", contentWithdrawalSentence(withdrawal), [], { key: "withdrawal" });
+  else page.querySelector('[data-notice-key="withdrawal"]')?.remove();
+  contentRenderActions();
+  renderContentDetailsPane(item);
+  if (contentState.mode === "history") contentShowMode("history");
+  if (notice) contentNotice(notice.kind, notice.message, notice.actions || []);
+}
+
+// One transient notice at a time (a new one replaces it); keyed notices (the approval-withdrawal note) persist until the state changes.
+function contentNotice(kind, message, actions = [], { key = "" } = {}) {
+  const host = contentState.page?.querySelector(".content-notices");
+  if (!host) return;
+  if (key) host.querySelector(`[data-notice-key="${key}"]`)?.remove();
+  else host.querySelectorAll(".content-notice:not([data-notice-key])").forEach((node) => node.remove());
+  const node = el(`
+    <div class="content-notice content-notice-${kind}" role="${kind === "error" ? "alert" : "status"}"${key ? ` data-notice-key="${key}"` : ""}>
+      <div class="content-notice-text">${escapeHtml(message)}</div>
+      <div class="content-notice-actions"></div>
+    </div>
+  `);
+  const actionsHost = node.querySelector(".content-notice-actions");
+  actions.forEach((action) => {
+    const btn = el(`<button type="button" class="btn btn-ghost btn-sm">${escapeHtml(action.label)}</button>`);
+    btn.addEventListener("click", () => action.run());
+    actionsHost.appendChild(btn);
+  });
+  if (!key) {
+    const close = el(`<button type="button" class="content-notice-close" aria-label="Dismiss">×</button>`);
+    close.addEventListener("click", () => node.remove());
+    actionsHost.appendChild(close);
+  }
+  if (key) host.prepend(node);
+  else host.appendChild(node);
+}
+
+// ---- Posts workspace: editor -------------------------------------------------------------------------------------------------------------------
+
+function renderContentEditorPane(main, item) {
+  main.innerHTML = "";
+  const hasImage = Boolean(item.featured_image_url);
+  const pane = el(`
+    <div class="content-editor">
+      <div class="rel-thread-head content-head">
+        <button type="button" class="rel-back" aria-label="Back to posts">‹</button>
+        <div class="rel-thread-title">
+          <div class="rel-thread-name"><span class="content-head-title"></span><span class="content-head-badge"></span></div>
+          <div class="rel-thread-sub content-head-sub"></div>
+        </div>
+        <button type="button" class="btn btn-ghost btn-sm rel-details-toggle content-details-toggle" aria-expanded="false">Details</button>
+      </div>
+      <div class="content-modes" role="tablist" aria-label="Post views">
+        <button type="button" class="content-mode active" role="tab" aria-selected="true" data-mode="edit">Edit</button>
+        <button type="button" class="content-mode" role="tab" aria-selected="false" data-mode="preview">Preview</button>
+        <button type="button" class="content-mode" role="tab" aria-selected="false" data-mode="history">History</button>
+      </div>
+      <div class="content-notices" aria-live="polite"></div>
+      <div class="content-scroll">
+        <form class="inline-form content-form" data-panel="edit" novalidate>
+          <div class="content-hero">
+            <img class="content-hero-img featured-image-thumb" alt="Featured image" src="${escapeHtml(item.featured_image_url || "")}"${hasImage ? "" : " hidden"} />
+            <div class="content-hero-empty"${hasImage ? " hidden" : ""}>${CONTENT_DOC_SVG}<span>No featured image</span></div>
+            <div class="content-hero-actions">
+              <button type="button" class="btn btn-ghost btn-sm content-hero-replace">${hasImage ? "Replace" : "Add image"}</button>
+              <button type="button" class="btn btn-ghost btn-sm content-hero-remove"${hasImage ? "" : " hidden"}>Remove</button>
+            </div>
+            <input type="file" accept="image/*" class="featured-image-input" hidden />
+            <span class="featured-image-status content-hero-status"></span>
+            <input type="hidden" name="featured_image_url" value="${escapeHtml(item.featured_image_url || "")}" />
+          </div>
+          <label>Title<input name="title" value="${escapeHtml(item.title || "")}" /></label>
+          <label>Excerpt<textarea name="excerpt" rows="2">${escapeHtml(item.excerpt || "")}</textarea></label>
+          <label class="content-body-label">Content
+            <div class="content-toolbar body-toolbar"></div>
+            <textarea name="body" class="content-body-input" rows="16">${escapeHtml(item.body || "")}</textarea>
+            <span class="hint">Kept on the published article: headings, **bold**, *italic* and "- " bullet lists. Leave a blank line between paragraphs.</span>
+          </label>
+          <div class="content-form-grid">
+            <label>Slug<input name="slug" value="${escapeHtml(item.slug || "")}" /></label>
+            <label>Category<input name="category" value="${escapeHtml(item.category || "")}" /></label>
+            <label>Author<input name="author" value="${escapeHtml(item.author || "")}" /></label>
+            <label>Tags (comma separated)<input name="tags" value="${escapeHtml((item.tags || []).join(", "))}" /></label>
+          </div>
+          <label>SEO Title<input name="seo_title" value="${escapeHtml(item.seo_title || "")}" /></label>
+          <label>SEO Description<textarea name="seo_description" rows="2">${escapeHtml(item.seo_description || "")}</textarea></label>
+        </form>
+        <div class="content-preview-pane" data-panel="preview" hidden></div>
+        <div class="content-history-pane" data-panel="history" hidden></div>
+      </div>
+      <div class="content-actionbar">
+        <span class="content-save-state" aria-live="polite"></span>
+        <div class="content-actionbar-buttons"></div>
+      </div>
+    </div>
+  `);
+  main.appendChild(pane);
+  const page = contentState.page;
+  const form = pane.querySelector("form");
+
+  // unsaved-changes tracking against the last saved form state
+  const serialize = () => JSON.stringify(Object.fromEntries(new FormData(form).entries()));
+  let baseline = serialize();
+  const saveState = pane.querySelector(".content-save-state");
+  const setSaveState = (text) => { saveState.textContent = text; saveState.classList.toggle("content-dirty", text === "Unsaved changes"); };
+  const markDirty = () => {
+    const dirty = serialize() !== baseline;
+    if (dirty !== contentState.dirty) {
+      contentState.dirty = dirty;
+      contentRenderActions();
+    }
+    if (dirty) setSaveState("Unsaved changes");
+    else if (saveState.textContent === "Unsaved changes") setSaveState("");
+  };
+  form.addEventListener("input", markDirty);
+  form.addEventListener("change", markDirty);
+  form.addEventListener("submit", (event) => { event.preventDefault(); contentSave(); });
+  contentState.editor = { form, markDirty, setSaveState, resetBaseline: () => { baseline = serialize(); contentState.dirty = false; } };
+
+  wireBodyToolbar(pane.querySelector(".content-toolbar"), form.querySelector('textarea[name="body"]'), {
+    onFullscreen: () => {
+      const on = page.classList.toggle("content-focus");
+      if (on) form.querySelector('textarea[name="body"]').focus();
+      return on;
+    },
+  });
+
+  // featured image: Replace / Remove through the existing content_featured_image upload
+  const imageInput = form.querySelector(".featured-image-input");
+  const heroImg = form.querySelector(".content-hero-img");
+  const heroEmpty = form.querySelector(".content-hero-empty");
+  const replaceBtn = form.querySelector(".content-hero-replace");
+  const removeBtn = form.querySelector(".content-hero-remove");
+  const imageStatus = form.querySelector(".featured-image-status");
+  const imageUrlField = form.querySelector('input[name="featured_image_url"]');
+  const showImage = (url) => {
+    imageUrlField.value = url;
+    heroImg.hidden = !url;
+    heroEmpty.hidden = Boolean(url);
+    if (url) heroImg.src = url; else heroImg.removeAttribute("src");
+    replaceBtn.textContent = url ? "Replace" : "Add image";
+    removeBtn.hidden = !url;
+    markDirty();
+  };
+  heroImg.addEventListener("error", () => { if (heroImg.getAttribute("src")) { heroImg.hidden = true; heroEmpty.hidden = false; imageStatus.textContent = "The image could not be loaded."; } });
+  replaceBtn.addEventListener("click", () => imageInput.click());
+  removeBtn.addEventListener("click", () => { showImage(""); imageStatus.textContent = "Removed — Save to keep this change."; });
+  imageInput.addEventListener("change", async () => {
+    const file = imageInput.files && imageInput.files[0];
+    if (!file) return;
+    imageStatus.textContent = "Uploading…";
+    try {
+      const dataUrl = await readFileAsDataUrl(file);
+      const result = await apiUploadContentImage(dataUrl, file.name, file.type);
+      showImage(result.file.url);
+      imageStatus.textContent = "Uploaded — Save to keep it.";
+    } catch (err) {
+      imageStatus.textContent = err.message || "Could not upload image.";
+    } finally {
+      imageInput.value = "";
+    }
+  });
+
+  pane.querySelectorAll(".content-mode").forEach((btn) => btn.addEventListener("click", () => contentShowMode(btn.dataset.mode)));
+  pane.querySelector(".rel-back").addEventListener("click", () => navigate("content"));
+  const toggle = pane.querySelector(".content-details-toggle");
+  toggle.addEventListener("click", () => {
+    const open = page.classList.toggle("content-details-open");
+    toggle.setAttribute("aria-expanded", String(open));
+    toggle.textContent = open ? "Hide details" : "Details";
+  });
+}
+
+function contentShowMode(mode) {
+  const page = contentState.page;
+  if (!page || !page.querySelector(".content-editor")) return;
+  contentState.mode = mode;
+  page.querySelectorAll(".content-mode").forEach((btn) => {
+    const active = btn.dataset.mode === mode;
+    btn.classList.toggle("active", active);
+    btn.setAttribute("aria-selected", String(active));
+  });
+  page.querySelectorAll("[data-panel]").forEach((panel) => { panel.hidden = panel.dataset.panel !== mode; });
+  if (mode === "preview") {
+    // the preview shows what is in the editor right now, saved or not (as before)
+    const formData = Object.fromEntries(new FormData(contentState.editor.form).entries());
+    page.querySelector(".content-preview-pane").innerHTML = renderContentPreviewHtml(formData);
+  }
+  if (mode === "history" && contentState.item) renderContentHistoryTab(page.querySelector(".content-history-pane"), contentState.item);
+}
+
+async function renderContentHistoryTab(host, item) {
+  host.innerHTML = "";
+  host.appendChild(skeletonPanel(3));
+  let history;
+  try {
+    history = await contentHistory(item);
+  } catch (err) {
+    host.innerHTML = "";
+    host.appendChild(errorPanel(err.message || "History could not be loaded."));
+    return;
+  }
+  if (contentState.item?.id !== item.id) return;
+  host.innerHTML = "";
+  if (!history.length) {
+    host.appendChild(el(`<p class="rel-empty">No recorded activity for this post yet.</p>`));
+    return;
+  }
+  const list = el(`<div class="content-history-list"></div>`);
+  history.forEach((entry) => list.appendChild(contentHistoryRow(entry)));
+  host.appendChild(list);
+}
+
+async function contentSave() {
+  const editor = contentState.editor;
+  const item = contentState.item;
+  if (!editor || !item || contentState.busy) return;
+  const formData = Object.fromEntries(new FormData(editor.form).entries());
+  contentState.busy = true;
+  contentRenderActions();
+  editor.setSaveState("Saving…");
+  try {
+    const result = await apiUpdateContent(item.id, { ...formData, tags: formData.tags.split(",").map((t) => t.trim()).filter(Boolean) });
+    editor.resetBaseline();
+    let message = result.sanity?.ok ? "Saved and synced to Sanity draft." : "Saved locally.";
+    // the warnings themselves are listed under "Publish to"; the action bar stays one line
+    if (result.sanity?.warnings?.length) message += ` Sanity noted ${result.sanity.warnings.length === 1 ? "1 issue" : `${result.sanity.warnings.length} issues`} (see Publish to).`;
+    editor.setSaveState(message);
+    contentState.busy = false;
+    contentShowItem(result.item, {
+      notice: result.approval_withdrawn
+        ? { kind: "warn", message: "Saved. This post had been approved, so the approval was withdrawn and it is back in draft." }
+        : null,
+    });
+  } catch (err) {
+    contentState.busy = false;
+    editor.setSaveState(err.message || "Could not save.");
+    contentNotice("error", `Not saved: ${err.message || "the server refused the change."}`);
+    contentRenderActions();
+  }
+}
+
+// ---- Posts workspace: workflow actions ---------------------------------------------------------------------------------------------------------
+
+// The same transitions and permission checks as before (and as the server enforces): one status-aware primary action, the rest in "⋯".
+function contentWorkflowActions(item) {
+  const actions = [];
+  const status = item.workflow_status;
+  if (status === "draft" && hasPermission("content.write")) actions.push({ key: "submit-review", label: "Submit for review", primary: true, run: () => contentRunAction("submit-review") });
+  if (status === "in_review" && hasPermission("content.review")) {
+    // the version on screen; the server refuses the approval if the post changed since it was loaded
+    actions.push({ key: "approve", label: "Approve", primary: true, run: () => contentRunAction("approve", item.content_fingerprint ? { content_fingerprint: item.content_fingerprint } : {}) });
+    actions.push({ key: "request-changes", label: "Request changes…", run: () => openDialog("Request Changes", [{ name: "note", label: "Note for the writer", type: "textarea" }], (data) => contentRunAction("request-changes", data)) });
+  }
+  if (status === "approved" && hasPermission("content.publish")) {
+    actions.push({ key: "publish", label: "Publish now", primary: true, run: () => contentRunAction("publish") });
+    actions.push({ key: "schedule", label: "Schedule…", run: () => openContentScheduleDialog(item) });
+  }
+  if (status === "scheduled" && hasPermission("content.publish")) actions.push({ key: "publish", label: "Publish now", primary: true, run: () => contentRunAction("publish") });
+  if (status === "published" && hasPermission("content.publish")) actions.push({ key: "unpublish", label: "Unpublish", danger: true, run: () => contentRunAction("unpublish") });
+  return actions;
+}
+
+function contentRenderActions() {
+  const host = contentState.page?.querySelector(".content-actionbar-buttons");
+  const item = contentState.item;
+  if (!host || !item) return;
+  host.innerHTML = "";
+  const { dirty, busy } = contentState;
+  const actions = contentWorkflowActions(item);
+  const primary = actions.find((a) => a.primary);
+  const saveBtn = el(`<button type="button" class="btn btn-sm ${dirty || !primary ? "btn-primary" : "btn-ghost"} content-save-btn">Save</button>`);
+  saveBtn.disabled = busy || !dirty;
+  saveBtn.addEventListener("click", () => contentSave());
+  host.appendChild(saveBtn);
+  if (primary) {
+    const btn = el(`<button type="button" class="btn btn-sm ${dirty ? "btn-ghost" : "btn-primary"} content-primary-action" data-action="${primary.key}">${escapeHtml(primary.label)}</button>`);
+    btn.disabled = busy || dirty;
+    if (dirty) btn.title = "Save your changes first.";
+    btn.addEventListener("click", () => primary.run());
+    host.appendChild(btn);
+  }
+  const live = item.workflow_status === "published" && item.sanity_live_url;
+  host.appendChild(buildOverflowMenu({
+    ariaLabel: "More actions for this post",
+    items: [
+      ...actions.filter((a) => !a.primary).map((a) => ({ label: a.label, danger: a.danger, onClick: () => (contentState.dirty ? contentNotice("warn", "Save your changes before changing this post's workflow.") : a.run()) })),
+      { label: "Preview", onClick: () => contentShowMode("preview") },
+      { label: "History", onClick: () => contentShowMode("history") },
+      { label: "View live article", hidden: !live, onClick: () => window.open(item.sanity_live_url, "_blank", "noopener") },
+    ],
+  }));
+  if (item.workflow_status === "published") {
+    host.appendChild(el(`<span class="content-actionbar-note" title="Republishing an edited post needs a reviewed new revision, which is planned.">Edits are not republished yet</span>`));
+  }
+}
+
+const CONTENT_ACTION_DONE = {
+  "submit-review": () => "Submitted for review. Reviewers have been notified.",
+  approve: () => "Approved. A publisher can now publish or schedule this version.",
+  "request-changes": () => "Changes requested. The writer has been notified.",
+  publish: (item, result) => `Published to the website.${result?.warnings?.length ? ` ${result.warnings.join(" ")}` : ""}`,
+  unpublish: () => "Unpublished. The article was removed from the website; its content is kept as a draft.",
+};
+
+async function contentRunAction(action, body) {
+  const item = contentState.item;
+  if (!item || contentState.busy) return;
+  if (contentState.dirty) {
+    contentNotice("warn", "Save your changes before changing this post's workflow.");
+    return;
+  }
+  contentState.busy = true;
+  contentRenderActions();
+  try {
+    const result = await apiContentAction(item.id, action, body || {});
+    const fresh = await apiGetContent(item.id).then((data) => data.item).catch(() => result.item || item);
+    contentState.busy = false;
+    contentShowItem(fresh, { notice: { kind: "ok", message: CONTENT_ACTION_DONE[action] ? CONTENT_ACTION_DONE[action](fresh, result) : "Done." } });
+  } catch (err) {
+    contentState.busy = false;
+    await contentHandleActionError(action, body, err);
+  } finally {
+    contentState.busy = false;
+    contentRenderActions();
+  }
+}
+
+// Every refusal the server can give is explained in place and the post is redrawn from the server's state.
+async function contentHandleActionError(action, body, err) {
+  const reason = err.data?.reason;
+  if (err.status === 409 && err.data?.item) {
+    // a stale or missing approval: the server returned the post to review
+    const fresh = await apiGetContent(err.data.item.id).then((data) => data.item).catch(() => err.data.item);
+    contentShowItem(fresh, { notice: { kind: "warn", message: err.message } });
+    return;
+  }
+  if (err.status === 409 && reason === "content_changed_during_review") {
+    contentNotice("warn", err.message, [{ label: "Reload current version", run: () => contentReload({ rebuild: true }) }]);
+    return;
+  }
+  if ((err.status === 502 || err.status === 503) && (action === "publish" || action === "unpublish")) {
+    contentNotice("error", `${action === "publish" ? "Publishing" : "Unpublishing"} failed, so nothing changed on the website. ${err.message || ""}`.trim(), [{ label: "Try again", run: () => contentRunAction(action, body) }]);
+    await contentReload({ rebuild: false, keepNotice: true });
+    return;
+  }
+  contentNotice("error", err.message || "That action could not be completed.");
+}
+
+async function contentReload({ rebuild = false, keepNotice = false } = {}) {
+  const item = contentState.item;
+  if (!item) return;
+  if (rebuild && !contentConfirmDiscard()) return;
+  let fresh;
+  try {
+    fresh = (await apiGetContent(item.id)).item;
+  } catch (err) {
+    if (!keepNotice) contentNotice("error", err.message || "The post could not be reloaded.");
+    return;
+  }
+  if (contentState.item?.id !== item.id) return;
+  if (rebuild) {
+    renderContentEditorPane(contentState.page.querySelector("#contentMain"), fresh);
+    contentState.mode = "edit";
+    contentShowItem(fresh, { notice: { kind: "ok", message: "Reloaded the current version." } });
+  } else {
+    contentShowItem(fresh);
+  }
+}
+
+function openContentScheduleDialog(item) {
+  const zone = (Intl.DateTimeFormat().resolvedOptions().timeZone || "").replace(/_/g, " ");
+  openDialog("Schedule Publish", [{ name: "scheduled_publish_at", label: `Publish at${zone ? ` (${zone} time)` : ""}`, type: "datetime-local" }], async (data) => {
+    const when = data.scheduled_publish_at ? new Date(data.scheduled_publish_at) : null;
+    if (!when || Number.isNaN(when.getTime())) throw new Error("Pick a date and time to publish.");
+    if (when.getTime() <= Date.now()) throw new Error("Pick a time in the future.");
+    try {
+      await apiContentAction(item.id, "schedule", { scheduled_publish_at: when.toISOString() });
+    } catch (err) {
+      // a stale approval closes the dialog and is explained on the page; a date the server refuses stays in the dialog
+      if (err.status === 409 && err.data?.item) {
+        await contentHandleActionError("schedule", null, err);
+        return;
+      }
+      throw err;
+    }
+    const fresh = await apiGetContent(item.id).then((d) => d.item).catch(() => null);
+    if (fresh) contentShowItem(fresh, { notice: { kind: "ok", message: `Scheduled to publish ${fmtDateTime(fresh.scheduled_publish_at)}.` } });
+  });
+  const input = document.querySelector('.dialog-card input[name="scheduled_publish_at"]');
+  if (input) input.min = toDatetimeLocalValue(new Date(Date.now() + 60000).toISOString());
+}
+
+// ---- Posts workspace: details pane -------------------------------------------------------------------------------------------------------------
+
+function renderContentDetailsPane(item) {
+  const host = contentState.page?.querySelector("#contentDetails");
+  if (!host) return;
+  host.innerHTML = "";
+  const site = contentWebsiteState(item);
+  const warnings = Array.isArray(item.metadata?.sanity_warnings) ? item.metadata.sanity_warnings : [];
+  const publishTo = el(`
+    <details class="rel-section content-section" open>
+      <summary>Publish to</summary>
+      <div class="rel-section-body">
+        <div class="content-dest content-dest-${site.tone}">
+          <span class="content-dest-icon">${CONTENT_GLOBE_SVG}</span>
+          <div class="content-dest-text"><b>Website (Ochiga Insights)</b><span>${escapeHtml(site.detail)}</span></div>
+          <span class="content-dest-state">${escapeHtml(site.label)}</span>
+        </div>
+        ${site.tone === "live" && item.sanity_live_url ? `<a class="content-live-link" href="${escapeHtml(item.sanity_live_url)}" target="_blank" rel="noopener">Open live article →</a>` : ""}
+        ${warnings.map((w) => `<div class="content-warning">${escapeHtml(w)}</div>`).join("")}
+        ${CONTENT_SOCIAL_DESTINATIONS.map((d) => `
+          <div class="content-dest content-dest-disabled" aria-disabled="true" data-destination="${d.key}">
+            <span class="rel-src sm ${d.cls}"><b>${escapeHtml(d.glyph)}</b></span>
+            <div class="content-dest-text"><b>${escapeHtml(d.label)}</b><span>Not connected</span></div>
+            <span class="content-dest-state">Off</span>
+          </div>`).join("")}
+        <p class="rel-faint">Only the website is connected. Nothing is posted to social channels from Office yet.</p>
+      </div>
+    </details>
+  `);
+  const approval = item.metadata?.approval;
+  const withdrawal = contentWithdrawal(item);
+  const facts = [
+    ["Status", titleCase(item.workflow_status)],
+    ["Created", `${item.created_by || "—"}${item.created_at ? ` · ${fmtDateTime(item.created_at)}` : ""}`],
+    ["Reviewed by", item.reviewed_by || "—"],
+    ["Approval", approval ? `${approval.approved_by || "—"} · ${fmtDateTime(approval.approved_at)}` : withdrawal ? "Withdrawn" : "None"],
+    ["Published by", item.published_by || "—"],
+    ...(item.workflow_status === "scheduled" ? [["Scheduled for", fmtDateTime(item.scheduled_publish_at)]] : []),
+    ["Last updated", fmtRelative(item.updated_at)],
+  ];
+  const workflow = el(`
+    <details class="rel-section content-section" open>
+      <summary>Workflow</summary>
+      <div class="rel-section-body">${facts.map(([label, value]) => `<div class="rel-fact"><span>${escapeHtml(label)}</span><b>${escapeHtml(value)}</b></div>`).join("")}</div>
+    </details>
+  `);
+  const performance = el(`
+    <details class="rel-section content-section" open>
+      <summary>Performance (this post)</summary>
+      <div class="rel-section-body content-not-connected" data-panel-kind="performance"><b>Not connected</b><span>Views, comments, reactions and shares are not collected yet, so none are shown.</span></div>
+    </details>
+  `);
+  const comments = el(`
+    <details class="rel-section content-section">
+      <summary>Comments</summary>
+      <div class="rel-section-body content-not-connected" data-panel-kind="comments"><b>Not connected</b><span>Comments from the website and social channels are not collected yet.</span></div>
+    </details>
+  `);
+  const activity = el(`
+    <details class="rel-section content-section" open>
+      <summary>Recent activity</summary>
+      <div class="rel-section-body content-activity"><span class="rel-faint">Loading…</span></div>
+    </details>
+  `);
+  // below 1100px the pane is a slide-over that covers its own toggle, so it carries its own Close
+  const close = el(`<button type="button" class="btn btn-ghost btn-sm content-details-close" aria-label="Close details">Close</button>`);
+  close.addEventListener("click", () => {
+    contentState.page?.classList.remove("content-details-open");
+    const toggle = contentState.page?.querySelector(".content-details-toggle");
+    if (toggle) { toggle.setAttribute("aria-expanded", "false"); toggle.textContent = "Details"; }
+  });
+  host.appendChild(close);
+  [publishTo, workflow, performance, comments, activity].forEach((node) => host.appendChild(node));
+  const activityBody = activity.querySelector(".content-activity");
+  contentHistory(item).then((history) => {
+    if (contentState.item?.id !== item.id) return;
+    activityBody.innerHTML = "";
+    if (!history.length) {
+      activityBody.appendChild(el(`<span class="rel-faint">No recorded activity yet.</span>`));
+      return;
+    }
+    history.slice(0, 4).forEach((entry) => activityBody.appendChild(contentHistoryRow(entry)));
+    const all = el(`<button type="button" class="rel-table-link content-history-all">View full history</button>`);
+    all.addEventListener("click", () => {
+      contentState.page?.classList.remove("content-details-open");
+      contentShowMode("history");
+    });
+    activityBody.appendChild(all);
+  }).catch(() => {
+    activityBody.innerHTML = `<span class="rel-faint">Activity could not be loaded.</span>`;
+  });
+}
+
+// ---- Overview, Calendar, Table -------------------------------------------------------------------------------------------------------------
+
+function contentCount(items, status) {
+  return items.filter((i) => i.workflow_status === status).length;
+}
+function contentFilterAndOpen(status) {
+  contentState.status = status;
+  contentState.time = "";
+  contentState.q = "";
+  navigate("content");
+}
+
+function renderContentOverview(host, items) {
+  const scheduled = items.filter((i) => i.workflow_status === "scheduled" && i.scheduled_publish_at).sort((a, b) => String(a.scheduled_publish_at).localeCompare(String(b.scheduled_publish_at)));
+  const publishedThisWeek = items.filter((i) => i.workflow_status === "published" && contentPublishedAt(i) && new Date(contentPublishedAt(i)) >= startOfWeek()).length;
+  host.appendChild(KPIGroup([
+    { label: "Published This Week", value: `${publishedThisWeek} / 2`, sub: "Weekly target: 2", icon: iconSvg("content", "kpi-icon"), tone: "green", onClick: () => contentFilterAndOpen("published") },
+    { label: "Drafts", value: contentCount(items, "draft"), onClick: () => contentFilterAndOpen("draft") },
+    { label: "Awaiting Review", value: contentCount(items, "in_review"), tone: "amber", onClick: () => contentFilterAndOpen("in_review") },
+    { label: "Ready to Publish", value: contentCount(items, "approved"), sub: "Approved", onClick: () => contentFilterAndOpen("approved") },
+    { label: "Scheduled", value: scheduled.length, sub: scheduled[0] ? `Next ${fmtDateTime(scheduled[0].scheduled_publish_at)}` : "Nothing scheduled", onClick: () => contentFilterAndOpen("scheduled") },
+    { label: "Live on Website", value: contentCount(items, "published"), onClick: () => contentFilterAndOpen("published") },
+  ]));
+
+  const now = Date.now();
+  const attention = [];
+  items.forEach((i) => {
+    if (i.workflow_status === "scheduled" && i.scheduled_publish_at && new Date(i.scheduled_publish_at).getTime() < now) attention.push({ item: i, tone: "red", title: "Scheduled time has passed", detail: `Due ${fmtDateTime(i.scheduled_publish_at)} but not published. Check the publishing scheduler.` });
+    else if (contentWithdrawal(i)) attention.push({ item: i, tone: "amber", title: "Needs re-approval", detail: contentWithdrawalSentence(contentWithdrawal(i)) });
+    else if (i.workflow_status === "in_review") attention.push({ item: i, tone: "amber", title: "Awaiting review", detail: i.created_by ? `Written by ${i.created_by}` : "" });
+    else if (i.workflow_status === "approved") attention.push({ item: i, tone: "default", title: "Approved, not yet published", detail: "Publish or schedule it." });
+    if (Array.isArray(i.metadata?.sanity_warnings) && i.metadata.sanity_warnings.length && ["approved", "scheduled"].includes(i.workflow_status)) attention.push({ item: i, tone: "amber", title: "Sanity note before publishing", detail: i.metadata.sanity_warnings[0] }); // drafts are still being written: their notes show in the post itself
+  });
+  const attentionPanel = homePanel("Needs Attention");
+  if (!attention.length) attentionPanel.appendChild(el(`<p class="home-panel-empty">Nothing needs attention right now.</p>`));
+  const list = el(`<div class="attention-list-v2"></div>`);
+  attention.slice(0, 8).forEach((a) => list.appendChild(contentAttentionRow(a)));
+  if (attention.length) attentionPanel.appendChild(list);
+
+  const upcoming = homePanel("Upcoming Schedule", "Calendar", () => navigate("content/calendar"));
+  if (!scheduled.length) upcoming.appendChild(el(`<p class="home-panel-empty">Nothing is scheduled.</p>`));
+  scheduled.slice(0, 6).forEach((i) => upcoming.appendChild(contentAttentionRow({ item: i, tone: "default", title: i.title || "Untitled", detail: fmtDateTime(i.scheduled_publish_at), plainTitle: true })));
+
+  const channels = homePanel("Publishing Channels");
+  channels.appendChild(el(`
+    <div class="content-channel-list">
+      <div class="content-dest content-dest-live"><span class="content-dest-icon">${CONTENT_GLOBE_SVG}</span><div class="content-dest-text"><b>Website (Ochiga Insights)</b><span>Connected through Sanity · ${contentCount(items, "published")} live</span></div><span class="content-dest-state">Connected</span></div>
+      ${CONTENT_SOCIAL_DESTINATIONS.map((d) => `<div class="content-dest content-dest-disabled" aria-disabled="true" data-destination="${d.key}"><span class="rel-src sm ${d.cls}"><b>${escapeHtml(d.glyph)}</b></span><div class="content-dest-text"><b>${escapeHtml(d.label)}</b><span>Not connected</span></div><span class="content-dest-state">Off</span></div>`).join("")}
     </div>
   `));
 
-  const publishedThisWeek = items.filter((i) => i.workflow_status === "published" && i.updated_at && new Date(i.updated_at) >= startOfWeek()).length;
-  outlet.appendChild(el(`
-    <div class="kpi-grid" style="margin-bottom:18px;">
-      <div class="kpi-card"><span class="kpi-label">Published This Week</span><span class="kpi-value">${publishedThisWeek} / 2</span></div>
-      <div class="kpi-card"><span class="kpi-label">Drafts</span><span class="kpi-value">${items.filter((i) => i.workflow_status === "draft").length}</span></div>
-      <div class="kpi-card"><span class="kpi-label">Awaiting Review</span><span class="kpi-value">${items.filter((i) => i.workflow_status === "in_review").length}</span></div>
-      <div class="kpi-card"><span class="kpi-label">Scheduled</span><span class="kpi-value">${items.filter((i) => i.workflow_status === "scheduled").length}</span></div>
+  const engagement = homePanel("Engagement");
+  engagement.appendChild(el(`<div class="content-not-connected" data-panel-kind="engagement"><b>Not connected</b><span>Office does not collect views, comments, reactions or shares for posts yet. They will appear here once an integration provides them.</span></div>`));
+
+  const grid = el(`<div class="content-overview-grid"></div>`);
+  [attentionPanel, upcoming, channels, engagement].forEach((panel) => grid.appendChild(panel));
+  host.appendChild(grid);
+}
+
+function contentAttentionRow({ item, tone, title, detail, plainTitle }) {
+  const row = el(`
+    <div class="attention-row-v2 clickable" style="border-left-color:${ATTENTION_BORDER_COLOR[tone] || ATTENTION_BORDER_COLOR.default};">
+      <div class="attention-row-text">
+        <div class="attention-row-title">${escapeHtml(plainTitle ? title : `${title}: ${item.title || "Untitled"}`)}</div>
+        ${detail ? `<div class="attention-row-detail">${escapeHtml(detail)}</div>` : ""}
+      </div>
+      ${badge(titleCase(item.workflow_status), CONTENT_STATUS_TONE[item.workflow_status] || "default")}
     </div>
-  `));
+  `);
+  row.addEventListener("click", () => navigate(`content/${encodeURIComponent(item.id)}`));
+  return row;
+}
 
-  const newBtn = el(`<button type="button" class="btn btn-primary btn-sm" style="margin-bottom:14px;">New Article</button>`);
-  newBtn.addEventListener("click", () => openNewContentDialog());
-  outlet.appendChild(newBtn);
+// Month calendar of real dates only: scheduled posts at their scheduled time, published posts at their recorded publish time. Posts published
+// before publish times were recorded are counted, never placed on a guessed date.
+function renderContentCalendar(host, items) {
+  const base = contentState.calendarMonth || new Date();
+  const month = new Date(base.getFullYear(), base.getMonth(), 1);
+  contentState.calendarMonth = month;
+  const events = [];
+  items.forEach((i) => {
+    if (i.workflow_status === "scheduled" && i.scheduled_publish_at) events.push({ item: i, at: new Date(i.scheduled_publish_at), kind: "scheduled" });
+    else if (i.workflow_status === "published" && contentPublishedAt(i)) events.push({ item: i, at: new Date(contentPublishedAt(i)), kind: "published" });
+  });
+  const undated = items.filter((i) => i.workflow_status === "published" && !contentPublishedAt(i)).length;
+  const inMonth = events.filter((e) => e.at.getFullYear() === month.getFullYear() && e.at.getMonth() === month.getMonth()).sort((a, b) => a.at - b.at);
 
-  outlet.appendChild(renderDataTable({
+  host.innerHTML = "";
+  const head = el(`
+    <div class="content-cal-head">
+      <button type="button" class="btn btn-ghost btn-sm" data-cal="prev" aria-label="Previous month">‹</button>
+      <h2>${escapeHtml(month.toLocaleDateString(undefined, { month: "long", year: "numeric" }))}</h2>
+      <button type="button" class="btn btn-ghost btn-sm" data-cal="next" aria-label="Next month">›</button>
+      <button type="button" class="btn btn-ghost btn-sm" data-cal="today">Today</button>
+      <span class="content-cal-legend"><i class="content-cal-dot content-cal-scheduled"></i>Scheduled <i class="content-cal-dot content-cal-published"></i>Published</span>
+    </div>
+  `);
+  const shift = (delta) => { contentState.calendarMonth = new Date(month.getFullYear(), month.getMonth() + delta, 1); renderContentCalendar(host, items); };
+  head.querySelector('[data-cal="prev"]').addEventListener("click", () => shift(-1));
+  head.querySelector('[data-cal="next"]').addEventListener("click", () => shift(1));
+  head.querySelector('[data-cal="today"]').addEventListener("click", () => { contentState.calendarMonth = new Date(); renderContentCalendar(host, items); });
+  host.appendChild(head);
+
+  const grid = el(`<div class="content-cal-grid" role="grid"></div>`);
+  ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].forEach((d) => grid.appendChild(el(`<div class="content-cal-dow">${d}</div>`)));
+  const offset = (month.getDay() + 6) % 7; // Monday first
+  const days = new Date(month.getFullYear(), month.getMonth() + 1, 0).getDate();
+  const today = new Date();
+  for (let i = 0; i < offset; i++) grid.appendChild(el(`<div class="content-cal-cell content-cal-blank"></div>`));
+  for (let day = 1; day <= days; day++) {
+    const isToday = today.getFullYear() === month.getFullYear() && today.getMonth() === month.getMonth() && today.getDate() === day;
+    const cell = el(`<div class="content-cal-cell${isToday ? " content-cal-today" : ""}" role="gridcell"><span class="content-cal-day">${day}</span></div>`);
+    inMonth.filter((e) => e.at.getDate() === day).forEach((e) => cell.appendChild(contentCalendarEvent(e)));
+    grid.appendChild(cell);
+  }
+  host.appendChild(grid);
+
+  // the same events as a list: the calendar on narrow screens, and a readable summary everywhere
+  const agenda = el(`<div class="content-cal-agenda"></div>`);
+  if (!inMonth.length) agenda.appendChild(el(`<p class="home-panel-empty">Nothing scheduled or published this month.</p>`));
+  inMonth.forEach((e) => {
+    const row = contentCalendarEvent(e, true);
+    agenda.appendChild(row);
+  });
+  host.appendChild(agenda);
+  if (undated) host.appendChild(el(`<p class="rel-faint content-cal-note">${undated} published ${undated === 1 ? "post has" : "posts have"} no recorded publish date (published before Office recorded publish times), so ${undated === 1 ? "it is" : "they are"} not placed on the calendar.</p>`));
+}
+
+function contentCalendarEvent(event, long = false) {
+  const time = event.at.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
+  const node = el(`
+    <button type="button" class="content-cal-event content-cal-${event.kind}" title="${escapeHtml(`${titleCase(event.kind)} · ${fmtDateTime(event.at.toISOString())}`)}">
+      <i class="content-cal-dot content-cal-${event.kind}"></i>
+      <span>${long ? `${escapeHtml(fmtDateTime(event.at.toISOString()))} · ` : `${escapeHtml(time)} `}${escapeHtml(event.item.title || "Untitled")}</span>
+    </button>
+  `);
+  node.addEventListener("click", () => navigate(`content/${encodeURIComponent(event.item.id)}`));
+  return node;
+}
+
+// The previous table list, kept as the "Table view" of Posts.
+function renderContentTable(host, items) {
+  const back = el(`<button type="button" class="detail-back">← Posts workspace</button>`);
+  back.addEventListener("click", () => navigate("content"));
+  host.appendChild(back);
+  host.appendChild(renderDataTable({
     columns: [
       { label: "Title", render: (i) => escapeHtml(i.title) },
       { label: "Status", render: (i) => badge(titleCase(i.workflow_status), CONTENT_STATUS_TONE[i.workflow_status] || "default") },
       { label: "Author", render: (i) => escapeHtml(i.author || "—") },
+      { label: "Scheduled / Published", render: (i) => escapeHtml(i.workflow_status === "scheduled" ? fmtDateTime(i.scheduled_publish_at) : contentPublishedAt(i) ? fmtDateTime(contentPublishedAt(i)) : "—") },
       { label: "Updated", render: (i) => escapeHtml(fmtRelative(i.updated_at)) },
     ],
     rows: items,
     onRowClick: (i) => navigate(`content/${i.id}`),
-    emptyMessage: "No articles yet. Start with New Article.",
+    emptyMessage: "No posts yet. Start with New Post.",
   }));
 }
 
@@ -7990,7 +8937,7 @@ async function renderDevelopmentProjectDetail(outlet, id, token) {
 }
 
 function openNewContentDialog() {
-  openDialog("New Article", [
+  openDialog("New Post", [
     { name: "title", label: "Title" },
     { name: "category", label: "Category (e.g. Oyi, Building Technology)" },
     { name: "author", label: "Author name" },
@@ -8034,177 +8981,79 @@ function contentOyiContext(item) {
   };
 }
 
-async function renderContentEditor(outlet, contentId, token) {
-  setTopbar("Content", "");
-  setSelectedObject(null);
-  let item;
-  try {
-    const data = await apiGetContent(contentId);
-    item = data.item;
-  } catch (err) {
-    if (token !== state.renderToken) return;
-    outlet.innerHTML = "";
-    outlet.appendChild(errorPanel(err.message || "This article could not be found."));
-    return;
-  }
-  if (token !== state.renderToken) return;
-
-  setSelectedObject("content", item.id, item.title, contentOyiContext(item));
-  outlet.innerHTML = "";
-  const back = el(`<button type="button" class="detail-back">← Content</button>`);
-  back.addEventListener("click", () => navigate("content"));
-  outlet.appendChild(back);
-
-  outlet.appendChild(el(`
-    <div class="detail-header">
-      <div>
-        <div class="detail-typeline">Article</div>
-        <h1>${escapeHtml(item.title)}</h1>
-        <div class="detail-badges">${badge(titleCase(item.workflow_status), CONTENT_STATUS_TONE[item.workflow_status] || "default")}</div>
-      </div>
-    </div>
-  `));
-
-  if (item.sanity_live_url && item.workflow_status === "published") {
-    outlet.appendChild(el(`<p style="margin:10px 0;"><a href="${escapeHtml(item.sanity_live_url)}" target="_blank" rel="noopener">Open live article →</a></p>`));
-  }
-  const scheduleHint = el(`<p class="hint"></p>`);
-  outlet.appendChild(scheduleHint);
-
-  // A save or a refused action can change the workflow state (an edit after approval withdraws it; a refused publish returns the article to review), so the
-  // badge, schedule note and workflow buttons are redrawn from the server's item instead of leaving a stale "Publish Now" on screen.
-  let workflowActions = null;
-  function showContentState(current, notice) {
-    const badgeEl = outlet.querySelector(".detail-badges");
-    if (badgeEl) badgeEl.innerHTML = badge(titleCase(current.workflow_status), CONTENT_STATUS_TONE[current.workflow_status] || "default");
-    const scheduled = current.workflow_status === "scheduled" && current.scheduled_publish_at;
-    scheduleHint.textContent = scheduled ? `Scheduled to publish ${fmtDateTime(current.scheduled_publish_at)}.` : "";
-    scheduleHint.style.display = scheduled ? "" : "none";
-    const fresh = renderContentWorkflowActions(current, contentId, { onStateChange: showContentState, notice });
-    if (workflowActions) workflowActions.replaceWith(fresh);
-    workflowActions = fresh;
-  }
-
-  const form = el(`
-    <form class="inline-form" style="flex-direction:column;align-items:stretch;gap:12px;max-width:640px;">
-      <label>Title<input name="title" value="${escapeHtml(item.title)}" /></label>
-      <label>Slug<input name="slug" value="${escapeHtml(item.slug || "")}" /></label>
-      <label>Excerpt<textarea name="excerpt" rows="2">${escapeHtml(item.excerpt || "")}</textarea></label>
-      <label>Featured Image
-        <div class="featured-image-field" style="display:flex;align-items:center;gap:10px;">
-          <img class="featured-image-thumb" src="${escapeHtml(item.featured_image_url || "")}" style="width:64px;height:64px;object-fit:cover;border-radius:var(--radius-sm);border:1px solid var(--line);display:${item.featured_image_url ? "block" : "none"};" alt="" />
-          <input type="file" accept="image/*" class="featured-image-input" />
-          <span class="featured-image-status" style="font-size:11px;color:var(--text-tertiary);"></span>
-        </div>
-        <input type="hidden" name="featured_image_url" value="${escapeHtml(item.featured_image_url || "")}" />
-      </label>
-      <label>Category<input name="category" value="${escapeHtml(item.category || "")}" /></label>
-      <label>Author<input name="author" value="${escapeHtml(item.author || "")}" /></label>
-      <label>Tags (comma separated)<input name="tags" value="${escapeHtml((item.tags || []).join(", "))}" /></label>
-      <label>Body
-        <div class="body-toolbar" style="display:flex;gap:4px;margin-bottom:4px;"></div>
-        <textarea name="body" rows="14" style="font-family:inherit;">${escapeHtml(item.body || "")}</textarea>
-        <span class="hint">Supports **bold**, *italic*, # / ## headings, and "- " bullet lists — carried through to the published article.</span>
-      </label>
-      <label>SEO Title<input name="seo_title" value="${escapeHtml(item.seo_title || "")}" /></label>
-      <label>SEO Description<textarea name="seo_description" rows="2">${escapeHtml(item.seo_description || "")}</textarea></label>
-      <div>
-        <button type="submit" class="btn btn-primary btn-sm">Save</button>
-        <button type="button" class="btn btn-ghost btn-sm content-preview-toggle">Preview</button>
-        <span class="form-status"></span>
-      </div>
-    </form>
-  `);
-
-  wireBodyToolbar(form.querySelector(".body-toolbar"), form.querySelector('textarea[name="body"]'));
-
-  const imageInput = form.querySelector(".featured-image-input");
-  const imageThumb = form.querySelector(".featured-image-thumb");
-  const imageStatus = form.querySelector(".featured-image-status");
-  const imageUrlField = form.querySelector('input[name="featured_image_url"]');
-  imageInput.addEventListener("change", async () => {
-    const file = imageInput.files && imageInput.files[0];
-    if (!file) return;
-    imageStatus.textContent = "Uploading…";
-    try {
-      const dataUrl = await readFileAsDataUrl(file);
-      const result = await apiUploadContentImage(dataUrl, file.name, file.type);
-      imageUrlField.value = result.file.url;
-      imageThumb.src = result.file.url;
-      imageThumb.style.display = "block";
-      imageStatus.textContent = "Uploaded — click Save to keep it.";
-    } catch (err) {
-      imageStatus.textContent = err.message || "Could not upload image.";
-    }
-  });
-
-  const previewHost = el(`<div class="content-preview" style="display:none;margin-top:14px;max-width:640px;"></div>`);
-  form.querySelector(".content-preview-toggle").addEventListener("click", () => {
-    const showing = previewHost.style.display !== "none";
-    if (showing) {
-      previewHost.style.display = "none";
-      previewHost.innerHTML = "";
-      return;
-    }
-    const formData = Object.fromEntries(new FormData(form).entries());
-    previewHost.innerHTML = renderContentPreviewHtml(formData);
-    previewHost.style.display = "block";
-  });
-
-  form.addEventListener("submit", async (event) => {
-    event.preventDefault();
-    const statusEl = form.querySelector(".form-status");
-    const formData = Object.fromEntries(new FormData(form).entries());
-    try {
-      const result = await apiUpdateContent(contentId, { ...formData, tags: formData.tags.split(",").map((t) => t.trim()).filter(Boolean) });
-      statusEl.textContent = result.sanity?.ok ? "Saved and synced to Sanity draft." : "Saved locally.";
-      if (result.sanity?.warnings?.length) statusEl.textContent += ` (${result.sanity.warnings.join(" ")})`;
-      if (result.approval_withdrawn) statusEl.textContent += " This article had been approved; because it changed, the approval was withdrawn and it must be reviewed again before it can be published.";
-      if (result.item) showContentState(result.item);
-    } catch (err) {
-      statusEl.textContent = err.message || "Could not save.";
-    }
-  });
-  outlet.appendChild(form);
-  outlet.appendChild(previewHost);
-
-  showContentState(item);
-  outlet.appendChild(workflowActions);
-}
-
 // Deliberately markdown-LITE, not a full markdown implementation and not
 // a WYSIWYG editor — a plain textarea stays inspectable/diffable, and
 // this small, fixed set of rules (bold/italic/headings/bullets) is
 // exactly what textToPortableText in sanity-adapter.js also parses, so
 // what a writer sees in Preview is what actually reaches the published
 // article, not a plain-text approximation of formatting that gets lost.
-function wireBodyToolbar(toolbar, textarea) {
+// Only formatting that survives publishing: textToPortableText (sanity-adapter.js) turns "# " / "## " / "### " paragraphs into h2/h3/h4,
+// **bold** / *italic* into strong/em, and "- " lines into bullets. Nothing else is offered, because anything else would silently disappear
+// from the published article. Every change raises an input event so unsaved-changes tracking sees it.
+const CONTENT_PARAGRAPH_STYLES = [["", "Normal"], ["# ", "Heading"], ["## ", "Subheading"], ["### ", "Minor heading"]];
+function wireBodyToolbar(toolbar, textarea, { onFullscreen } = {}) {
+  const changed = () => textarea.dispatchEvent(new Event("input", { bubbles: true }));
+  const lineBounds = () => {
+    const value = textarea.value;
+    const start = value.lastIndexOf("\n", textarea.selectionStart - 1) + 1;
+    const endIndex = value.indexOf("\n", textarea.selectionStart);
+    return { start, end: endIndex === -1 ? value.length : endIndex };
+  };
+  // replaces the current line's marker (heading or bullet) with `prefix` ("" = plain paragraph)
+  const setLinePrefix = (prefix) => {
+    const { start, end } = lineBounds();
+    const line = textarea.value.slice(start, end);
+    const text = line.replace(/^(#{1,3}\s+|-\s+)/, "");
+    const caret = textarea.selectionStart - (line.length - text.length) + prefix.length;
+    textarea.value = textarea.value.slice(0, start) + prefix + text + textarea.value.slice(end);
+    textarea.selectionStart = textarea.selectionEnd = Math.max(start + prefix.length, caret);
+    textarea.focus();
+    changed();
+  };
+  const style = el(`<select class="content-style-select" aria-label="Paragraph style">${CONTENT_PARAGRAPH_STYLES.map(([value, label]) => `<option value="${value}">${label}</option>`).join("")}</select>`);
+  const syncStyle = () => {
+    const { start, end } = lineBounds();
+    const match = textarea.value.slice(start, end).match(/^(#{1,3})\s/);
+    style.value = match ? `${match[1]} ` : "";
+  };
+  style.addEventListener("change", () => setLinePrefix(style.value));
+  ["keyup", "click", "focus"].forEach((type) => textarea.addEventListener(type, syncStyle));
+  toolbar.appendChild(style);
+
   const buttons = [
-    { label: "B", wrap: "**" },
-    { label: "I", wrap: "*" },
-    { label: "H2", prefix: "## " },
-    { label: "H3", prefix: "### " },
-    { label: "•", prefix: "- " },
+    { label: "B", title: "Bold", wrap: "**", className: "content-tool-bold" },
+    { label: "I", title: "Italic", wrap: "*", className: "content-tool-italic" },
+    { label: "•", title: "Bullet list", bullet: true },
   ];
-  buttons.forEach(({ label, wrap, prefix }) => {
-    const btn = el(`<button type="button" class="btn btn-ghost btn-sm" style="padding:2px 8px;">${escapeHtml(label)}</button>`);
+  buttons.forEach(({ label, title, wrap, bullet, className }) => {
+    const btn = el(`<button type="button" class="content-tool${className ? ` ${className}` : ""}" title="${title}" aria-label="${title}">${escapeHtml(label)}</button>`);
     btn.addEventListener("click", () => {
+      if (bullet) {
+        const { start, end } = lineBounds();
+        setLinePrefix(/^-\s+/.test(textarea.value.slice(start, end)) ? "" : "- ");
+        return;
+      }
       const start = textarea.selectionStart;
       const end = textarea.selectionEnd;
       const value = textarea.value;
-      if (wrap) {
-        textarea.value = value.slice(0, start) + wrap + value.slice(start, end) + wrap + value.slice(end);
-        textarea.selectionStart = start + wrap.length;
-        textarea.selectionEnd = end + wrap.length;
-      } else if (prefix) {
-        const lineStart = value.lastIndexOf("\n", start - 1) + 1;
-        textarea.value = value.slice(0, lineStart) + prefix + value.slice(lineStart);
-        textarea.selectionStart = textarea.selectionEnd = start + prefix.length;
-      }
+      textarea.value = value.slice(0, start) + wrap + value.slice(start, end) + wrap + value.slice(end);
+      textarea.selectionStart = start + wrap.length;
+      textarea.selectionEnd = end + wrap.length;
       textarea.focus();
+      changed();
     });
     toolbar.appendChild(btn);
   });
+  if (onFullscreen) {
+    const full = el(`<button type="button" class="content-tool content-tool-full" title="Full screen" aria-label="Full screen" aria-pressed="false">⤢</button>`);
+    full.addEventListener("click", () => {
+      const on = onFullscreen();
+      full.setAttribute("aria-pressed", String(Boolean(on)));
+      full.title = on ? "Exit full screen" : "Full screen";
+    });
+    textarea.addEventListener("keydown", (event) => { if (event.key === "Escape" && full.getAttribute("aria-pressed") === "true") full.click(); });
+    toolbar.appendChild(full);
+  }
 }
 
 function markdownLiteToHtml(text) {
@@ -8479,72 +9328,6 @@ function renderContentPreviewHtml(item) {
       <div>${markdownLiteToHtml(item.body)}</div>
     </div>
   `;
-}
-
-function renderContentWorkflowActions(item, contentId, { onStateChange, notice } = {}) {
-  const wrap = el(`<div class="status-actions" style="margin-top:18px;"></div>`);
-  const errorLabel = el(`<span class="form-status"></span>`);
-  if (notice) {
-    errorLabel.textContent = notice;
-    errorLabel.classList.add("visible");
-  }
-
-  async function runAction(action, body) {
-    try {
-      await apiContentAction(contentId, action, body);
-      // Same route as we're already on — navigate() re-renders in
-      // place when the hash doesn't change, refreshing the status
-      // badge and the now-different set of workflow buttons.
-      navigate(`content/${contentId}`);
-    } catch (err) {
-      // A refused publish/schedule returns the article to review: redraw from the returned item and keep the explanation visible.
-      if (err.status === 409 && err.data?.item && onStateChange) {
-        onStateChange(err.data.item, err.message);
-        return;
-      }
-      errorLabel.textContent = err.message || "That action could not be completed.";
-      errorLabel.classList.add("visible");
-    }
-  }
-
-  if (item.workflow_status === "draft" && hasPermission("content.write")) {
-    const btn = el(`<button type="button" class="btn btn-primary btn-sm">Submit for Review</button>`);
-    btn.addEventListener("click", () => runAction("submit-review"));
-    wrap.appendChild(btn);
-  }
-  if (item.workflow_status === "in_review" && hasPermission("content.review")) {
-    const approveBtn = el(`<button type="button" class="btn btn-primary btn-sm">Approve</button>`);
-    // the version on screen; the server refuses the approval if the article changed since it was loaded
-    approveBtn.addEventListener("click", () => runAction("approve", item.content_fingerprint ? { content_fingerprint: item.content_fingerprint } : {}));
-    wrap.appendChild(approveBtn);
-    const requestBtn = el(`<button type="button" class="btn btn-ghost btn-sm">Request Changes</button>`);
-    requestBtn.addEventListener("click", () => openDialog("Request Changes", [{ name: "note", label: "Note for the writer", type: "textarea" }], (data) => runAction("request-changes", data)));
-    wrap.appendChild(requestBtn);
-  }
-  if (item.workflow_status === "approved" && hasPermission("content.publish")) {
-    const publishBtn = el(`<button type="button" class="btn btn-primary btn-sm">Publish Now</button>`);
-    publishBtn.addEventListener("click", () => runAction("publish"));
-    wrap.appendChild(publishBtn);
-    const scheduleBtn = el(`<button type="button" class="btn btn-ghost btn-sm">Schedule</button>`);
-    scheduleBtn.addEventListener("click", () => openDialog("Schedule Publish", [{ name: "scheduled_publish_at", label: "Publish at (ISO date/time)", type: "datetime-local" }], (data) => {
-      const when = data.scheduled_publish_at ? new Date(data.scheduled_publish_at) : null;
-      if (!when || Number.isNaN(when.getTime())) throw new Error("Pick a date and time to publish.");
-      return runAction("schedule", { scheduled_publish_at: when.toISOString() });
-    }));
-    wrap.appendChild(scheduleBtn);
-  }
-  if (item.workflow_status === "scheduled" && hasPermission("content.publish")) {
-    const publishBtn = el(`<button type="button" class="btn btn-primary btn-sm">Publish Now</button>`);
-    publishBtn.addEventListener("click", () => runAction("publish"));
-    wrap.appendChild(publishBtn);
-  }
-  if (item.workflow_status === "published" && hasPermission("content.publish")) {
-    const unpublishBtn = el(`<button type="button" class="btn btn-ghost btn-sm">Unpublish</button>`);
-    unpublishBtn.addEventListener("click", () => runAction("unpublish"));
-    wrap.appendChild(unpublishBtn);
-  }
-  wrap.appendChild(errorLabel);
-  return wrap;
 }
 
 async function renderDocumentsRoute(outlet, rest, token) {

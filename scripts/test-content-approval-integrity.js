@@ -160,6 +160,8 @@ async function main() {
     ok(pub1.status === 200 && pub1.data.item.workflow_status === "published" && pub1.data.item.published_by === "publisher@ochiga.local", "the approved version publishes");
     ok(publishedFor(a1).length === 1 && bodyText(publishedFor(a1)[0]) === "The approved words" && publishedFor(a1)[0].title === "Baseline article", "Sanity's published document is exactly the approved content");
     ok(!sanity.docs.has(`drafts.post-${a1}`), "the draft is removed after publishing (Sanity Studio behaviour unchanged)");
+    const a1Published = await item(a1);
+    ok(!Number.isNaN(Date.parse(a1Published.metadata.published_at)) && a1Published.metadata.approval?.fingerprint === a1Item.metadata.approval.fingerprint, "publishing records metadata.published_at and keeps the approval record");
 
     // 2. Editing after approval withdraws it; the edit cannot be published.
     const a2 = await approvedArticle("Edited after approval", "Approved text");
@@ -344,9 +346,10 @@ async function main() {
   // 14. Office UI wiring (static): Approve sends the on-screen fingerprint; a save or refusal redraws state from the server's item.
   const fs = require("node:fs");
   const ui = fs.readFileSync(require("node:path").join(__dirname, "../public/office/office.js"), "utf8");
-  ok(/runAction\("approve", item\.content_fingerprint \? \{ content_fingerprint: item\.content_fingerprint \} : \{\}\)/.test(ui), "UI: Approve sends the fingerprint of the version on screen");
-  ok(/result\.approval_withdrawn/.test(ui) && /showContentState\(result\.item\)/.test(ui), "UI: a save that withdraws approval says so and redraws the workflow buttons");
-  ok(/err\.status === 409 && err\.data\?\.item && onStateChange/.test(ui), "UI: a refused publish/schedule redraws from the returned-to-review item");
+  // (Slice 2 moved these into the Content workspace; scripts/test-content-workspace-browser.js exercises them in a real browser.)
+  ok(/contentRunAction\("approve", item\.content_fingerprint \? \{ content_fingerprint: item\.content_fingerprint \} : \{\}\)/.test(ui), "UI: Approve sends the fingerprint of the version on screen");
+  ok(/result\.approval_withdrawn/.test(ui) && /contentShowItem\(result\.item/.test(ui), "UI: a save that withdraws approval says so and redraws the workflow buttons");
+  ok(/err\.status === 409 && err\.data\?\.item\)/.test(ui), "UI: a refused publish/schedule redraws from the returned-to-review item");
   ok(/Pick a date and time to publish\./.test(ui), "UI: an empty schedule date gets a clear message instead of a RangeError");
 
   console.log(JSON.stringify({ suite: "content-approval-integrity", checks, failed: 0 }));

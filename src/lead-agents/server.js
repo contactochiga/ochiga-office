@@ -2061,7 +2061,8 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
     const publishResult = await publishToSanity(docId, { expectedDraftRev: draftResult.draft_rev });
     if (!publishResult.ok) return { ok: false, status: 502, reason: publishResult.reason || "publish_failed", error: `Sanity publish failed: ${publishResult.reason || "unknown error"}` };
     const liveUrl = `${process.env.OCHIGA_WEBSITE_URL || "https://ochiga.com.ng"}/insights/${item.slug || slugify(item.title)}`;
-    const updated = await store.updateContentItem(item.id, { workflow_status: "published", published_by: publishedBy, sanity_document_id: docId, sanity_live_url: liveUrl });
+    // published_at: when this version went live (the Content calendar's only reliable publish date; updated_at moves on every edit)
+    const updated = await store.updateContentItem(item.id, { workflow_status: "published", published_by: publishedBy, sanity_document_id: docId, sanity_live_url: liveUrl, metadata: { ...(item.metadata || {}), published_at: new Date().toISOString() } });
     return { ok: true, item: updated, docId, liveUrl, warnings: draftResult.warnings, sanity: publishResult };
   }
 
