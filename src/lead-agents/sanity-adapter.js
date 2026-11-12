@@ -15,6 +15,13 @@
 const { createClient } = require("@sanity/client");
 const crypto = require("crypto");
 
+let clientFactory = createClient;
+// Tests only: replaces the Sanity client constructor (null restores the real one). Never used by the server.
+function setSanityClientFactoryForTests(factory) {
+  clientFactory = factory || createClient;
+  cachedClient = null;
+}
+
 function sanityConfigured() {
   return Boolean(process.env.SANITY_PROJECT_ID && process.env.SANITY_DATASET && process.env.SANITY_API_WRITE_TOKEN);
 }
@@ -23,7 +30,7 @@ let cachedClient = null;
 function sanityClient() {
   if (!sanityConfigured()) return null;
   if (cachedClient) return cachedClient;
-  cachedClient = createClient({
+  cachedClient = clientFactory({
     projectId: process.env.SANITY_PROJECT_ID,
     dataset: process.env.SANITY_DATASET,
     apiVersion: process.env.SANITY_API_VERSION || "2024-01-01",
@@ -165,18 +172,21 @@ async function saveDraftToSanity(item, { baseUrl } = {}) {
   if (categoryRef) doc.category = { _type: "reference", _ref: categoryRef };
   if (coverImage) doc.coverImage = coverImage;
 
-  await client.createOrReplace(doc);
-  return { ok: true, document_id: id, warnings };
+  const saved = await client.createOrReplace(doc);
+  return { ok: true, document_id: id, warnings, draft_rev: (saved && saved._rev) || null };
 }
 
 // Publishes: copy the draft's current field values onto the bare
 // (published) id, then remove the draft — the same effect as clicking
-// Publish in Sanity Studio.
-async function publishToSanity(documentId, { publishedAt } = {}) {
+// Publish in Sanity Studio. With expectedDraftRev (the revision
+// saveDraftToSanity just wrote), a draft that changed in between — e.g.
+// a concurrent edit — is refused instead of published.
+async function publishToSanity(documentId, { publishedAt, expectedDraftRev } = {}) {
   const client = sanityClient();
   if (!client) return { ok: false, skipped: true, reason: "sanity_not_configured" };
   const draftId = `drafts.${documentId}`;
   const draft = await client.getDocument(draftId).catch(() => null);
+  if (expectedDraftRev && (!draft || draft._rev !== expectedDraftRev)) return { ok: false, reason: "draft_changed_before_publish" };
   const source = draft || (await client.getDocument(documentId).catch(() => null));
   if (!source) return { ok: false, reason: "document_not_found" };
 
@@ -249,4 +259,5 @@ module.exports = {
   syncDevelopmentProjectToSanity,
   slugify,
   textToPortableText,
+  setSanityClientFactoryForTests,
 };

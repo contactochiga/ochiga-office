@@ -8068,8 +8068,21 @@ async function renderContentEditor(outlet, contentId, token) {
   if (item.sanity_live_url && item.workflow_status === "published") {
     outlet.appendChild(el(`<p style="margin:10px 0;"><a href="${escapeHtml(item.sanity_live_url)}" target="_blank" rel="noopener">Open live article →</a></p>`));
   }
-  if (item.workflow_status === "scheduled" && item.scheduled_publish_at) {
-    outlet.appendChild(el(`<p class="hint">Scheduled to publish ${escapeHtml(fmtDateTime(item.scheduled_publish_at))}.</p>`));
+  const scheduleHint = el(`<p class="hint"></p>`);
+  outlet.appendChild(scheduleHint);
+
+  // A save or a refused action can change the workflow state (an edit after approval withdraws it; a refused publish returns the article to review), so the
+  // badge, schedule note and workflow buttons are redrawn from the server's item instead of leaving a stale "Publish Now" on screen.
+  let workflowActions = null;
+  function showContentState(current, notice) {
+    const badgeEl = outlet.querySelector(".detail-badges");
+    if (badgeEl) badgeEl.innerHTML = badge(titleCase(current.workflow_status), CONTENT_STATUS_TONE[current.workflow_status] || "default");
+    const scheduled = current.workflow_status === "scheduled" && current.scheduled_publish_at;
+    scheduleHint.textContent = scheduled ? `Scheduled to publish ${fmtDateTime(current.scheduled_publish_at)}.` : "";
+    scheduleHint.style.display = scheduled ? "" : "none";
+    const fresh = renderContentWorkflowActions(current, contentId, { onStateChange: showContentState, notice });
+    if (workflowActions) workflowActions.replaceWith(fresh);
+    workflowActions = fresh;
   }
 
   const form = el(`
@@ -8146,6 +8159,8 @@ async function renderContentEditor(outlet, contentId, token) {
       const result = await apiUpdateContent(contentId, { ...formData, tags: formData.tags.split(",").map((t) => t.trim()).filter(Boolean) });
       statusEl.textContent = result.sanity?.ok ? "Saved and synced to Sanity draft." : "Saved locally.";
       if (result.sanity?.warnings?.length) statusEl.textContent += ` (${result.sanity.warnings.join(" ")})`;
+      if (result.approval_withdrawn) statusEl.textContent += " This article had been approved; because it changed, the approval was withdrawn and it must be reviewed again before it can be published.";
+      if (result.item) showContentState(result.item);
     } catch (err) {
       statusEl.textContent = err.message || "Could not save.";
     }
@@ -8153,7 +8168,8 @@ async function renderContentEditor(outlet, contentId, token) {
   outlet.appendChild(form);
   outlet.appendChild(previewHost);
 
-  outlet.appendChild(renderContentWorkflowActions(item, contentId));
+  showContentState(item);
+  outlet.appendChild(workflowActions);
 }
 
 // Deliberately markdown-LITE, not a full markdown implementation and not
@@ -8465,9 +8481,13 @@ function renderContentPreviewHtml(item) {
   `;
 }
 
-function renderContentWorkflowActions(item, contentId) {
+function renderContentWorkflowActions(item, contentId, { onStateChange, notice } = {}) {
   const wrap = el(`<div class="status-actions" style="margin-top:18px;"></div>`);
   const errorLabel = el(`<span class="form-status"></span>`);
+  if (notice) {
+    errorLabel.textContent = notice;
+    errorLabel.classList.add("visible");
+  }
 
   async function runAction(action, body) {
     try {
@@ -8477,6 +8497,11 @@ function renderContentWorkflowActions(item, contentId) {
       // badge and the now-different set of workflow buttons.
       navigate(`content/${contentId}`);
     } catch (err) {
+      // A refused publish/schedule returns the article to review: redraw from the returned item and keep the explanation visible.
+      if (err.status === 409 && err.data?.item && onStateChange) {
+        onStateChange(err.data.item, err.message);
+        return;
+      }
       errorLabel.textContent = err.message || "That action could not be completed.";
       errorLabel.classList.add("visible");
     }
@@ -8489,7 +8514,8 @@ function renderContentWorkflowActions(item, contentId) {
   }
   if (item.workflow_status === "in_review" && hasPermission("content.review")) {
     const approveBtn = el(`<button type="button" class="btn btn-primary btn-sm">Approve</button>`);
-    approveBtn.addEventListener("click", () => runAction("approve"));
+    // the version on screen; the server refuses the approval if the article changed since it was loaded
+    approveBtn.addEventListener("click", () => runAction("approve", item.content_fingerprint ? { content_fingerprint: item.content_fingerprint } : {}));
     wrap.appendChild(approveBtn);
     const requestBtn = el(`<button type="button" class="btn btn-ghost btn-sm">Request Changes</button>`);
     requestBtn.addEventListener("click", () => openDialog("Request Changes", [{ name: "note", label: "Note for the writer", type: "textarea" }], (data) => runAction("request-changes", data)));
@@ -8500,7 +8526,11 @@ function renderContentWorkflowActions(item, contentId) {
     publishBtn.addEventListener("click", () => runAction("publish"));
     wrap.appendChild(publishBtn);
     const scheduleBtn = el(`<button type="button" class="btn btn-ghost btn-sm">Schedule</button>`);
-    scheduleBtn.addEventListener("click", () => openDialog("Schedule Publish", [{ name: "scheduled_publish_at", label: "Publish at (ISO date/time)", type: "datetime-local" }], (data) => runAction("schedule", { scheduled_publish_at: new Date(data.scheduled_publish_at).toISOString() })));
+    scheduleBtn.addEventListener("click", () => openDialog("Schedule Publish", [{ name: "scheduled_publish_at", label: "Publish at (ISO date/time)", type: "datetime-local" }], (data) => {
+      const when = data.scheduled_publish_at ? new Date(data.scheduled_publish_at) : null;
+      if (!when || Number.isNaN(when.getTime())) throw new Error("Pick a date and time to publish.");
+      return runAction("schedule", { scheduled_publish_at: when.toISOString() });
+    }));
     wrap.appendChild(scheduleBtn);
   }
   if (item.workflow_status === "scheduled" && hasPermission("content.publish")) {
