@@ -122,7 +122,9 @@ async function main() {
   const TOTAL = 11;
 
   const userDir = fs.mkdtempSync(path.join(os.tmpdir(), "content-ws-chrome-"));
-  const chrome = spawn(CHROME, ["--headless=new", `--remote-debugging-port=${PORT}`, `--user-data-dir=${userDir}`, "--no-first-run", "--disable-gpu", "--hide-scrollbars", "about:blank"], { stdio: "ignore" });
+  // No back/forward cache: each user switch leaves the previous Office page cached with its notification stream (EventSource) still open, and after
+  // six switches Chrome's HTTP/1.1 per-host connection limit (the local test server is not HTTP/2) queues the next request forever.
+  const chrome = spawn(CHROME, ["--headless=new", `--remote-debugging-port=${PORT}`, `--user-data-dir=${userDir}`, "--no-first-run", "--disable-gpu", "--hide-scrollbars", "--disable-features=BackForwardCache", "about:blank"], { stdio: "ignore" });
   let ws;
   let id = 0;
   const pending = new Map();
