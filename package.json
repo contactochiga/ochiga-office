@@ -50,7 +50,10 @@
     "office:import:test": "node scripts/test-product-import.js && node scripts/test-product-import-postgres.js",
     "office:import:local": "node scripts/product-import-local.js",
     "office:ingestion:test": "node scripts/test-ingestion-v2.js && node scripts/test-ingestion-v2-postgres.js && node scripts/test-ingestion-v2-edges.js && node scripts/test-ingestion-multisheet.js && node scripts/test-ingestion-taxonomy.js",
-    "office:api-routing:test": "node scripts/test-office-api-routing.mjs"
+    "office:api-routing:test": "node scripts/test-office-api-routing.mjs",
+    "office:content-integrity:test": "node scripts/test-content-approval-integrity.js",
+    "office:content-workspace:test": "node scripts/test-content-workspace-browser.js",
+    "office:content-featured-image:test": "node scripts/test-content-featured-image.js"
   },
   "dependencies": {
     "@sanity/client": "^6.29.1",

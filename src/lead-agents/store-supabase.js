@@ -1608,6 +1608,13 @@ class SupabaseLeadAgentsStore {
     return response.data;
   }
 
+  // Audit events of ONE record (exact target type + id), newest first.
+  async listAuditEventsForTarget(targetType, targetId, limit = 100) {
+    const query = new URLSearchParams({ target_type: `eq.${targetType}`, target_id: `eq.${targetId}`, order: "created_at.desc", limit: String(limit) });
+    const response = await this.client.get(`/audit_events?${query.toString()}`);
+    return response.data;
+  }
+
   async listOfficePackages() {
     return this.safeGet("/office_packages?order=name.asc");
   }

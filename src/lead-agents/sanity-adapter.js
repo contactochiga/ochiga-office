@@ -14,6 +14,14 @@
 // the bare id, then delete the draft. Unpublishing = the reverse.
 const { createClient } = require("@sanity/client");
 const crypto = require("crypto");
+const { classifyCoverImageUrl } = require("./content-images");
+
+let clientFactory = createClient;
+// Tests only: replaces the Sanity client constructor (null restores the real one). Never used by the server.
+function setSanityClientFactoryForTests(factory) {
+  clientFactory = factory || createClient;
+  cachedClient = null;
+}
 
 function sanityConfigured() {
   return Boolean(process.env.SANITY_PROJECT_ID && process.env.SANITY_DATASET && process.env.SANITY_API_WRITE_TOKEN);
@@ -23,7 +31,7 @@ let cachedClient = null;
 function sanityClient() {
   if (!sanityConfigured()) return null;
   if (cachedClient) return cachedClient;
-  cachedClient = createClient({
+  cachedClient = clientFactory({
     projectId: process.env.SANITY_PROJECT_ID,
     dataset: process.env.SANITY_DATASET,
     apiVersion: process.env.SANITY_API_VERSION || "2024-01-01",
@@ -114,24 +122,64 @@ async function findReference(client, type, fieldName, value) {
   }
 }
 
-async function uploadImageIfNeeded(client, imageUrl, baseUrl) {
-  if (!imageUrl) return null;
-  try {
-    const absoluteUrl = /^https?:\/\//.test(imageUrl) ? imageUrl : `${baseUrl || ""}${imageUrl}`;
-    const response = await fetch(absoluteUrl);
-    if (!response.ok) return null;
-    const buffer = Buffer.from(await response.arrayBuffer());
-    const asset = await client.assets.upload("image", buffer, { filename: imageUrl.split("/").pop() || "cover.jpg" });
-    return { _type: "image", asset: { _type: "reference", _ref: asset._id } };
-  } catch {
-    return null;
+// The cover already on the Sanity document (draft first, then published), so an image that cannot be sent never removes what the site shows.
+// A read error is thrown (the save then fails and nothing is published), never taken as "no cover".
+async function existingCoverImage(client, documentIds) {
+  for (const id of documentIds) {
+    const doc = await client.getDocument(id);
+    if (doc && doc.coverImage && doc.coverImage.asset) return doc.coverImage;
   }
+  return null;
+}
+
+const COVER_PROBLEMS = Object.freeze({
+  image_not_found: "the uploaded file is no longer in Office storage",
+  image_too_large: "the file is larger than 10 MB",
+  unsupported_image_type: "the file is not a JPEG, PNG or WebP image",
+  image_unreadable: "the file is not a readable JPEG, PNG or WebP image",
+});
+
+// The server never requests a cover URL (content-images.js): an Office upload is read from Office storage, a Sanity image is referenced by asset id,
+// and anything else keeps the document's current cover with a warning. Returns { image, warning }; image undefined means "leave the cover as it is".
+async function resolveCoverImage(client, imageUrl, kind, { readStoredImage, documentIds, label }) {
+  const source = classifyCoverImageUrl(imageUrl, kind, { sanityProjectId: process.env.SANITY_PROJECT_ID, sanityDataset: process.env.SANITY_DATASET });
+  if (source.kind === "none") return { image: null };
+  if (source.kind === "sanity_asset") return { image: { _type: "image", asset: { _type: "reference", _ref: source.assetId } } };
+  let problem;
+  if (source.kind === "office") {
+    if (typeof readStoredImage !== "function") {
+      problem = "Office storage is not available to this sync";
+    } else {
+      let file = null;
+      try {
+        file = await readStoredImage(source.filename);
+      } catch (err) {
+        problem = COVER_PROBLEMS[err && err.code] || "Office storage could not be read";
+      }
+      if (file) {
+        try {
+          const asset = await client.assets.upload("image", file.buffer, { filename: file.filename, contentType: file.mime_type });
+          return { image: { _type: "image", asset: { _type: "reference", _ref: asset._id } } };
+        } catch {
+          problem = "Sanity did not accept the upload";
+        }
+      }
+    }
+  } else {
+    problem = source.detail === "external_url"
+      ? `it is a link to ${source.host}, and Office does not download images from links`
+      : "it is not an image uploaded in Office";
+  }
+  const kept = await existingCoverImage(client, documentIds);
+  const next = kept ? `The ${label} already in Sanity was kept.` : `Sanity has no ${label} for it.`;
+  return { image: kept || null, warning: `${label[0].toUpperCase()}${label.slice(1)} not sent: ${problem}. ${next} Upload the image in Office to replace it.` };
 }
 
 // Creates or updates the DRAFT Sanity document for a content item.
 // Never touches the published version — that only happens in
 // publishToSanity(). Returns { ok, document_id, warnings }.
-async function saveDraftToSanity(item, { baseUrl } = {}) {
+// readStoredImage(filename) reads an Office-uploaded cover (content-images.js readStoredCoverImage bound to the storage service).
+async function saveDraftToSanity(item, { readStoredImage } = {}) {
   const client = sanityClient();
   if (!client) return { ok: false, skipped: true, reason: "sanity_not_configured" };
 
@@ -139,14 +187,15 @@ async function saveDraftToSanity(item, { baseUrl } = {}) {
   const id = item.sanity_document_id || `post-${item.id}`;
   const draftId = `drafts.${id}`;
 
-  const [authorRef, categoryRef, coverImage] = await Promise.all([
+  const [authorRef, categoryRef, cover] = await Promise.all([
     findReference(client, "author", "name", item.author),
     findReference(client, "category", "title", item.category),
-    uploadImageIfNeeded(client, item.featured_image_url, baseUrl),
+    resolveCoverImage(client, item.featured_image_url, "content", { readStoredImage, documentIds: [draftId, id], label: "featured image" }),
   ]);
+  const coverImage = cover.image;
   if (item.author && !authorRef) warnings.push(`No matching Sanity author named "${item.author}" — publish without one, or create it in Sanity Studio first.`);
   if (item.category && !categoryRef) warnings.push(`No matching Sanity category named "${item.category}" — publish without one, or create it in Sanity Studio first.`);
-  if (item.featured_image_url && !coverImage) warnings.push("Featured image could not be uploaded to Sanity — publishing without a cover image.");
+  if (cover.warning) warnings.push(cover.warning);
 
   const doc = {
     _id: draftId,
@@ -165,18 +214,21 @@ async function saveDraftToSanity(item, { baseUrl } = {}) {
   if (categoryRef) doc.category = { _type: "reference", _ref: categoryRef };
   if (coverImage) doc.coverImage = coverImage;
 
-  await client.createOrReplace(doc);
-  return { ok: true, document_id: id, warnings };
+  const saved = await client.createOrReplace(doc);
+  return { ok: true, document_id: id, warnings, draft_rev: (saved && saved._rev) || null };
 }
 
 // Publishes: copy the draft's current field values onto the bare
 // (published) id, then remove the draft — the same effect as clicking
-// Publish in Sanity Studio.
-async function publishToSanity(documentId, { publishedAt } = {}) {
+// Publish in Sanity Studio. With expectedDraftRev (the revision
+// saveDraftToSanity just wrote), a draft that changed in between — e.g.
+// a concurrent edit — is refused instead of published.
+async function publishToSanity(documentId, { publishedAt, expectedDraftRev } = {}) {
   const client = sanityClient();
   if (!client) return { ok: false, skipped: true, reason: "sanity_not_configured" };
   const draftId = `drafts.${documentId}`;
   const draft = await client.getDocument(draftId).catch(() => null);
+  if (expectedDraftRev && (!draft || draft._rev !== expectedDraftRev)) return { ok: false, reason: "draft_changed_before_publish" };
   const source = draft || (await client.getDocument(documentId).catch(() => null));
   if (!source) return { ok: false, reason: "document_not_found" };
 
@@ -212,14 +264,15 @@ async function unpublishFromSanity(documentId) {
 // their status/progress fields, not introducing a new unpublished
 // state for content that already exists publicly). One direct
 // createOrReplace per save.
-async function syncDevelopmentProjectToSanity(project, { baseUrl } = {}) {
+async function syncDevelopmentProjectToSanity(project, { readStoredImage } = {}) {
   const client = sanityClient();
   if (!client) return { ok: false, skipped: true, reason: "sanity_not_configured" };
   const id = project.sanity_document_id || `development-project-${project.slug || project.id}`;
 
   const warnings = [];
-  const coverImage = await uploadImageIfNeeded(client, project.cover_image_url, baseUrl);
-  if (project.cover_image_url && !coverImage) warnings.push("Cover image could not be uploaded to Sanity — syncing without it.");
+  const cover = await resolveCoverImage(client, project.cover_image_url, "development", { readStoredImage, documentIds: [id], label: "cover image" });
+  if (cover.warning) warnings.push(cover.warning);
+  const coverImage = cover.image ? { ...cover.image } : null;
   if (coverImage && project.cover_image_alt) coverImage.alt = project.cover_image_alt;
 
   const doc = {
@@ -249,4 +302,5 @@ module.exports = {
   syncDevelopmentProjectToSanity,
   slugify,
   textToPortableText,
+  setSanityClientFactoryForTests,
 };
