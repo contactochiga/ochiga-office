@@ -1914,13 +1914,20 @@
   .content-list-pane { width: 340px; flex-shrink: 0; display: flex; flex-direction: column; border-right: 1px solid var(--line); min-height: 0; }
   .content-main-pane { flex: 1; min-width: 0; display: flex; flex-direction: column; min-height: 0; }
   /* --content-oyi-clearance: room for the floating Oyi orb (54px, 20px from the corner) at the bottom-right, so no Content control sits under it */
-  .content-details-pane { width: 320px; flex-shrink: 0; display: flex; flex-direction: column; border-left: 1px solid var(--line); min-height: 0; overflow-y: auto; padding-bottom: var(--content-oyi-clearance); }
+  /* the details column stops above that corner (an empty strip the orb sits in), so nothing in it is ever under the orb, scrolled or not */
+  .content-details-pane { width: 320px; flex-shrink: 0; display: flex; flex-direction: column; border-left: 1px solid var(--line); border-bottom: 1px solid var(--line); min-height: 0; overflow-y: auto; padding-bottom: 24px; margin-bottom: var(--content-oyi-clearance); }
   .content-row { display: flex; gap: 10px; align-items: center; padding: 10px 8px 10px 14px; border-top: 1px solid var(--line); cursor: pointer; position: relative; }
   .content-row:hover, .content-row:focus-visible { background: rgba(255,255,255,0.035); outline: none; }
   .content-row.active { background: rgba(179,36,27,0.16); box-shadow: inset 2px 0 0 var(--content-accent); }
   .content-row-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 6px; }
-  .content-row-top { display: flex; justify-content: space-between; gap: 8px; }
-  .content-row-title { font-size: 13px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .content-row-top { display: flex; justify-content: space-between; align-items: flex-start; gap: 8px; }
+  .content-row-top .rel-row-time { flex-shrink: 0; padding-top: 1px; }
+  /* long titles wrap (up to three lines, full title on hover) beside the status badge instead of pushing it */
+  .content-head .rel-thread-name { flex-wrap: nowrap; align-items: flex-start; }
+  .content-head-title { min-width: 0; line-height: 1.3; overflow-wrap: anywhere; text-wrap: balance; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+  .content-head-badge { flex-shrink: 0; padding-top: 1px; }
+  .content-head .rel-thread-sub { margin-top: 4px; line-height: 1.45; }
+  .content-row-title { font-size: 13px; font-weight: 600; line-height: 1.3; overflow-wrap: anywhere; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
   .content-row-meta { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; font-size: 11px; color: var(--text-tertiary); }
   .content-row .portfolio-overflow-trigger { padding: 2px 6px; border-color: transparent; }
   .content-thumb { width: 56px; height: 44px; flex-shrink: 0; border-radius: var(--radius); object-fit: cover; background: var(--graphite); border: 1px solid var(--line); }
@@ -1960,6 +1967,12 @@
   .content-hero-status { font-size: 11px; color: var(--text-tertiary); min-height: 0; }
   .content-toolbar { display: flex; align-items: center; gap: 4px; padding: 5px 6px; border: 1px solid var(--line-strong); border-bottom: none; border-radius: var(--radius) var(--radius) 0 0; background: var(--charcoal); text-transform: none; letter-spacing: 0; }
   .content-style-select { background: var(--graphite); border: 1px solid var(--line); color: var(--text-primary); border-radius: var(--radius-sm); padding: 3px 6px; font-size: 12px; margin-right: 4px; }
+  /* Content dropdowns in the Office field style (the search field's surface, border, radius and red focus) with a drawn chevron instead of the native one */
+  .content-select { appearance: none; -webkit-appearance: none; background: var(--graphite) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='%238c887f' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") no-repeat right 10px center / 10px 6px; border: 1px solid var(--line); color: var(--text-primary); border-radius: var(--radius); padding: 7px 28px 7px 10px; font-size: 12.5px; font-family: inherit; cursor: pointer; transition: border-color var(--duration-fast) var(--ease); }
+  .content-select:hover { border-color: var(--line-strong); }
+  .content-select:focus, .content-select:focus-visible { outline: none; border-color: var(--red); }
+  .content-select option { background: var(--charcoal); color: var(--text-primary); }
+  .content-style-select.content-select { border-radius: var(--radius-sm); padding: 4px 24px 4px 8px; font-size: 12px; background-position: right 8px center; }
   .content-tool { background: none; border: 1px solid transparent; color: var(--text-secondary); border-radius: var(--radius-sm); min-width: 28px; height: 26px; font-size: 13px; cursor: pointer; }
   .content-tool:hover, .content-tool[aria-pressed="true"] { color: var(--white); border-color: var(--line-strong); }
   .content-tool-bold { font-weight: 700; } .content-tool-italic { font-style: italic; }
@@ -1979,6 +1992,22 @@
   .content-actionbar-buttons { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
   .content-actionbar-buttons .btn { width: auto; margin: 0; }
   .content-actionbar-note { font-size: 11px; color: var(--text-tertiary); }
+  .content-actionbar-buttons { margin-left: auto; }
+  .content-unsaved-note { color: var(--amber); }
+  .content-sanity-notes { display: flex; flex-direction: column; gap: 6px; }
+  .content-sanity-recorded { display: flex; flex-direction: column; gap: 4px; padding: 8px 10px; border: 1px dashed var(--line-strong); border-radius: 8px; }
+  .content-sanity-when { font-size: 10.5px; color: var(--text-tertiary); }
+  .content-warning-retired { color: var(--text-secondary); }
+  .content-note-tag { display: block; width: fit-content; margin-top: 3px; font-size: 9.5px; text-transform: uppercase; letter-spacing: .05em; color: var(--text-tertiary); border: 1px solid var(--line-strong); border-radius: 6px; padding: 0 4px; }
+  .content-sanity-notes .content-sanity-check { align-self: flex-start; width: auto; margin: 0; }
+  .content-sanity-current:empty { display: none; }
+  .content-sanity-current { font-size: 11.5px; color: var(--text-secondary); }
+  .content-sanity-findings { display: flex; flex-direction: column; gap: 4px; }
+  .content-finding { position: relative; padding-left: 12px; font-size: 11.5px; line-height: 1.4; }
+  .content-finding::before { content: ""; position: absolute; left: 0; top: 6px; width: 6px; height: 6px; border-radius: 50%; background: var(--green); }
+  .content-finding-ok { color: var(--text-secondary); }
+  .content-finding-warn { color: var(--amber); }
+  .content-finding-warn::before { background: var(--amber); }
   .content-dest { display: flex; align-items: center; gap: 10px; padding: 8px 10px; background: var(--graphite); border: 1px solid var(--line); border-radius: 8px; font-size: 12px; }
   .content-dest-icon { display: inline-flex; width: 18px; height: 18px; color: var(--text-secondary); } .content-dest-icon svg { width: 100%; height: 100%; }
   .content-dest-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
@@ -2025,12 +2054,13 @@
     .content-details-pane { display: none; }
     .content-details-close { display: inline-flex; }
     .content-actionbar { padding-right: var(--content-oyi-clearance); }
-    .content-list { padding-bottom: var(--content-oyi-clearance); }
-    .content-page.content-details-open .content-details-pane { display: flex; position: absolute; right: 0; top: 0; bottom: 0; width: min(340px, 92vw); background: var(--charcoal); z-index: 5; box-shadow: -8px 0 24px rgba(0,0,0,.5); }
+    .content-page.content-details-open .content-details-pane { display: flex; position: absolute; right: 0; top: 0; bottom: var(--content-oyi-clearance); margin-bottom: 0; width: min(340px, 92vw); background: var(--charcoal); z-index: 5; box-shadow: -8px 0 24px rgba(0,0,0,.5); }
   }
   @media (max-width: 860px) {
     .content-page { margin: 0 -16px -120px; }
     .content-list-pane { width: 100%; border-right: none; }
+    /* full-width list on a phone: it stops above the Oyi corner, like the details column */
+    .content-list { margin-bottom: var(--content-oyi-clearance); border-bottom: 1px solid var(--line); }
     .content-main-pane { display: none; }
     .content-page.content-item-open .content-list-pane { display: none; }
     .content-page.content-item-open .content-main-pane { display: flex; width: 100%; }

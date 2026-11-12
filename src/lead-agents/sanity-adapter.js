@@ -218,6 +218,31 @@ async function saveDraftToSanity(item, { readStoredImage } = {}) {
   return { ok: true, document_id: id, warnings, draft_rev: (saved && saved._rev) || null };
 }
 
+// Read-only snapshot of what Sanity holds for a content item right now -- the live and draft documents (cover, author, category) and whether the
+// item's author and category exist in Sanity -- so Office can tell current issues from warnings recorded at an earlier sync. Never writes; a
+// Sanity read error is thrown (the caller reports it) rather than reported as "missing".
+async function inspectSanityPost(item) {
+  const client = sanityClient();
+  if (!client) return { configured: false };
+  const id = item.sanity_document_id || `post-${item.id}`;
+  const [published, draft, authorId, categoryId] = await Promise.all([
+    client.getDocument(id),
+    client.getDocument(`drafts.${id}`),
+    item.author ? client.fetch(`*[_type == "author" && name == $value][0]._id`, { value: item.author }) : null,
+    item.category ? client.fetch(`*[_type == "category" && title == $value][0]._id`, { value: item.category }) : null,
+  ]);
+  const summary = (doc) => (doc ? { exists: true, has_cover: Boolean(doc.coverImage && doc.coverImage.asset), has_author: Boolean(doc.author), has_category: Boolean(doc.category), updated_at: doc._updatedAt || null } : { exists: false });
+  return {
+    configured: true,
+    checked_at: new Date().toISOString(),
+    document_id: id,
+    published: summary(published),
+    draft: summary(draft),
+    author: item.author ? { name: item.author, found: Boolean(authorId) } : null,
+    category: item.category ? { name: item.category, found: Boolean(categoryId) } : null,
+  };
+}
+
 // Publishes: copy the draft's current field values onto the bare
 // (published) id, then remove the draft — the same effect as clicking
 // Publish in Sanity Studio. With expectedDraftRev (the revision
@@ -299,6 +324,7 @@ module.exports = {
   saveDraftToSanity,
   publishToSanity,
   unpublishFromSanity,
+  inspectSanityPost,
   syncDevelopmentProjectToSanity,
   slugify,
   textToPortableText,

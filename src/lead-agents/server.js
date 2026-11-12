@@ -82,7 +82,7 @@ const {
 const { bridgeWorkflow, transitionLinkedWorkflow } = require("./workflow-bridge");
 const { executeGovernedOfficeToolProposals } = require("./office-tool-governance");
 const { listDocumentTemplates, renderDocumentFromTemplate } = require("./office-document-templates");
-const { sanityConfigured, saveDraftToSanity, publishToSanity, unpublishFromSanity, syncDevelopmentProjectToSanity, slugify } = require("./sanity-adapter");
+const { sanityConfigured, saveDraftToSanity, publishToSanity, unpublishFromSanity, inspectSanityPost, syncDevelopmentProjectToSanity, slugify } = require("./sanity-adapter");
 const contentIntegrity = require("./content-integrity");
 const contentImages = require("./content-images");
 // The only audit metadata an article's history exposes (what the content routes write); everything else -- ip, user agent, contract fields -- is never returned.
@@ -412,6 +412,12 @@ function parseDataUrl(value) {
 }
 
 // A cover URL Office can send to Sanity without fetching anything (content-images.js). Legacy values that are not re-submitted stay untouched.
+// Sanity warnings are stored with when and at which step they were recorded, so a warning from an earlier sync is never shown as current.
+// context: "draft_sync" (create/edit) or "publish" (the warnings that applied to the version that went live).
+function sanityWarningsMetadata(warnings, context) {
+  return { sanity_warnings: Array.isArray(warnings) ? warnings : [], sanity_warnings_at: new Date().toISOString(), sanity_warnings_context: context };
+}
+
 function coverImageUrlRefusal(value, kind) {
   const source = contentImages.classifyCoverImageUrl(value, kind, { sanityProjectId: process.env.SANITY_PROJECT_ID, sanityDataset: process.env.SANITY_DATASET });
   if (source.kind !== "unsupported") return null;
@@ -2070,7 +2076,7 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
     if (!publishResult.ok) return { ok: false, status: 502, reason: publishResult.reason || "publish_failed", error: `Sanity publish failed: ${publishResult.reason || "unknown error"}` };
     const liveUrl = `${process.env.OCHIGA_WEBSITE_URL || "https://ochiga.com.ng"}/insights/${item.slug || slugify(item.title)}`;
     // published_at: when this version went live (the Content calendar's only reliable publish date; updated_at moves on every edit)
-    const updated = await store.updateContentItem(item.id, { workflow_status: "published", published_by: publishedBy, sanity_document_id: docId, sanity_live_url: liveUrl, metadata: { ...(item.metadata || {}), published_at: new Date().toISOString() } });
+    const updated = await store.updateContentItem(item.id, { workflow_status: "published", published_by: publishedBy, sanity_document_id: docId, sanity_live_url: liveUrl, metadata: { ...(item.metadata || {}), published_at: new Date().toISOString(), ...sanityWarningsMetadata(draftResult.warnings, "publish") } });
     return { ok: true, item: updated, docId, liveUrl, warnings: draftResult.warnings, sanity: publishResult };
   }
 
@@ -8362,7 +8368,7 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           const item = await store.createContentItem({ ...body, slug: body.slug || slugify(body.title), created_by: authContext?.email || "office" });
           const sanityResult = await saveDraftToSanity(item, { readStoredImage: readOfficeCoverImage }).catch(() => ({ ok: false }));
           const updated = sanityResult.ok
-            ? await store.updateContentItem(item.id, { sanity_document_id: sanityResult.document_id, metadata: { ...item.metadata, sanity_warnings: sanityResult.warnings } })
+            ? await store.updateContentItem(item.id, { sanity_document_id: sanityResult.document_id, metadata: { ...item.metadata, ...sanityWarningsMetadata(sanityResult.warnings, "draft_sync") } })
             : item;
           await appendAudit(store, authContext, "content_created", "office_content_item", item.id, { title: item.title });
           json(res, 201, { item: updated, sanity: sanityResult }, { "x-request-id": ctx.requestId });
@@ -8398,6 +8404,31 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
             details: Object.fromEntries(CONTENT_HISTORY_DETAIL_KEYS.filter((key) => event.metadata && event.metadata[key] !== undefined).map((key) => [key, event.metadata[key]])),
           }));
         json(res, 200, { history }, { "x-request-id": ctx.requestId });
+        return;
+      }
+
+      // What Sanity holds for this article right now (read-only), next to the warnings stored at its last sync. Gated like reading the article.
+      const contentSanityStatusMatch = pathname.match(/^\/api\/lead-agents\/admin\/content\/([^/]+)\/sanity-status$/);
+      if (contentSanityStatusMatch) {
+        if (req.method !== "GET") {
+          methodNotAllowed(res, "GET");
+          return;
+        }
+        authorizePermission(authContext, "content.write");
+        const item = await store.getContentItemById(contentSanityStatusMatch[1]);
+        if (!item) {
+          notFound(res);
+          return;
+        }
+        let status;
+        try {
+          status = await inspectSanityPost(item);
+        } catch (err) {
+          json(res, 502, { error: "Sanity could not be read just now. Try again shortly.", reason: "sanity_read_failed" }, { "x-request-id": ctx.requestId });
+          return;
+        }
+        const cover = contentImages.classifyCoverImageUrl(item.featured_image_url, "content", { sanityProjectId: process.env.SANITY_PROJECT_ID, sanityDataset: process.env.SANITY_DATASET });
+        json(res, 200, { status: { ...status, cover_source: cover.kind } }, { "x-request-id": ctx.requestId });
         return;
       }
 
@@ -8448,7 +8479,7 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
             return;
           }
           const sanityResult = await saveDraftToSanity(item, { readStoredImage: readOfficeCoverImage }).catch(() => ({ ok: false }));
-          if (sanityResult.ok) await store.updateContentItem(contentId, { sanity_document_id: sanityResult.document_id, metadata: { ...item.metadata, sanity_warnings: sanityResult.warnings } });
+          if (sanityResult.ok) await store.updateContentItem(contentId, { sanity_document_id: sanityResult.document_id, metadata: { ...item.metadata, ...sanityWarningsMetadata(sanityResult.warnings, "draft_sync") } });
           await appendAudit(store, authContext, "content_edited", "office_content_item", contentId, { fields: contentIntegrity.CONTENT_FIELDS.filter((field) => field in patch) });
           if (approvalWithdrawn) {
             await appendAudit(store, authContext, "content_approval_withdrawn", "office_content_item", contentId, { title: item.title, reason: "edited_after_approval", previous_status: before.workflow_status, previous_scheduled_publish_at: before.scheduled_publish_at || null });

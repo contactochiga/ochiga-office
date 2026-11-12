@@ -118,8 +118,12 @@ async function main() {
   const pOwnReview = await create("Kappa writer's own post in review");
   await api("writer", "POST", `/content/${pOwnReview}/submit-review`, {});
   const pLegacyLink = (await store.createContentItem({ title: "Lambda legacy image link", body: "Lambda body", slug: "lambda", featured_image_url: "/legacy/old-cover.jpg", created_by: "writer@ochiga.local" })).id; // saved before uploads were required
+  const LONG_TITLE = "Nu: a deliberately long article title about integrated smart-building operating systems, estate security, energy monitoring and resident services across Lagos";
+  const pLongTitle = await create(LONG_TITLE);
+  // published before warnings were dated (the live article's case): the old draft-sync warnings, no time or step recorded
+  await store.updateContentItem(pLegacyPublished, { metadata: { sanity_warnings: ["No matching Sanity author named \"Writer\" — publish without one, or create it in Sanity Studio first.", "Featured image could not be uploaded to Sanity — publishing without a cover image."] } });
   const pDraft = await create("Iota newest draft", { featured_image_url: image, excerpt: "Newest draft excerpt" });
-  const TOTAL = 11;
+  const TOTAL = 12;
 
   const userDir = fs.mkdtempSync(path.join(os.tmpdir(), "content-ws-chrome-"));
   // No back/forward cache: each user switch leaves the previous Office page cached with its notification stream (EventSource) still open, and after
@@ -173,15 +177,26 @@ async function main() {
         const shown = { edit: await rendered(".content-form"), preview: await rendered(".content-preview-pane"), history: await rendered(".content-history-pane") };
         const atCentre = await evalJs(`(() => { const s = document.querySelector('.content-scroll').getBoundingClientRect(); const e = document.elementFromPoint(s.left + s.width / 2, s.top + 40); return e?.closest('[data-panel]')?.dataset.panel || (e?.closest('.content-scroll') ? 'scroll' : 'outside'); })()`);
         ok(Object.entries(shown).every(([m, v]) => v === (m === mode)) && (atCentre === mode || (mode !== "edit" && atCentre === "scroll")), `${label}: ${mode} shows only the ${mode} panel on screen (${JSON.stringify(shown)}, at centre: ${atCentre})`);
+        const bar = await evalJs(`({ save: !!document.querySelector('.content-save-btn'), saveState: (() => { const e = document.querySelector('.content-save-state'); return !!e && getComputedStyle(e).display !== 'none' && e.getBoundingClientRect().width > 0; })(), editNote: [...document.querySelectorAll('.content-actionbar-note')].some((n) => /not republished/.test(n.textContent)), back: !!document.querySelector('.content-back-to-edit'), dirty: document.querySelector('.content-save-state')?.classList.contains('content-dirty') || !!document.querySelector('.content-unsaved-note'), menu: !!document.querySelector('.content-actionbar .portfolio-overflow-trigger') })`);
+        const barOk = mode === "edit" ? bar.save && bar.menu && !bar.back : !bar.save && !bar.saveState && !bar.editNote && bar.menu && bar.back === bar.dirty;
+        ok(barOk, `${label}: the ${mode} action bar ${mode === "edit" ? "has Save" : "has no Save or editing notes" + (bar.dirty ? ", and offers Back to Edit for the unsaved changes" : "")} (${JSON.stringify(bar)})`);
       }
     };
     // controls the floating Oyi orb covers (the details pane scrolled to its end, where its last controls are)
     const underOrb = async () => {
-      await evalJs(`(() => { const d = document.querySelector('.content-details-pane'); if (d) d.scrollTop = d.scrollHeight; })()`);
-      await sleep(100);
-      return evalJs(`(() => { const orb = document.getElementById('oyiBar'); if (!orb || !orb.offsetParent) return ['orb not shown']; const o = orb.getBoundingClientRect();
-        return [...document.querySelectorAll('.content-page button, .content-page a, .content-page summary, .content-page select, .content-page input:not([type=hidden])')].filter((e) => { const r = e.getBoundingClientRect(); return e.offsetParent && r.width && r.height && getComputedStyle(e).visibility !== 'hidden' && r.left < o.right && r.right > o.left && r.top < o.bottom && r.bottom > o.top && e.closest('.content-actionbar, .content-details-pane, .content-hero-actions, .content-list'); }).map((e) => e.textContent.trim().slice(0, 30) || e.className); })()`);
+      const hits = [];
+      for (const where of ["top", "end"]) {
+        await evalJs(`(() => { const d = document.querySelector('.content-details-pane'); if (d) d.scrollTop = ${where === "top" ? 0 : "d.scrollHeight"}; })()`);
+        await sleep(100);
+        hits.push(...(await underOrbNow()).map((h) => `${where}: ${h}`));
+      }
+      return hits;
     };
+    // also any text in the details pane (workflow information), not only controls
+    const underOrbNow = () => evalJs(`(() => { const orb = document.getElementById('oyiBar'); if (!orb || !orb.offsetParent) return ['orb not shown']; const o = orb.getBoundingClientRect();
+        const visible = (e) => { const r = e.getBoundingClientRect(); const clip = e.closest('.content-details-pane, .content-list, .content-scroll'); const c = clip ? clip.getBoundingClientRect() : { top: -1e9, bottom: 1e9 }; return { left: r.left, right: r.right, top: Math.max(r.top, c.top), bottom: Math.min(r.bottom, c.bottom), w: r.width }; };
+        return [...document.querySelectorAll('.content-page button, .content-page a, .content-page summary, .content-page select, .content-page input:not([type=hidden])')].filter((e) => { const r = visible(e); return e.offsetParent && r.w && r.bottom > r.top && getComputedStyle(e).visibility !== 'hidden' && r.left < o.right && r.right > o.left && r.top < o.bottom && r.bottom > o.top && e.closest('.content-actionbar, .content-details-pane, .content-hero-actions, .content-list'); }).map((e) => e.textContent.trim().slice(0, 30) || e.className)
+          .concat([...document.querySelectorAll('.content-details-pane .rel-fact, .content-details-pane .content-history-item, .content-details-pane .content-dest, .content-details-pane .content-warning, .content-details-pane summary')].filter((e) => { const r = e.getBoundingClientRect(); const d = document.querySelector('.content-details-pane').getBoundingClientRect(); const top = Math.max(r.top, d.top), bottom = Math.min(r.bottom, d.bottom); return e.offsetParent && bottom > top && r.left < o.right && r.right > o.left && top < o.bottom && bottom > o.top; }).map((e) => 'info: ' + e.textContent.trim().slice(0, 30))); })()`);
     const select = async (postId) => { await evalJs(`location.hash = '#/content/${postId}'`); await waitFor(`document.querySelector('.content-form [name=title]') && document.querySelector('.content-row.active')?.dataset.contentId === '${postId}'`, `post ${postId} selected`); };
 
     await send("Page.enable"); await send("Runtime.enable"); await send("Network.enable");
@@ -205,6 +220,7 @@ async function main() {
     await waitFor(`document.querySelectorAll('#contentDetails .content-history-item').length > 0`, "recent activity");
     ok(/Created/.test(await text("#contentDetails .content-activity")), "compact recent activity in the details pane");
     await shot("content-posts-desktop.png");
+    ok(await evalJs(`(() => { const s = getComputedStyle(document.querySelector('#contentStatusFilter')), q = getComputedStyle(document.querySelector('#contentSearch')), t = getComputedStyle(document.querySelector('#contentTimeFilter')); return s.appearance === 'none' && t.appearance === 'none' && s.borderRadius === q.borderRadius && s.backgroundColor === q.backgroundColor && s.fontSize === q.fontSize && s.backgroundImage.includes('svg'); })()`), "status and time dropdowns use the Office field style (search field surface, radius and size, drawn chevron)");
     const coveredDesktop = await underOrb();
     ok(coveredDesktop.length === 0, `desktop: no Content control is under the Oyi orb (${JSON.stringify(coveredDesktop)})`);
 
@@ -234,6 +250,10 @@ async function main() {
     ok((await text(".content-save-state")) === "Unsaved changes" && (await evalJs(`document.querySelector('.content-primary-action').disabled && !document.querySelector('.content-save-btn').disabled`)), "an edit marks unsaved changes; workflow actions wait for Save");
     await evalJs(`document.querySelector('.content-mode[data-mode=preview]').click()`);
     ok(await evalJs(`!!document.querySelector('.content-preview-pane h2 strong')`) && !(await rendered(".content-form")) && (await rendered(".content-preview-pane")), "Preview renders the unsaved editor content, and the form is not on screen");
+    ok(await evalJs(`!document.querySelector('.content-save-btn') && !!document.querySelector('.content-back-to-edit') && /Unsaved changes/.test(document.querySelector('.content-actionbar').textContent) && document.querySelector('.content-primary-action').disabled`), "with unsaved edits, Preview offers Back to Edit (no Save) and workflow actions stay blocked");
+    await evalJs(`document.querySelector('.content-back-to-edit').click()`);
+    ok(await rendered(".content-form") && (await evalJs(`!!document.querySelector('.content-save-btn') && !document.querySelector('.content-save-btn').disabled`)), "Back to Edit returns to the form with Save available, edits intact");
+    await evalJs(`document.querySelector('.content-mode[data-mode=preview]').click()`);
     await modeCheck("desktop");
     await evalJs(`document.querySelector('.content-tool-full').click()`);
     ok(await evalJs(`document.querySelector('.content-page').classList.contains('content-focus') && getComputedStyle(document.querySelector('.content-list-pane')).display === 'none'`), "Full screen hides the list and details");
@@ -263,6 +283,20 @@ async function main() {
     await select(pLegacyLink);
     ok(/not an Office upload, so it is not sent to the website/.test(await text(".content-hero-legacy")) && (await rendered(".content-hero-legacy")), "a cover saved as a link says it is not sent to the website and to upload it");
     ok(/^Created by writer@ochiga\.local · last updated /.test(await text(".content-head-sub")), "the header names the creator as 'Created by' (no last-editor attribution is claimed)");
+
+    // 5c. Long titles wrap beside the badge; the list row keeps two lines
+    await select(pLongTitle);
+    const head = await evalJs(`(() => { const t = document.querySelector('.content-head-title'), b = document.querySelector('.content-head-badge'), h = document.querySelector('.content-head'); const lh = parseFloat(getComputedStyle(t).lineHeight); return { lines: Math.round(t.getBoundingClientRect().height / lh), badgeInside: b.getBoundingClientRect().right <= h.getBoundingClientRect().right + 1 && b.getBoundingClientRect().width > 0, overflow: h.scrollWidth > h.clientWidth + 1, tip: t.title }; })()`);
+    ok(head.lines >= 2 && head.lines <= 3 && head.badgeInside && !head.overflow && head.tip === LONG_TITLE, `a long title wraps (at most three lines, full title on hover) with the badge beside it (${JSON.stringify(head)})`);
+    const rowLines = await evalJs(`(() => { const t = document.querySelector('.content-row[data-content-id="${pLongTitle}"] .content-row-title'); return Math.round(t.getBoundingClientRect().height / parseFloat(getComputedStyle(t).lineHeight)); })()`);
+    ok(rowLines === 2, `the list row shows a long title on two lines (${rowLines})`);
+
+    // 5d. Warnings recorded at an earlier sync are labelled as such; "Check Sanity now" reports the current state, read-only
+    await select(pLegacyPublished);
+    ok(/before 12 Nov 2026/.test(await text("#contentDetails .content-sanity-when")) && /before this version was published/.test(await text("#contentDetails .content-sanity-when")) && /Earlier image method, replaced 12 Nov 2026/.test(await text("#contentDetails .content-warning-retired")), "an undated warning on a published post is labelled as recorded at an earlier sync, before publishing; the retired image message is marked");
+    await evalJs(`document.querySelector('.content-sanity-check').click()`);
+    await waitFor(`/Read-only/.test(document.querySelector('.content-sanity-current')?.textContent || '')`, "sanity check");
+    ok(/No live article was found in Sanity/.test(await text(".content-sanity-current")) && /Author "Writer" does not exist in Sanity/.test(await text(".content-sanity-current")), "Check Sanity now lists what Sanity holds now (here: no live document, no such author)");
 
     // 6. Edit after approval: withdrawal notice now and after a reload
     await select(pApprovedEdit);
@@ -394,6 +428,8 @@ async function main() {
     await viewport(390, 844, true);
     await open("content", `!!document.querySelector('.content-list-pane')`, "phone list");
     ok(await evalJs(`getComputedStyle(document.querySelector('.content-main-pane')).display === 'none' && document.querySelector('.content-list-pane').getBoundingClientRect().width >= 350`), "on a phone the list is shown first, full width");
+    const coveredPhoneList = await evalJs(`(() => { const orb = document.getElementById('oyiBar'); const o = orb.getBoundingClientRect(); const list = document.querySelector('.content-list').getBoundingClientRect(); return [...document.querySelectorAll('.content-list .content-row, .content-list button')].filter((e) => { const r = e.getBoundingClientRect(); const top = Math.max(r.top, list.top), bottom = Math.min(r.bottom, list.bottom); return bottom > top && r.left < o.right && r.right > o.left && top < o.bottom && bottom > o.top; }).map((e) => e.textContent.trim().slice(0, 30)); })()`);
+    ok(coveredPhoneList.length === 0, `phone: no list row or control is under the Oyi orb (${JSON.stringify(coveredPhoneList)})`);
     await shot("content-phone-list.png");
     await evalJs(`document.querySelector('.content-row[data-content-id="${pScheduled}"]').click()`);
     await waitFor(`getComputedStyle(document.querySelector('.content-main-pane')).display !== 'none' && document.querySelector('.content-form [name=title]')?.value === 'Gamma scheduled post'`, "phone editor");
