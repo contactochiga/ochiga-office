@@ -9,6 +9,7 @@
 // activity from the original event later. Nothing here ever sends a message, and original events are never modified or deleted.
 
 const { createCorporateRecord } = require("./office-operating-system");
+const { describeInboundMessage } = require("./whatsapp-media");
 
 const LEGACY_MATCH_WINDOW_MS = 10_000;
 
@@ -27,6 +28,13 @@ function inboundMessageText(payload) {
   if (candidate) return candidate;
   const type = clean(p.type) || "unknown";
   return `[${type} message — content not available in Office]`;
+}
+
+// What staff see for a message: the customer's text or caption (video captions included), else the same honest placeholder. Display only -- the legacy
+// one-to-one match below keeps using inboundMessageText unchanged, so records written before this change still pair with their events exactly as before.
+function inboundDisplayText(payload) {
+  const described = describeInboundMessage(payload);
+  return described.text || described.caption || inboundMessageText(payload);
 }
 
 function inboundOccurredAt(inboundEvent) {
@@ -81,6 +89,8 @@ async function recordInboundActivity(store, { lead, event, inboundEvent, request
       if (existing) return { ok: true, activity: existing, created: false };
     }
     const payload = inboundEvent?.payload || event?.raw || {};
+    const fallbackPayload = Object.keys(payload).length ? payload : { type: event?.message_type, text: { body: event?.text } };
+    const described = describeInboundMessage(fallbackPayload);
     const activity = await createCorporateRecord(
       store,
       "activities",
@@ -90,7 +100,7 @@ async function recordInboundActivity(store, { lead, event, inboundEvent, request
         related_id: lead.id,
         activity_type: "whatsapp_message",
         title: "WhatsApp message",
-        body: inboundMessageText(Object.keys(payload).length ? payload : { type: event?.message_type, text: { body: event?.text } }).slice(0, 2000),
+        body: inboundDisplayText(fallbackPayload).slice(0, 2000),
         source: "whatsapp",
         occurred_at: inboundOccurredAt(inboundEvent || { payload: { timestamp: event?.timestamp }, created_at: new Date().toISOString() }),
         metadata: {
@@ -100,6 +110,10 @@ async function recordInboundActivity(store, { lead, event, inboundEvent, request
           provider_message_id: providerId || null,
           source_event_id: inboundEvent?.id || null,
           message_type: clean(payload.type || event?.message_type) || null,
+          // kept distinct: typed text, caption and media metadata (no bytes, no URL; nothing downloaded yet)
+          ...(described.caption ? { caption: described.caption } : {}),
+          ...(described.attachments.length ? { attachments: described.attachments } : {}),
+          customer_text_present: Boolean(described.text || described.caption),
           request_id: requestId || null,
           ai_replied: false,
           recorded_by: "inbound_webhook",
@@ -215,4 +229,4 @@ async function repairInboundVisibility(store, { dryRun = true, limit = 1000, log
   return { ...report, invalid: plan.invalid_records, conflicts: plan.conflicting_lead_groups };
 }
 
-module.exports = { planInboundVisibilityRepair, REPAIR_CLAIM_PREFIX, inboundMessageText, inboundOccurredAt, activityProviderId, matchLegacyActivities, recordInboundActivity, annotateInboundActivity, findMissingInboundActivities, repairInboundVisibility, LEGACY_MATCH_WINDOW_MS };
+module.exports = { planInboundVisibilityRepair, REPAIR_CLAIM_PREFIX, inboundMessageText, inboundDisplayText, inboundOccurredAt, activityProviderId, matchLegacyActivities, recordInboundActivity, annotateInboundActivity, findMissingInboundActivities, repairInboundVisibility, LEGACY_MATCH_WINDOW_MS };

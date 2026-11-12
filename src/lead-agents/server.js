@@ -133,6 +133,7 @@ const { createOfficeSyncService } = require("./office-sync");
 const { appendAuditRecord } = require("./audit");
 const { PERMISSION_KEYS, ROLE_PERMISSIONS, hasPermission } = require("./permissions");
 const relationshipWorkspace = require("./relationship-workspace");
+const whatsappMedia = require("./whatsapp-media");
 const { handleCatalogueRequest } = require("./catalogue-api");
 const { handlePublicCatalogueRequest } = require("./catalogue-public-api");
 const signatureStats = require("./webhook-signature-stats");
@@ -1716,13 +1717,21 @@ async function suppressAutonomousWhatsAppReply({ store, lead, event, requestId, 
     event_type: "whatsapp_autonomous_reply_suppressed",
     actor: "ochiga_intelligence",
     title: "WhatsApp autonomous reply not sent",
-    body: reason === "autonomous_whatsapp_disabled" ? "Autonomous WhatsApp responses are switched off in Office settings." : reason === "setting_unreadable" ? "The autonomous-response setting could not be read, so no reply was sent." : ["claim_unavailable", "no_provider_message_id", "reply_already_sent"].includes(reason) ? "The message could not be safely de-duplicated, or a reply was already sent, so no automatic reply was sent." : "A human has taken over this conversation.",
+    body: reason === "autonomous_whatsapp_disabled" ? "Autonomous WhatsApp responses are switched off in Office settings." : reason === "setting_unreadable" ? "The autonomous-response setting could not be read, so no reply was sent." : ["claim_unavailable", "no_provider_message_id", "reply_already_sent"].includes(reason) ? "The message could not be safely de-duplicated, or a reply was already sent, so no automatic reply was sent." : AUTOMATIC_REPLY_CONTENT_REASONS[reason] || "A human has taken over this conversation.",
     metadata: { request_id: requestId, reason, stage },
   }).catch(() => null);
   // The customer's message already has its canonical CRM record (written on intake, independent of any reply decision); this only records WHY no reply was sent.
   await inboundVisibility.annotateInboundActivity(store, { lead, event, requestId, patch: { ai_replied: false, suppressed_reason: reason }, log });
   return { kind: "message", lead_id: lead.id, suppressed: true, reason, ...(paused ? { paused: true } : {}) };
 }
+
+// Reasons a message's own content rules out an automatic reply (Slice 3.1). The message stays in the CRM, unanswered (so the inbox keeps it unread), with this note.
+const AUTOMATIC_REPLY_CONTENT_REASONS = Object.freeze({
+  opt_out_requested: "The customer asked not to be contacted, so no automatic reply was sent.",
+  opted_out: "This customer has opted out of messages, so no automatic reply was sent.",
+  media_without_text: "The customer sent media without any text. Oyi cannot see media, so no automatic reply was sent; a team member should review it.",
+  no_customer_text: "The message has no text Oyi can read (for example a location, contact card or reaction), so no automatic reply was sent; a team member should review it.",
+});
 
 // message ids currently being processed in this process (a concurrent retry of the same Meta delivery must not draw a second reply)
 const inflightWhatsAppMessageIds = new Set();
@@ -1792,6 +1801,11 @@ async function processWhatsAppEvent({ event, store, adapter, config, requestId }
 }
 
 async function processWhatsAppMessageEvent({ event, store, adapter, config, requestId, claim }) {
+  // what the customer sent: typed text, caption and media metadata, kept distinct (whatsapp-media.js); the raw provider object is the source when present
+  const described = event.raw && typeof event.raw === "object" && typeof event.raw.type === "string" && event.raw.type
+    ? whatsappMedia.describeInboundMessage(event.raw)
+    : { message_type: event.message_type || "text", text: event.text || "", caption: event.caption || "", attachments: Array.isArray(event.attachments) ? event.attachments : [] };
+  const customerText = whatsappMedia.customerAuthoredText(described);
   const lead = await resolveLeadForChannel(store, event.from, "whatsapp");
   log("info", "whatsapp_webhook.thread_resolved", { request_id: requestId, lead_id: lead.id });
   await store.updateLead(lead.id, {
@@ -1835,7 +1849,9 @@ async function processWhatsAppMessageEvent({ event, store, adapter, config, requ
         provider_event_type: "message",
         provider_message_id: event.message_id,
         from: event.from,
-        text: event.text || "",
+        // typed text only; the caption and media metadata travel in their own fields (never a placeholder, never media bytes or URLs)
+        text: described.text,
+        ...whatsappMedia.backendMessageFields(described),
         lead_id: lead.id,
         occurred_at: new Date(Number(event.timestamp || 0) * 1000 || Date.now()).toISOString(),
       },
@@ -1888,6 +1904,14 @@ async function processWhatsAppMessageEvent({ event, store, adapter, config, requ
   const claimBlock = claim.status === "unavailable" ? "claim_unavailable" : claim.status === "no_message_id" ? "no_provider_message_id" : claim.reply_sent ? "reply_already_sent" : null;
   if (claimBlock) return withCrmStatus(await suppressAutonomousWhatsAppReply({ store, lead, event, requestId, reason: claimBlock, stage: "before_generation" }));
 
+  // The message's own content, before any reply is generated: an opt-out request (typed or as a caption), a sender Backend reports as opted out, or a
+  // message with no customer-authored text (media without a caption, location, contacts, reaction...) never draws an automatic reply.
+  const contentBlock = whatsappMedia.isOptOutRequest(customerText) ? "opt_out_requested"
+    : forwardResult.optedOut ? "opted_out"
+    : !customerText ? (described.attachments.length ? "media_without_text" : "no_customer_text")
+    : null;
+  if (contentBlock) return withCrmStatus(await suppressAutonomousWhatsAppReply({ store, lead, event, requestId, reason: contentBlock, stage: "before_generation" }));
+
   // Global autonomy switch: OFF (or unreadable) means no autonomous reply is generated or sent. The inbound message stays stored and visible in the CRM.
   const earlyPolicy = await evaluateAutonomousWhatsAppPolicy(store);
   if (!earlyPolicy.allowed) {
@@ -1898,12 +1922,12 @@ async function processWhatsAppMessageEvent({ event, store, adapter, config, requ
     source_site: "whatsapp",
     source_channel: "whatsapp",
     lead_id: lead.id,
-    message: event.text || "",
+    message: customerText,
     lead_stage: lead.status || lead.commercial_stage || "exploring",
   });
   const oyiCoreRequest = buildOyiCoreCorporateConversationRequest({
     session,
-    message: event.text || "",
+    message: customerText,
     lead,
     body: {
       source: "whatsapp",
@@ -1911,6 +1935,8 @@ async function processWhatsAppMessageEvent({ event, store, adapter, config, requ
     },
     requestId,
   });
+  // the turn's media is described structurally (never as words in the customer's message): Oyi answers the caption and can tell media was attached
+  if (described.attachments.length) oyiCoreRequest.metadata.inbound_message = { message_type: described.message_type, caption_present: Boolean(described.caption), attachment_kinds: described.attachments.map((a) => a.kind) };
   const oyiCoreResult = await callOyiCoreCorporateConversation(config, oyiCoreRequest);
   const assistantMessage = oyiCoreResult.ok
     ? oyiCoreResult.response.answer

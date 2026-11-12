@@ -80,6 +80,10 @@ const TIMELINE_REASON_TEXT = {
   human_takeover_active: "A human has taken over this conversation, so no automatic reply was sent.",
   ai_paused: "Oyi is paused for this conversation, so no automatic reply was sent.",
   deferred_to_goal: "An active follow-up goal owns this conversation, so Office sent no separate reply.",
+  opt_out_requested: "The customer asked not to be contacted, so no automatic reply was sent.",
+  opted_out: "This customer has opted out of messages, so no automatic reply was sent.",
+  media_without_text: "Media without text: Oyi cannot see media, so no automatic reply was sent. A team member should review it.",
+  no_customer_text: "No readable text (for example a location, contact card or reaction), so no automatic reply was sent. A team member should review it.",
 };
 
 function entryId(kind, table, id) {
@@ -220,7 +224,7 @@ function buildThread({ lead, conversations = [], timeline = [], activities = [],
       sender: "customer",
       sender_type: "customer",
       origin: "customer",
-      text: visibility.inboundMessageText(ev.payload),
+      text: visibility.inboundDisplayText(ev.payload),
       occurred_at: visibility.inboundOccurredAt(ev),
       delivery: { state: "not_applicable", verified: false },
       provider_message_id: providerId || null,
