@@ -175,6 +175,8 @@ function createConfig() {
     metaSocialPostsSyncEnabled: process.env.OFFICE_META_POSTS_SYNC_ENABLED === "true",
     // Staff hide/unhide of public comments with read-back confirmation (C3). No deletion, no replies, nothing automatic.
     metaSocialCommentsModerationEnabled: process.env.OFFICE_META_COMMENTS_MODERATION_ENABLED === "true",
+    // Sample Facebook/Instagram posts in Content, clearly marked, only while no Page or Instagram account is connected. Never stored or sent.
+    contentSocialDemoEnabled: process.env.OFFICE_CONTENT_SOCIAL_DEMO_ENABLED === "true",
     metaSocialOperatorIds: stringListFromEnv(process.env.OFFICE_META_SOCIAL_OPERATOR_IDS)
       .filter((id) => /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(id)).map((id) => id.toLowerCase()),
     metaSocialGraphVersion: process.env.META_SOCIAL_GRAPH_VERSION || "",

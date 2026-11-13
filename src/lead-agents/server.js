@@ -12,6 +12,7 @@ const { handleMetaSocialWebhook } = require("./meta-social-inbound");
 const { createMetaSocialReplyAdapter, replyPolicy, sendSocialReply } = require("./meta-social-replies");
 const { createMetaSocialPostsAdapter } = require("./meta-social-posts");
 const { createMetaSocialModerationAdapter, moderateComment, reconcileModeration } = require("./meta-social-moderation");
+const { demoPosts, isDemoId } = require("./content-social-demo");
 const { createStore } = require("./store-factory");
 const { OpenAIResponsesClient } = require("./openai");
 const { ToolExecutor } = require("./tools");
@@ -8512,7 +8513,7 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
         if (!config.metaSocialCommentsModerationEnabled) { json(res, 403, { error: "moderation_disabled" }); return; }
         const [, postId, commentId, actionId] = moderationMatch;
         const uuid = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i;
-        const found = uuid.test(postId) && uuid.test(commentId) ? await store.getSocialPost(postId) : null;
+        const found = uuid.test(postId) && uuid.test(commentId) && !isDemoId(postId) ? await store.getSocialPost(postId) : null;
         const comment = found?.comments.find((c) => c.id === commentId);
         if (!found || !comment) { json(res, 404, { error: "comment_not_found" }); return; }
         const assetFor = (channel) => (channel === "facebook" ? config.facebookPageId : config.instagramBusinessAccountId);
@@ -8564,12 +8565,19 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           sync_status: post.sync_status || "not_synced", synced_at: post.synced_at || null, unavailable_since: post.unavailable_since || null,
           comment_counts: counts(comments || []) });
         const isUuid = (v) => /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(v || "");
+        // connected = Page/Instagram credentials are configured; demonstration = sample data while nothing is connected.
+        const channels = { facebook: metaSocialPostsAdapter.configured("facebook"), instagram: metaSocialPostsAdapter.configured("instagram") };
+        const live = channels.facebook || channels.instagram;
+        const demo = !live && Boolean(config.contentSocialDemoEnabled);
+        const connection = { state: live ? "connected" : demo ? "demonstration" : "disconnected", channels,
+          comments_inbound: !demo && Boolean(config.metaSocialCommentsInboundEnabled), post_sync: !demo && Boolean(config.metaSocialPostsSyncEnabled),
+          moderation: !demo && Boolean(config.metaSocialCommentsModerationEnabled) && live, replies: false, publishing: false };
 
         if (isSync) {
           if (req.method !== "POST") { methodNotAllowed(res, "POST"); return; }
           authorizePermission(authContext, "content.write");
           if (authContext?.type !== "session") { json(res, 403, { error: "staff_session_required" }); return; }
-          if (!config.metaSocialPostsSyncEnabled) { json(res, 403, { error: "social_sync_disabled" }); return; }
+          if (!config.metaSocialPostsSyncEnabled || demo) { json(res, 403, { error: "social_sync_disabled" }); return; }
           if (socialSyncBusy) { json(res, 409, { error: "social_sync_in_progress" }); return; }
           socialSyncBusy = true;
           try {
@@ -8606,13 +8614,27 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
 
         if (req.method !== "GET") { methodNotAllowed(res, "GET"); return; }
         authorizePermission(authContext, "content.write");
-        if (!postId) {
-          const posts = await store.listSocialPosts({ limit: 100 });
-          json(res, 200, { enabled: Boolean(config.metaSocialCommentsInboundEnabled), sync_enabled: Boolean(config.metaSocialPostsSyncEnabled),
-            posts: posts.map((p) => postView(p, p.comments)) }, { "x-request-id": ctx.requestId });
+        if (demo) {
+          // Demonstration: sample posts only, never stored rows; sync and moderation stay off.
+          const samples = demoPosts();
+          if (!postId) { json(res, 200, { enabled: false, sync_enabled: false, connection, posts: samples.map((d) => d.post) }, { "x-request-id": ctx.requestId }); return; }
+          const sample = samples.find((d) => d.post.id === postId);
+          if (!sample) { json(res, 404, { error: "social_post_not_found" }, { "x-request-id": ctx.requestId }); return; }
+          json(res, 200, { enabled: false, sync_enabled: false, moderation_enabled: false, connection, post: sample.post, comments: sample.comments }, { "x-request-id": ctx.requestId });
           return;
         }
-        const found = isUuid(postId) ? await store.getSocialPost(postId) : null;
+        if (!postId) {
+          // Before the Content social tables exist (or while they cannot be read) the status still renders; stored posts are marked unavailable.
+          let posts = [], postsUnavailable = false;
+          try { posts = await store.listSocialPosts({ limit: 100 }); } catch (error) {
+            postsUnavailable = true;
+            log("error", "content_social_posts.unreadable", { request_id: ctx.requestId, error: String(error?.message || error).slice(0, 120) });
+          }
+          json(res, 200, { enabled: Boolean(config.metaSocialCommentsInboundEnabled), sync_enabled: Boolean(config.metaSocialPostsSyncEnabled) && !postsUnavailable, connection,
+            posts_unavailable: postsUnavailable, posts: posts.map((p) => postView(p, p.comments)) }, { "x-request-id": ctx.requestId });
+          return;
+        }
+        const found = isUuid(postId) && !isDemoId(postId) ? await store.getSocialPost(postId) : null;
         if (!found) { json(res, 404, { error: "social_post_not_found" }, { "x-request-id": ctx.requestId }); return; }
         const actions = await store.listCommentModerationActions(found.comments.map((c) => c.id)).catch(() => []);
         const latest = new Map();
@@ -8621,6 +8643,7 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           enabled: Boolean(config.metaSocialCommentsInboundEnabled),
           sync_enabled: Boolean(config.metaSocialPostsSyncEnabled),
           moderation_enabled: Boolean(config.metaSocialCommentsModerationEnabled),
+          connection,
           post: postView(found.post, found.comments),
           comments: found.comments.map((c) => {
             const a = latest.get(c.id);

@@ -7730,21 +7730,37 @@ async function renderContentRoute(outlet, rest, token) {
 // Content → Comments: public comments on Facebook Page and Instagram posts, shown with the post they belong to. Read-only in this
 // slice (no replies or moderation). Comments are never CRM leads and never linked to Messenger/Instagram DM conversations.
 function contentCommentsAvailable() {
-  return Boolean(contentState.social && (contentState.social.enabled || contentState.social.posts.length));
+  return Boolean(contentState.social && (contentState.social.connection || contentState.social.enabled || contentState.social.posts.length));
 }
 const SOCIAL_CHANNEL = { facebook: { label: "Facebook Page", cls: "rel-src-fb", glyph: "f" }, instagram: { label: "Instagram", cls: "rel-src-ig", glyph: "IG" } };
+// Connection state of the Facebook Page / Instagram account, as reported by the API: connected, disconnected or demonstration.
+function contentSocialConnection() {
+  const c = contentState.social?.connection;
+  return c && ["connected", "disconnected", "demonstration"].includes(c.state) ? c : { state: "disconnected", channels: {} };
+}
+function contentSocialStatusChip() {
+  const c = contentSocialConnection();
+  if (c.state === "demonstration") return el(`<span class="content-connection content-connection-demo" data-connection="demonstration" role="status">${badge("Demonstration", "warning")}<span>Sample posts and comments, not from your Facebook Page or Instagram. Nothing is synced or sent.</span></span>`);
+  if (c.state === "connected") {
+    const names = ["facebook", "instagram"].filter((k) => c.channels?.[k]).map((k) => SOCIAL_CHANNEL[k].label).join(" and ");
+    return el(`<span class="content-connection" data-connection="connected" role="status">${badge("Connected", "success")}<span>${escapeHtml(names)}.${c.moderation ? "" : " Hiding comments is off."} Replies and publishing are not enabled.</span></span>`);
+  }
+  return el(`<span class="content-connection" data-connection="disconnected" role="status">${badge("Not connected", "default")}<span>Facebook and Instagram posts appear here once the Page and Instagram account are connected.</span></span>`);
+}
+const contentDemoNotice = () => el(`<div class="content-notice content-notice-warn content-demo-notice" role="note" data-connection="demonstration"><div class="content-notice-text"><b>Demonstration.</b> This is sample data, not a real Facebook or Instagram post. Nothing here is stored, synced, hidden or sent.</div></div>`);
 
 async function renderContentComments(host, selectedId, token) {
   const social = contentState.social || { enabled: false, posts: [] };
-  if (!contentCommentsAvailable()) {
-    host.appendChild(el(`<div class="content-not-connected" data-panel-kind="comments"><b>Not connected</b><span>Comments from Facebook and Instagram are not collected yet.</span></div>`));
+  if (!contentCommentsAvailable() || (contentSocialConnection().state === "disconnected" && !social.posts.length)) {
+    host.appendChild(el(`<div class="content-not-connected" data-panel-kind="comments" data-connection="disconnected"><b>Not connected</b><span>Comments from Facebook and Instagram are not collected yet. They appear here, under their post, once the Page and Instagram account are connected.</span></div>`));
     return;
   }
+  if (contentSocialConnection().state === "demonstration") host.appendChild(contentDemoNotice());
   const layout = el(`<div class="content-comments"><div class="content-comments-posts" role="list" aria-label="Posts with comments"></div><div class="content-comments-thread"></div></div>`);
   host.appendChild(layout);
   const list = layout.querySelector(".content-comments-posts");
   const thread = layout.querySelector(".content-comments-thread");
-  if (!social.enabled) list.appendChild(el(`<p class="home-panel-empty">Collection is switched off. Stored comments are shown read-only.</p>`));
+  if (!social.enabled && contentSocialConnection().state !== "demonstration") list.appendChild(el(`<p class="home-panel-empty">Collection is switched off. Stored comments are shown read-only.</p>`));
   if (!social.posts.length) {
     list.appendChild(el(`<p class="home-panel-empty">No Facebook or Instagram post has received a comment yet.</p>`));
     thread.appendChild(el(`<p class="home-panel-empty">Comments appear here, under the post they were left on.</p>`));
@@ -7774,7 +7790,7 @@ async function renderContentComments(host, selectedId, token) {
   if (token !== state.renderToken) return;
   thread.innerHTML = "";
   const ch = SOCIAL_CHANNEL[detail.post.channel] || SOCIAL_CHANNEL.facebook;
-  thread.appendChild(el(`<div class="content-comments-head"><b>${escapeHtml(contentSocialTitle(detail.post))}</b><span>${escapeHtml(ch.label)}${detail.post.origin === "office" ? " · published from Office" : " · published outside Office"}</span>
+  thread.appendChild(el(`<div class="content-comments-head"><b>${escapeHtml(contentSocialTitle(detail.post))}</b><span>${escapeHtml(ch.label)}${detail.post.demo ? " · sample post" : detail.post.origin === "office" ? " · published from Office" : " · published outside Office"}</span>
     <span class="content-comments-readonly">${detail.moderation_enabled && hasPermission("content.review") ? "Staff with review permission can hide or unhide comments. Replies are not enabled yet." : "Read-only. Replying and hiding comments are not enabled here."}</span></div>`));
   const threadHost = el(`<div class="content-comments-list"></div>`);
   thread.appendChild(threadHost);
@@ -7872,7 +7888,7 @@ function drawContentList() {
 // they never open the editor, enter the approval workflow or publish. Comments shown with them are public comments, never CRM leads or DMs.
 const SOCIAL_SYNC_LABEL = { not_synced: ["Not synced", "default"], synced: ["Synced", "success"], unavailable: ["No longer available", "warning"], restricted: ["Access restricted", "danger"], error: ["Sync failed", "warning"] };
 function contentSocialAvailable() {
-  return Boolean(contentState.social && (contentState.social.enabled || contentState.social.sync_enabled || contentState.social.posts.length));
+  return Boolean(contentState.social && (contentState.social.connection || contentState.social.enabled || contentState.social.sync_enabled || contentState.social.posts.length));
 }
 function contentSocialTitle(post) {
   const ch = SOCIAL_CHANNEL[post.channel] || SOCIAL_CHANNEL.facebook;
@@ -7908,7 +7924,7 @@ function contentSocialRow(post) {
         <div class="content-row-top"><span class="content-row-title">${escapeHtml(contentSocialTitle(post))}</span><span class="rel-row-time">${escapeHtml(when ? fmtRelative(when) : "")}</span></div>
         <div class="content-row-meta">
           <span class="rel-chip content-source-chip" data-source-chip="${escapeHtml(post.channel)}">${escapeHtml(ch.label)}</span>
-          ${badge(syncLabel, syncTone)}
+          ${post.demo ? badge("Sample", "warning") : badge(syncLabel, syncTone)}
           ${count ? `<span class="rel-chip">${count} comment${count === 1 ? "" : "s"}</span>` : ""}
         </div>
       </div>
@@ -7927,9 +7943,11 @@ function contentSetupSocialBar(page) {
   source.value = contentState.source;
   source.addEventListener("change", (e) => { contentState.source = e.target.value; drawContentList(); });
   facets.appendChild(source);
-  if (!contentState.social.sync_enabled || !hasPermission("content.write")) return;
   const bar = page.querySelector("#contentSocialBar");
   bar.hidden = false;
+  bar.appendChild(contentSocialStatusChip());
+  if (contentState.social.posts_unavailable) bar.appendChild(el(`<span class="rel-faint content-social-status" data-posts-unavailable role="status">Stored Facebook and Instagram posts could not be loaded.</span>`));
+  if (!contentState.social.sync_enabled || !hasPermission("content.write")) return;
   const btn = el(`<button type="button" class="btn btn-ghost btn-sm" id="contentSocialSync">Sync Facebook &amp; Instagram</button>`);
   const status = el(`<span class="rel-faint content-social-status" role="status"></span>`);
   btn.addEventListener("click", async () => {
@@ -7984,8 +8002,8 @@ function renderSocialPostPane(main, details, detail, token) {
       <div class="content-social-head">
         <span class="rel-src ${ch.cls}"><b>${escapeHtml(ch.glyph)}</b></span>
         <div class="content-social-head-text"><h2>${escapeHtml(ch.label)} post</h2>
-          <span class="rel-faint">${post.origin === "office" ? "Published from Office" : "Published outside Office"}${post.published_at ? ` · ${escapeHtml(fmtDateTime(post.published_at))}` : ""}</span></div>
-        <span class="content-social-sync">${badge(syncLabel, syncTone)}</span>
+          <span class="rel-faint">${post.demo ? "Sample post" : post.origin === "office" ? "Published from Office" : "Published outside Office"}${post.published_at ? ` · ${escapeHtml(fmtDateTime(post.published_at))}` : ""}</span></div>
+        <span class="content-social-sync">${post.demo ? badge("Sample", "warning") : badge(syncLabel, syncTone)}</span>
       </div>
       <div class="content-notice content-notice-info content-social-readonly" role="note"><div class="content-notice-text">Read-only post. It lives on ${escapeHtml(ch.label)}; Office does not edit, publish or reply to it.${detail.moderation_enabled && hasPermission("content.review") ? " You can hide or unhide its comments." : ""}</div></div>
       <div class="content-social-media"></div>
@@ -7996,6 +8014,7 @@ function renderSocialPostPane(main, details, detail, token) {
     </div>
   `);
   pane.querySelector(".content-back").addEventListener("click", () => { contentState.page?.classList.remove("content-item-open"); navigate("content"); });
+  if (post.demo) pane.querySelector(".content-social-readonly").replaceWith(contentDemoNotice());
   if (post.media_preview_url) {
     const img = el(`<img class="content-social-preview" src="${escapeHtml(post.media_preview_url)}" alt="Preview of the ${escapeHtml(ch.label)} post" loading="lazy" referrerpolicy="no-referrer" />`);
     img.addEventListener("error", () => img.remove());
@@ -8003,7 +8022,7 @@ function renderSocialPostPane(main, details, detail, token) {
   }
   const caption = pane.querySelector(".content-social-caption");
   if (post.caption) caption.textContent = post.caption;
-  else caption.appendChild(el(`<span class="rel-faint">${post.sync_status === "not_synced" ? "Not synced yet, so the caption is not shown." : "This post has no caption."}</span>`));
+  else caption.appendChild(el(`<span class="rel-faint">${post.sync_status === "not_synced" && !post.demo ? "Not synced yet, so the caption is not shown." : "This post has no caption."}</span>`));
   if (post.sync_status === "unavailable") caption.prepend(el(`<p class="content-social-warning">This post is no longer available on ${escapeHtml(ch.label)}. The last synced details are kept.</p>`));
   if (post.sync_status === "restricted") caption.prepend(el(`<p class="content-social-warning">Office's access to this post is restricted. Check the Page or Instagram account permissions.</p>`));
   const links = pane.querySelector(".content-social-links");
@@ -8034,8 +8053,8 @@ function renderSocialPostPane(main, details, detail, token) {
   renderSocialThread(commentsHost, detail.comments, { postId: post.id, channel: post.channel, moderationEnabled: detail.moderation_enabled, refresh: refreshThread });
   main.appendChild(pane);
   details.innerHTML = "";
-  const facts = [["Source", ch.label], ["Origin", post.origin === "office" ? "Published from Office" : "Published outside Office"],
-    ["Published", post.published_at ? fmtDateTime(post.published_at) : "—"], ["Sync", syncLabel],
+  const facts = [["Source", ch.label], ["Origin", post.demo ? "Demonstration sample" : post.origin === "office" ? "Published from Office" : "Published outside Office"],
+    ["Published", post.published_at ? fmtDateTime(post.published_at) : "—"], ["Sync", post.demo ? "Not applicable" : syncLabel],
     ["Last synced", post.synced_at ? fmtRelative(post.synced_at) : "Never"], ["Comments", String((post.comment_counts?.visible || 0) + (post.comment_counts?.hidden || 0))]];
   details.appendChild(el(`<details class="rel-section content-section" open><summary>Post</summary><div class="rel-section-body">${facts.map(([label, value]) => `<div class="rel-fact"><span>${escapeHtml(label)}</span><b>${escapeHtml(value)}</b></div>`).join("")}</div></details>`));
 }
@@ -8049,7 +8068,6 @@ const MODERATION_REASON = {
   throttled: "The platform is limiting requests. Try again later.",
   comment_unavailable: "The comment no longer exists on the platform.",
   foreign_post: "The comment does not belong to this post.",
-  not_applied: "The platform did not apply the change.",
   not_configured: "Moderation is not configured for this account.",
 };
 const moderationReason = (code, ch) => MODERATION_REASON[code] || `No clear answer from ${ch.label}.`;
@@ -8071,7 +8089,7 @@ function renderSocialThread(host, comments, opts = {}) {
     if (m && m.state !== "confirmed") {
       const verb = m.action === "hide" ? "hide" : "unhide";
       const text = ["pending", "dispatched"].includes(m.state) ? `${verb === "hide" ? "Hiding" : "Unhiding"}…`
-        : m.state === "unknown" ? `Couldn't confirm the ${verb} yet. ${m.failure_reason === "not_yet_applied" ? `${ch.label} has not shown the change yet.` : moderationReason(m.failure_reason, ch)}`
+        : m.state === "unknown" ? `Couldn't confirm the ${verb} yet. ${m.failure_reason === "not_yet_applied" ? `${ch.label} has not shown the change yet and may still apply it.` : moderationReason(m.failure_reason, ch)} It won't be sent again.`
         : `The ${verb} failed. ${moderationReason(m.failure_reason, ch)}`;
       const line = el(`<div class="content-moderation-state content-moderation-${escapeHtml(m.state)}" data-moderation-state="${escapeHtml(m.state)}" role="status">${escapeHtml(text)}</div>`);
       if (m.state === "unknown" && canModerate) {

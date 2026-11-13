@@ -62,6 +62,7 @@
     "office:content-social-posts:test": "node scripts/test-content-social-posts-browser.js",
     "office:meta-social-comment-moderation:test": "node scripts/test-meta-social-comment-moderation.js",
     "office:content-comment-moderation:test": "node scripts/test-content-comment-moderation-browser.js",
+    "office:content-social-connection:test": "node scripts/test-content-social-connection-browser.js",
     "office:security-baseline:test": "node scripts/test-office-security-baseline-postgres.js",
     "office:legacy-db-entrypoints:test": "node scripts/test-office-legacy-db-entrypoints.js",
     "office:catalogue-postgres:test": "node scripts/test-catalogue-postgres.js",

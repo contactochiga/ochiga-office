@@ -4,14 +4,15 @@
 // nothing automatic: every action is a staff request with a reason, claimed in the database ledger before any Graph call.
 // Success is never inferred from a submitted request: an action is 'confirmed' only when a read-back shows the requested
 // state. Definitive refusals (expired token, revoked permission, comment gone) are 'failed' with no change. Anything else
-// (throttling, timeout, 5xx, malformed reply, read-back unavailable) is decided by read-back, or stays 'unknown' until
-// reconciled. Hide and unhide are idempotent, so a repeated request is harmless.
+// (throttling, timeout, 5xx, malformed reply, read-back unavailable, or a read-back still showing the old state) is decided
+// by read-back, or stays 'unknown' until a later read-back proves it. An unchanged read-back is never proof of failure (Meta
+// may still apply the change), so an 'unknown' action keeps the comment fenced: nothing is re-sent and no other action is
+// accepted until a reconcile read-back shows the requested state or shows the comment gone.
 
 const axios = require("axios");
 
 const COMMENT_ID = /^[A-Za-z0-9_.:-]{1,200}$/;
 const THROTTLE_CODES = new Set([4, 17, 32, 613]);
-const NOT_APPLIED_AFTER_MS = 60_000; // a read-back this long after dispatch that still shows the old state means it did not apply
 
 function classify(error) {
   const status = error?.response?.status;
@@ -70,13 +71,13 @@ function createMetaSocialModerationAdapter(config, { post = axios.post, get = ax
 const wanted = (action) => (action === "hide" ? "hidden" : "visible");
 const STATE_HTTP = { confirmed: 200, failed: 409, unknown: 202, pending: 202, dispatched: 202 };
 
-// Decides an outcome from a read-back. sentAt is when the request was dispatched (null if it never was).
-function decide(action, readBack, { requestKind, sentAt, now = Date.now() }) {
+// Decides an outcome from a read-back. Only a definitive refusal or a comment that no longer exists is 'failed'; an
+// unchanged read-back after an accepted or uncertain request stays 'unknown' however long ago it was sent.
+function decide(action, readBack, { requestKind }) {
   if (readBack.visibility === wanted(action)) return { status: "confirmed", observed: readBack.visibility };
   if (readBack.visibility) {
     if (requestKind === "refused") return { status: "failed", observed: readBack.visibility };
-    const settledLongEnough = !sentAt || now - Date.parse(sentAt) >= NOT_APPLIED_AFTER_MS;
-    return settledLongEnough ? { status: "failed", observed: readBack.visibility, failure: "not_applied" } : { status: "unknown", observed: readBack.visibility, failure: "not_yet_applied" };
+    return { status: "unknown", observed: readBack.visibility, failure: "not_yet_applied" };
   }
   if (["comment_unavailable", "foreign_post"].includes(readBack.failure)) return { status: "failed", failure: readBack.failure };
   return { status: "unknown", failure: readBack.failure || "readback_unavailable" };
@@ -92,14 +93,13 @@ async function moderateComment({ store, adapter, comment, post, action, actor, r
   const actionId = claim.id;
   await audit("requested", { action_id: actionId, action });
   if (!(await store.markCommentModerationDispatched(actionId))) return { httpStatus: 409, body: { error: "moderation_state_changed", action_id: actionId } };
-  const sentAt = new Date().toISOString();
   const request = await adapter.setHidden(post.channel, comment.provider_comment_id, action === "hide");
   let outcome;
   if (request.kind === "refused" && request.failure !== "comment_unavailable") {
     outcome = { status: "failed", failure: request.failure, resolvedBy: "refusal" };
   } else {
     const readBack = await adapter.readBack(post.channel, comment.provider_comment_id, post.provider_post_id);
-    const decision = decide(action, readBack, { requestKind: request.kind, sentAt });
+    const decision = decide(action, readBack, { requestKind: request.kind });
     outcome = { ...decision, failure: decision.failure || (decision.status === "confirmed" ? null : request.failure), resolvedBy: "readback" };
   }
   await store.settleCommentModeration({ actionId, status: outcome.status, observed: outcome.observed || null, code: request.code ?? null, failure: outcome.failure || null, resolvedBy: outcome.resolvedBy });
@@ -108,13 +108,13 @@ async function moderateComment({ store, adapter, comment, post, action, actor, r
 }
 
 // Re-check an open (pending/dispatched/unknown) action by read-back only. Never sends a moderation request.
-async function reconcileModeration({ store, adapter, action, comment, post, audit, now = Date.now() }) {
+async function reconcileModeration({ store, adapter, action, comment, post, audit }) {
   if (!["pending", "dispatched", "unknown"].includes(action.status)) return { httpStatus: 409, body: { error: "moderation_already_settled", state: action.status } };
   const readBack = await adapter.readBack(post.channel, comment.provider_comment_id, post.provider_post_id);
-  const decision = decide(action.action, readBack, { requestKind: action.status === "pending" ? "refused" : "uncertain", sentAt: action.dispatch_at, now });
+  const decision = decide(action.action, readBack, { requestKind: action.status === "pending" ? "refused" : "uncertain" });
   await store.settleCommentModeration({ actionId: action.id, status: decision.status, observed: decision.observed || null, code: null, failure: decision.failure || null, resolvedBy: "reconcile" });
   await audit(`reconciled_${decision.status}`, { action_id: action.id, action: action.action, state: decision.status, failure_reason: decision.failure || null });
   return { httpStatus: STATE_HTTP[decision.status], body: { ok: decision.status === "confirmed", action_id: action.id, state: decision.status, visibility: decision.observed || null, failure_reason: decision.failure || null } };
 }
 
-module.exports = { createMetaSocialModerationAdapter, moderateComment, reconcileModeration, decide, classify, NOT_APPLIED_AFTER_MS };
+module.exports = { createMetaSocialModerationAdapter, moderateComment, reconcileModeration, decide, classify };

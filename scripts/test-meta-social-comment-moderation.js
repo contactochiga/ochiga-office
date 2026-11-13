@@ -15,7 +15,7 @@ const { buildServer } = require("../src/lead-agents/server");
 const { MemoryRateLimiter } = require("../src/lead-agents/rate-limit");
 const { createTempStore } = require("../src/lead-agents/testing");
 const { hashPassword } = require("../src/lead-agents/auth");
-const { createMetaSocialModerationAdapter, decide, NOT_APPLIED_AFTER_MS } = require("../src/lead-agents/meta-social-moderation");
+const { createMetaSocialModerationAdapter, decide } = require("../src/lead-agents/meta-social-moderation");
 
 const PAGE = "910000000000001", IG = "910000000000002", TOKEN = "synthetic-token-not-real", SECRET = "synthetic-secret";
 let checks = 0;
@@ -80,13 +80,16 @@ async function unitChecks() {
   assert.equal(createMetaSocialModerationAdapter({ metaSocialGraphVersion: "v23.0" }).configured("facebook"), false);
   pass("adapters: Facebook is_hidden / Instagram hide on POST /{comment}, token only in the Authorization header; read-back of is_hidden / hidden; Instagram comment must belong to the stored post; token, permission and missing-comment refusals; throttling, timeout and malformed replies uncertain");
 
-  const now = Date.now(), recent = new Date(now - 1000).toISOString(), old = new Date(now - NOT_APPLIED_AFTER_MS - 1000).toISOString();
-  assert.equal(decide("hide", { visibility: "hidden" }, { requestKind: "uncertain", sentAt: recent, now }).status, "confirmed");
-  assert.deepEqual(decide("hide", { visibility: "visible" }, { requestKind: "accepted", sentAt: recent, now }), { status: "unknown", observed: "visible", failure: "not_yet_applied" });
-  assert.equal(decide("hide", { visibility: "visible" }, { requestKind: "uncertain", sentAt: old, now }).failure, "not_applied");
-  assert.equal(decide("hide", { failure: "graph_no_response" }, { requestKind: "accepted", sentAt: recent, now }).status, "unknown");
-  assert.equal(decide("unhide", { failure: "foreign_post" }, { requestKind: "accepted", sentAt: recent, now }).status, "failed");
-  pass("decision: confirmed only when the read-back shows the requested state; a recent mismatch stays unknown; a mismatch after 60 s is not applied; no read-back stays unknown");
+  assert.equal(decide("hide", { visibility: "hidden" }, { requestKind: "uncertain" }).status, "confirmed");
+  for (const requestKind of ["accepted", "uncertain"]) {
+    assert.deepEqual(decide("hide", { visibility: "visible" }, { requestKind }), { status: "unknown", observed: "visible", failure: "not_yet_applied" });
+    assert.deepEqual(decide("unhide", { visibility: "hidden" }, { requestKind }), { status: "unknown", observed: "hidden", failure: "not_yet_applied" });
+  }
+  assert.equal(decide("hide", { visibility: "visible" }, { requestKind: "refused" }).status, "failed");
+  assert.equal(decide("hide", { failure: "graph_no_response" }, { requestKind: "accepted" }).status, "unknown");
+  assert.equal(decide("hide", { failure: "comment_unavailable" }, { requestKind: "uncertain" }).status, "failed");
+  assert.equal(decide("unhide", { failure: "foreign_post" }, { requestKind: "accepted" }).status, "failed");
+  pass("decision: confirmed only when the read-back shows the requested state; an unchanged read-back after an accepted or uncertain request stays unknown regardless of elapsed time; only refusals and a missing comment fail; no read-back stays unknown");
 }
 
 async function sqlChecks() {
@@ -208,13 +211,19 @@ async function httpChecks() {
     const unknownId = r.body.action_id;
     let rec = await fetch(url(fbPost.id, cid(`${PAGE}_c2`), `/${unknownId}/reconcile`), { method: "POST", headers: { cookie: reviewer } }).then((x) => x.json());
     assert.equal(rec.state, "unknown");
-    store.state.office_social_comment_actions.find((a) => a.id === unknownId).dispatch_at = new Date(Date.now() - NOT_APPLIED_AFTER_MS - 5000).toISOString();
+    store.state.office_social_comment_actions.find((a) => a.id === unknownId).dispatch_at = new Date(Date.now() - 24 * 3600 * 1000).toISOString();
     rec = await fetch(url(fbPost.id, cid(`${PAGE}_c2`), `/${unknownId}/reconcile`), { method: "POST", headers: { cookie: reviewer } }).then((x) => x.json());
-    assert.equal(rec.state, "failed"); assert.equal(rec.failure_reason, "not_applied");
-    assert.equal(meta.calls.filter((c) => c.kind === "post").length, 2, "reconcile never sends a moderation request");
+    assert.equal(rec.state, "unknown", "an unchanged read-back a day later is still not proof of failure"); assert.equal(rec.failure_reason, "not_yet_applied");
     r = await moderate(reviewer, fbPost.id, cid(`${PAGE}_c2`), "hide");
-    assert.equal(r.body.state, "confirmed");
-    pass("a submitted request is never success: accepted-but-unchanged stays unknown (and blocks other actions); reconcile is read-only and marks it not applied after 60 s; a new attempt then succeeds");
+    assert.equal(r.status, 409); assert.equal(r.body.error, "moderation_in_progress", "a new request id cannot re-send while the first is unconfirmed");
+    assert.equal((await moderate(reviewer2, fbPost.id, cid(`${PAGE}_c2`), "unhide")).body.error, "moderation_in_progress");
+    assert.equal(meta.calls.filter((c) => c.kind === "post").length, 2, "reconcile never sends and the fence blocks re-sends");
+    meta.visible.set(`${PAGE}_c2`, true); // Meta applies the original request late
+    rec = await fetch(url(fbPost.id, cid(`${PAGE}_c2`), `/${unknownId}/reconcile`), { method: "POST", headers: { cookie: reviewer } }).then((x) => x.json());
+    assert.equal(rec.state, "confirmed");
+    assert.equal(store.state.office_social_comments.find((c) => c.id === cid(`${PAGE}_c2`)).visibility, "hidden");
+    assert.equal(meta.calls.filter((c) => c.kind === "post").length, 2);
+    pass("a submitted request is never success: accepted-but-unchanged stays unknown, even a day later, and stays fenced (no re-send, no other action); reconcile is read-only and confirms when Meta applies it late");
 
     // timeout applied -> confirmed; timeout + read-back failure -> unknown -> reconcile confirmed
     meta.plan.post.push({ mode: "timeout_applied" });
@@ -239,14 +248,17 @@ async function httpChecks() {
     meta.plan.post.push({ mode: "throttled" });
     r = await moderate(reviewer, fbPost.id, cid(`${PAGE}_c8`), "hide");
     assert.equal(r.body.state, "unknown");
-    store.state.office_social_comment_actions.find((a) => a.id === r.body.action_id).dispatch_at = new Date(Date.now() - NOT_APPLIED_AFTER_MS - 5000).toISOString();
+    store.state.office_social_comment_actions.find((a) => a.id === r.body.action_id).dispatch_at = new Date(Date.now() - 3600 * 1000).toISOString();
     rec = await fetch(url(fbPost.id, cid(`${PAGE}_c8`), `/${r.body.action_id}/reconcile`), { method: "POST", headers: { cookie: reviewer } }).then((x) => x.json());
-    assert.equal(rec.state, "failed");
+    assert.equal(rec.state, "unknown", "throttled and still unchanged an hour later stays unknown");
+    meta.plan.get.push({ mode: "gone" });
+    rec = await fetch(url(fbPost.id, cid(`${PAGE}_c8`), `/${r.body.action_id}/reconcile`), { method: "POST", headers: { cookie: reviewer } }).then((x) => x.json());
+    assert.equal(rec.state, "failed"); assert.equal(rec.failure_reason, "comment_unavailable");
     meta.plan.post.push({ mode: "gone" }); meta.plan.get.push({ mode: "gone" });
     r = await moderate(reviewer, fbPost.id, cid(`${PAGE}_c8`), "hide");
     assert.equal(r.body.failure_reason, "comment_unavailable");
     assert.equal(store.state.office_social_comments.find((c) => c.id === cid(`${PAGE}_c8`)).visibility, "visible");
-    pass("expired token and revoked permission fail with no change and no read-back; throttling stays unknown until reconcile shows it was not applied; a comment gone from Facebook fails");
+    pass("expired token and revoked permission fail with no change and no read-back; throttling stays unknown (not failed) until a read-back proves the outcome; a comment gone from Facebook fails");
 
     // duplicates and simultaneous staff
     const dupId = rid();
