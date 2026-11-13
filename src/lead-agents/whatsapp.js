@@ -1,6 +1,7 @@
 const axios = require("axios");
 const crypto = require("crypto");
 const { normalizePhone } = require("./normalize-lead");
+const { describeInboundMessage } = require("./whatsapp-media");
 
 // Writes every UTF-16 code unit above U+007F as a lower-case \uXXXX escape (surrogate pairs become two escapes), leaving ASCII untouched.
 function escapeNonAscii(text) {
@@ -80,17 +81,17 @@ class WhatsAppCloudAdapter {
       for (const change of entry.changes || []) {
         const value = change.value || {};
         for (const message of value.messages || []) {
+          // text = what the customer typed or tapped; caption and media metadata are kept separately (whatsapp-media.js)
+          const described = describeInboundMessage(message);
           events.push({
             kind: "message",
             from: normalizePhone(message.from),
             message_id: message.id,
             message_type: message.type || "unknown",
             timestamp: message.timestamp,
-            text:
-              message.text?.body ||
-              message.button?.text ||
-              message.interactive?.button_reply?.title ||
-              "",
+            text: described.text,
+            caption: described.caption,
+            attachments: described.attachments,
             raw: message,
             metadata: value.metadata || {},
             contacts: value.contacts || [],

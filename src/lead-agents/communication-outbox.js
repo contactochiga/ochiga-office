@@ -15,6 +15,7 @@
 
 const axios = require("axios");
 const crypto = require("node:crypto");
+const { describeInboundMessage, backendMessageFields } = require("./whatsapp-media");
 
 const DEFAULTS = Object.freeze({
   inlineTimeoutMs: 8_000,    // first, inline attempt (same budget the webhook always had)
@@ -55,8 +56,9 @@ function payloadFromInboundEvent(event) {
     const error = Array.isArray(raw.errors) ? raw.errors[0] : null;
     return { channel: "whatsapp", provider_event_type: "status", provider_message_id: clean(raw.id || event.external_event_id), status: clean(raw.status || event.event_type.slice(7)), error_code: error?.code ?? null, error_title: error?.title || error?.message || null, occurred_at: occurredAt };
   }
-  const text = raw.text && typeof raw.text === "object" ? raw.text.body : raw.text;
-  return { channel: "whatsapp", provider_event_type: "message", provider_message_id: clean(event.external_event_id || raw.id), from: clean(raw.from), text: clean(text) || clean(raw.button?.text) || clean(raw.interactive?.button_reply?.title) || clean(raw.interactive?.list_reply?.title) || "", lead_id: event.lead_id || null, occurred_at: occurredAt };
+  // the same fields the live webhook sends: typed text, plus message type, caption and media metadata (never bytes or URLs)
+  const described = describeInboundMessage(raw);
+  return { channel: "whatsapp", provider_event_type: "message", provider_message_id: clean(event.external_event_id || raw.id), from: clean(raw.from), text: described.text, ...backendMessageFields(described), lead_id: event.lead_id || null, occurred_at: occurredAt };
 }
 
 // Durable entry for one event. Never throws: returns { ok, entry, created, error }.
@@ -70,6 +72,13 @@ async function enqueueDelivery(store, { payload, sourceEventId = null, mode = "l
     log("error", "communication_outbox.enqueue_failed", { provider_message_id: clean(payload?.provider_message_id), error: String(error?.message || error).slice(0, 200) });
     return { ok: false, entry: null, created: false, error };
   }
+}
+
+// "not_opted_out" ONLY when Backend positively verified it. Anything else (opted out, a failed lookup reported as "unknown", an older Backend that does not
+// report it, no delivery at all) is "opted_out" or "unverified", and no automatic reply is sent.
+function optOutStatusFrom(data) {
+  if (data.opted_out === true || data.opt_out_status === "opted_out") return "opted_out";
+  return data.opt_out_status === "not_opted_out" ? "not_opted_out" : "unverified";
 }
 
 function classify(result) {
@@ -87,7 +96,8 @@ function classify(result) {
   if (httpStatus === 401 || httpStatus === 403) return { delivered: false, retryable: true, error: `backend_auth_${httpStatus}`, http: httpStatus };
   if (httpStatus === 408 || httpStatus === 429 || httpStatus >= 500) return { delivered: false, retryable: true, error: `backend_http_${httpStatus}`, http: httpStatus };
   if (httpStatus >= 400) return { delivered: false, retryable: false, error: `backend_http_${httpStatus}`, http: httpStatus };
-  if (result.status === 200 && data.ok === true) return { delivered: true, http: 200, goalActive: Boolean(data.goal_active) };
+  // Backend's opt-out answer for this sender, after this message was processed, honoured by the caller before any automatic reply
+  if (result.status === 200 && data.ok === true) return { delivered: true, http: 200, goalActive: Boolean(data.goal_active), optedOut: data.opted_out === true, optOutStatus: optOutStatusFrom(data) };
   if (result.status === 200 && data.ok === false && PERMANENT_REASONS.has(clean(data.reason))) return { delivered: false, retryable: false, error: `backend_refused_${clean(data.reason)}`, http: 200 };
   return { delivered: false, retryable: true, error: `backend_not_acknowledged_${clean(data.reason || data.error || result.status)}`.slice(0, 120), http: result.status || null };
 }
@@ -116,7 +126,7 @@ async function attemptDelivery(store, config, entry, { workerId = `worker-${proc
   try {
     if (verdict.delivered) {
       await store.completeCommunicationDelivery(leased.id, { status: "delivered", delivered_at: at, last_error: null, last_http_status: verdict.http, lease_until: null, leased_by: null });
-      return { delivered: true, replay, goalActive: replay ? false : verdict.goalActive, attempts: leased.attempts };
+      return { delivered: true, replay, goalActive: replay ? false : verdict.goalActive, optedOut: Boolean(verdict.optedOut), optOutStatus: verdict.optOutStatus, attempts: leased.attempts };
     }
     const dead = !verdict.retryable || leased.attempts >= s.maxAttempts;
     const nextAt = new Date(now() + backoffDelayMs(leased.attempts, s, random)).toISOString();
@@ -132,12 +142,13 @@ async function attemptDelivery(store, config, entry, { workerId = `worker-${proc
 
 // Inline path used by the webhook: enqueue, try once with the short timeout, return what the old synchronous forward returned.
 async function enqueueAndAttempt(store, config, { payload, sourceEventId, log = () => {}, post, now }) {
-  if (!config.officeBackendBaseUrl || !config.officeBackendApiKey) return { forwarded: false, goalActive: false, reason: "backend_bridge_not_configured" };
+  // optOutStatus is "unverified" on every path where Backend did not positively answer for this delivery (fail closed for automatic replies)
+  if (!config.officeBackendBaseUrl || !config.officeBackendApiKey) return { forwarded: false, goalActive: false, optOutStatus: "unverified", reason: "backend_bridge_not_configured" };
   const queued = await enqueueDelivery(store, { payload, sourceEventId, mode: "live", log });
-  if (!queued.ok) return { forwarded: false, goalActive: false, reason: "enqueue_failed", outbox_recorded: false };
-  if (queued.entry.status === "delivered") return { forwarded: true, goalActive: false, reason: "already_delivered", outbox_recorded: true };
+  if (!queued.ok) return { forwarded: false, goalActive: false, optOutStatus: "unverified", reason: "enqueue_failed", outbox_recorded: false };
+  if (queued.entry.status === "delivered") return { forwarded: true, goalActive: false, optOutStatus: "unverified", reason: "already_delivered", outbox_recorded: true };
   const outcome = await attemptDelivery(store, config, queued.entry, { log, post, now });
-  return { forwarded: Boolean(outcome.delivered), goalActive: Boolean(outcome.goalActive), reason: outcome.delivered ? null : outcome.reason || outcome.error || "pending_retry", outbox_recorded: true };
+  return { forwarded: Boolean(outcome.delivered), goalActive: Boolean(outcome.goalActive), optedOut: Boolean(outcome.optedOut), optOutStatus: outcome.delivered ? outcome.optOutStatus || "unverified" : "unverified", reason: outcome.delivered ? null : outcome.reason || outcome.error || "pending_retry", outbox_recorded: true };
 }
 
 // One worker tick: lease and deliver due entries (background, long timeout, replay semantics from the second attempt on).

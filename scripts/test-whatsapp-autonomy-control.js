@@ -20,7 +20,7 @@ async function main() {
   const backend = http.createServer((req, res) => {
     let raw = ""; req.on("data", (c) => (raw += c)); req.on("end", async () => {
       res.setHeader("content-type", "application/json");
-      if (req.url === "/office/communications/webhook-event") return res.end(JSON.stringify({ ok: true, goal_active: goalActive }));
+      if (req.url === "/office/communications/webhook-event") return res.end(JSON.stringify({ ok: true, goal_active: goalActive, opted_out: false, opt_out_status: "not_opted_out" }));
       if (req.url === "/office/conversation/corporate") { coreCalls++; if (coreDelayMs) await new Promise((r) => setTimeout(r, coreDelayMs)); return res.end(JSON.stringify({ ok: true, answer: "Hello from Oyi", conversation_thread_id: "oyi-thread-1" })); }
       res.statusCode = 404; res.end("{}");
     });

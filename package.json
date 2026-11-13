@@ -53,7 +53,8 @@
     "office:api-routing:test": "node scripts/test-office-api-routing.mjs",
     "office:content-integrity:test": "node scripts/test-content-approval-integrity.js",
     "office:content-workspace:test": "node scripts/test-content-workspace-browser.js",
-    "office:content-featured-image:test": "node scripts/test-content-featured-image.js"
+    "office:content-featured-image:test": "node scripts/test-content-featured-image.js",
+    "office:whatsapp-media-contract:test": "node scripts/test-whatsapp-media-contract.js"
   },
   "dependencies": {
     "@sanity/client": "^6.29.1",

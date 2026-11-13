@@ -18,7 +18,7 @@ let seq = 0;
 
 async function main() {
   let goalActive = false, coreMode = "ok";
-  const backend = http.createServer((req, res) => { req.resume(); req.on("end", () => { res.setHeader("content-type", "application/json"); if (req.url === "/office/communications/webhook-event") return res.end(JSON.stringify({ ok: true, goal_active: goalActive })); if (req.url === "/office/conversation/corporate") { if (coreMode === "fail") { res.statusCode = 500; return res.end("{}"); } return res.end(JSON.stringify({ ok: true, answer: "Hello from Oyi", conversation_thread_id: "t1" })); } res.statusCode = 404; res.end("{}"); }); });
+  const backend = http.createServer((req, res) => { req.resume(); req.on("end", () => { res.setHeader("content-type", "application/json"); if (req.url === "/office/communications/webhook-event") return res.end(JSON.stringify({ ok: true, goal_active: goalActive, opted_out: false, opt_out_status: "not_opted_out" })); if (req.url === "/office/conversation/corporate") { if (coreMode === "fail") { res.statusCode = 500; return res.end("{}"); } return res.end(JSON.stringify({ ok: true, answer: "Hello from Oyi", conversation_thread_id: "t1" })); } res.statusCode = 404; res.end("{}"); }); });
   const backendPort = await listen(backend);
   const config = { ...createConfig(), authMode: "required_api_key", apiKeys: ["vis-key"], allowedOrigins: [], officeBackendBaseUrl: `http://127.0.0.1:${backendPort}`, officeBackendApiKey: "vis-bridge" };
   const { store } = await createTempStore();
