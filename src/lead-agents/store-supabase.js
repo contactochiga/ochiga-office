@@ -238,14 +238,47 @@ class SupabaseLeadAgentsStore {
     return response.data;
   }
 
+  // The Content social tables (db/20261114+) may not be installed yet. A missing table is "setup pending", not a failure: it is
+  // remembered for a minute so Content page views neither re-query nor re-log it, and any other error still surfaces.
+  socialSetupPending(error) {
+    const data = error?.response?.data || {};
+    const missing = error?.response?.status === 404 || ["PGRST205", "PGRST200", "42P01"].includes(data.code);
+    if (!missing) return null;
+    this.socialTablesMissingAt = Date.now();
+    const pending = new Error("social_setup_pending");
+    pending.code = "social_setup_pending";
+    return pending;
+  }
+
+  assertSocialTablesMaybePresent() {
+    if (this.socialTablesMissingAt && Date.now() - this.socialTablesMissingAt < 60000) {
+      const pending = new Error("social_setup_pending");
+      pending.code = "social_setup_pending";
+      throw pending;
+    }
+  }
+
   async listSocialPosts({ limit = 50 } = {}) {
-    const response = await this.client.get(`/office_social_posts?select=*,comments:office_social_comments(visibility,deleted_at)&order=last_comment_at.desc.nullslast&limit=${Math.min(Math.max(Number(limit) || 50, 1), 200)}`);
+    this.assertSocialTablesMaybePresent();
+    let response;
+    try {
+      response = await this.client.get(`/office_social_posts?select=*,comments:office_social_comments(visibility,deleted_at)&order=last_comment_at.desc.nullslast&limit=${Math.min(Math.max(Number(limit) || 50, 1), 200)}`);
+    } catch (error) {
+      throw this.socialSetupPending(error) || error;
+    }
     if (!Array.isArray(response.data)) throw new Error("social_posts_unreadable");
+    this.socialTablesMissingAt = 0;
     return response.data;
   }
 
   async getSocialPost(id) {
-    const posts = await this.client.get(`/office_social_posts?id=eq.${encodeURIComponent(id)}&limit=1`);
+    this.assertSocialTablesMaybePresent();
+    let posts;
+    try {
+      posts = await this.client.get(`/office_social_posts?id=eq.${encodeURIComponent(id)}&limit=1`);
+    } catch (error) {
+      throw this.socialSetupPending(error) || error;
+    }
     if (!Array.isArray(posts.data)) throw new Error("social_posts_unreadable");
     if (!posts.data[0]) return null;
     const comments = await this.client.get(`/office_social_comments?post_id=eq.${encodeURIComponent(id)}&order=provider_created_at.asc.nullslast,first_seen_at.asc`);

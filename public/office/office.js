@@ -7736,11 +7736,12 @@ const SOCIAL_CHANNEL = { facebook: { label: "Facebook Page", cls: "rel-src-fb", 
 // Connection state of the Facebook Page / Instagram account, as reported by the API: connected, disconnected or demonstration.
 function contentSocialConnection() {
   const c = contentState.social?.connection;
-  return c && ["connected", "disconnected", "demonstration"].includes(c.state) ? c : { state: "disconnected", channels: {} };
+  return c && ["connected", "disconnected", "demonstration", "setup_pending"].includes(c.state) ? c : { state: "disconnected", channels: {} };
 }
 function contentSocialStatusChip() {
   const c = contentSocialConnection();
   if (c.state === "demonstration") return el(`<span class="content-connection content-connection-demo" data-connection="demonstration" role="status">${badge("Demonstration", "warning")}<span>Sample posts and comments, not from your Facebook Page or Instagram. Nothing is synced or sent.</span></span>`);
+  if (c.state === "setup_pending") return el(`<span class="content-connection" data-connection="setup_pending" role="status">${badge("Setup pending", "default")}<span>Facebook and Instagram are not connected yet. Posts and comments will appear here once setup is complete.</span></span>`);
   if (c.state === "connected") {
     const names = ["facebook", "instagram"].filter((k) => c.channels?.[k]).map((k) => SOCIAL_CHANNEL[k].label).join(" and ");
     return el(`<span class="content-connection" data-connection="connected" role="status">${badge("Connected", "success")}<span>${escapeHtml(names)}.${c.moderation ? "" : " Hiding comments is off."} Replies and publishing are not enabled.</span></span>`);
@@ -7751,8 +7752,10 @@ const contentDemoNotice = () => el(`<div class="content-notice content-notice-wa
 
 async function renderContentComments(host, selectedId, token) {
   const social = contentState.social || { enabled: false, posts: [] };
-  if (!contentCommentsAvailable() || (contentSocialConnection().state === "disconnected" && !social.posts.length)) {
-    host.appendChild(el(`<div class="content-not-connected" data-panel-kind="comments" data-connection="disconnected"><b>Not connected</b><span>Comments from Facebook and Instagram are not collected yet. They appear here, under their post, once the Page and Instagram account are connected.</span></div>`));
+  const connState = contentSocialConnection().state;
+  if (!contentCommentsAvailable() || connState === "setup_pending" || (connState === "disconnected" && !social.posts.length)) {
+    const pending = connState === "setup_pending";
+    host.appendChild(el(`<div class="content-not-connected" data-panel-kind="comments" data-connection="${pending ? "setup_pending" : "disconnected"}"><b>${pending ? "Setup pending" : "Not connected"}</b><span>Comments from Facebook and Instagram are not collected yet. They appear here, under their post, once the Page and Instagram account are connected.</span></div>`));
     return;
   }
   if (contentSocialConnection().state === "demonstration") host.appendChild(contentDemoNotice());

@@ -2086,6 +2086,7 @@ async function enrichAuthContext(authContext, store) {
 
 function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRateLimiter, loginRateLimiter, whatsappAdapter, metaSocialReplyAdapter = createMetaSocialReplyAdapter(config), metaSocialPostsAdapter = createMetaSocialPostsAdapter(config), metaSocialModerationAdapter = createMetaSocialModerationAdapter(config), openaiClient, toolExecutor }) {
   let socialSyncBusy = false; // one Content social-post sync at a time
+  let socialSetupPendingLogged = false; // the "tables not installed yet" state is logged once per process, not on every page view
   const startedAt = Date.now();
   const widgetRateLimiter = publicRateLimiter || rateLimiter;
   const officeInternalRateLimiter = officeRateLimiter || rateLimiter;
@@ -8569,6 +8570,7 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
         const channels = { facebook: metaSocialPostsAdapter.configured("facebook"), instagram: metaSocialPostsAdapter.configured("instagram") };
         const live = channels.facebook || channels.instagram;
         const demo = !live && Boolean(config.contentSocialDemoEnabled);
+        // setup_pending = the Content social tables are not installed yet (before the production migration). Detected below.
         const connection = { state: live ? "connected" : demo ? "demonstration" : "disconnected", channels,
           comments_inbound: !demo && Boolean(config.metaSocialCommentsInboundEnabled), post_sync: !demo && Boolean(config.metaSocialPostsSyncEnabled),
           moderation: !demo && Boolean(config.metaSocialCommentsModerationEnabled) && live, replies: false, publishing: false };
@@ -8624,17 +8626,24 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           return;
         }
         if (!postId) {
-          // Before the Content social tables exist (or while they cannot be read) the status still renders; stored posts are marked unavailable.
+          // Before the Content social tables exist the status renders as "Setup pending" (logged once per process); any other read
+          // failure is a real error: logged, and stored posts are marked unavailable.
           let posts = [], postsUnavailable = false;
           try { posts = await store.listSocialPosts({ limit: 100 }); } catch (error) {
-            postsUnavailable = true;
-            log("error", "content_social_posts.unreadable", { request_id: ctx.requestId, error: String(error?.message || error).slice(0, 120) });
+            if (error?.code === "social_setup_pending") {
+              Object.assign(connection, { state: "setup_pending", comments_inbound: false, post_sync: false, moderation: false });
+              if (!socialSetupPendingLogged) { socialSetupPendingLogged = true; log("info", "content_social_posts.setup_pending", { request_id: ctx.requestId }); }
+            } else {
+              postsUnavailable = true;
+              log("error", "content_social_posts.unreadable", { request_id: ctx.requestId, error: String(error?.message || error).slice(0, 120) });
+            }
           }
-          json(res, 200, { enabled: Boolean(config.metaSocialCommentsInboundEnabled), sync_enabled: Boolean(config.metaSocialPostsSyncEnabled) && !postsUnavailable, connection,
-            posts_unavailable: postsUnavailable, posts: posts.map((p) => postView(p, p.comments)) }, { "x-request-id": ctx.requestId });
+          const setupPending = connection.state === "setup_pending";
+          json(res, 200, { enabled: Boolean(config.metaSocialCommentsInboundEnabled) && !setupPending, sync_enabled: Boolean(config.metaSocialPostsSyncEnabled) && !postsUnavailable && !setupPending,
+            connection, posts_unavailable: postsUnavailable, posts: posts.map((p) => postView(p, p.comments)) }, { "x-request-id": ctx.requestId });
           return;
         }
-        const found = isUuid(postId) && !isDemoId(postId) ? await store.getSocialPost(postId) : null;
+        const found = isUuid(postId) && !isDemoId(postId) ? await store.getSocialPost(postId).catch((error) => { if (error?.code === "social_setup_pending") return null; throw error; }) : null;
         if (!found) { json(res, 404, { error: "social_post_not_found" }, { "x-request-id": ctx.requestId }); return; }
         const actions = await store.listCommentModerationActions(found.comments.map((c) => c.id)).catch(() => []);
         const latest = new Map();

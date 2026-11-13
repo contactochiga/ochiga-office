@@ -75,6 +75,36 @@ async function main() {
   ok(sampleDetail.moderation_enabled === false && sampleDetail.comments.every((c) => c.actionable === false) && modOnSample.status === 404 && syncInDemo.status === 403 && sampleViaConnected.status === 404 && store.state.office_social_posts.length === 1 && (store.state.office_social_comment_actions || []).length === 0,
     "API: sample posts cannot be moderated or synced, are not served once connected, and nothing about them is stored");
 
+  // ---- Supabase store: a missing table is "setup pending", remembered for a minute; other errors surface unchanged
+  const { SupabaseLeadAgentsStore } = require("../src/lead-agents/store-supabase");
+  const sb = new SupabaseLeadAgentsStore({ url: "http://127.0.0.1:9", serviceRoleKey: "synthetic", requestTimeoutMs: 1000 });
+  const sbCalls = [];
+  const restError = (status, code) => Object.assign(new Error("rest"), { response: { status, data: { code, message: "fixture" } } });
+  let nextError = restError(404, "PGRST205");
+  sb.client = { get: async (p) => { sbCalls.push(p); throw nextError; } };
+  const codeOf = (p) => p.then(() => "resolved", (e) => e.code || e.message);
+  const first = await codeOf(sb.listSocialPosts()), second = await codeOf(sb.listSocialPosts()), detail = await codeOf(sb.getSocialPost(storedPostId));
+  sb.socialTablesMissingAt = 0; nextError = restError(500, "XX000");
+  const outage = await codeOf(sb.listSocialPosts());
+  ok(first === "social_setup_pending" && second === "social_setup_pending" && detail === "social_setup_pending" && sbCalls.length === 2 && outage === "rest",
+    "Supabase store: a missing Content social table reads as setup pending and is not re-queried for a minute; a real outage still surfaces as an error");
+  // ---- server: setup pending is logged once per process, never as an error; a real outage is logged as an error
+  const lines = []; const origLog = console.log, origErr = console.error;
+  console.log = (l, ...rest) => { if (typeof l === "string" && l.includes("content_social_posts")) lines.push(l); else origLog(l, ...rest); };
+  console.error = (l, ...rest) => { if (typeof l === "string" && l.includes("content_social_posts")) lines.push(l); else origErr(l, ...rest); };
+  const realListForLog = store.listSocialPosts.bind(store);
+  try {
+    store.listSocialPosts = async () => { throw Object.assign(new Error("social_setup_pending"), { code: "social_setup_pending" }); };
+    for (let i = 0; i < 5; i++) await (await api("disconnected", "social-posts")).json();
+    const pendingLines = lines.splice(0);
+    store.listSocialPosts = async () => { throw new Error("connection reset (fixture)"); };
+    const broken = await (await api("disconnected", "social-posts")).json();
+    ok(pendingLines.length === 1 && /"level":"info".*setup_pending/.test(pendingLines[0]) && broken.posts_unavailable === true && broken.connection.state === "disconnected" && lines.length === 1 && /"level":"error".*unreadable/.test(lines[0]),
+      "server: five pre-migration page loads log setup pending once (info, not error); a genuine read failure is still logged as an error and flagged");
+  } finally {
+    console.log = origLog; console.error = origErr; store.listSocialPosts = realListForLog;
+  }
+
   const PORT = await freePort();
   const userDir = fs.mkdtempSync(path.join(os.tmpdir(), "content-connection-chrome-"));
   const chrome = spawn(CHROME, ["--headless=new", `--remote-debugging-port=${PORT}`, `--user-data-dir=${userDir}`, "--no-first-run", "--disable-gpu", "--hide-scrollbars", "--disable-features=BackForwardCache", "about:blank"], { stdio: "ignore" });
@@ -117,14 +147,20 @@ async function main() {
       "disconnected: Posts shows a Not connected status, the source filter and no sync button");
     ok(await evalJs("[...document.querySelectorAll('.content-row-social')].length === 1 && !/Sample/.test(document.querySelector('#contentList').textContent)"), "disconnected: previously stored posts stay visible read-only; no sample data");
     await shot("connection-desktop-disconnected.png");
-    // before the C1-C3 tables exist (production today): the status still renders, nothing breaks
-    const realList = store.listSocialPosts.bind(store);
-    store.listSocialPosts = async () => { throw new Error("relation office_social_posts does not exist (fixture)"); };
+    // before the C1-C3 tables exist (production today): a clean "Setup pending" state, no warning note
+    const realList = store.listSocialPosts.bind(store), realGet = store.getSocialPost.bind(store);
+    const pendingError = () => Object.assign(new Error("social_setup_pending"), { code: "social_setup_pending" });
+    store.listSocialPosts = async () => { throw pendingError(); }; store.getSocialPost = async () => { throw pendingError(); };
     const premig = await (await api("disconnected", "social-posts")).json();
+    const premigDetail = await api("disconnected", `social-posts/${storedPostId}`);
     await open("disconnected", "content", `!!${chip}`, "pre-migration list");
-    ok(premig.posts_unavailable === true && premig.connection.state === "disconnected" && premig.sync_enabled === false && await evalJs(`${chip}.dataset.connection === 'disconnected' && !!document.querySelector('[data-posts-unavailable]') && !!document.querySelector('#contentSourceFilter')`),
-      "before the migration: the Content list still loads with Not connected and a 'could not be loaded' note instead of failing");
-    store.listSocialPosts = realList;
+    ok(premig.connection.state === "setup_pending" && premig.posts_unavailable === false && premig.sync_enabled === false && premigDetail.status === 404 &&
+      await evalJs(`${chip}.dataset.connection === 'setup_pending' && /Setup pending/.test(${chip}.textContent) && !document.querySelector('[data-posts-unavailable]') && !!document.querySelector('#contentSourceFilter') && !/could not|error|failed/i.test(${chip}.parentElement.textContent)`),
+      "before the migration: Content shows a clean Setup pending status (no database warning) and a post link is a plain 404");
+    await shot("connection-desktop-setup-pending.png");
+    await open("disconnected", "content/comments", "!!document.querySelector('.content-not-connected')", "pre-migration comments");
+    ok(await evalJs("document.querySelector('.content-not-connected').dataset.connection === 'setup_pending' && /Setup pending/.test(document.querySelector('.content-not-connected').textContent)"), "before the migration: the Comments tab shows Setup pending");
+    store.listSocialPosts = realList; store.getSocialPost = realGet;
     await open("disconnected", "content/comments", "!!document.querySelector('.content-comments, .content-not-connected')", "disconnected comments");
     ok(await evalJs("!document.querySelector('.content-tab-soon[title*=\"Comments\"]') && !!document.querySelector('[data-content-tab=comments]') && document.querySelectorAll('.content-moderation-toggle').length === 0"), "disconnected: the Comments tab is open (not Soon) and offers no moderation");
 
