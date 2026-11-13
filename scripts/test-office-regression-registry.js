@@ -7,7 +7,7 @@
 const fs = require("node:fs");
 const path = require("node:path");
 const { spawnSync } = require("node:child_process");
-const { plan, outcome, GATES } = require("./run-office-regression");
+const { plan, outcome, GATES, STEP_TIMEOUT_MS } = require("./run-office-regression");
 
 const ROOT = path.join(__dirname, "..");
 const scripts = require(path.join(ROOT, "package.json")).scripts;
@@ -69,6 +69,22 @@ const skipping = ["test-whatsapp-inbound-claims-postgres.js", "test-relationship
 check("RR9", `the runner fails a step that exits 0 but reports SKIP (covers ${skipping.length} suites that can still skip standalone)`,
   outcome(0, "SKIP: Chrome not installed").ok === false && outcome(0, "x\n  SKIP: docker or postgres:16-alpine unavailable\n").ok === false &&
   outcome(0, "PASS all\nskipped 2 echoes").ok === true && outcome(1, "").ok === false && outcome(0, "ok").ok === true, skipping);
+
+// A hung suite must fail, not hold the run open: every step has a deadline.
+const hung = spawnSync(process.execPath, [path.join(ROOT, "scripts", "run-office-regression.js"), "--list"], { encoding: "utf8" });
+check("RR10", `each step has a deadline (${Math.round(STEP_TIMEOUT_MS / 60000)} min default) and a timeout counts as a failure`,
+  STEP_TIMEOUT_MS > 0 && STEP_TIMEOUT_MS <= 30 * 60_000 && outcome(null, "", true).ok === false && outcome(0, "ok", true).ok === false &&
+  /timeout: STEP_TIMEOUT_MS/.test(source("run-office-regression.js")) && hung.status === 0);
+
+// The proposed workflow stays inert and least-privileged.
+const wf = fs.readFileSync(path.join(ROOT, ".github", "workflows", "office-regression.yml"), "utf8");
+check("RR11", "the proposed CI workflow is dormant, read-only, secret-free, SHA-pinned and runs npm run office:regression",
+  /^on:\n  pull_request:\n/m.test(wf) && !/pull_request_target|workflow_run|secrets\.|upload-artifact|deploy/i.test(wf.replace(/^#.*$/gm, "")) &&
+  /^permissions:\n  contents: read$/m.test(wf) && !/write/.test(wf.replace(/^#.*$/gm, "")) &&
+  /if: vars\.OFFICE_CI_ENABLED == 'true'/.test(wf) && /persist-credentials: false/.test(wf) &&
+  (wf.match(/uses: [^\n]+/g) || []).every((u) => /@[0-9a-f]{40}\b/.test(u)) &&
+  /npm ci --ignore-scripts/.test(wf) && /run: npm run office:regression$/m.test(wf) &&
+  ["public.ecr.aws/supabase/postgres", "public.ecr.aws/supabase/postgrest", "node sha256", "postgres sha256"].every((image) => wf.includes(image)));
 
 console.log(`\n${checks - failures}/${checks} checks passed`);
 console.log(failures ? "Office regression registry: FAIL" : "Office regression registry: PASS");
