@@ -411,6 +411,32 @@ class FileLeadAgentsStore {
     return applied ? "accepted" : "stale";
   }
 
+  async upsertSocialPostSnapshot({ channel, asset, providerPostId, status, error, caption, permalink, mediaType, previewUrl, publishedAt, providerUpdatedAt }) {
+    if (channel === "facebook" && !String(providerPostId).startsWith(`${asset}_`)) throw new Error("invalid social post snapshot");
+    let row = this.state.office_social_posts.find((p) => p.channel === channel && p.asset_id === asset && p.provider_post_id === providerPostId);
+    const created = !row;
+    if (!row) {
+      row = { id: crypto.randomUUID(), channel, asset_id: asset, provider_post_id: providerPostId, content_item_id: null, origin: "external", media_kind: null,
+        first_seen_at: this.nowIso(), last_comment_at: null, sync_status: "not_synced" };
+      this.state.office_social_posts.push(row);
+    }
+    const now = this.nowIso();
+    if (status === "synced") {
+      const newer = !providerUpdatedAt || !row.provider_updated_at || Date.parse(providerUpdatedAt) >= Date.parse(row.provider_updated_at);
+      if (newer) { row.caption = caption ?? null; row.media_preview_url = previewUrl ?? null; }
+      row.permalink_url = permalink || row.permalink_url || null;
+      row.media_type = mediaType || row.media_type || null;
+      row.published_at = row.published_at || publishedAt || null;
+      if (providerUpdatedAt && (!row.provider_updated_at || Date.parse(providerUpdatedAt) > Date.parse(row.provider_updated_at))) row.provider_updated_at = providerUpdatedAt;
+      Object.assign(row, { sync_status: "synced", sync_error: null, synced_at: now, unavailable_since: null });
+    } else {
+      Object.assign(row, { sync_status: status, sync_error: error || null, synced_at: now,
+        unavailable_since: status === "unavailable" ? row.unavailable_since || now : row.unavailable_since || null });
+    }
+    await this.persist();
+    return created ? "created" : "updated";
+  }
+
   async listSocialPosts({ limit = 50 } = {}) {
     return [...this.state.office_social_posts].sort((a, b) => String(b.last_comment_at || "").localeCompare(String(a.last_comment_at || ""))).slice(0, limit)
       .map((post) => ({ ...post, comments: this.state.office_social_comments.filter((c) => c.post_id === post.id).map(({ visibility, deleted_at }) => ({ visibility, deleted_at })) }));

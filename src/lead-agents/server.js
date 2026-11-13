@@ -10,6 +10,7 @@ const { log } = require("./logger");
 const envelopeObservation = require("./whatsapp-envelope-observation");
 const { handleMetaSocialWebhook } = require("./meta-social-inbound");
 const { createMetaSocialReplyAdapter, replyPolicy, sendSocialReply } = require("./meta-social-replies");
+const { createMetaSocialPostsAdapter } = require("./meta-social-posts");
 const { createStore } = require("./store-factory");
 const { OpenAIResponsesClient } = require("./openai");
 const { ToolExecutor } = require("./tools");
@@ -2081,7 +2082,8 @@ async function enrichAuthContext(authContext, store) {
   };
 }
 
-function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRateLimiter, loginRateLimiter, whatsappAdapter, metaSocialReplyAdapter = createMetaSocialReplyAdapter(config), openaiClient, toolExecutor }) {
+function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRateLimiter, loginRateLimiter, whatsappAdapter, metaSocialReplyAdapter = createMetaSocialReplyAdapter(config), metaSocialPostsAdapter = createMetaSocialPostsAdapter(config), openaiClient, toolExecutor }) {
+  let socialSyncBusy = false; // one Content social-post sync at a time
   const startedAt = Date.now();
   const widgetRateLimiter = publicRateLimiter || rateLimiter;
   const officeInternalRateLimiter = officeRateLimiter || rateLimiter;
@@ -8500,30 +8502,79 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
 
       // Editorial history of ONE article: only audit events whose target is this exact content item, gated like reading the article itself (content.write).
       // Only workflow fields are returned -- the request ip / user agent and any other audit metadata stay server-side.
-      // Content → Posts & Comments: Facebook Page and Instagram posts with their public comments (read-only). Comments stay
-      // attached to their post; commenter platform ids are never returned and nothing here touches CRM leads or DMs.
-      if (pathname === "/api/lead-agents/admin/content/social-posts" || /^\/api\/lead-agents\/admin\/content\/social-posts\/[^/]+$/.test(pathname)) {
-        if (req.method !== "GET") { methodNotAllowed(res, "GET"); return; }
-        authorizePermission(authContext, "content.write");
+      // Content → Posts & Comments: Facebook Page and Instagram posts with their public comments. Comments stay attached to their
+      // post; commenter platform ids are never returned and nothing here touches CRM leads or DMs. GETs are read-only; the two
+      // sync actions make read-only Graph lookups (no publishing, replies or moderation) and never return tokens or Graph errors.
+      if (pathname === "/api/lead-agents/admin/content/social-posts" || /^\/api\/lead-agents\/admin\/content\/social-posts\/[^/]+(\/sync)?$/.test(pathname)) {
+        const segments = pathname.split("/");
+        const isSync = segments.at(-1) === "sync";
+        const postId = isSync ? (segments.at(-2) === "social-posts" ? null : segments.at(-2)) : (segments.at(-1) === "social-posts" ? null : segments.at(-1));
         const counts = (comments) => ({
           total: comments.length,
           visible: comments.filter((c) => !c.deleted_at && c.visibility === "visible").length,
           hidden: comments.filter((c) => !c.deleted_at && c.visibility === "hidden").length,
           deleted: comments.filter((c) => c.deleted_at).length,
         });
-        const postView = (post, comments) => ({ id: post.id, channel: post.channel, provider_post_id: post.provider_post_id, origin: post.origin,
-          content_item_id: post.content_item_id || null, media_kind: post.media_kind || null, first_seen_at: post.first_seen_at,
-          last_comment_at: post.last_comment_at || null, comment_counts: counts(comments || []) });
-        const postId = pathname.split("/").pop();
-        if (postId === "social-posts") {
-          const posts = await store.listSocialPosts({ limit: 100 });
-          json(res, 200, { enabled: Boolean(config.metaSocialCommentsInboundEnabled), posts: posts.map((p) => postView(p, p.comments)) }, { "x-request-id": ctx.requestId });
+        const postView = (post, comments) => ({ id: post.id, channel: post.channel, origin: post.origin,
+          content_item_id: post.content_item_id || null, first_seen_at: post.first_seen_at, last_comment_at: post.last_comment_at || null,
+          caption: post.caption ?? null, permalink_url: post.permalink_url || null, media_type: post.media_type || null,
+          media_preview_url: post.media_preview_url || null, published_at: post.published_at || null,
+          sync_status: post.sync_status || "not_synced", synced_at: post.synced_at || null, unavailable_since: post.unavailable_since || null,
+          comment_counts: counts(comments || []) });
+        const isUuid = (v) => /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(v || "");
+
+        if (isSync) {
+          if (req.method !== "POST") { methodNotAllowed(res, "POST"); return; }
+          authorizePermission(authContext, "content.write");
+          if (authContext?.type !== "session") { json(res, 403, { error: "staff_session_required" }); return; }
+          if (!config.metaSocialPostsSyncEnabled) { json(res, 403, { error: "social_sync_disabled" }); return; }
+          if (socialSyncBusy) { json(res, 409, { error: "social_sync_in_progress" }); return; }
+          socialSyncBusy = true;
+          try {
+            const tally = { created: 0, updated: 0, unavailable: 0, restricted: 0, error: 0, rejected: 0 };
+            if (postId) {
+              const found = isUuid(postId) ? await store.getSocialPost(postId) : null;
+              if (!found) { json(res, 404, { error: "social_post_not_found" }); return; }
+              const result = await metaSocialPostsAdapter.lookup(found.post.channel, found.post.provider_post_id);
+              if (result.status === "synced") tally[await store.upsertSocialPostSnapshot({ ...result.snapshot, status: "synced" })]++;
+              else if (result.error === "foreign_asset") tally.rejected++;
+              else {
+                await store.upsertSocialPostSnapshot({ channel: found.post.channel, asset: found.post.asset_id, providerPostId: found.post.provider_post_id, status: result.status, error: result.error });
+                tally[result.status]++;
+              }
+            } else {
+              for (const channel of ["facebook", "instagram"]) {
+                if (!metaSocialPostsAdapter.configured(channel)) continue;
+                const result = await metaSocialPostsAdapter.listRecent(channel);
+                tally.rejected += result.rejected || 0;
+                if (result.status !== "synced") { tally[result.status] = (tally[result.status] || 0) + 1; continue; }
+                for (const snapshot of result.posts) tally[await store.upsertSocialPostSnapshot({ ...snapshot, status: "synced" })]++;
+              }
+            }
+            await appendAuditRecord({ store, authContext, action: "content.social_posts_synced", resourceType: "content_social_posts", resourceId: postId || "recent",
+              metadata: { ...tally, operator: authContext.email || "" }, req, status: tally.error || tally.restricted ? "failure" : "success" }).catch(() => null);
+            if (!postId) { json(res, 200, { ok: true, ...tally }, { "x-request-id": ctx.requestId }); return; }
+            const fresh = await store.getSocialPost(postId);
+            json(res, 200, { ok: true, ...tally, post: postView(fresh.post, fresh.comments) }, { "x-request-id": ctx.requestId });
+          } finally {
+            socialSyncBusy = false;
+          }
           return;
         }
-        const found = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(postId) ? await store.getSocialPost(postId) : null;
+
+        if (req.method !== "GET") { methodNotAllowed(res, "GET"); return; }
+        authorizePermission(authContext, "content.write");
+        if (!postId) {
+          const posts = await store.listSocialPosts({ limit: 100 });
+          json(res, 200, { enabled: Boolean(config.metaSocialCommentsInboundEnabled), sync_enabled: Boolean(config.metaSocialPostsSyncEnabled),
+            posts: posts.map((p) => postView(p, p.comments)) }, { "x-request-id": ctx.requestId });
+          return;
+        }
+        const found = isUuid(postId) ? await store.getSocialPost(postId) : null;
         if (!found) { json(res, 404, { error: "social_post_not_found" }, { "x-request-id": ctx.requestId }); return; }
         json(res, 200, {
           enabled: Boolean(config.metaSocialCommentsInboundEnabled),
+          sync_enabled: Boolean(config.metaSocialPostsSyncEnabled),
           post: postView(found.post, found.comments),
           comments: found.comments.map((c) => ({ id: c.id, provider_comment_id: c.provider_comment_id, provider_parent_id: c.provider_parent_id || null,
             author_label: c.author_label || null, author_is_page: Boolean(c.author_is_page), body: c.deleted_at ? null : c.body ?? null,

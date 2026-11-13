@@ -201,6 +201,14 @@ class SupabaseLeadAgentsStore {
     return response.data;
   }
 
+  async upsertSocialPostSnapshot({ channel, asset, providerPostId, status, error, caption, permalink, mediaType, previewUrl, publishedAt, providerUpdatedAt }) {
+    const response = await this.client.post("/rpc/office_upsert_social_post_snapshot", {
+      p_channel: channel, p_asset: asset, p_post: providerPostId, p_status: status, p_error: error || null, p_caption: caption ?? null,
+      p_permalink: permalink || null, p_media_type: mediaType || null, p_preview: previewUrl || null, p_published: publishedAt || null, p_updated: providerUpdatedAt || null,
+    });
+    return response.data;
+  }
+
   async listSocialPosts({ limit = 50 } = {}) {
     const response = await this.client.get(`/office_social_posts?select=*,comments:office_social_comments(visibility,deleted_at)&order=last_comment_at.desc.nullslast&limit=${Math.min(Math.max(Number(limit) || 50, 1), 200)}`);
     if (!Array.isArray(response.data)) throw new Error("social_posts_unreadable");

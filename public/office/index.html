@@ -2039,6 +2039,22 @@
   .content-comment-flag { font-weight: 600; }
   .content-comment-body { font-size: 13px; white-space: pre-wrap; overflow-wrap: anywhere; }
   @media (max-width: 760px) { .content-comments { grid-template-columns: minmax(0, 1fr); } }
+  .content-social-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 6px 14px 10px; }
+  .content-social-status { font-size: 12px; }
+  .content-list-group { font-size: 10.5px; text-transform: uppercase; letter-spacing: .08em; color: var(--text-tertiary); padding: 12px 14px 6px; border-top: 1px solid var(--line); }
+  .content-thumb-social { display: inline-flex; align-items: center; justify-content: center; }
+  .content-source-chip[data-source-chip="facebook"] { border-color: #1877f2; } .content-source-chip[data-source-chip="instagram"] { border-color: #c13584; }
+  .content-social-view { display: flex; flex-direction: column; gap: 12px; padding: 18px 22px; min-width: 0; }
+  .content-social-view .content-back { align-self: flex-start; }
+  .content-social-head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+  .content-social-head-text { display: flex; flex-direction: column; min-width: 0; flex: 1; }
+  .content-social-head-text h2 { font-size: 17px; margin: 0; }
+  .content-social-preview { max-width: min(100%, 520px); max-height: 420px; border-radius: 10px; object-fit: cover; }
+  .content-social-caption { font-size: 14px; line-height: 1.55; white-space: pre-wrap; overflow-wrap: anywhere; max-width: 72ch; }
+  .content-social-warning { margin: 0 0 8px; font-size: 13px; color: var(--warning, #d4a017); white-space: normal; }
+  .content-social-links { display: flex; flex-wrap: wrap; gap: 8px; }
+  .content-social-subhead { font-size: 14px; margin: 8px 0 0; }
+  .content-social-comments { display: flex; flex-direction: column; gap: 8px; }
   .content-not-connected b { color: var(--text-secondary); font-weight: 500; }
   .content-activity .content-history-item { padding: 7px 0; }
   .content-tab-body { display: flex; flex-direction: column; gap: 18px; }

@@ -227,6 +227,9 @@ async function apiListSocialPosts() {
 async function apiGetSocialPost(id) {
   return api(`/api/lead-agents/admin/content/social-posts/${encodeURIComponent(id)}`);
 }
+async function apiSyncSocialPosts(postId) {
+  return api(postId ? `/api/lead-agents/admin/content/social-posts/${encodeURIComponent(postId)}/sync` : "/api/lead-agents/admin/content/social-posts/sync", { method: "POST", body: {} });
+}
 async function apiGetContent(id) {
   return api(`/api/lead-agents/admin/content/${encodeURIComponent(id)}`);
 }
@@ -7578,7 +7581,7 @@ const CONTENT_HISTORY_LABELS = {
 const CONTENT_GLOBE_SVG = `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><circle cx="8" cy="8" r="6"/><path d="M2 8h12M8 2c2.2 2.2 2.2 9.8 0 12M8 2C5.8 4.2 5.8 11.8 8 14"/></svg>`;
 const CONTENT_DOC_SVG = `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" aria-hidden="true"><path d="M4 2h5l3 3v9H4z"/><path d="M9 2v3h3M6 8h4M6 10.5h4"/></svg>`;
 
-const contentState = { items: [], q: "", status: "", time: "", activeId: null, explicit: false, item: null, mode: "edit", dirty: false, busy: false, hash: "", page: null, editor: null, historyCache: new Map(), calendarMonth: null };
+const contentState = { items: [], q: "", status: "", time: "", source: "", activeId: null, explicit: false, item: null, mode: "edit", dirty: false, busy: false, hash: "", page: null, editor: null, historyCache: new Map(), calendarMonth: null };
 
 // ---- shared helpers --------------------------------------------------------------------------------------------------------------------------
 
@@ -7747,7 +7750,7 @@ async function renderContentComments(host, selectedId, token) {
     const c = post.comment_counts || { visible: 0, hidden: 0, deleted: 0 };
     const row = el(`<button type="button" role="listitem" class="content-comments-post ${post.id === active.id ? "active" : ""}" data-social-post="${escapeHtml(post.id)}">
       <span class="rel-src sm ${ch.cls}"><b>${escapeHtml(ch.glyph)}</b></span>
-      <span class="content-comments-post-text"><b>${escapeHtml(ch.label)} post</b><span>${c.visible} visible${c.hidden ? ` · ${c.hidden} hidden` : ""}${c.deleted ? ` · ${c.deleted} deleted` : ""}${post.last_comment_at ? ` · ${escapeHtml(fmtRelative(post.last_comment_at))}` : ""}</span></span>
+      <span class="content-comments-post-text"><b>${escapeHtml(contentSocialTitle(post))}</b><span>${c.visible} visible${c.hidden ? ` · ${c.hidden} hidden` : ""}${c.deleted ? ` · ${c.deleted} deleted` : ""}${post.last_comment_at ? ` · ${escapeHtml(fmtRelative(post.last_comment_at))}` : ""}</span></span>
     </button>`);
     row.addEventListener("click", () => navigate(`content/comments/${post.id}`));
     list.appendChild(row);
@@ -7765,23 +7768,9 @@ async function renderContentComments(host, selectedId, token) {
   if (token !== state.renderToken) return;
   thread.innerHTML = "";
   const ch = SOCIAL_CHANNEL[detail.post.channel] || SOCIAL_CHANNEL.facebook;
-  thread.appendChild(el(`<div class="content-comments-head"><b>${escapeHtml(ch.label)} post</b><span>Post ${escapeHtml(detail.post.provider_post_id)}${detail.post.origin === "office" ? " · published from Office" : " · published outside Office"}</span>
+  thread.appendChild(el(`<div class="content-comments-head"><b>${escapeHtml(contentSocialTitle(detail.post))}</b><span>${escapeHtml(ch.label)}${detail.post.origin === "office" ? " · published from Office" : " · published outside Office"}</span>
     <span class="content-comments-readonly">Read-only. Replying and hiding comments are not enabled yet.</span></div>`));
-  const byParent = new Map();
-  detail.comments.forEach((c) => { const key = c.provider_parent_id || ""; if (!byParent.has(key)) byParent.set(key, []); byParent.get(key).push(c); });
-  const known = new Set(detail.comments.map((c) => c.provider_comment_id));
-  const roots = detail.comments.filter((c) => !c.provider_parent_id || !known.has(c.provider_parent_id));
-  const renderComment = (c, depth) => {
-    const node = el(`<div class="content-comment${depth ? " reply" : ""}${c.visibility === "hidden" ? " is-hidden" : ""}" data-comment="${escapeHtml(c.id)}">
-      <div class="content-comment-meta"><b>${c.author_is_page ? "Your Page" : escapeHtml(c.author_label || "Someone")}</b><span>${escapeHtml(fmtDateTime(c.created_at))}${c.edited_at ? " · edited" : ""}</span>
-        ${c.visibility === "hidden" && !c.deleted ? '<span class="content-comment-flag">Hidden</span>' : ""}</div>
-      <div class="content-comment-body">${c.deleted ? '<span class="rel-faint">Deleted by its author. The text is no longer stored.</span>' : c.body ? escapeHtml(c.body) : '<span class="rel-faint">No text (for example, an image only).</span>'}</div>
-    </div>`);
-    thread.appendChild(node);
-    (byParent.get(c.provider_comment_id) || []).forEach((r) => renderComment(r, depth + 1));
-  };
-  if (!roots.length) thread.appendChild(el(`<p class="home-panel-empty">This post has no comments.</p>`));
-  roots.forEach((c) => renderComment(c, 0));
+  renderSocialThread(thread, detail.comments);
 }
 
 function renderContentTabs(active) {
@@ -7819,6 +7808,7 @@ function renderContentWorkspace(outlet) {
             <select id="contentTimeFilter" class="rel-select content-select" aria-label="Filter by last update">${CONTENT_TIME_FILTERS.map(([value, label]) => `<option value="${value}">${escapeHtml(label)}</option>`).join("")}</select>
           </div>
         </div>
+        <div class="content-social-bar" id="contentSocialBar" hidden></div>
         <div class="rel-list content-list" id="contentList" role="list"></div>
       </div>
       <div class="content-main-pane" id="contentMain"></div>
@@ -7834,6 +7824,7 @@ function renderContentWorkspace(outlet) {
   page.querySelector("#contentStatusFilter").addEventListener("change", (e) => { contentState.status = e.target.value; drawContentList(); });
   page.querySelector("#contentTimeFilter").addEventListener("change", (e) => { contentState.time = e.target.value; drawContentList(); });
   page.querySelector("#contentTableLink").addEventListener("click", () => navigate("content/table"));
+  contentSetupSocialBar(page);
   outlet.appendChild(page);
   contentState.page = page;
   drawContentList();
@@ -7843,15 +7834,208 @@ function drawContentList() {
   const page = contentState.page;
   if (!page) return;
   const list = page.querySelector("#contentList");
-  const rows = contentState.items.filter(contentMatchesFilters);
-  const filtered = rows.length !== contentState.items.length;
-  page.querySelector("#contentCount").textContent = filtered ? `(${rows.length} of ${contentState.items.length})` : `(${contentState.items.length})`;
+  const social = contentSocialAvailable() ? contentState.social.posts : [];
+  const showWebsite = !contentState.source || contentState.source === "website";
+  const rows = showWebsite ? contentState.items.filter(contentMatchesFilters) : [];
+  const socialRows = social.filter(contentSocialMatchesFilters);
+  const total = contentState.items.length + social.length;
+  const shown = rows.length + socialRows.length;
+  page.querySelector("#contentCount").textContent = shown !== total ? `(${shown} of ${total})` : `(${total})`;
   list.innerHTML = "";
-  if (!rows.length) {
-    list.appendChild(el(`<div class="rel-empty">${contentState.items.length ? "No posts match these filters." : "No posts yet. Start with New Post."}</div>`));
+  if (!shown) {
+    list.appendChild(el(`<div class="rel-empty">${total ? "No posts match these filters." : "No posts yet. Start with New Post."}</div>`));
     return;
   }
   rows.forEach((item) => list.appendChild(contentRow(item)));
+  if (socialRows.length) {
+    if (rows.length) list.appendChild(el(`<div class="content-list-group" role="presentation">Facebook &amp; Instagram</div>`));
+    socialRows.forEach((post) => list.appendChild(contentSocialRow(post)));
+  }
+}
+
+// ---- Posts workspace: Facebook Page and Instagram posts (C2) ------------------------------------------------------------------------------------
+// Posts made on Facebook or Instagram are shown read-only next to website articles, marked by source and sync state. They are not Sanity articles:
+// they never open the editor, enter the approval workflow or publish. Comments shown with them are public comments, never CRM leads or DMs.
+const SOCIAL_SYNC_LABEL = { not_synced: ["Not synced", "default"], synced: ["Synced", "success"], unavailable: ["No longer available", "warning"], restricted: ["Access restricted", "danger"], error: ["Sync failed", "warning"] };
+function contentSocialAvailable() {
+  return Boolean(contentState.social && (contentState.social.enabled || contentState.social.sync_enabled || contentState.social.posts.length));
+}
+function contentSocialTitle(post) {
+  const ch = SOCIAL_CHANNEL[post.channel] || SOCIAL_CHANNEL.facebook;
+  const text = String(post.caption || "").replace(/\s+/g, " ").trim();
+  return text ? (text.length > 90 ? `${text.slice(0, 89)}…` : text) : `${ch.label} post`;
+}
+function contentSocialMatchesFilters(post) {
+  if (contentState.source && contentState.source !== post.channel) return false;
+  if (contentState.status) return false; // workflow status applies to website articles only
+  const days = (CONTENT_TIME_FILTERS.find(([key]) => key === contentState.time) || [])[2];
+  const when = post.published_at || post.last_comment_at || post.first_seen_at;
+  if (days && !(when && Date.now() - new Date(when).getTime() <= days * 86400000)) return false;
+  const q = contentState.q.trim().toLowerCase();
+  return !q || String(post.caption || "").toLowerCase().includes(q) || (SOCIAL_CHANNEL[post.channel]?.label || "").toLowerCase().includes(q);
+}
+function contentSocialThumb(post) {
+  const ch = SOCIAL_CHANNEL[post.channel] || SOCIAL_CHANNEL.facebook;
+  const empty = el(`<span class="content-thumb content-thumb-social"><span class="rel-src sm ${ch.cls}"><b>${escapeHtml(ch.glyph)}</b></span></span>`);
+  if (!post.media_preview_url) return empty;
+  const img = el(`<img class="content-thumb" src="${escapeHtml(post.media_preview_url)}" alt="" loading="lazy" referrerpolicy="no-referrer" />`);
+  img.addEventListener("error", () => img.replaceWith(empty));
+  return img;
+}
+function contentSocialRow(post) {
+  const ch = SOCIAL_CHANNEL[post.channel] || SOCIAL_CHANNEL.facebook;
+  const [syncLabel, syncTone] = SOCIAL_SYNC_LABEL[post.sync_status] || SOCIAL_SYNC_LABEL.not_synced;
+  const id = `social:${post.id}`;
+  const when = post.published_at || post.last_comment_at || post.first_seen_at;
+  const count = post.comment_counts ? post.comment_counts.visible + post.comment_counts.hidden : 0;
+  const row = el(`
+    <div class="content-row content-row-social${id === contentState.activeId ? " active" : ""}" role="listitem" tabindex="0" data-content-id="${escapeHtml(id)}" data-source="${escapeHtml(post.channel)}">
+      <div class="content-row-main">
+        <div class="content-row-top"><span class="content-row-title">${escapeHtml(contentSocialTitle(post))}</span><span class="rel-row-time">${escapeHtml(when ? fmtRelative(when) : "")}</span></div>
+        <div class="content-row-meta">
+          <span class="rel-chip content-source-chip" data-source-chip="${escapeHtml(post.channel)}">${escapeHtml(ch.label)}</span>
+          ${badge(syncLabel, syncTone)}
+          ${count ? `<span class="rel-chip">${count} comment${count === 1 ? "" : "s"}</span>` : ""}
+        </div>
+      </div>
+    </div>
+  `);
+  row.prepend(contentSocialThumb(post));
+  row.addEventListener("click", () => contentOpen(id));
+  row.addEventListener("keydown", (e) => { if (e.key === "Enter") contentOpen(id); });
+  return row;
+}
+function contentSetupSocialBar(page) {
+  if (!contentSocialAvailable()) return;
+  const facets = page.querySelector(".rel-facets");
+  const source = el(`<select id="contentSourceFilter" class="rel-select content-select" aria-label="Filter by source">
+    <option value="">All sources</option><option value="website">Website</option><option value="facebook">Facebook Page</option><option value="instagram">Instagram</option></select>`);
+  source.value = contentState.source;
+  source.addEventListener("change", (e) => { contentState.source = e.target.value; drawContentList(); });
+  facets.appendChild(source);
+  if (!contentState.social.sync_enabled || !hasPermission("content.write")) return;
+  const bar = page.querySelector("#contentSocialBar");
+  bar.hidden = false;
+  const btn = el(`<button type="button" class="btn btn-ghost btn-sm" id="contentSocialSync">Sync Facebook &amp; Instagram</button>`);
+  const status = el(`<span class="rel-faint content-social-status" role="status"></span>`);
+  btn.addEventListener("click", async () => {
+    btn.disabled = true;
+    status.textContent = "Syncing…";
+    try {
+      const r = await apiSyncSocialPosts();
+      const problems = (r.restricted || 0) + (r.error || 0);
+      status.textContent = `${r.created || 0} new · ${r.updated || 0} updated${problems ? ` · ${problems} could not be read` : ""}`;
+      contentState.social = await apiListSocialPosts();
+      drawContentList();
+    } catch (err) {
+      status.textContent = err.message || "Sync failed.";
+    } finally {
+      btn.disabled = false;
+    }
+  });
+  bar.appendChild(btn);
+  bar.appendChild(status);
+}
+
+async function contentSelectSocial(id, token) {
+  const page = contentState.page;
+  const main = page.querySelector("#contentMain");
+  const details = page.querySelector("#contentDetails");
+  setSelectedObject(null);
+  contentState.item = null;
+  main.innerHTML = "";
+  main.appendChild(skeletonPanel(3));
+  details.innerHTML = "";
+  let detail;
+  try {
+    detail = await apiGetSocialPost(id.slice("social:".length));
+  } catch (err) {
+    if (token !== state.renderToken || contentState.activeId !== id) return;
+    main.innerHTML = "";
+    main.appendChild(errorPanel(err.message || "This post could not be found."));
+    return;
+  }
+  if (token !== state.renderToken || contentState.activeId !== id) return;
+  renderSocialPostPane(main, details, detail, token);
+}
+
+function renderSocialPostPane(main, details, detail, token) {
+  const post = detail.post;
+  const ch = SOCIAL_CHANNEL[post.channel] || SOCIAL_CHANNEL.facebook;
+  const [syncLabel, syncTone] = SOCIAL_SYNC_LABEL[post.sync_status] || SOCIAL_SYNC_LABEL.not_synced;
+  main.innerHTML = "";
+  const pane = el(`
+    <div class="content-social-view" data-social-post="${escapeHtml(post.id)}">
+      <button type="button" class="btn btn-ghost btn-sm content-back" aria-label="Back to posts">← Posts</button>
+      <div class="content-social-head">
+        <span class="rel-src ${ch.cls}"><b>${escapeHtml(ch.glyph)}</b></span>
+        <div class="content-social-head-text"><h2>${escapeHtml(ch.label)} post</h2>
+          <span class="rel-faint">${post.origin === "office" ? "Published from Office" : "Published outside Office"}${post.published_at ? ` · ${escapeHtml(fmtDateTime(post.published_at))}` : ""}</span></div>
+        <span class="content-social-sync">${badge(syncLabel, syncTone)}</span>
+      </div>
+      <div class="content-notice content-notice-info content-social-readonly" role="note"><div class="content-notice-text">Read-only. This post lives on ${escapeHtml(ch.label)}; Office does not edit, publish, reply to or moderate it.</div></div>
+      <div class="content-social-media"></div>
+      <div class="content-social-caption"></div>
+      <div class="content-social-links"></div>
+      <h3 class="content-social-subhead">Comments</h3>
+      <div class="content-social-comments"></div>
+    </div>
+  `);
+  pane.querySelector(".content-back").addEventListener("click", () => { contentState.page?.classList.remove("content-item-open"); navigate("content"); });
+  if (post.media_preview_url) {
+    const img = el(`<img class="content-social-preview" src="${escapeHtml(post.media_preview_url)}" alt="Preview of the ${escapeHtml(ch.label)} post" loading="lazy" referrerpolicy="no-referrer" />`);
+    img.addEventListener("error", () => img.remove());
+    pane.querySelector(".content-social-media").appendChild(img);
+  }
+  const caption = pane.querySelector(".content-social-caption");
+  if (post.caption) caption.textContent = post.caption;
+  else caption.appendChild(el(`<span class="rel-faint">${post.sync_status === "not_synced" ? "Not synced yet, so the caption is not shown." : "This post has no caption."}</span>`));
+  if (post.sync_status === "unavailable") caption.prepend(el(`<p class="content-social-warning">This post is no longer available on ${escapeHtml(ch.label)}. The last synced details are kept.</p>`));
+  if (post.sync_status === "restricted") caption.prepend(el(`<p class="content-social-warning">Office's access to this post is restricted. Check the Page or Instagram account permissions.</p>`));
+  const links = pane.querySelector(".content-social-links");
+  if (post.permalink_url) links.appendChild(el(`<a class="btn btn-ghost btn-sm" href="${escapeHtml(post.permalink_url)}" target="_blank" rel="noopener noreferrer">Open on ${escapeHtml(ch.label)}</a>`));
+  if (detail.sync_enabled && hasPermission("content.write")) {
+    const btn = el(`<button type="button" class="btn btn-ghost btn-sm content-social-refresh">Refresh from ${escapeHtml(ch.label)}</button>`);
+    btn.addEventListener("click", async () => {
+      btn.disabled = true;
+      try {
+        await apiSyncSocialPost(post.id);
+        contentState.social = await apiListSocialPosts();
+        drawContentList();
+        if (contentState.activeId === `social:${post.id}`) renderSocialPostPane(main, details, await apiGetSocialPost(post.id), token);
+      } catch (err) {
+        btn.disabled = false;
+        btn.textContent = err.message || "Refresh failed";
+      }
+    });
+    links.appendChild(btn);
+  }
+  renderSocialThread(pane.querySelector(".content-social-comments"), detail.comments);
+  main.appendChild(pane);
+  details.innerHTML = "";
+  const facts = [["Source", ch.label], ["Origin", post.origin === "office" ? "Published from Office" : "Published outside Office"],
+    ["Published", post.published_at ? fmtDateTime(post.published_at) : "—"], ["Sync", syncLabel],
+    ["Last synced", post.synced_at ? fmtRelative(post.synced_at) : "Never"], ["Comments", String((post.comment_counts?.visible || 0) + (post.comment_counts?.hidden || 0))]];
+  details.appendChild(el(`<details class="rel-section content-section" open><summary>Post</summary><div class="rel-section-body">${facts.map(([label, value]) => `<div class="rel-fact"><span>${escapeHtml(label)}</span><b>${escapeHtml(value)}</b></div>`).join("")}</div></details>`));
+}
+async function apiSyncSocialPost(id) { return apiSyncSocialPosts(id); }
+
+// Threaded, read-only comments (shared by the Comments tab and the social post view).
+function renderSocialThread(host, comments) {
+  const byParent = new Map();
+  comments.forEach((c) => { const key = c.provider_parent_id || ""; if (!byParent.has(key)) byParent.set(key, []); byParent.get(key).push(c); });
+  const known = new Set(comments.map((c) => c.provider_comment_id));
+  const roots = comments.filter((c) => !c.provider_parent_id || !known.has(c.provider_parent_id));
+  const draw = (c, depth) => {
+    host.appendChild(el(`<div class="content-comment${depth ? " reply" : ""}${c.visibility === "hidden" ? " is-hidden" : ""}" data-comment="${escapeHtml(c.id)}">
+      <div class="content-comment-meta"><b>${c.author_is_page ? "Your Page" : escapeHtml(c.author_label || "Someone")}</b><span>${escapeHtml(fmtDateTime(c.created_at))}${c.edited_at ? " · edited" : ""}</span>
+        ${c.visibility === "hidden" && !c.deleted ? '<span class="content-comment-flag">Hidden</span>' : ""}</div>
+      <div class="content-comment-body">${c.deleted ? '<span class="rel-faint">Deleted by its author. The text is no longer stored.</span>' : c.body ? escapeHtml(c.body) : '<span class="rel-faint">No text (for example, an image only).</span>'}</div>
+    </div>`));
+    (byParent.get(c.provider_comment_id) || []).forEach((r) => draw(r, depth + 1));
+  };
+  if (!roots.length) host.appendChild(el(`<p class="home-panel-empty">No comments yet.</p>`));
+  roots.forEach((c) => draw(c, 0));
 }
 
 function contentRow(item) {
@@ -7899,6 +8083,7 @@ function contentMarkActive() {
 
 async function contentSelect(postId, token) {
   const page = contentState.page;
+  if (postId) postId = decodeURIComponent(postId);
   const explicit = Boolean(postId);
   // No post in the URL: show the most recently updated post (as the CRM workspace selects the latest lead); on a phone the list stays in front.
   const id = postId || (contentState.items.filter(contentMatchesFilters)[0] || contentState.items[0] || {}).id || null;
@@ -7920,6 +8105,7 @@ async function contentSelect(postId, token) {
     details.innerHTML = "";
     return;
   }
+  if (id.startsWith("social:")) { await contentSelectSocial(id, token); return; }
   main.innerHTML = "";
   main.appendChild(skeletonPanel(4));
   details.innerHTML = "";
