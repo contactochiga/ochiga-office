@@ -15,6 +15,7 @@ const requiredFiles = [
   "public/plan-studio/app.js",
   "public/office/index.html",
   "public/office/office.js",
+  "public/office/social-reply-attempt.mjs",
   "lead-agents-server.js",
   "render.yaml",
   "docs/office-os-2-architecture.md",

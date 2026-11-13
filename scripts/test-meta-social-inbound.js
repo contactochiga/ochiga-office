@@ -24,6 +24,15 @@ const event = (asset, overrides = {}) => ({
 const batch = (object, asset, ...messaging) => ({ object, entry: [{ id: asset, messaging }] });
 
 async function main() {
+  const graphError = (data) => createMetaSocialReplyAdapter({}, async () => {
+    throw Object.assign(new Error("fixture"), { response: { status: 403, data } });
+  });
+  const graphRequest = { channel: "facebook", to: "333", body: "Fixture" };
+  const known = { type: "OAuthException", code: 190, message: "Invalid token", fbtrace_id: "fixture-trace" };
+  assert.deepEqual(await graphError({ error: known }).sendTextMessage(graphRequest), { rejected: true, response_code: 403 });
+  for (const data of [null, { error: { ...known, is_transient: true } }, { error: { ...known, code: 999 } }, { error: { ...known, fbtrace_id: "" } }]) {
+    await assert.rejects(graphError(data).sendTextMessage(graphRequest), /meta_provider_outcome_unconfirmed/);
+  }
   assert.throws(() => createStore({ metaSocialOutboundEnabled: true, storeDriver: "file" }), /Supabase dispatch fence/);
   const supabase = Object.create(SupabaseLeadAgentsStore.prototype);
   const queries = [];
@@ -45,6 +54,8 @@ async function main() {
   const { store, tempDir, filePath } = await createTempStore();
   await store.ensureAdminUser({ email: "social@ochiga.local", password_hash: hashPassword("fixture-pass-123"), role: "super_admin", display_name: "Fixture", status: "active" });
   await store.ensureAdminUser({ email: "resident@ochiga.local", password_hash: hashPassword("fixture-pass-123"), role: "resident", display_name: "Fixture", status: "active" });
+  await store.ensureAdminUser({ email: "unapproved@ochiga.local", password_hash: hashPassword("fixture-pass-123"), role: "super_admin", display_name: "Fixture", status: "active" });
+  const operator = await store.getAdminUserByEmail("social@ochiga.local");
   const originalLead = await store.createLead({ name: "Existing", whatsapp_phone: sender, source: "whatsapp", primary_channel: "whatsapp" });
   const servers = [];
   const sent = [];
@@ -55,12 +66,15 @@ async function main() {
   const start = async (overrides = {}, db = store) => {
     const config = { ...createConfig(), authMode: "required_api_key", apiKeys: ["fixture-api"], allowedOrigins: [],
       metaAppSecret: secret, metaSocialVerifyToken: "fixture-verify", facebookPageId: page, instagramBusinessAccountId: instagram,
-      officeBackendBaseUrl: "", facebookPageAccessToken: "fixture-page-token", metaSocialGraphVersion: "v26.0", ...overrides };
+      officeBackendBaseUrl: "", facebookPageAccessToken: "fixture-page-token", metaSocialGraphVersion: "v26.0", metaSocialOperatorIds: [operator.id], ...overrides };
     const metaSocialReplyAdapter = createMetaSocialReplyAdapter(config, async (url, body, options) => {
       sent.push({ url, body, options });
       if (providerBarrier) await providerBarrier();
       if (providerMode === "timeout") throw Object.assign(new Error("mock timeout"), { code: "ETIMEDOUT" });
-      if (providerMode === "reject") throw Object.assign(new Error("mock refusal"), { response: { status: 429 } });
+      if (providerMode === "reject") throw Object.assign(new Error("mock refusal"), {
+        response: { status: 403, data: { error: { type: "OAuthException", code: 200, message: "Permission denied", fbtrace_id: "fixture-trace" } } },
+      });
+      if (providerMode === "ambiguous") throw Object.assign(new Error("mock gateway"), { response: { status: 403 } });
       return { status: 200, data: { recipient_id: body.recipient.id, message_id: providerMode === "accept" ? "out_shared" : "out_ordered" } };
     });
     const server = buildServer({ config, store: db, rateLimiter: mk(), publicRateLimiter: mk(), officeRateLimiter: mk(),
@@ -149,6 +163,10 @@ async function main() {
     });
     assert.equal((await reply(restarted, fb, "facebook", "off")).status, 403);
     const enabled = await start({ metaSocialInboundEnabled: true, metaSocialOutboundEnabled: true }, restored);
+    const unapproved = await staffHeaders("unapproved@ochiga.local");
+    assert.equal((await (await reply(enabled, fb, "facebook", "no-pilot", {}, unapproved)).json()).error, "social_operator_required");
+    const noOperators = await start({ metaSocialInboundEnabled: true, metaSocialOutboundEnabled: true, metaSocialOperatorIds: [] }, restored);
+    assert.equal((await (await reply(noOperators, fb, "facebook", "empty-pilot")).json()).error, "social_operator_required");
     assert.equal((await reply(enabled, fb, "facebook", "key", {}, { "x-api-key": "fixture-api" })).status, 403);
     assert.equal((await reply(enabled, fb, "instagram", "wrong")).status, 409);
     assert.equal((await reply(enabled, originalLead, "facebook", "wrong")).status, 409);
@@ -168,6 +186,13 @@ async function main() {
     const outbound = async (lead) => (await thread(lead)).find((entry) => entry.direction === "outbound");
     assert.equal((await outbound(fb)).delivery.state, "sent");
     const receipt = (object, asset, eventData, peer = sender) => batch(object, asset, { sender: { id: peer }, recipient: { id: asset }, ...eventData });
+    await post(enabled, receipt("page", page, { read: { watermark: Date.now() } }));
+    await post(enabled, receipt("page", page, { delivery: { watermark: Date.now() } }));
+    await post(enabled, receipt("instagram", instagram, { read: { watermark: Date.now() } }));
+    await post(enabled, batch("page", page, { sender: { id: page }, recipient: { id: sender }, delivery: { mids: ["out_shared"] } }));
+    await post(enabled, receipt("instagram", instagram, { delivery: { mids: ["out_shared"] } }));
+    assert.equal((await outbound(fb)).delivery.state, "sent");
+    assert.equal((await outbound(ig)).delivery.state, "sent");
     await post(enabled, receipt("page", page, { delivery: { mids: ["out_shared"] } }, "444"));
     assert.equal((await outbound(fb)).delivery.state, "sent");
     await post(enabled, receipt("page", page, { delivery: { mids: ["out_shared"] } }));
@@ -180,7 +205,7 @@ async function main() {
     assert.equal((await reply(enabled, fb, "facebook", "reject")).status, 502);
     assert.equal((await reply(enabled, fb, "facebook", "reject")).status, 409);
     assert.equal(sent.length, 3);
-    providerMode = "timeout";
+    providerMode = "ambiguous";
     const timeout = await reply(enabled, fb, "facebook", "timeout");
     assert.equal(timeout.status, 202);
     assert.equal((await timeout.json()).state, "outcome_unknown");
@@ -290,7 +315,7 @@ async function main() {
     const activeIntent = restored.state.whatsapp_manual_sends.find((row) => row.lead_id === ordering.id);
     assert.ok(activeIntent.social_dispatch_at);
     const callback = receipt("page", page, { delivery: { mids: ["out_ordered"] } }, "905");
-    assert.equal((await post(enabled, callback)).status, 503);
+    assert.equal((await post(enabled, callback)).status, 200);
     assert.equal((await resolveManualSend(restored, activeIntent.id, { resolution: "confirmed_not_sent" })).httpStatus, 409);
     release.release();
     assert.equal((await active).status, 200);
@@ -298,12 +323,26 @@ async function main() {
     assert.equal((await post(enabled, callback)).status, 200);
     assert.equal((await outbound(ordering)).delivery.state, "delivered");
     const crossedLead = await newLead("906");
+    const { socialReplyAttempts } = await import("../public/office/social-reply-attempt.mjs");
+    const browserStorage = new Map();
+    const browser = () => socialReplyAttempts({
+      storage: { getItem: (k) => browserStorage.get(k), setItem: (k, v) => browserStorage.set(k, v), removeItem: (k) => browserStorage.delete(k) },
+      locks: { request: async (_k, fn) => fn() }, digest: async (s) => createHmac("sha256", "fixture").update(s).digest("hex"),
+      createId: () => "fixture-request-inflight",
+    });
+    const browserKey = "fixture:operator:facebook";
+    assert.equal(await browser().prepare(browserKey, "Fixture response"), "fixture-request-inflight");
     const dispatched = deferred();
     const finish = deferred();
     providerBarrier = async () => { dispatched.release(); await finish.promise; };
     const inflight = reply(enabled, crossedLead, "facebook", "inflight");
     await dispatched.promise;
     const crossedIntent = restored.state.whatsapp_manual_sends.find((row) => row.lead_id === crossedLead.id);
+    const early = receipt("page", page, { delivery: { mids: ["out_ordered"] } }, "906");
+    assert.equal((await post(enabled, early)).status, 200);
+    const receiptRestart = new FileLeadAgentsStore(filePath);
+    await receiptRestart.init();
+    assert.equal(receiptRestart.state.meta_social_pending_receipts[JSON.stringify(["facebook", "111:906", "out_ordered"])], "delivered");
     await Promise.all([
       reconcileManualSends(restored, crossedLead.id, { ...later, now: Date.now() + 121_000 }),
       resolveManualSend(restored, crossedIntent.id, { resolution: "confirmed_not_sent" }),
@@ -312,7 +351,24 @@ async function main() {
     assert.equal((await resolveManualSend(restored, crossedIntent.id, { resolution: "confirmed_not_sent" })).body.error, "dispatch_outcome_unverified");
     assert.equal((await (await reply(enabled, crossedLead, "facebook", "cannot-retry")).json()).error, "unresolved_send");
     finish.release();
-    assert.equal((await inflight).status, 202);
+    assert.equal((await inflight).status, 200);
+    assert.equal(crossedIntent.status, "provider_accepted");
+    assert.equal(crossedIntent.provider_message_id, "out_ordered");
+    assert.equal(crossedIntent.social_delivery_state, "delivered");
+    // Discard the Office response and recreate the browser controller with only its persistent storage.
+    const reloadedBrowser = browser();
+    assert.equal(reloadedBrowser.read(browserKey).id, "fixture-request-inflight");
+    await assert.rejects(reloadedBrowser.prepare(browserKey, "Different response"), /original reply text/);
+    assert.equal(await reloadedBrowser.prepare(browserKey, "Fixture response"), "fixture-request-inflight");
+    const statusPath = `/api/lead-agents/admin/leads/${crossedLead.id}/facebook/reply/fixture-request-inflight`;
+    const authoritative = (await (await fetch(enabled + statusPath, { headers })).json()).state;
+    assert.equal(authoritative, "provider_accepted");
+    assert.equal((await fetch(enabled + statusPath, { headers: unapproved })).status, 403);
+    assert.equal((await reply(enabled, crossedLead, "facebook", "inflight")).status, 409);
+    const oldKey = reloadedBrowser.read(browserKey).id;
+    await reloadedBrowser.settle(browserKey, oldKey, authoritative);
+    assert.equal(reloadedBrowser.read(browserKey), null);
+    await assert.rejects(reloadedBrowser.prepare(browserKey, "Fixture response", oldKey), /previous attempt changed/);
     providerBarrier = null;
     assert.equal(sent.length, 6);
     assert.equal(await restored.getRuntimeSetting("whatsapp_autonomous_responses_enabled"), null);

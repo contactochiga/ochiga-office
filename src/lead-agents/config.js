@@ -169,6 +169,8 @@ function createConfig() {
     metaAppSecret: process.env.META_APP_SECRET || "",
     metaSocialInboundEnabled: process.env.OFFICE_META_SOCIAL_INBOUND_ENABLED === "true",
     metaSocialOutboundEnabled: process.env.OFFICE_META_SOCIAL_OUTBOUND_ENABLED === "true",
+    metaSocialOperatorIds: stringListFromEnv(process.env.OFFICE_META_SOCIAL_OPERATOR_IDS)
+      .filter((id) => /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(id)).map((id) => id.toLowerCase()),
     metaSocialGraphVersion: process.env.META_SOCIAL_GRAPH_VERSION || "",
     metaSocialVerifyToken: process.env.META_SOCIAL_VERIFY_TOKEN || "",
     // "enforce" (default): unsigned / badly signed / unauthenticatable WhatsApp webhooks are refused before anything is parsed or stored. "report" exists ONLY as an

@@ -212,6 +212,22 @@ class SupabaseLeadAgentsStore {
     return response.data?.[0] || null;
   }
 
+  async findMetaSocialSend(leadId, channel, actorEmail, requestId) {
+    const query = new URLSearchParams({ lead_id: `eq.${leadId}`, channel: `eq.${channel}`,
+      actor_email: `eq.${actorEmail}`, client_request_id: `eq.${requestId}`, limit: "1" });
+    const response = await this.client.get(`/whatsapp_manual_sends?${query}`);
+    if (!Array.isArray(response.data)) throw new Error("social_attempt_unreadable");
+    return response.data[0] || null;
+  }
+
+  async acceptMetaSocialSend(send, outcome) {
+    const response = await this.client.post("/rpc/office_accept_meta_social_send", {
+      p_send: send.id, p_channel: send.channel, p_binding: send.recipient,
+      p_mid: outcome.provider_message_id, p_code: outcome.provider_response_code,
+    });
+    return response.data === true;
+  }
+
   async appendConversation(input) {
     // correlation_id (the manual-send id) is unique in the database; a repeated persistence attempt returns the existing row instead of creating a second one.
     if (input.correlation_id) {

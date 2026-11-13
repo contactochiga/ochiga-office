@@ -30,14 +30,27 @@ function replyPolicy(config, lead, channel, now = Date.now()) {
 function createMetaSocialReplyAdapter(config, request = axios.post) {
   return {
     async sendTextMessage({ to, body, channel }) {
-      const response = await request(
-        `https://graph.facebook.com/${config.metaSocialGraphVersion}/${config.facebookPageId}/messages`,
-        { recipient: { id: to }, message: { text: body }, ...(channel === "facebook" ? { messaging_type: "RESPONSE" } : {}) },
-        { headers: { Authorization: `Bearer ${config.facebookPageAccessToken}` }, timeout: 10_000, maxRedirects: 0 }
-      );
+      let response;
+      try {
+        response = await request(
+          `https://graph.facebook.com/${config.metaSocialGraphVersion}/${config.facebookPageId}/messages`,
+          { recipient: { id: to }, message: { text: body }, ...(channel === "facebook" ? { messaging_type: "RESPONSE" } : {}) },
+          { headers: { Authorization: `Bearer ${config.facebookPageAccessToken}` }, timeout: 10_000, maxRedirects: 0 }
+        );
+      } catch (error) {
+        const status = error?.response?.status;
+        const graph = error?.response?.data?.error;
+        // Only known authorization refusals with recognizable Graph evidence release the block.
+        const refused = [400, 401, 403].includes(status) && graph?.type === "OAuthException" &&
+          [10, 190, 200].includes(graph.code) && graph.is_transient !== true &&
+          typeof graph.message === "string" && Boolean(graph.message.trim()) &&
+          typeof graph.fbtrace_id === "string" && /^[\w-]{1,128}$/.test(graph.fbtrace_id);
+        if (refused) return { rejected: true, response_code: status };
+        throw new Error("meta_provider_outcome_unconfirmed");
+      }
       const mid = response.data?.message_id;
       if (response.status < 200 || response.status >= 300 || typeof mid !== "string" || !/^[!-~]{1,512}$/.test(mid) ||
-          (response.data?.recipient_id != null && response.data.recipient_id !== to)) throw new Error("unconfirmed_provider_response");
+          response.data?.recipient_id !== to) throw new Error("unconfirmed_provider_response");
       return { delivered: true, external_message_id: mid, response_code: response.status };
     },
   };

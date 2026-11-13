@@ -50,6 +50,7 @@ class FileLeadAgentsStore {
       runtime_settings: {},
       whatsapp_inbound_claims: {},
       whatsapp_manual_sends: [],
+      meta_social_pending_receipts: {},
       communication_delivery_outbox: [],
       office_support_mappings: [],
       office_handoffs: [],
@@ -129,6 +130,7 @@ class FileLeadAgentsStore {
         office_letterhead_config: parsed.office_letterhead_config && typeof parsed.office_letterhead_config === "object" ? parsed.office_letterhead_config : null,
         runtime_settings: parsed.runtime_settings && typeof parsed.runtime_settings === "object" && !Array.isArray(parsed.runtime_settings) ? parsed.runtime_settings : {},
         whatsapp_manual_sends: Array.isArray(parsed.whatsapp_manual_sends) ? parsed.whatsapp_manual_sends : [],
+        meta_social_pending_receipts: parsed.meta_social_pending_receipts || {},
         communication_delivery_outbox: Array.isArray(parsed.communication_delivery_outbox) ? parsed.communication_delivery_outbox : [],
         whatsapp_inbound_claims: parsed.whatsapp_inbound_claims && typeof parsed.whatsapp_inbound_claims === "object" && !Array.isArray(parsed.whatsapp_inbound_claims) ? parsed.whatsapp_inbound_claims : {},
         // product catalogue (catalogue-store.js FileCatalogueStore) and its supplier registry (CORPORATE_COLLECTIONS.suppliers)
@@ -774,8 +776,37 @@ class FileLeadAgentsStore {
   async recordMetaSocialReceipt({ channel, binding, mid, state }) {
     const row = this.state.whatsapp_manual_sends.find((send) => send.channel === channel && send.recipient === binding &&
       send.provider_message_id === mid && send.status === "provider_accepted");
-    if (!row) return !this.state.whatsapp_manual_sends.some((send) => send.channel === channel && send.recipient === binding && send.status === "pending");
+    if (!row) {
+      if (!this.state.whatsapp_manual_sends.some((send) => send.channel === channel && send.recipient === binding &&
+        send.social_dispatch_at && ["pending", "outcome_unknown"].includes(send.status))) return true;
+      const receipts = this.state.meta_social_pending_receipts;
+      const key = JSON.stringify([channel, binding, mid]);
+      receipts[key] = receipts[key] === "read" ? "read" : state;
+      await this.persist();
+      return true;
+    }
     if (row.social_delivery_state !== "read") row.social_delivery_state = state;
+    await this.persist();
+    return true;
+  }
+
+  async findMetaSocialSend(leadId, channel, actorEmail, requestId) {
+    const row = this.state.whatsapp_manual_sends.find((send) => send.lead_id === leadId && send.channel === channel &&
+      send.actor_email === actorEmail && send.client_request_id === requestId);
+    return row ? { ...row } : null;
+  }
+
+  async acceptMetaSocialSend(send, outcome) {
+    const row = this.state.whatsapp_manual_sends.find((item) => item.id === send.id && item.channel === send.channel && item.recipient === send.recipient);
+    const mid = outcome.provider_message_id;
+    if (!row?.social_dispatch_at || !/^[!-~]{1,512}$/.test(mid || "") ||
+        !(row.status === "provider_accepted" ? row.provider_message_id === mid : ["pending", "outcome_unknown"].includes(row.status) && !row.provider_message_id)) return false;
+    if (this.state.whatsapp_manual_sends.some((item) => item !== row && item.channel === row.channel && item.recipient === row.recipient && item.provider_message_id === mid)) return false;
+    const key = JSON.stringify([row.channel, row.recipient, mid]);
+    const receipts = this.state.meta_social_pending_receipts;
+    Object.assign(row, outcome, { failure_reason: null, updated_at: this.nowIso(),
+      social_delivery_state: row.social_delivery_state === "read" ? "read" : receipts[key] || row.social_delivery_state });
+    delete receipts[key];
     await this.persist();
     return true;
   }

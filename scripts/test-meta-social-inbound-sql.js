@@ -9,7 +9,7 @@ async function main() {
   try {
     // Isolated in-memory schema fixture; no connection to any deployed database.
     await db.exec(`
-      create role anon; create role authenticated; create role service_role;
+      create role anon; create role authenticated; create role service_role bypassrls;
       create table leads (id uuid primary key default gen_random_uuid(), name text, source text, source_channel text,
         primary_channel text, status text, idempotency_key text, last_contact_at timestamptz, channel_last_seen_at timestamptz, contactability_status text);
       create unique index leads_idempotency_key_idx on leads (idempotency_key) where idempotency_key is not null;
@@ -18,7 +18,7 @@ async function main() {
       create unique index conversations_correlation_id_uidx on conversations (correlation_id) where correlation_id is not null;
       create table lead_channel_states (lead_id uuid references leads(id), channel text, ai_paused boolean, last_inbound_at timestamptz, unique (lead_id, channel));
       create table whatsapp_manual_sends (id uuid primary key default gen_random_uuid(), lead_id uuid, channel text, recipient text, provider_message_id text,
-        status text, created_at timestamptz default now(), failure_reason text);
+        status text, created_at timestamptz default now(), updated_at timestamptz default now(), failure_reason text, provider_response_code integer);
       grant select, insert, update on leads, conversations, lead_channel_states, whatsapp_manual_sends to service_role;
     `);
     await db.exec(readFileSync(path.join(__dirname, "../db/20261113_meta_social_inbound.sql"), "utf8"));
@@ -29,6 +29,11 @@ async function main() {
     const input = { channel: "facebook", senderKey: "meta-social:sender:" + "1".repeat(64), eventKey: "meta-social:event:" + "2".repeat(64), text: "fixture", occurredAt: new Date().toISOString(), asset: "111", sender: "333", optedOut: false };
     const store = new SupabaseLeadAgentsStore({ url: "http://127.0.0.1:1", serviceRoleKey: "fixture" });
     store.client = { post: async (route, payload) => {
+      if (route === "/rpc/office_accept_meta_social_send") {
+        const { p_send, p_channel, p_binding, p_mid, p_code } = payload;
+        const { rows } = await db.query("select public.office_accept_meta_social_send($1,$2,$3,$4,$5) as outcome", [p_send, p_channel, p_binding, p_mid, p_code]);
+        return { data: rows[0].outcome };
+      }
       if (route === "/rpc/office_fence_meta_social_dispatch") {
         const { rows } = await db.query("select public.office_fence_meta_social_dispatch($1,$2,$3) as outcome",
           [payload.p_send, payload.p_channel, payload.p_sender_key]);
@@ -72,6 +77,9 @@ async function main() {
     for (const role of ["anon", "authenticated"]) {
       await db.exec(`set role ${role}`);
       await assert.rejects(store.fenceMetaSocialDispatch(intent.id, "facebook", input.senderKey), { code: "42501" });
+      await assert.rejects(store.acceptMetaSocialSend({ id: intent.id, channel: "facebook", recipient: "111:333" },
+        { provider_message_id: "fixture", provider_response_code: 200 }), { code: "42501" });
+      await assert.rejects(db.exec("select * from office_meta_social_pending_receipts"), { code: "42501" });
     }
     await db.exec("set role service_role");
     assert.equal(await store.fenceMetaSocialDispatch(intent.id, "instagram", input.senderKey), "social_dispatch_claim_lost");
@@ -80,10 +88,18 @@ async function main() {
     assert.deepEqual(competing.sort(), ["acquired", "social_dispatch_claim_lost"]);
     await assert.rejects(db.exec("insert into whatsapp_manual_sends (lead_id, channel, recipient, status) select id, 'facebook', '111:333', 'pending' from leads"), { code: "23505" });
     const receipt = { channel: "facebook", binding: "111:333", mid: "fixture", state: "delivered" };
-    assert.equal(await store.recordMetaSocialReceipt(receipt), false);
-    await db.exec("update whatsapp_manual_sends set status='provider_accepted', provider_message_id='fixture'");
-    assert.equal(await store.recordMetaSocialReceipt({ ...receipt, binding: "111:444" }), true);
-    assert.equal((await db.query("select social_delivery_state from whatsapp_manual_sends")).rows[0].social_delivery_state, null);
+    assert.equal(await store.recordMetaSocialReceipt({ ...receipt, binding: "111:444", state: "read" }), true);
+    assert.equal(await store.recordMetaSocialReceipt(receipt), true);
+    assert.equal(await store.recordMetaSocialReceipt(receipt), true);
+    assert.equal((await db.query("select count(*)::int as count from office_meta_social_pending_receipts")).rows[0].count, 1);
+    await db.exec("update whatsapp_manual_sends set status='outcome_unknown'");
+    const attempt = { id: intent.id, channel: "facebook", recipient: "111:333" };
+    const acceptance = { provider_message_id: "fixture", provider_response_code: 200 };
+    assert.equal(await store.acceptMetaSocialSend({ ...attempt, recipient: "111:444" }, acceptance), false);
+    assert.equal(await store.acceptMetaSocialSend(attempt, acceptance), true);
+    assert.equal(await store.acceptMetaSocialSend(attempt, acceptance), true);
+    assert.equal(await store.acceptMetaSocialSend(attempt, { ...acceptance, provider_message_id: "conflict" }), false);
+    assert.equal((await db.query("select social_delivery_state from whatsapp_manual_sends")).rows[0].social_delivery_state, "delivered");
     assert.equal(await store.recordMetaSocialReceipt({ ...receipt, state: "read" }), true);
     assert.equal(await store.recordMetaSocialReceipt(receipt), true);
     assert.equal((await db.query("select social_delivery_state from whatsapp_manual_sends")).rows[0].social_delivery_state, "read");

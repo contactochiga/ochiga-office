@@ -91,13 +91,13 @@ async function performManualSend({ store, adapter, lead, actorEmail, clientReque
   let outcome;
   if (providerError) {
     if (social) {
-      const code = providerError?.response?.status;
-      const rejected = Number.isInteger(code) && code >= 400 && code < 500 && code !== 408;
-      outcome = { status: rejected ? "provider_rejected" : "outcome_unknown", provider_response_code: Number.isInteger(code) ? code : null, failure_reason: rejected ? "meta_refused" : "meta_outcome_unknown" };
+      outcome = { status: "outcome_unknown", failure_reason: "meta_outcome_unknown" };
     } else {
       const failure = classifyProviderFailure(providerError);
       outcome = { status: failure.status, provider_response_code: failure.code, failure_reason: failure.reason };
     }
+  } else if (social && result?.rejected) {
+    outcome = { status: "provider_rejected", provider_response_code: result.response_code, failure_reason: "meta_refused" };
   } else if (result && result.delivered) {
     outcome = { status: "provider_accepted", provider_message_id: result.external_message_id || null, provider_response_code: result.response_code ?? null };
   } else {
@@ -107,6 +107,10 @@ async function performManualSend({ store, adapter, lead, actorEmail, clientReque
 
   // 3. record the outcome durably (retried; a failure here is surfaced, never swallowed)
   const saved = await withRetries(async () => {
+    if (social && outcome.status === "provider_accepted") {
+      if (!await store.acceptMetaSocialSend(send, outcome)) throw new Error("send_acceptance_conflict");
+      return true;
+    }
     const updated = await store.updateManualSend(send.id, outcome, social ? "pending" : undefined);
     if (social && !updated) {
       const current = await store.getManualSend(send.id);

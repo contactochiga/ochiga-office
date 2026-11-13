@@ -41,12 +41,16 @@ function parseMessages(body, config) {
       const mid = message?.mid;
       const timestamp = event?.timestamp;
       const recipient = event?.recipient?.id;
-      const peer = sender === asset ? recipient : recipient === asset ? sender : null;
-      if (isAssetId(peer) && peer !== asset && (event.delivery || event.read)) {
-        const mids = channel === "facebook" ? event.delivery?.mids : [event.read?.mid];
+      if (event?.delivery || event?.read) {
+        if (!isAssetId(sender) || sender === asset || recipient !== asset) {
+          skipped++;
+          continue;
+        }
+        const mids = channel === "facebook" && !event.read ? event.delivery?.mids
+          : channel === "instagram" && !event.delivery ? [event.read?.mid] : [];
         for (const id of Array.isArray(mids) ? mids : []) {
           if (typeof id === "string" && /^[!-~]{1,512}$/.test(id)) {
-            receipts.push({ channel, binding: `${asset}:${peer}`, mid: id, state: channel === "facebook" ? "delivered" : "read" });
+            receipts.push({ channel, binding: `${asset}:${sender}`, mid: id, state: channel === "facebook" ? "delivered" : "read" });
           }
         }
         continue;

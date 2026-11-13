@@ -2366,6 +2366,7 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
         pathname === "/office/brand/icon-512.png" ||
         pathname === "/office/brand/icon-maskable-512.png" ||
         pathname === "/office/shared/oyi-core/docking.mjs" ||
+        pathname === "/office/social-reply-attempt.mjs" ||
         pathname === "/office/shared/oyi-core/presence.mjs" ||
         pathname === "/office/shared/oyi-core/responseNormalizer.mjs" ||
         pathname === "/office/catalogue/catalogue.mjs" ||
@@ -3431,6 +3432,11 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
         return;
       }
 
+      if (pathname === "/office/social-reply-attempt.mjs") {
+        if (req.method !== "GET") { methodNotAllowed(res, "GET"); return; }
+        await serveFile(res, path.join(process.cwd(), "public", "office", "social-reply-attempt.mjs"));
+        return;
+      }
       if (pathname === "/office/shared/oyi-core/docking.mjs") {
         if (req.method !== "GET") {
           methodNotAllowed(res, "GET");
@@ -6980,6 +6986,8 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
         });
         const takeoverActive = Boolean(channelState && ["human_active", "human_review"].includes(channelState.human_status));
         const canReply = hasPermission(authContext, "manage_takeover");
+        const socialOperator = authContext?.type === "session" &&
+          config.metaSocialOperatorIds?.includes(String(authContext.userId || "").toLowerCase());
         const socialLead = social && config.metaSocialOutboundEnabled ? await store.getMetaSocialReplyLead(leadId).catch(() => null) : null;
         const socialProblem = social ? (unresolved === null ? "send_state_unavailable" : unresolved.length ? "unresolved_send" : replyPolicy(config, socialLead, inboxChannel)) : null;
         const autonomy = describeWhatsAppAutonomyStatus(setting, { officialNumber: config.whatsappDisplayNumber });
@@ -7000,7 +7008,7 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           channel_state: channelState ? { human_status: channelState.human_status, human_owner: channelState.human_owner || null, ai_paused: Boolean(channelState.ai_paused), takeover_started_at: channelState.takeover_started_at || null, last_inbound_at: channelState.last_inbound_at || null, last_outbound_at: channelState.last_outbound_at || null } : { human_status: "auto", human_owner: null, ai_paused: false },
           communication: {
             ...(inboxChannel !== "whatsapp" ? { inbound_only_channel: inboxChannel } : {}),
-            ...(social ? { social_reply: { available: authContext?.type === "session" && canReply && !socialProblem, reason: socialProblem || "staff_permission_required" } } : {}),
+            ...(social ? { social_reply: { available: Boolean(socialOperator && canReply && !socialProblem), reason: socialProblem || "staff_permission_required" } } : {}),
             global_autonomous_responses: autonomy.state === "on" ? "on" : autonomy.state === "off" ? "off" : "unknown",
             takeover_active: takeoverActive,
             mode: takeoverActive ? "human" : autonomy.state === "on" ? "autonomous_allowed" : autonomy.state === "off" ? "autonomous_off" : "autonomous_off_unreadable",
@@ -7070,13 +7078,24 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
         return;
       }
 
-      // Governed MANUAL WhatsApp reply by an authorised staff member. Independent of the autonomy switch (a human is sending), but only while that human owns the
-      // conversation (active takeover), and always audited with the operator.
-      const socialReplyMatch = pathname.match(/^\/api\/lead-agents\/admin\/leads\/([^/]+)\/(facebook|instagram)\/reply$/);
+      // Social replies and attempt status are restricted to allowlisted staff sessions.
+      const socialReplyMatch = pathname.match(/^\/api\/lead-agents\/admin\/leads\/([^/]+)\/(facebook|instagram)\/reply(?:\/([a-zA-Z0-9_-]{16,80}))?$/);
       if (socialReplyMatch) {
-        if (req.method !== "POST") { methodNotAllowed(res, "POST"); return; }
         if (authContext?.type !== "session") { json(res, 403, { error: "staff_session_required" }); return; }
         authorizePermission(authContext, "manage_takeover");
+        if (!config.metaSocialOperatorIds?.includes(String(authContext.userId || "").toLowerCase())) {
+          json(res, 403, { error: "social_operator_required" });
+          return;
+        }
+        const leadId = decodeURIComponent(socialReplyMatch[1]);
+        const channel = socialReplyMatch[2];
+        if (socialReplyMatch[3]) {
+          if (req.method !== "GET") { methodNotAllowed(res, "GET"); return; }
+          const row = await store.findMetaSocialSend(leadId, channel, authContext.email, socialReplyMatch[3]);
+          json(res, 200, { state: row?.status || "unrecorded" }, { "cache-control": "no-store" });
+          return;
+        }
+        if (req.method !== "POST") { methodNotAllowed(res, "POST"); return; }
         if (!config.metaSocialOutboundEnabled || !config.metaSocialInboundEnabled) {
           json(res, 403, { error: "social_reply_disabled" });
           return;
@@ -7090,8 +7109,6 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           json(res, 400, { error: "invalid_social_reply" });
           return;
         }
-        const leadId = decodeURIComponent(socialReplyMatch[1]);
-        const channel = socialReplyMatch[2];
         const audit = (action, status, metadata) => appendAuditRecord({ store, authContext, action, resourceType: "lead", resourceId: leadId, metadata, req, status });
         const lead = await store.getMetaSocialReplyLead(leadId);
         if (!lead) {
@@ -7107,6 +7124,7 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
         json(res, outcome.httpStatus, outcome.body, { "x-request-id": ctx.requestId });
         return;
       }
+      // WhatsApp keeps its existing active-takeover gate and audit path.
       const manualReplyMatch = pathname.match(/^\/api\/lead-agents\/admin\/leads\/([^/]+)\/whatsapp\/reply$/);
       if (manualReplyMatch) {
         if (req.method !== "POST") {
@@ -7165,6 +7183,10 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
         requireObject(body, "body");
         const channel = manualSendResolveMatch[2];
         if (channel !== "whatsapp" && authContext?.type !== "session") { json(res, 403, { error: "staff_session_required" }); return; }
+        if (channel !== "whatsapp" && !config.metaSocialOperatorIds?.includes(String(authContext.userId || "").toLowerCase())) {
+          json(res, 403, { error: "social_operator_required" });
+          return;
+        }
         const sendId = decodeURIComponent(manualSendResolveMatch[3]);
         const leadIdForSend = decodeURIComponent(manualSendResolveMatch[1]);
         const record = await store.getManualSend(sendId).catch(() => null);

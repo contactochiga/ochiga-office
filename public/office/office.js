@@ -1,3 +1,5 @@
+import { socialReplyAttempts } from "/office/social-reply-attempt.mjs";
+
 // Ochiga Office — corporate shell (Phase 4: Private + Partnerships +
 // Documents / Proposals / Quotations).
 //
@@ -18363,6 +18365,43 @@ function relRenderComposer(data) {
   const social = Boolean(c.inbound_only_channel);
   const channel = c.inbound_only_channel || "whatsapp";
   const label = channel === "instagram" ? "Instagram" : channel === "facebook" ? "Messenger" : "WhatsApp";
+  const replyPath = `/api/lead-agents/admin/leads/${encodeURIComponent(data.lead.id)}/${channel}/reply`;
+  const attemptKey = "office:social-reply:" + JSON.stringify([state.admin?.id || currentEmail(), data.lead.id, channel]);
+  let attempts;
+  let previous;
+  if (social) {
+    try {
+      if (!navigator.locks || !window.crypto?.subtle) throw new Error("Secure browser storage required");
+      attempts = socialReplyAttempts({ storage: localStorage, locks: navigator.locks, createId: newRelRequestId,
+        digest: async (text) => Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text))),
+          (byte) => byte.toString(16).padStart(2, "0")).join("") });
+      previous = attempts.read(attemptKey);
+    } catch {
+      wrap.appendChild(el('<div class="rel-locked">Secure browser storage is unavailable. Social replies are paused.</div>'));
+      return wrap;
+    }
+  }
+  const recover = async (id) => {
+    const result = await api(replyPath + "/" + encodeURIComponent(id), { cache: "no-store" });
+    await attempts.settle(attemptKey, id, result.state);
+    return result.state;
+  };
+  if (previous) {
+    const check = el('<button type="button" class="btn btn-sm">Check previous reply</button>');
+    check.addEventListener("click", async () => {
+      check.disabled = true;
+      try {
+        const outcome = await recover(previous.id);
+        toast(outcome === "unrecorded" ? "No recorded attempt yet. Retry only with the original reply text." :
+          `Previous reply: ${String(outcome).replace(/_/g, " ")}.`);
+        await relLoadThread(false);
+      } catch {
+        toast("Could not verify the previous reply. Do not submit a replacement.", "error");
+        check.disabled = false;
+      }
+    });
+    wrap.appendChild(check);
+  }
   if (social && !c.social_reply?.available) {
     const reason = {
       social_window_closed: "The 24-hour reply window is closed.",
@@ -18392,7 +18431,18 @@ function relRenderComposer(data) {
       const btn = form.querySelector("button");
       btn.disabled = true; ta.disabled = true;
       try {
-        const res = await api(`/api/lead-agents/admin/leads/${encodeURIComponent(data.lead.id)}/${channel}/reply`, { method: "POST", body: { body: text, client_request_id: requestId } });
+        if (social) {
+          const pending = attempts.read(attemptKey);
+          if (pending && await recover(pending.id) !== "unrecorded") {
+            ta.value = "";
+            toast("Previous reply checked. Review its status before sending another.");
+            await relLoadThread(false);
+            return;
+          }
+          requestId = await attempts.prepare(attemptKey, text, pending?.id);
+        }
+        const res = await api(replyPath, { method: "POST", body: { body: text, client_request_id: requestId } });
+        if (social) await attempts.settle(attemptKey, requestId, res?.state);
         // A 202 means "no answer from WhatsApp": the send is stored as UNKNOWN and is never retried automatically. Each attempt gets a fresh request id afterwards.
         requestId = newRelRequestId();
         ta.value = "";
@@ -18400,6 +18450,17 @@ function relRenderComposer(data) {
         else toast(res.recorded === false ? `Accepted by ${label}; the CRM record is still being saved and will appear shortly.` : `Message accepted by ${label}. Delivery is confirmed separately.`);
         await relLoadThread(false);
       } catch (err) {
+        if (social) {
+          const settled = await attempts.settle(attemptKey, requestId, err.data?.state).catch(() => false);
+          toast(err.data?.error || err.message || "Reply not verified. Check the previous attempt before resending.", "error");
+          if (settled) {
+            ta.value = "";
+            await relLoadThread(false);
+            return;
+          }
+          btn.disabled = false; ta.disabled = false;
+          return;
+        }
         const definitive = err.status === 409 || err.status === 502 || (err.status === 503 && err.data && err.data.state);
         if (err.status === 409 && err.data && err.data.error === "duplicate_request") toast(`Already submitted (${String(err.data.state || "recorded").replace(/_/g, " ")}). It was not sent again.`, "error");
         else toast(err.message || "The message was not sent.", "error");

@@ -15,7 +15,10 @@ path with no safe provider idempotency; it remains unchanged.
   OFF by default. No credential is required or accessed for a disabled send.
   The deployed send path requires Supabase; the file store is fixture-only
   for social outbound because it cannot coordinate multiple processes.
-- Only a permitted staff session can submit plain text. It cannot specify
+- Only a permitted staff session whose immutable user ID is explicitly
+  listed in `OFFICE_META_SOCIAL_OPERATOR_IDS` can submit plain text or
+  check the status of its own attempt. The list defaults empty and CRM
+  management alone is insufficient. The request cannot specify
   an actor, recipient, asset, tag, template, or permission override.
 - The target comes from the latest signed channel/asset/sender binding, not
   phone, email, or mutable CRM last-contact dates. The server rechecks the
@@ -25,8 +28,10 @@ path with no safe provider idempotency; it remains unchanged.
   Do not use the lane for outreach or rely on the command matcher to interpret
   arbitrary prose. There is no automatic re-opt-in.
 - The existing ledger claims the request before sending. The same request
-  never sends twice. A known rejection (including 429) allows a new explicit
-  attempt after review. No response, malformed success, or server failure is
+  never sends twice. A recognizable non-transient Graph OAuth/permission
+  refusal (HTTP 400/401/403 and Graph code 10, 190 or 200) allows a new
+  explicit attempt after review. Unrecognized HTTP responses (including
+  429), no response, malformed success, or server failure are
   unknown and blocks new attempts on that lead/channel. A service-role-only
   database fence locks the claim and recipient policy rows, checks the binding,
   opt-out and window, and writes a one-way dispatch marker before the provider
@@ -37,13 +42,23 @@ path with no safe provider idempotency; it remains unchanged.
   override. Database retries never retry the provider call. A crash between
   committing the marker and making the request is conservatively unknown.
   Unresolved sends are queried separately from paginated conversation history.
+- The browser stores only the attempt ID and a digest of its text, scoped to
+  the signed-in operator, relationship and channel. Tabs share a browser
+  lock for key creation. Reloads check the actor-scoped ledger before a new
+  attempt is allowed; an unrecorded attempt can only reuse its original
+  key and text. Clearing site data, switching browsers or changing the
+  operator's ledger email can prevent recovery of a lost client attempt.
 - Provider acceptance is not delivery. Signed Messenger delivery callbacks
   with exact message IDs and Instagram read callbacks with an exact message
   ID can advance the stored evidence for the same channel, asset and customer.
-  Watermark-only callbacks are deliberately not mapped onto individual sends.
-  A receipt arriving while its send is pending requests retry; unknown
-  unrelated receipts do not create records. A staff-confirmed send without
-  a provider ID remains unverified.
+  Watermark-only callbacks and unsupported receipt shapes are deliberately
+  not mapped onto individual sends. Early exact-ID receipts for a binding
+  with a fenced pending/unknown send are retained in a restricted table.
+  Only acceptance evidence from the original send worker with the exact
+  recipient and provider message ID can resolve that attempt. Acceptance
+  and receipt writes serialize on the same binding and preserve the higher
+  delivery state. An unmatched receipt cannot prove acceptance on its own.
+  Retention for unmatched receipts requires an operator policy before scale.
 
 ## Proposed staging migration and rollout
 
@@ -63,7 +78,13 @@ path with no safe provider idempotency; it remains unchanged.
    level for real users. Verify the app and asset subscriptions for messages,
    Messenger delivery, and Instagram seen events. Verify the configured
    Graph version and actual linked-Page Send API path and payload with Meta
-   before rollout; this commit proves only the mocked contract.
+   before rollout; this commit proves only sanitized fixtures. In particular,
+   verify Messenger `page / messaging[].delivery.mids` and Instagram
+   Facebook Login `instagram / messaging[].read.mid` (event subscription,
+   asset ID, direction, and exact MID). Messenger read/delivery watermarks,
+   Instagram watermark-only reads, and other delivery envelopes do not
+   update individual messages. Verify the Page token and Instagram linkage
+   before approving any outbound test.
 3. In a separately approved staging release, deploy with outbound OFF.
    Confirm WhatsApp and AI OFF unchanged. Validate signed callbacks on the
    test assets, then separately authorize enabling outbound there. Validate
