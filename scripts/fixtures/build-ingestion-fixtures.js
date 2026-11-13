@@ -4,12 +4,13 @@
 // The workbooks reproduce the structure the suites assert (sheets, headers, row counts, roles, attribute and image
 // totals), not any real catalogue.
 //   node scripts/fixtures/build-ingestion-fixtures.js           write scripts/fixtures/ingestion/*.xlsx
-//   node scripts/fixtures/build-ingestion-fixtures.js --check   fail if the committed files differ from the generator
+//   node scripts/fixtures/build-ingestion-fixtures.js --check   fail if the committed workbooks' contents differ from the
+//                                                               generator (zip timestamps are local time, so not compared)
 "use strict";
 
 const fs = require("node:fs");
 const path = require("node:path");
-const { zipSync, strToU8 } = require("fflate");
+const { zipSync, unzipSync, strToU8 } = require("fflate");
 
 const DIR = path.join(__dirname, "ingestion");
 const FILES = { products: "synthetic-50-products.xlsx", master: "synthetic-research-master.xlsx" };
@@ -132,13 +133,18 @@ function masterWorkbook() {
   ]);
 }
 
+// Same entries with the same bytes; zip timestamps are ignored because fflate writes them in the local time zone.
+const sameContents = (a, b) => {
+  const x = unzipSync(a), y = unzipSync(b), names = Object.keys(x).sort();
+  return names.join() === Object.keys(y).sort().join() && names.every((n) => Buffer.from(x[n]).equals(Buffer.from(y[n])));
+};
 const build = () => ({ [FILES.products]: productsWorkbook(), [FILES.master]: masterWorkbook() });
 const fixturePath = (key) => path.join(DIR, FILES[key]);
 
 if (require.main === module) {
   const built = build();
   if (process.argv.includes("--check")) {
-    const stale = Object.entries(built).filter(([name, bytes]) => !fs.existsSync(path.join(DIR, name)) || !fs.readFileSync(path.join(DIR, name)).equals(bytes));
+    const stale = Object.entries(built).filter(([name, bytes]) => !fs.existsSync(path.join(DIR, name)) || !sameContents(fs.readFileSync(path.join(DIR, name)), bytes));
     if (stale.length) { console.error(`stale fixtures: ${stale.map(([n]) => n).join(", ")}`); process.exit(1); }
     console.log("ingestion fixtures match the generator");
   } else {
