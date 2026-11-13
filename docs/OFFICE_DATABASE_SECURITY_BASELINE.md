@@ -29,6 +29,25 @@ The repository did not record this posture. On Supabase's defaults, a fresh data
   - All modes refuse any role other than `postgres`.
   - The marker is a workflow check, not authentication. A deliberate forgery needs owner write access to the target. The target guard is the safety boundary.
 
+## Existing databases: `npm run crm:apply-schema`
+
+`scripts/apply-supabase-schema.js` is for maintaining an EXISTING database only. It re-applies `lead-agents-schema.sql` to the database named by `SUPABASE_DB_URL` in `.env.lead-agents.local`.
+
+- **Default:** a read-only dry run that reports the table count and every security-gate violation.
+- **Fresh databases:** refused. Use `scripts/init-office-database.js --fresh` instead.
+- **Applying:** `--apply --confirm-target <host>`. The host must equal the host the connection really uses, and the connection must be made as `postgres`.
+- **URL limits:** URL overrides (`?host=`, `hostaddr`, `service`, `options`), several hosts and socket paths are refused. Only `?sslmode=` is accepted.
+- **Transaction:** the apply runs in one transaction.
+  - Tables and routines the schema creates in that run are secured: RLS on, and nothing for `PUBLIC`, `anon` or `authenticated`.
+  - The gate runs before and after. If the apply would add any violation that wasn't already present, the whole transaction is rolled back.
+  - Violations that already existed are reported, not repaired. Re-applying the baseline to an existing database is a separate, explicit decision.
+
+## Test fixtures
+
+Postgres test fixtures build their databases from the manifest through `scripts/office-db-fixture.js`. A test that exercises one migration excludes it from the manifest and applies that migration itself.
+
+No script applies `db/*.sql` in filename order. `npm run office:legacy-db-entrypoints:test` enforces this. It also shows that filename order replaces the fenced receipt function, while the manifest keeps it.
+
 ## Order and later migrations
 
 The baseline runs first, so the owner's default privileges cover every later object. It runs again at the end, followed by the gate.

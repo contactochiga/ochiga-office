@@ -57,7 +57,8 @@
     "office:whatsapp-media-contract:test": "node scripts/test-whatsapp-media-contract.js",
     "office:whatsapp-envelope-observation:test": "node scripts/test-whatsapp-envelope-observation.js",
     "office:meta-social-inbound:test": "node scripts/test-meta-social-inbound.js && node scripts/test-meta-social-inbound-sql.js && node scripts/test-meta-social-concurrency.js",
-    "office:security-baseline:test": "node scripts/test-office-security-baseline-postgres.js"
+    "office:security-baseline:test": "node scripts/test-office-security-baseline-postgres.js",
+    "office:legacy-db-entrypoints:test": "node scripts/test-office-legacy-db-entrypoints.js"
   },
   "dependencies": {
     "@sanity/client": "^6.29.1",
