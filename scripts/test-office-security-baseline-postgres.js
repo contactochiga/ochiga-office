@@ -12,7 +12,7 @@ const fs = require("fs");
 const net = require("net");
 const path = require("path");
 const { spawnSync } = require("child_process");
-const { migrationOrder, assertTarget, run } = require("./init-office-database");
+const { migrationOrder, resolveLocalTarget, run } = require("./init-office-database");
 
 const ROOT = path.resolve(__dirname, "..");
 const PG_IMAGE = process.env.PG_IMAGE || "public.ecr.aws/supabase/postgres:17.6.1.131";
@@ -39,7 +39,7 @@ const SNAPSHOT = `select md5(string_agg(x, '|' order by x)) from (
   union all select 'd:'||defaclrole::regrole||':'||defaclnamespace||':'||defaclobjtype||':'||defaclacl::text from pg_default_acl) s`;
 const PROBE_TABLES = ["leads", "conversations", "lead_channel_states", "admin_users", "audit_events", "whatsapp_manual_sends", "office_meta_social_pending_receipts", "catalogue_products", "office_intake_receipts"];
 
-function manifestChecks() {
+async function manifestChecks() {
   const order = migrationOrder();
   const top = fs.readdirSync(path.join(ROOT, "db")).filter((f) => f.endsWith(".sql"));
   const listed = order.filter((f) => !f.startsWith("security/"));
@@ -53,16 +53,34 @@ function manifestChecks() {
     i("20261113_meta_social_inbound.sql") < i("20261113_meta_social_staff_replies.sql") && i("20261113_meta_social_staff_replies.sql") < i("20261113_meta_social_dispatch_fence.sql"));
   const dated = listed.filter((f) => /^\d/.test(f) && !f.startsWith("20261113_meta_social_"));
   check("MF4", "other dated migrations keep date order", dated.join() === [...dated].sort().join(), dated);
-  // Synthetic refs: real production refs live only in the operator's environment, never in this repository.
-  const refused = (url, host, refs) => { try { assertTarget(url, host, refs); return false; } catch { return true; } };
-  const prod = "prodrefaaaaaaaaaaaaa", other = "prodrefbbbbbbbbbbbbb";
-  check("MF5", "initializer refuses protected refs, unnamed remote hosts, and remote hosts without a protected-ref list",
-    refused(`postgres://postgres:x@db.${prod}.supabase.co:5432/postgres`, `db.${prod}.supabase.co`, `${prod},${other}`) &&
-    refused(`postgres://postgres.${other}:x@pooler.supabase.com:6543/postgres`, "pooler.supabase.com", `${prod},${other}`) &&
-    refused("postgres://postgres:x@staging.example.com:5432/postgres", "", prod) &&
-    refused("postgres://postgres:x@staging.example.com:5432/postgres", "staging.example.com", "") &&
-    !refused("postgres://postgres:x@staging.example.com:5432/postgres", "staging.example.com", prod) &&
-    !refused("postgres://postgres:x@127.0.0.1:5432/postgres", "", "") && !refused("postgres://postgres:x@pg:5432/postgres", "", ""));
+  // Synthetic refs and addresses: real production refs live only in the operator's environment, never in this repository.
+  // DNS is injected, so nothing is resolved or contacted.
+  const prod = "prodrefaaaaaaaaaaaaa";
+  const dnsTable = { localhost: ["127.0.0.1"], pg: ["192.168.32.5"], db: ["203.0.113.10"], mixed: ["10.0.0.4", "198.51.100.7"], "staging.example.com": ["10.1.2.3"] };
+  const lookup = async (host) => (dnsTable[host] || []).map((address) => ({ address }));
+  const verdict = async (url, refs) => { try { await resolveLocalTarget(url, refs, lookup); return "accepted"; } catch (error) { return error.message; } };
+  const cases = [
+    ["hosted host, refs missing", `postgres://postgres:x@db.${prod}.supabase.co:5432/postgres`, undefined, false],
+    ["hosted host, refs empty", `postgres://postgres:x@db.${prod}.supabase.co:5432/postgres`, "", false],
+    ["hosted host, refs misconfigured", `postgres://postgres:x@db.${prod}.supabase.co:5432/postgres`, "someotherref", false],
+    ["pooler host", `postgres://postgres.${prod}:x@aws-0-eu-west-2.pooler.supabase.com:6543/postgres`, "", false],
+    ["localhost URL with ?host= override", `postgres://postgres:x@localhost:5432/postgres?host=db.${prod}.supabase.co`, "", false],
+    ["localhost URL with ?host= public IP", "postgres://postgres:x@localhost:5432/postgres?host=203.0.113.10", "", false],
+    ["empty host with ?host= override", `postgres://postgres:x@/postgres?host=db.${prod}.supabase.co`, "", false],
+    ["unix socket host", "postgres://postgres:x@/postgres?host=/var/run/postgresql", "", false],
+    ["protected ref anywhere in URL", `postgres://postgres:x@localhost:5432/${prod}`, prod, false],
+    ["remote named host (private DNS)", "postgres://postgres:x@staging.example.com:5432/postgres", "", false],
+    ["public IP literal", "postgres://postgres:x@203.0.113.10:5432/postgres", "", false],
+    ["dotless alias resolving to public IP", "postgres://postgres:x@db:5432/postgres", "", false],
+    ["dotless alias with a public address among private ones", "postgres://postgres:x@mixed:5432/postgres", "", false],
+    ["unresolvable dotless alias", "postgres://postgres:x@nowhere:5432/postgres", "", false],
+    ["loopback", "postgres://postgres:x@127.0.0.1:5432/postgres", "", true],
+    ["localhost", "postgres://postgres:x@localhost:5432/postgres", "", true],
+    ["docker alias on a private network", "postgres://postgres:x@pg:5432/postgres", prod, true],
+  ];
+  const results = []; for (const [name, url, refs, allowed] of cases) results.push({ name, allowed, verdict: await verdict(url, refs) });
+  const wrong = results.filter((r) => (r.verdict === "accepted") !== r.allowed);
+  check("MF5", `initializer target guard: ${cases.filter((c) => !c[3]).length} hostile targets refused (incl. misconfigured refs and ?host= override), ${cases.filter((c) => c[3]).length} local targets accepted`, wrong.length === 0, wrong);
 }
 
 async function databaseChecks() {
@@ -148,6 +166,10 @@ async function databaseChecks() {
   check("SB15", "baseline is repeatable: three more applications, no errors, identical privilege snapshot", errs.length === 0 && one(SNAPSHOT) === s1, { errs });
   let refusedFresh = false; try { await run({ url, mode: "fresh", log: () => {} }); } catch (error) { refusedFresh = /not a fresh database/.test(error.message); }
   check("SB16", "initializer refuses --fresh on a non-empty database", refusedFresh);
+  psql("alter schema office_local_init rename to office_local_init_hidden");
+  let refusedUnmarked = false; try { await run({ url, mode: "reassert", log: () => {} }); } catch (error) { refusedUnmarked = /not initialized by this tool/.test(error.message); }
+  psql("alter schema office_local_init_hidden rename to office_local_init");
+  check("SB16b", "initializer refuses --reassert on a database it did not initialize (no marker)", refusedUnmarked);
   let refusedRole = false;
   sh("docker", ["exec", PG, "psql", "-X", "-U", "supabase_admin", "-d", "postgres", "-h", "127.0.0.1", "-c", `alter role authenticator with password '${PW}'`]);
   const asAuthenticator = new URL(url); asAuthenticator.username = "authenticator";
@@ -187,7 +209,7 @@ async function databaseChecks() {
 }
 
 (async () => {
-  manifestChecks();
+  await manifestChecks();
   try { await databaseChecks(); } catch (error) { check("SB--", "database checks completed", false, error.message); }
   finally { for (const fn of cleanup) fn(); }
   console.log(`\n${checks - failures}/${checks} checks passed`);

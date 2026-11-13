@@ -20,8 +20,8 @@ The repository did not record this posture. On Supabase's defaults, a fresh data
   - `service_role` read access.
 - `db/migration-order.txt` gives the initialization order for a fresh database.
 - `scripts/init-office-database.js` applies that order (`--fresh`), re-applies the baseline (`--reassert`) or runs the gate alone (`--verify`).
-  - It refuses a non-empty database for `--fresh`, any role other than `postgres`, and remote hosts unless the host is named with `--allow-remote-host` and `OFFICE_DB_PROTECTED_REFS` is set.
-  - `OFFICE_DB_PROTECTED_REFS` is a comma-separated list of production project refs, kept outside the repository. The initializer refuses any URL containing one of them.
+  - It works on local databases only; there is no remote mode. It checks the target exactly as `pg` will use it, including query parameters such as `?host=`. Every address the target resolves to must be loopback or private. It refuses hosted Supabase hosts and any ref listed in `OFFICE_DB_PROTECTED_REFS`, an optional extra deny-list kept outside the repository.
+  - `--fresh` refuses a non-empty database and records a marker schema, `office_local_init`. `--reassert` refuses a database without that marker. All modes refuse any role other than `postgres`.
 
 ## Order and later migrations
 
