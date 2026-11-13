@@ -54,7 +54,8 @@
     "office:content-integrity:test": "node scripts/test-content-approval-integrity.js",
     "office:content-workspace:test": "node scripts/test-content-workspace-browser.js",
     "office:content-featured-image:test": "node scripts/test-content-featured-image.js",
-    "office:whatsapp-media-contract:test": "node scripts/test-whatsapp-media-contract.js"
+    "office:whatsapp-media-contract:test": "node scripts/test-whatsapp-media-contract.js",
+    "office:whatsapp-envelope-observation:test": "node scripts/test-whatsapp-envelope-observation.js"
   },
   "dependencies": {
     "@sanity/client": "^6.29.1",

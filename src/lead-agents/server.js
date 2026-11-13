@@ -7,6 +7,7 @@ const crypto = require("crypto");
 const axios = require("axios");
 const { createConfig } = require("./config");
 const { log } = require("./logger");
+const envelopeObservation = require("./whatsapp-envelope-observation");
 const { createStore } = require("./store-factory");
 const { OpenAIResponsesClient } = require("./openai");
 const { ToolExecutor } = require("./tools");
@@ -2541,6 +2542,9 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
               return;
             }
           }
+          // Shadow observation (OFFICE_WHATSAPP_ENVELOPE_OBSERVATION_UNTIL; off by default): for SIGNED callbacks only, aggregate counts of whether each
+          // message / status carries the configured business-account and phone-number ids. Reads the body, changes nothing, never logs an id; never throws.
+          if (signatureCheck.ok) envelopeObservation.observe(body, config, { log });
           const events = whatsappAdapter.extractEvents(body);
           log("info", "whatsapp_webhook.received", { request_id: ctx.requestId, event_count: events.length });
           // Observability only (no behaviour change): events addressed to a phone-number id other than the configured official one are counted and logged.

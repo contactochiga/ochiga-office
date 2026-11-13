@@ -27,7 +27,8 @@
       "codex/office-intake-package-fix": false,
       "codex/unified-engagement-office": false,
       "codex/content-workspace-refinement": false,
-      "codex/whatsapp-media-contract": false
+      "codex/whatsapp-media-contract": false,
+      "codex/whatsapp-envelope-observation": false
     }
   }
 }
