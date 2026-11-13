@@ -355,6 +355,38 @@ class FileLeadAgentsStore {
     );
   }
 
+  async recordMetaSocialMessage({ channel, senderKey, eventKey, text, occurredAt }) {
+    let lead = this.state.leads.find((row) => row.idempotency_key === senderKey);
+    const existing = this.state.conversations.find((row) => row.correlation_id === eventKey);
+    if (existing) {
+      if (existing.lead_id !== lead?.id || existing.channel !== channel) throw new Error("social message identity conflict");
+      await this.pendingWrite;
+      return "duplicate";
+    }
+    const now = this.nowIso();
+    if (!lead) {
+      const name = channel === "facebook" ? "Messenger contact" : "Instagram contact";
+      lead = { id: crypto.randomUUID(), ...this.withDefaults({ name, source: channel, primary_channel: channel, status: "new" }), idempotency_key: senderKey, created_at: now };
+      this.state.leads.push(lead);
+    }
+    const newest = (current) => Date.parse(current) >= Date.parse(occurredAt) ? current : occurredAt;
+    lead.last_contact_at = newest(lead.last_contact_at);
+    lead.channel_last_seen_at = newest(lead.channel_last_seen_at);
+    lead.updated_at = now;
+    this.state.conversations.push({
+      id: crypto.randomUUID(), lead_id: lead.id, agent_name: "meta_social", message_role: "user",
+      channel, content: text, correlation_id: eventKey, created_at: occurredAt,
+    });
+    const state = this.state.lead_channel_states.find((row) => row.lead_id === lead.id && row.channel === channel);
+    if (state) state.last_inbound_at = newest(state.last_inbound_at);
+    else this.state.lead_channel_states.push({
+      id: crypto.randomUUID(), lead_id: lead.id, channel, ai_paused: true, human_status: "auto",
+      resume_mode: "manual_only", last_inbound_at: occurredAt, created_at: now, updated_at: now,
+    });
+    await this.persist();
+    return "accepted";
+  }
+
   async appendConversation(input) {
     // correlation_id (the manual-send id) is unique: a repeated persistence attempt returns the existing row instead of creating a second one.
     if (input.correlation_id) {
@@ -811,7 +843,8 @@ class FileLeadAgentsStore {
 
   async listLeadChannelStatesForLeads(leadIds, channel = "whatsapp") {
     const wanted = new Set(leadIds || []);
-    return this.state.lead_channel_states.filter((item) => wanted.has(item.lead_id) && item.channel === channel);
+    const channels = new Set(Array.isArray(channel) ? channel : [channel]);
+    return this.state.lead_channel_states.filter((item) => wanted.has(item.lead_id) && channels.has(item.channel));
   }
 
   async listInboundStatusEventsByExternalIds(externalIds) {

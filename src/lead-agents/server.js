@@ -8,6 +8,7 @@ const axios = require("axios");
 const { createConfig } = require("./config");
 const { log } = require("./logger");
 const envelopeObservation = require("./whatsapp-envelope-observation");
+const { handleMetaSocialWebhook } = require("./meta-social-inbound");
 const { createStore } = require("./store-factory");
 const { OpenAIResponsesClient } = require("./openai");
 const { ToolExecutor } = require("./tools");
@@ -2384,6 +2385,10 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
         pathname === "/api/lead-agents/admin/session/invite/accept" ||
         pathname === "/api/lead-agents/admin/session/reset/confirm";
       const isPublicWhatsappPath = pathname === "/webhooks/whatsapp";
+      if (pathname === "/webhooks/meta-social") {
+        await handleMetaSocialWebhook({ req, res, config, store, log });
+        return;
+      }
       // A document share link is meant to be opened by an external
       // recipient (a lead/client with no Office login) — the token
       // itself (validated inside the route handler) is what gates
@@ -6930,8 +6935,9 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           const offset = Math.max(Number(params.get("offset")) || 0, 0);
           const pageLeads = scoped.slice(offset, offset + limit);
           const pageIds = pageLeads.map((lead) => lead.id);
-          const [latest, states, allActivities] = await Promise.all([store.listLatestConversationsForLeads(pageIds), store.listLeadChannelStatesForLeads(pageIds, "whatsapp"), listCorporateRecords(store, "activities")]);
-          const stateByLead = new Map(states.map((state) => [state.lead_id, state]));
+          const inboxChannels = new Map(pageLeads.map((lead) => [lead.id, relationshipWorkspace.inboxChannel(lead)]));
+          const [latest, states, allActivities] = await Promise.all([store.listLatestConversationsForLeads(pageIds), store.listLeadChannelStatesForLeads(pageIds, [...new Set(inboxChannels.values())]), listCorporateRecords(store, "activities")]);
+          const stateByLead = new Map(states.filter((state) => inboxChannels.get(state.lead_id) === state.channel).map((state) => [state.lead_id, state]));
           const pageSet = new Set(pageIds);
           const activitiesByLead = new Map();
           for (const activity of allActivities) if (activity.lead_id && pageSet.has(activity.lead_id)) (activitiesByLead.get(activity.lead_id) || activitiesByLead.set(activity.lead_id, []).get(activity.lead_id)).push(activity);
@@ -6949,12 +6955,13 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
         }
         // Local repair only (never calls WhatsApp): stale pending sends become "outcome unknown"; accepted sends missing their conversation record get it written.
         await reconcileManualSends(store, leadId, { log }).catch(() => null);
+        const inboxChannel = relationshipWorkspace.inboxChannel(lead);
         const [conversations, timeline, activities, documents, channelState, setting, manualSends, inboundMessageEvents] = await Promise.all([
           store.listConversationsForLead(leadId, 500),
           store.listTimelineForLead(leadId, 500),
           listCorporateRecords(store, "activities"),
           hasPermission(authContext, "documents.generate") ? store.listOfficeDocuments().catch(() => []) : Promise.resolve([]),
-          store.getLeadChannelState(leadId, "whatsapp").catch(() => null),
+          store.getLeadChannelState(leadId, inboxChannel).catch(() => null),
           readWhatsAppAutonomySetting(store),
           store.listManualSendsForLead(leadId, 200).catch(() => []),
           store.listInboundMessageEvents({ leadId, limit: 500 }).catch(() => []),
@@ -6983,10 +6990,11 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           opportunities: leadOpportunities.map((o) => ({ id: o.id, business_unit: o.business_unit, inquiry_type: o.inquiry_type, stage: o.stage, status: o.status, owner: o.owner || null })),
           channel_state: channelState ? { human_status: channelState.human_status, human_owner: channelState.human_owner || null, ai_paused: Boolean(channelState.ai_paused), takeover_started_at: channelState.takeover_started_at || null, last_inbound_at: channelState.last_inbound_at || null, last_outbound_at: channelState.last_outbound_at || null } : { human_status: "auto", human_owner: null, ai_paused: false },
           communication: {
+            ...(inboxChannel !== "whatsapp" ? { inbound_only_channel: inboxChannel } : {}),
             global_autonomous_responses: autonomy.state === "on" ? "on" : autonomy.state === "off" ? "off" : "unknown",
             takeover_active: takeoverActive,
             mode: takeoverActive ? "human" : autonomy.state === "on" ? "autonomous_allowed" : autonomy.state === "off" ? "autonomous_off" : "autonomous_off_unreadable",
-            whatsapp_reply: { available: Boolean(lead.whatsapp_phone) && canReply && takeoverActive && whatsappAdapter.isConfigured(), can_reply_permission: canReply, takeover_required: !takeoverActive, whatsapp_number_known: Boolean(lead.whatsapp_phone) },
+            whatsapp_reply: { available: inboxChannel === "whatsapp" && Boolean(lead.whatsapp_phone) && canReply && takeoverActive && whatsappAdapter.isConfigured(), can_reply_permission: canReply, takeover_required: !takeoverActive, whatsapp_number_known: Boolean(lead.whatsapp_phone) },
           },
           integrations: {
             whatsapp: { connected: whatsappAdapter.isConfigured(), media_ingestion: "not_verified" },

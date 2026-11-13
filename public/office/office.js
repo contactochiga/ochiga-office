@@ -18346,6 +18346,11 @@ function relRenderThreadPane(pane, data) {
 function relRenderComposer(data) {
   const wrap = el(`<div class="messages-composer-wrap rel-composer"></div>`);
   const c = data.communication;
+  if (c.inbound_only_channel) {
+    const label = c.inbound_only_channel === "instagram" ? "Instagram" : "Messenger";
+    wrap.appendChild(el(`<div class="rel-locked">${label} messages are inbound only. Replies are not available here.</div>`));
+    return wrap;
+  }
   const modeText = c.takeover_active ? `Human conversation${data.channel_state.human_owner ? ` — owned by ${data.channel_state.human_owner}` : ""}` : c.global_autonomous_responses === "on" ? "Autonomous responses ON (eligible conversations only)" : c.global_autonomous_responses === "off" ? "Autonomous responses OFF — Oyi will not reply" : "Autonomous response state unreadable — treated as OFF";
   wrap.appendChild(el(`<div class="rel-modeline"><span class="rel-mode rel-mode-${escapeHtml(c.mode)}">${escapeHtml(modeText)}</span></div>`));
   const reply = c.whatsapp_reply;

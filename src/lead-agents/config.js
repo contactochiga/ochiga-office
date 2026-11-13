@@ -167,6 +167,8 @@ function createConfig() {
     whatsappDisplayNumber: process.env.WHATSAPP_DISPLAY_NUMBER || "",
     metaAppId: process.env.META_APP_ID || "",
     metaAppSecret: process.env.META_APP_SECRET || "",
+    metaSocialInboundEnabled: process.env.OFFICE_META_SOCIAL_INBOUND_ENABLED === "true",
+    metaSocialVerifyToken: process.env.META_SOCIAL_VERIFY_TOKEN || "",
     // "enforce" (default): unsigned / badly signed / unauthenticatable WhatsApp webhooks are refused before anything is parsed or stored. "report" exists ONLY as an
     // explicit, temporary rollout aid (legacy behaviour: failures are logged and counted but processed); it must be set deliberately and is shown in /healthz.
     whatsappWebhookSignatureMode: String(process.env.WHATSAPP_WEBHOOK_SIGNATURE_MODE || "enforce").trim().toLowerCase() === "report" ? "report" : "enforce",

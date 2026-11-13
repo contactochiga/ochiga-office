@@ -47,6 +47,11 @@ function leadSourceInfo(lead) {
   return { original_source: original, delivery_channel: delivery, source_form: clean(lead.source_form || lead.inquiry_type) || null };
 }
 
+function inboxChannel(lead) {
+  return String(lead.idempotency_key || "").startsWith("meta-social:sender:") && ["facebook", "instagram"].includes(lead.source_channel)
+    ? lead.source_channel : "whatsapp";
+}
+
 function ts(value) {
   const t = Date.parse(value || "");
   return Number.isFinite(t) ? t : 0;
@@ -481,4 +486,4 @@ function newRequestKey() {
   return crypto.randomUUID();
 }
 
-module.exports = { qualificationOf, stageOf, latestMessageFor, classifySource, leadSourceInfo, buildThread, buildInboxEntry, leadIdsForScope, deliveryFromStatuses, encodeCursor, decodeCursor, newRequestKey };
+module.exports = { qualificationOf, stageOf, latestMessageFor, classifySource, leadSourceInfo, inboxChannel, buildThread, buildInboxEntry, leadIdsForScope, deliveryFromStatuses, encodeCursor, decodeCursor, newRequestKey };

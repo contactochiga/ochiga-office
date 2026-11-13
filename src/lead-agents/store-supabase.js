@@ -191,6 +191,13 @@ class SupabaseLeadAgentsStore {
     return response.data.map((row) => this.normalizeLead(row));
   }
 
+  async recordMetaSocialMessage({ channel, senderKey, eventKey, text, occurredAt }) {
+    const response = await this.client.post("/rpc/office_record_meta_social_message", {
+      p_channel: channel, p_sender_key: senderKey, p_event_key: eventKey, p_text: text, p_occurred_at: occurredAt,
+    });
+    return response.data;
+  }
+
   async appendConversation(input) {
     // correlation_id (the manual-send id) is unique in the database; a repeated persistence attempt returns the existing row instead of creating a second one.
     if (input.correlation_id) {
@@ -664,7 +671,7 @@ class SupabaseLeadAgentsStore {
     const ids = [...new Set((leadIds || []).filter(Boolean))];
     if (!ids.length) return [];
     const response = await this.client.get(
-      `/lead_channel_states?lead_id=in.(${ids.map(encodeURIComponent).join(",")})&channel=eq.${encodeURIComponent(channel)}`
+      `/lead_channel_states?lead_id=in.(${ids.map(encodeURIComponent).join(",")})${Array.isArray(channel) ? `&channel=in.(${channel.map(encodeURIComponent).join(",")})` : `&channel=eq.${encodeURIComponent(channel)}`}`
     );
     return response.data;
   }
