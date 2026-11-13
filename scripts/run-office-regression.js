@@ -1,6 +1,8 @@
 // Full Office regression: every package.json script whose name ends in ":test" (office:test and office:*:test), in
-// declared order and discovered, so a registered suite cannot be left out; then the repository gates. Database-backed suites run against disposable local Docker
-// containers with synthetic data and FAIL (never skip) when Docker or an image is missing.
+// declared order and discovered, so a registered suite cannot be left out; then the repository gates. Database-backed
+// suites run against disposable local Docker containers with synthetic data and FAIL (never skip) when Docker or an
+// image is missing. A step that reports SKIP
+// (a missing prerequisite such as Docker, an image or Chrome) counts as a failure even if it exits 0.
 //   npm run office:regression            run everything, exit 1 on any failure
 //   npm run office:regression -- --list  print the plan only
 "use strict";
@@ -15,6 +17,13 @@ function plan(scripts = require(path.join(ROOT, "package.json")).scripts) {
   return [...Object.keys(scripts).filter((name) => /:test$/.test(name)), ...GATES];
 }
 
+// Exit 0 is not enough: a suite that skipped part of itself did not prove it.
+function outcome(status, output) {
+  if (status !== 0) return { ok: false, reason: `exit ${status}` };
+  if (/^\s*SKIP\b/m.test(output)) return { ok: false, reason: "skipped (missing prerequisite)" };
+  return { ok: true, reason: "" };
+}
+
 function main(argv) {
   const steps = plan();
   if (argv.includes("--list")) {
@@ -26,9 +35,9 @@ function main(argv) {
     const started = Date.now();
     const run = spawnSync("npm", ["run", "-s", step], { cwd: ROOT, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], maxBuffer: 256 * 1024 * 1024 });
     const seconds = (Date.now() - started) / 1000;
-    const ok = run.status === 0;
+    const { ok, reason } = outcome(run.status, String(run.stdout) + String(run.stderr));
     results.push({ step, ok, seconds });
-    console.log(`${ok ? "PASS" : "FAIL"} ${step} (${seconds.toFixed(1)} s)`);
+    console.log(`${ok ? "PASS" : "FAIL"} ${step} (${seconds.toFixed(1)} s)${ok ? "" : ` — ${reason}`}`);
     if (!ok) console.log(String(run.stdout + run.stderr).trim().split("\n").slice(-15).map((line) => `    ${line}`).join("\n"));
   }
   const failed = results.filter((r) => !r.ok);
@@ -39,4 +48,4 @@ function main(argv) {
 
 if (require.main === module) process.exit(main(process.argv.slice(2)));
 
-module.exports = { plan, GATES };
+module.exports = { plan, outcome, GATES };

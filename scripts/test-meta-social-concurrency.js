@@ -6,12 +6,14 @@ const { Client } = require("pg");
 
 const docker = (...args) => execFileSync("docker", args, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
 const sql = (name) => readFileSync(path.join(__dirname, "../db", name + ".sql"), "utf8");
+const PG_IMAGE = process.env.PG_IMAGE || "postgres:16-alpine";
 
 async function main() {
-  try { docker("image", "inspect", "postgres:16-alpine"); }
-  catch { console.log("SKIP: Docker or local Postgres 16 image unavailable"); return; }
+  // A missing prerequisite fails the suite (and its parent npm script); it never passes by skipping.
+  try { docker("image", "inspect", PG_IMAGE); }
+  catch { throw new Error(`BLOCKED: Docker or the image ${PG_IMAGE} is unavailable`); }
   const name = "office-social-test-" + process.pid;
-  docker("run", "--rm", "-d", "--name", name, "-e", "POSTGRES_PASSWORD=fixture", "-p", "127.0.0.1::5432", "postgres:16-alpine");
+  docker("run", "--rm", "-d", "--name", name, "-e", "POSTGRES_PASSWORD=fixture", "-p", "127.0.0.1::5432", PG_IMAGE);
   const clients = [];
   try {
     const port = Number(docker("port", name, "5432/tcp").split(":").pop());

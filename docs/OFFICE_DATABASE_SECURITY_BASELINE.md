@@ -50,7 +50,7 @@ Both fixtures are registered as `office:catalogue-postgres:test` and `office:int
 
 `npm run office:regression` runs every script whose name ends in `:test` (`office:test` and every `office:*:test`), discovered from `package.json`, then check, lint, secrets, build, `deployment:validate` and `validate:release`.
 
-The Docker suites fail rather than skip when Docker or an image is missing. `office:regression-registry:test` enforces this, and also that every Postgres suite is registered.
+The Docker suites, including Meta social concurrency, fail rather than skip when Docker or an image is missing. The runner also counts any step that reports `SKIP` as a failure, even if it exits 0. Three unchanged suites can still print `SKIP` when run on their own: WhatsApp inbound claims on Postgres and the two Chrome browser suites. `office:regression-registry:test` enforces this, and also that every Postgres suite is registered.
 
 No script applies `db/*.sql` in filename order. `npm run office:legacy-db-entrypoints:test` enforces this. It also shows that filename order replaces the fenced receipt function, while the manifest keeps it.
 

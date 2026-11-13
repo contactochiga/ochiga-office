@@ -7,7 +7,7 @@
 const fs = require("node:fs");
 const path = require("node:path");
 const { spawnSync } = require("node:child_process");
-const { plan, GATES } = require("./run-office-regression");
+const { plan, outcome, GATES } = require("./run-office-regression");
 
 const ROOT = path.join(__dirname, "..");
 const scripts = require(path.join(ROOT, "package.json")).scripts;
@@ -47,13 +47,28 @@ check("RR6", "the Docker suites use disposable local containers only (no hosted 
 // A missing image (or no Docker) must fail the suite, not skip it. The bogus image name never reaches a registry:
 // each suite checks `docker image inspect` before running anything.
 const missing = {};
-for (const file of ["test-catalogue-postgres.js", "test-intake-receipts-postgres.js", "test-office-security-baseline-postgres.js", "test-office-legacy-db-entrypoints.js"]) {
+for (const file of ["test-catalogue-postgres.js", "test-intake-receipts-postgres.js", "test-office-security-baseline-postgres.js", "test-office-legacy-db-entrypoints.js", "test-meta-social-concurrency.js"]) {
   const run = spawnSync(process.execPath, [path.join(ROOT, "scripts", file)], { cwd: ROOT, encoding: "utf8", timeout: 120_000,
     env: { ...process.env, PG_IMAGE: "office-regression-registry.invalid/no-such-image:0" } });
   missing[file] = { status: run.status, blocked: /BLOCKED/.test(run.stdout + run.stderr), skipped: /\bSKIP\b/.test(run.stdout + run.stderr) };
 }
-check("RR7", "each Docker suite exits non-zero with BLOCKED (never SKIP) when Docker or its image is unavailable",
+check("RR7", "each Docker suite (incl. Meta social concurrency) exits non-zero with BLOCKED (never SKIP) when Docker or its image is unavailable",
   Object.values(missing).every((m) => m.status !== 0 && m.status !== null && m.blocked && !m.skipped), missing);
+
+// The parent npm script chains the three Meta social suites with &&, so the concurrency failure must reach it.
+const parent = spawnSync("npm", ["run", "-s", "office:meta-social-inbound:test"], { cwd: ROOT, encoding: "utf8", timeout: 300_000,
+  env: { ...process.env, PG_IMAGE: "office-regression-registry.invalid/no-such-image:0" } });
+check("RR8", "office:meta-social-inbound:test fails (non-zero, BLOCKED) when the concurrency suite's database image is unavailable",
+  parent.status !== 0 && parent.status !== null && /BLOCKED/.test(parent.stdout + parent.stderr) && !/^\s*SKIP\b/m.test(parent.stdout + parent.stderr),
+  { status: parent.status, tail: String(parent.stdout + parent.stderr).slice(-300) });
+
+// Suites not changed here (WhatsApp inbound claims on Postgres, the two Chrome browser suites) still print SKIP and exit 0
+// when Docker/Chrome is missing; the regression runner counts any SKIP line as a failure.
+const skipping = ["test-whatsapp-inbound-claims-postgres.js", "test-relationship-workspace-browser.js", "test-content-workspace-browser.js"]
+  .filter((f) => /SKIP/.test(source(f)));
+check("RR9", `the runner fails a step that exits 0 but reports SKIP (covers ${skipping.length} suites that can still skip standalone)`,
+  outcome(0, "SKIP: Chrome not installed").ok === false && outcome(0, "x\n  SKIP: docker or postgres:16-alpine unavailable\n").ok === false &&
+  outcome(0, "PASS all\nskipped 2 echoes").ok === true && outcome(1, "").ok === false && outcome(0, "ok").ok === true, skipping);
 
 console.log(`\n${checks - failures}/${checks} checks passed`);
 console.log(failures ? "Office regression registry: FAIL" : "Office regression registry: PASS");
