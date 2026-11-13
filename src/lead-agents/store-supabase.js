@@ -553,6 +553,24 @@ class SupabaseLeadAgentsStore {
     return Array.isArray(response.data) ? response.data[0] || null : null;
   }
 
+  async fenceMetaSocialDispatch(id, channel, senderKey) {
+    const response = await this.client.post("/rpc/office_fence_meta_social_dispatch", {
+      p_send: id, p_channel: channel, p_sender_key: senderKey,
+    });
+    if (!["acquired", "social_dispatch_claim_lost", "social_recipient_unverified", "social_opted_out",
+      "social_window_closed", "social_claim_expired"].includes(response.data)) throw new Error("invalid_dispatch_fence_response");
+    return response.data;
+  }
+
+  async expireMetaSocialClaim(id, channel, dispatched) {
+    const response = await this.client.patch(
+      `/whatsapp_manual_sends?id=eq.${encodeURIComponent(id)}&channel=eq.${encodeURIComponent(channel)}&status=eq.pending&social_dispatch_at=${dispatched ? "not.is.null" : "is.null"}`,
+      { status: dispatched ? "outcome_unknown" : "not_sent", failure_reason: dispatched ? "no_provider_outcome_recorded" : "social_claim_expired", updated_at: new Date().toISOString() },
+      { headers: this.selectHeaders() }
+    );
+    return response.data?.[0] || null;
+  }
+
   async updateManualSend(id, patch, expectedStatus) {
     const body = { updated_at: new Date().toISOString() };
     for (const field of ["status", "provider_message_id", "provider_response_code", "failure_reason", "conversation_id", "conversation_recorded_at", "resolved_by", "resolved_at", "resolution_note"]) if (patch[field] !== undefined) body[field] = patch[field];
@@ -562,6 +580,14 @@ class SupabaseLeadAgentsStore {
 
   async listManualSendsForLead(leadId, limit = 200) {
     const response = await this.client.get(`/whatsapp_manual_sends?lead_id=eq.${encodeURIComponent(leadId)}&order=created_at.asc&limit=${Math.min(Math.max(Number(limit) || 200, 1), 500)}`);
+    return response.data;
+  }
+
+  async listSocialManualSends(leadId, channel, { unresolved = false, repair = false, limit = 200, offset = 0 } = {}) {
+    const filter = unresolved ? "&status=in.(pending,outcome_unknown)"
+      : repair ? "&status=eq.provider_accepted&conversation_recorded_at=is.null" : "";
+    const response = await this.client.get(`/whatsapp_manual_sends?lead_id=eq.${encodeURIComponent(leadId)}&channel=eq.${encodeURIComponent(channel)}&order=created_at.desc,id.desc&limit=${limit}&offset=${offset}${filter}`);
+    if (!Array.isArray(response.data)) throw new Error("social_send_ledger_unreadable");
     return response.data;
   }
 

@@ -83,7 +83,7 @@ async function performManualSend({ store, adapter, lead, actorEmail, clientReque
   let result = null;
   let providerError = null;
   try {
-    result = await (dispatch ? dispatch() : adapter.sendTextMessage({ to: recipient, body: text }));
+    result = await (dispatch ? dispatch(send) : adapter.sendTextMessage({ to: recipient, body: text }));
   } catch (error) {
     providerError = error;
   }
@@ -102,7 +102,7 @@ async function performManualSend({ store, adapter, lead, actorEmail, clientReque
     outcome = { status: "provider_accepted", provider_message_id: result.external_message_id || null, provider_response_code: result.response_code ?? null };
   } else {
     // adapter reported "not delivered" without an error (e.g. not configured): the request never reached the provider
-    outcome = { status: "not_sent", provider_response_code: result?.response_code ?? null, failure_reason: result?.skipped ? "provider_not_configured" : "not_accepted" };
+    outcome = { status: "not_sent", provider_response_code: result?.response_code ?? null, failure_reason: result?.refusal || (result?.skipped ? "provider_not_configured" : "not_accepted") };
   }
 
   // 3. record the outcome durably (retried; a failure here is surfaced, never swallowed)
@@ -115,6 +115,10 @@ async function performManualSend({ store, adapter, lead, actorEmail, clientReque
     }
     return updated;
   });
+  if (social && saved.ok && outcome.failure_reason === "social_dispatch_claim_lost" &&
+      saved.value?.status === "not_sent" && !saved.value.social_dispatch_at) {
+    outcome.failure_reason = saved.value.failure_reason || outcome.failure_reason;
+  }
   const stateRecorded = saved.ok;
   if (!stateRecorded) {
     log("error", "manual_whatsapp_send_outcome_unrecorded", social ? { channel, outcome: outcome.status } : { lead_id: lead.id, send_id: send.id, outcome: outcome.status, provider_message_id: outcome.provider_message_id || null });
@@ -142,7 +146,7 @@ async function performManualSend({ store, adapter, lead, actorEmail, clientReque
     if (outcome.status === "provider_accepted" && stateRecorded) return { httpStatus: 200, body: { ok: true, accepted: true, recorded, ...base } };
     if (!stateRecorded || outcome.status === "outcome_unknown") return { httpStatus: 202, body: { ...base, ok: false, state: "outcome_unknown", error: "outcome_unknown" } };
     const rejected = outcome.status === "provider_rejected";
-    return { httpStatus: rejected ? 502 : 409, body: { ...base, ok: false, error: rejected ? "provider_rejected" : "social_reply_no_longer_allowed" } };
+    return { httpStatus: rejected ? 502 : 409, body: { ...base, ok: false, error: rejected ? "provider_rejected" : outcome.failure_reason } };
   }
   if (outcome.status === "provider_accepted") return { httpStatus: 200, body: { ok: true, accepted: true, delivered: true, recorded, ...base } };
   if (outcome.status === "provider_rejected") return { httpStatus: 502, body: { ok: false, accepted: false, delivered: false, error: "provider_rejected", detail: "WhatsApp refused this message. It was not sent.", ...base } };
@@ -152,20 +156,28 @@ async function performManualSend({ store, adapter, lead, actorEmail, clientReque
 
 // Local repair only -- never calls the provider. Stale `pending` rows (the process died or lost the response) become `outcome_unknown`; accepted rows whose
 // conversation record is missing get it written (idempotent via the unique correlation id).
-async function reconcileManualSends(store, leadId, { now = Date.now(), staleMs = STALE_PENDING_MS, log = () => {} } = {}) {
+async function reconcileManualSends(store, leadId, { now = Date.now(), staleMs = STALE_PENDING_MS, log = () => {}, channel } = {}) {
   const summary = { marked_unknown: 0, conversation_repaired: 0, errors: 0 };
   let sends = [];
   try {
-    sends = await store.listManualSendsForLead(leadId, 200);
+    sends = channel && channel !== "whatsapp"
+      ? (await Promise.all([
+        store.listSocialManualSends(leadId, channel, { unresolved: true }),
+        store.listSocialManualSends(leadId, channel, { repair: true }),
+      ])).flat()
+      : await store.listManualSendsForLead(leadId, 200);
   } catch (error) {
     log("error", "manual_whatsapp_reconcile_unreadable", { lead_id: leadId, error: String(error?.message || error).slice(0, 200) });
     return { ...summary, errors: 1 };
   }
   for (const send of sends) {
     try {
-      if (send.status === "pending" && now - Date.parse(send.created_at) > staleMs) {
-        await store.updateManualSend(send.id, { status: "outcome_unknown", failure_reason: "no_provider_outcome_recorded" }, send.channel && send.channel !== "whatsapp" ? "pending" : undefined);
-        summary.marked_unknown++;
+      if (send.status === "pending" && now - Date.parse(send.social_dispatch_at || send.created_at) > staleMs) {
+        const social = send.channel && send.channel !== "whatsapp";
+        const updated = social
+          ? await store.expireMetaSocialClaim(send.id, send.channel, Boolean(send.social_dispatch_at))
+          : await store.updateManualSend(send.id, { status: "outcome_unknown", failure_reason: "no_provider_outcome_recorded" });
+        if (updated?.status === "outcome_unknown") summary.marked_unknown++;
       } else if (send.status === "provider_accepted" && !send.conversation_recorded_at) {
         await persistAcceptedConversation(store, send);
         summary.conversation_repaired++;
@@ -183,6 +195,7 @@ async function resolveManualSend(store, sendId, { resolution, providerMessageId 
   const send = await store.getManualSend(sendId);
   if (!send) return { httpStatus: 404, body: { error: "send_not_found" } };
   const social = ["facebook", "instagram"].includes(send.channel);
+  if (social && send.social_dispatch_at) return { httpStatus: 409, body: { error: "dispatch_outcome_unverified", state: send.status } };
   if (!(social ? send.status === "outcome_unknown" : ["outcome_unknown", "pending"].includes(send.status))) return { httpStatus: 409, body: { error: "send_not_unresolved", state: send.status } };
   if (!["confirmed_sent", "confirmed_not_sent"].includes(resolution)) return { httpStatus: 400, body: { error: "invalid_resolution" } };
   const resolved = { resolved_by: actorEmail, resolved_at: new Date().toISOString(), resolution_note: String(note || "").slice(0, 500) || null };

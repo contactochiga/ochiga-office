@@ -46,15 +46,24 @@ function createMetaSocialReplyAdapter(config, request = axios.post) {
 async function sendSocialReply({ config, store, adapter, lead, channel, actorEmail, clientRequestId, text, audit }) {
   const target = replyTarget(config, lead, channel);
   const problem = replyPolicy(config, lead, channel);
-  if (problem) return { httpStatus: 409, body: { ok: false, error: problem } };
+  if (problem) {
+    await audit(`communication.${channel}.manual_reply`, "failure", { failure_reason: problem }).catch(() => null);
+    return { httpStatus: 409, body: { ok: false, error: problem } };
+  }
   return performManualSend({
     store, adapter, lead, actorEmail, clientRequestId, text, audit, channel, recipient: target.binding,
-    send: async () => {
+    send: async (intent) => {
       const fresh = await store.getMetaSocialReplyLead(lead.id);
       const latest = fresh && replyTarget(config, fresh, channel);
-      if (!latest || latest.binding !== target.binding || replyPolicy(config, fresh, channel)) {
-        return { skipped: true };
-      }
+      if (!latest || latest.binding !== target.binding) return { refusal: "social_recipient_unverified" };
+      const refusal = replyPolicy(config, fresh, channel);
+      if (refusal) return { refusal };
+      const started = performance.now();
+      // A failed RPC response may conceal a committed grant; never classify it as Meta rejection.
+      const fence = await store.fenceMetaSocialDispatch(intent.id, channel, fresh.idempotency_key)
+        .catch(() => { throw new Error("social_dispatch_fence_unconfirmed"); });
+      if (fence !== "acquired") return { refusal: fence };
+      if (performance.now() - started >= 5_000) throw new Error("social_dispatch_grant_stale");
       return adapter.sendTextMessage({ to: target.sender, body: text, channel });
     },
   });

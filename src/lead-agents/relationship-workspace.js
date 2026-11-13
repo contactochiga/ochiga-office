@@ -204,7 +204,7 @@ function buildThread({ lead, conversations = [], timeline = [], activities = [],
       provider_message_id: providerId || null,
       opportunity_id: null,
       attachments: [],
-      manual_send: { id: send.id, status: send.status, resolvable: send.status === "outcome_unknown" || (!social && send.status === "pending"), failure_reason: send.failure_reason || null, resolved_by: send.resolved_by || null },
+      manual_send: { id: send.id, status: send.status, resolvable: social ? send.status === "outcome_unknown" && !send.social_dispatch_at : ["outcome_unknown", "pending"].includes(send.status), failure_reason: send.failure_reason || null, resolved_by: send.resolved_by || null },
       provenance: { table: "whatsapp_manual_sends", id: send.id },
       merged_from: [],
     };

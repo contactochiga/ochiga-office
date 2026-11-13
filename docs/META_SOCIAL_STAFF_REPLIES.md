@@ -13,6 +13,8 @@ path with no safe provider idempotency; it remains unchanged.
 
 - Both inbound and outbound switches must be explicitly enabled. Outbound is
   OFF by default. No credential is required or accessed for a disabled send.
+  The deployed send path requires Supabase; the file store is fixture-only
+  for social outbound because it cannot coordinate multiple processes.
 - Only a permitted staff session can submit plain text. It cannot specify
   an actor, recipient, asset, tag, template, or permission override.
 - The target comes from the latest signed channel/asset/sender binding, not
@@ -25,9 +27,16 @@ path with no safe provider idempotency; it remains unchanged.
 - The existing ledger claims the request before sending. The same request
   never sends twice. A known rejection (including 429) allows a new explicit
   attempt after review. No response, malformed success, or server failure is
-  unknown and blocks new attempts on that lead/channel until a staff member
-  verifies the provider inbox and records the outcome. Reconciliation does
-  not send. Database retries never retry the provider call.
+  unknown and blocks new attempts on that lead/channel. A service-role-only
+  database fence locks the claim and recipient policy rows, checks the binding,
+  opt-out and window, and writes a one-way dispatch marker before the provider
+  call. Reconciliation uses conditional writes: expired unfenced claims become
+  not sent; expired fenced claims stay unknown. Staff cannot manually clear a
+  fenced attempt as not sent or assert success without correlated evidence.
+  Escalate unknown attempts for operator investigation; there is no resend
+  override. Database retries never retry the provider call. A crash between
+  committing the marker and making the request is conservatively unknown.
+  Unresolved sends are queried separately from paginated conversation history.
 - Provider acceptance is not delivery. Signed Messenger delivery callbacks
   with exact message IDs and Instagram read callbacks with an exact message
   ID can advance the stored evidence for the same channel, asset and customer.
@@ -39,12 +48,14 @@ path with no safe provider idempotency; it remains unchanged.
 ## Proposed staging migration and rollout
 
 1. Review `20261113_meta_social_inbound.sql` then
-   `20261113_meta_social_staff_replies.sql` in that order, with the existing
+   `20261113_meta_social_staff_replies.sql` then
+   `20261113_meta_social_dispatch_fence.sql` in that order, with the existing
    manual-send ledger migration already present. The proposal adds private
    reply-binding columns, a delivery column, two social-only indexes and
    service-role-only invoker functions. Recheck Office table grants/RLS and
-   the staging PostgREST contract before applying anything. Both scripts were
-   exercised only in a disposable PostgreSQL fixture.
+   the staging PostgREST contract before applying anything. The fence migration
+   conservatively marks previously unresolved social sends as potentially
+   dispatched. The scripts were exercised only in a disposable SQL fixture.
 2. Reuse the Ochiga Systems app and the Facebook Login model. With isolated
    test assets, verify Page access token, messaging task, `pages_messaging`,
    `pages_manage_metadata`, and linked Instagram professional account with
@@ -57,7 +68,7 @@ path with no safe provider idempotency; it remains unchanged.
    Confirm WhatsApp and AI OFF unchanged. Validate signed callbacks on the
    test assets, then separately authorize enabling outbound there. Validate
    text replies, receipts, permission and opt-out refusals, and an operator's
-   outcome reconciliation. No tags, bulk sends, attachments, comments or
+   outcome investigation without retries or manual clearance. No tags, bulk sends, attachments, comments or
    publishing are included.
 4. Roll back by disabling social outbound first. If code must roll back,
    leave the additive SQL and history intact and keep social outbound off.

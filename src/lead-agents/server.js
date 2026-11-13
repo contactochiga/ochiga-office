@@ -6954,18 +6954,20 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           json(res, 404, { error: "lead_not_found" }, { "x-request-id": ctx.requestId });
           return;
         }
-        // Local repair only (never calls WhatsApp): stale pending sends become "outcome unknown"; accepted sends missing their conversation record get it written.
-        await reconcileManualSends(store, leadId, { log }).catch(() => null);
+        // Local repair only: expire stale claims and project accepted sends missing from history.
         const inboxChannel = relationshipWorkspace.inboxChannel(lead);
-        const [conversations, timeline, activities, documents, channelState, setting, manualSends, inboundMessageEvents] = await Promise.all([
+        const social = inboxChannel !== "whatsapp";
+        await reconcileManualSends(store, leadId, { log, channel: inboxChannel }).catch(() => null);
+        const [conversations, timeline, activities, documents, channelState, setting, manualSends, inboundMessageEvents, unresolved] = await Promise.all([
           store.listConversationsForLead(leadId, 500),
           store.listTimelineForLead(leadId, 500),
           listCorporateRecords(store, "activities"),
           hasPermission(authContext, "documents.generate") ? store.listOfficeDocuments().catch(() => []) : Promise.resolve([]),
           store.getLeadChannelState(leadId, inboxChannel).catch(() => null),
           readWhatsAppAutonomySetting(store),
-          store.listManualSendsForLead(leadId, 200).catch(() => []),
+          social ? store.listSocialManualSends(leadId, inboxChannel).catch(() => []) : store.listManualSendsForLead(leadId, 200).catch(() => []),
           store.listInboundMessageEvents({ leadId, limit: 500 }).catch(() => []),
+          social ? store.listSocialManualSends(leadId, inboxChannel, { unresolved: true }).catch(() => null) : null,
         ]);
         const leadActivities = activities.filter((a) => a.lead_id === leadId);
         const leadOpportunities = opportunities.filter((o) => o.lead_id === leadId);
@@ -6978,9 +6980,8 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
         });
         const takeoverActive = Boolean(channelState && ["human_active", "human_review"].includes(channelState.human_status));
         const canReply = hasPermission(authContext, "manage_takeover");
-        const social = inboxChannel !== "whatsapp";
         const socialLead = social && config.metaSocialOutboundEnabled ? await store.getMetaSocialReplyLead(leadId).catch(() => null) : null;
-        const socialProblem = social ? replyPolicy(config, socialLead, inboxChannel) : null;
+        const socialProblem = social ? (unresolved === null ? "send_state_unavailable" : unresolved.length ? "unresolved_send" : replyPolicy(config, socialLead, inboxChannel)) : null;
         const autonomy = describeWhatsAppAutonomyStatus(setting, { officialNumber: config.whatsappDisplayNumber });
         const sourceInfo = relationshipWorkspace.leadSourceInfo(lead);
         json(res, 200, {
@@ -6991,6 +6992,10 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           },
           source: sourceInfo,
           thread,
+          ...(social ? { unresolved_sends: (unresolved || []).map((send) => ({
+            id: send.id, state: send.status, channel: send.channel, created_at: send.created_at,
+            may_have_dispatched: Boolean(send.social_dispatch_at),
+          })) } : {}),
           opportunities: leadOpportunities.map((o) => ({ id: o.id, business_unit: o.business_unit, inquiry_type: o.inquiry_type, stage: o.stage, status: o.status, owner: o.owner || null })),
           channel_state: channelState ? { human_status: channelState.human_status, human_owner: channelState.human_owner || null, ai_paused: Boolean(channelState.ai_paused), takeover_started_at: channelState.takeover_started_at || null, last_inbound_at: channelState.last_inbound_at || null, last_outbound_at: channelState.last_outbound_at || null } : { human_status: "auto", human_owner: null, ai_paused: false },
           communication: {
@@ -7086,13 +7091,18 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           return;
         }
         const leadId = decodeURIComponent(socialReplyMatch[1]);
-        const lead = await store.getMetaSocialReplyLead(leadId).catch(() => null);
-        if (!lead) { json(res, 404, { error: "social_recipient_unverified" }); return; }
         const channel = socialReplyMatch[2];
+        const audit = (action, status, metadata) => appendAuditRecord({ store, authContext, action, resourceType: "lead", resourceId: leadId, metadata, req, status });
+        const lead = await store.getMetaSocialReplyLead(leadId);
+        if (!lead) {
+          await audit(`communication.${channel}.manual_reply`, "failure", { failure_reason: "social_recipient_unverified" }).catch(() => null);
+          json(res, 404, { error: "social_recipient_unverified" });
+          return;
+        }
         const outcome = await sendSocialReply({
           config, store, adapter: metaSocialReplyAdapter, lead, channel,
           actorEmail: authContext.email, clientRequestId: body.client_request_id, text,
-          audit: (action, status, metadata) => appendAuditRecord({ store, authContext, action, resourceType: "lead", resourceId: leadId, metadata, req, status }),
+          audit,
         });
         json(res, outcome.httpStatus, outcome.body, { "x-request-id": ctx.requestId });
         return;

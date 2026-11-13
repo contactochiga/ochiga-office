@@ -18346,6 +18346,13 @@ function relRenderThreadPane(pane, data) {
   relRenderEntries(holder, data.thread.entries);
   Array.from(holder.childNodes).forEach((n) => scroll.appendChild(n));
   pane.appendChild(scroll);
+  if (data.unresolved_sends?.length) {
+    const notice = el(`<div class="rel-note" role="status"></div>`);
+    notice.textContent = data.unresolved_sends.some((send) => send.may_have_dispatched)
+      ? "A reply may have reached Meta. Do not resend; ask an integration operator to verify the outcome."
+      : "A reply is still being prepared. Refresh the thread before trying again.";
+    pane.appendChild(notice);
+  }
   pane.appendChild(relRenderComposer(data));
   requestAnimationFrame(() => { scroll.scrollTop = scroll.scrollHeight; });
 }
@@ -18361,6 +18368,8 @@ function relRenderComposer(data) {
       social_window_closed: "The 24-hour reply window is closed.",
       social_opted_out: "The customer has opted out, or consent state could not be verified.",
       social_recipient_unverified: "A new incoming message is needed before staff can reply.",
+      unresolved_send: "A previous send is unresolved. Do not resend. Ask an integration operator to review the outcome.",
+      send_state_unavailable: "Send history could not be verified. Replies are paused.",
     }[c.social_reply?.reason] || "Staff replies are not available for this conversation.";
     wrap.appendChild(el(`<div class="rel-locked">${label}: ${reason}</div>`));
     return wrap;

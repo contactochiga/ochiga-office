@@ -746,6 +746,31 @@ class FileLeadAgentsStore {
     return record ? { ...record } : null;
   }
 
+  async fenceMetaSocialDispatch(id, channel, senderKey) {
+    const row = this.state.whatsapp_manual_sends.find((send) => send.id === id && send.channel === channel);
+    if (!row || !["facebook", "instagram"].includes(channel) || row.status !== "pending" || row.social_dispatch_at) return "social_dispatch_claim_lost";
+    const target = this.state.leads.find((lead) => lead.id === row.lead_id);
+    if (!target || target.idempotency_key !== senderKey || !target.meta_social_asset_id || !target.meta_social_sender_id ||
+      row.recipient !== `${target.meta_social_asset_id}:${target.meta_social_sender_id}`) return "social_recipient_unverified";
+    if (target.meta_social_opted_out !== false || target.contactability_status === "denied") return "social_opted_out";
+    const now = Date.now();
+    const last = Date.parse(target.meta_social_last_inbound_at);
+    if (!Number.isFinite(last) || last > now || last <= now - 86_400_000) return "social_window_closed";
+    if (Date.parse(row.created_at) <= now - 120_000) return "social_claim_expired";
+    row.social_dispatch_at = this.nowIso();
+    await this.persist();
+    return "acquired";
+  }
+
+  async expireMetaSocialClaim(id, channel, dispatched) {
+    const row = this.state.whatsapp_manual_sends.find((send) => send.id === id && send.channel === channel);
+    if (!row || row.status !== "pending" || Boolean(row.social_dispatch_at) !== dispatched) return null;
+    return this.updateManualSend(id, {
+      status: dispatched ? "outcome_unknown" : "not_sent",
+      failure_reason: dispatched ? "no_provider_outcome_recorded" : "social_claim_expired",
+    }, "pending");
+  }
+
   async recordMetaSocialReceipt({ channel, binding, mid, state }) {
     const row = this.state.whatsapp_manual_sends.find((send) => send.channel === channel && send.recipient === binding &&
       send.provider_message_id === mid && send.status === "provider_accepted");
@@ -766,6 +791,14 @@ class FileLeadAgentsStore {
 
   async listManualSendsForLead(leadId, limit = 200) {
     return this.state.whatsapp_manual_sends.filter((r) => r.lead_id === leadId).sort((a, b) => String(a.created_at).localeCompare(String(b.created_at))).slice(-limit).map((r) => ({ ...r }));
+  }
+
+  async listSocialManualSends(leadId, channel, { unresolved = false, repair = false, limit = 200, offset = 0 } = {}) {
+    return this.state.whatsapp_manual_sends.filter((row) => row.lead_id === leadId && row.channel === channel &&
+      (unresolved ? ["pending", "outcome_unknown"].includes(row.status) :
+        !repair || (row.status === "provider_accepted" && !row.conversation_recorded_at)))
+      .sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at) || b.id.localeCompare(a.id))
+      .slice(offset, offset + limit).map((row) => ({ ...row }));
   }
 
   // ---- Communication delivery outbox (see db/20261018_communication_delivery_outbox.sql and communication-outbox.js) ----

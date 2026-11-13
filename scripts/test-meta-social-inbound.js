@@ -6,8 +6,11 @@ const { buildServer } = require("../src/lead-agents/server");
 const { MemoryRateLimiter } = require("../src/lead-agents/rate-limit");
 const { createTempStore } = require("../src/lead-agents/testing");
 const { FileLeadAgentsStore } = require("../src/lead-agents/store-file");
+const { SupabaseLeadAgentsStore } = require("../src/lead-agents/store-supabase");
+const { createStore } = require("../src/lead-agents/store-factory");
 const { hashPassword } = require("../src/lead-agents/auth");
 const { createMetaSocialReplyAdapter } = require("../src/lead-agents/meta-social-replies");
+const { reconcileManualSends, resolveManualSend } = require("../src/lead-agents/manual-whatsapp-send");
 
 const secret = "local-social-fixture-secret";
 const page = "111";
@@ -21,6 +24,24 @@ const event = (asset, overrides = {}) => ({
 const batch = (object, asset, ...messaging) => ({ object, entry: [{ id: asset, messaging }] });
 
 async function main() {
+  assert.throws(() => createStore({ metaSocialOutboundEnabled: true, storeDriver: "file" }), /Supabase dispatch fence/);
+  const supabase = Object.create(SupabaseLeadAgentsStore.prototype);
+  const queries = [];
+  supabase.client = { get: async (path) => {
+    queries.push(new URL(path, "https://fixture.invalid").searchParams);
+    return { data: [] };
+  } };
+  await supabase.listSocialManualSends("lead-x", "facebook", { limit: 200, offset: 200 });
+  await supabase.listSocialManualSends("lead-x", "facebook", { unresolved: true });
+  await supabase.listSocialManualSends("lead-x", "facebook", { repair: true });
+  assert.equal(queries[0].get("offset"), "200");
+  for (const query of queries) {
+    assert.equal(query.get("order"), "created_at.desc,id.desc");
+    assert.equal(query.get("channel"), "eq.facebook");
+    assert.equal(query.get("lead_id"), "eq.lead-x");
+  }
+  assert.equal(queries[1].get("status"), "in.(pending,outcome_unknown)");
+  assert.equal(queries[2].get("conversation_recorded_at"), "is.null");
   const { store, tempDir, filePath } = await createTempStore();
   await store.ensureAdminUser({ email: "social@ochiga.local", password_hash: hashPassword("fixture-pass-123"), role: "super_admin", display_name: "Fixture", status: "active" });
   await store.ensureAdminUser({ email: "resident@ochiga.local", password_hash: hashPassword("fixture-pass-123"), role: "resident", display_name: "Fixture", status: "active" });
@@ -28,6 +49,7 @@ async function main() {
   const servers = [];
   const sent = [];
   let providerMode = "accept";
+  let providerBarrier;
   const mk = () => new MemoryRateLimiter({ windowMs: 60_000, maxRequests: 500 });
   const noCalls = () => { assert.fail("social intake must not call WhatsApp"); };
   const start = async (overrides = {}, db = store) => {
@@ -36,9 +58,10 @@ async function main() {
       officeBackendBaseUrl: "", facebookPageAccessToken: "fixture-page-token", metaSocialGraphVersion: "v26.0", ...overrides };
     const metaSocialReplyAdapter = createMetaSocialReplyAdapter(config, async (url, body, options) => {
       sent.push({ url, body, options });
+      if (providerBarrier) await providerBarrier();
       if (providerMode === "timeout") throw Object.assign(new Error("mock timeout"), { code: "ETIMEDOUT" });
       if (providerMode === "reject") throw Object.assign(new Error("mock refusal"), { response: { status: 429 } });
-      return { status: 200, data: { recipient_id: body.recipient.id, message_id: "out_shared" } };
+      return { status: 200, data: { recipient_id: body.recipient.id, message_id: providerMode === "accept" ? "out_shared" : "out_ordered" } };
     });
     const server = buildServer({ config, store: db, rateLimiter: mk(), publicRateLimiter: mk(), officeRateLimiter: mk(),
       loginRateLimiter: mk(), whatsappAdapter: { extractEvents: noCalls, verifySignature: noCalls, sendTextMessage: noCalls, isConfigured: () => false }, metaSocialReplyAdapter, openaiClient: {}, toolExecutor: {} });
@@ -171,18 +194,127 @@ async function main() {
     assert.equal((await resolve("whatsapp")).status, 404);
     assert.equal((await resolve("instagram")).status, 404);
     const decisions = await Promise.all([resolve("facebook"), resolve("facebook")]);
-    assert.deepEqual(decisions.map((r) => r.status).sort(), [200, 409]);
+    assert.deepEqual(decisions.map((r) => r.status), [409, 409]);
+    for (const decision of decisions) assert.equal((await decision.json()).error, "dispatch_outcome_unverified");
     assert.equal(sent.length, 4);
     providerMode = "accept";
-    assert.equal((await reply(enabled, fb, "facebook", "explicit-retry")).status, 200);
-    assert.equal(sent.length, 5);
+    assert.equal((await (await reply(enabled, fb, "facebook", "explicit-retry")).json()).error, "unresolved_send");
+    assert.equal(sent.length, 4);
+    for (let i = 0; i < 205; i++) {
+      restored.state.whatsapp_manual_sends.push({ id: `history-${i}`, lead_id: fb.id, channel: "facebook",
+        status: "provider_rejected", created_at: new Date(Date.now() + 1000 + i).toISOString() });
+    }
+    restored.state.whatsapp_manual_sends.push({ id: "foreign-ledger", lead_id: fb.id, channel: "instagram", status: "outcome_unknown", created_at: new Date().toISOString() });
+    const ledgerPage = await restored.listSocialManualSends(fb.id, "facebook", { limit: 2, offset: 200 });
+    assert.deepEqual(ledgerPage.map((row) => row.id), ["history-4", "history-3"]);
+    const pagedUrl = `${enabled}/api/lead-agents/admin/crm/relationships/${fb.id}?limit=1`;
+    const page1 = await (await fetch(pagedUrl, { headers })).json();
+    assert.equal(page1.thread.has_more, true);
+    const page2 = await (await fetch(pagedUrl + "&before=" + encodeURIComponent(page1.thread.next_before), { headers })).json();
+    assert.notEqual(page1.thread.entries[0].id, page2.thread.entries[0].id);
+    for (const page of [page1, page2]) {
+      assert.deepEqual(page.unresolved_sends.map((s) => s.id), [uncertain.id]);
+      assert.equal(page.communication.social_reply.available, false);
+    }
+    assert.equal((await fetch(pagedUrl, { headers: await staffHeaders("resident@ochiga.local") })).status, 403);
     const igInternal = await restored.getMetaSocialReplyLead(ig.id);
     igInternal.meta_social_last_inbound_at = new Date(Date.now() - 24 * 60 * 60_000).toISOString();
     assert.equal((await (await reply(enabled, ig, "instagram", "expired")).json()).error, "social_window_closed");
     await post(enabled, batch("instagram", instagram, event(instagram, { message: { mid: "stop", text: "STOP" } })));
     await post(enabled, batch("instagram", instagram, event(instagram, { message: { mid: "after-stop", text: "Hello" } })));
     assert.equal((await (await reply(enabled, ig, "instagram", "opted")).json()).error, "social_opted_out");
-    assert.equal(sent.length, 5);
+    assert.equal(sent.length, 4);
+    const newLead = async (peer) => {
+      await post(enabled, batch("page", page, event(page, { sender: { id: peer }, message: { mid: "in_" + peer, text: "Hello" } })));
+      return restored.state.leads.find((row) => row.meta_social_sender_id === peer);
+    };
+    const deferred = () => { let release; const promise = new Promise((resolve) => { release = resolve; }); return { promise, release }; };
+    const delayed = await newLead("901");
+    const lookup = restored.getMetaSocialReplyLead.bind(restored);
+    const pause = deferred();
+    const entered = deferred();
+    let reads = 0;
+    restored.getMetaSocialReplyLead = async (id) => {
+      if (id === delayed.id && ++reads === 2) { entered.release(); await pause.promise; }
+      return lookup(id);
+    };
+    const old = reply(enabled, delayed, "facebook", "delay");
+    await entered.promise;
+    const oldIntent = restored.state.whatsapp_manual_sends.find((row) => row.lead_id === delayed.id);
+    assert.equal(oldIntent.status, "pending");
+    assert.equal(oldIntent.social_dispatch_at, undefined);
+    const later = { now: Date.now() + 121_000, channel: "facebook" };
+    await Promise.all([reconcileManualSends(restored, delayed.id, later), reconcileManualSends(restored, delayed.id, later)]);
+    assert.equal(oldIntent.status, "not_sent");
+    assert.equal((await resolveManualSend(restored, oldIntent.id, { resolution: "confirmed_not_sent" })).httpStatus, 409);
+    pause.release();
+    const expired = await old;
+    assert.equal(expired.status, 409);
+    assert.equal((await expired.json()).error, "social_claim_expired");
+    assert.equal(sent.length, 4);
+    restored.getMetaSocialReplyLead = lookup;
+    const restartedLedger = new FileLeadAgentsStore(filePath);
+    await restartedLedger.init();
+    assert.equal(await restartedLedger.fenceMetaSocialDispatch(oldIntent.id, "facebook", delayed.idempotency_key), "social_dispatch_claim_lost");
+
+    for (const [peer, reason, mutate] of [
+      ["902", "social_opted_out", (row) => { row.meta_social_opted_out = true; }],
+      ["903", "social_window_closed", (row) => { row.meta_social_last_inbound_at = "2020-01-01T00:00:00Z"; }],
+      ["904", "social_recipient_unverified", (row) => { row.meta_social_sender_id = null; }],
+    ]) {
+      const lead = await newLead(peer);
+      let calls = 0;
+      restored.getMetaSocialReplyLead = async (id) => {
+        const row = await lookup(id);
+        if (id === lead.id && ++calls === 2) mutate(row);
+        return row;
+      };
+      const refused = await reply(enabled, lead, "facebook", "policy-" + peer);
+      assert.equal(refused.status, 409);
+      assert.equal((await refused.json()).error, reason);
+      const attempt = restored.state.whatsapp_manual_sends.find((row) => row.lead_id === lead.id);
+      assert.equal(attempt.failure_reason, reason);
+      assert.equal(attempt.status, "not_sent");
+      assert.equal(restored.state.audit_events.some((row) => row.metadata?.failure_reason === reason), true);
+    }
+    restored.getMetaSocialReplyLead = lookup;
+    assert.equal(sent.length, 4);
+
+    const ordering = await newLead("905");
+    const crossed = deferred();
+    const release = deferred();
+    providerMode = "ordered";
+    providerBarrier = async () => { crossed.release(); await release.promise; };
+    const active = reply(enabled, ordering, "facebook", "ordered");
+    await crossed.promise;
+    const activeIntent = restored.state.whatsapp_manual_sends.find((row) => row.lead_id === ordering.id);
+    assert.ok(activeIntent.social_dispatch_at);
+    const callback = receipt("page", page, { delivery: { mids: ["out_ordered"] } }, "905");
+    assert.equal((await post(enabled, callback)).status, 503);
+    assert.equal((await resolveManualSend(restored, activeIntent.id, { resolution: "confirmed_not_sent" })).httpStatus, 409);
+    release.release();
+    assert.equal((await active).status, 200);
+    assert.equal((await post(enabled, callback)).status, 200);
+    assert.equal((await post(enabled, callback)).status, 200);
+    assert.equal((await outbound(ordering)).delivery.state, "delivered");
+    const crossedLead = await newLead("906");
+    const dispatched = deferred();
+    const finish = deferred();
+    providerBarrier = async () => { dispatched.release(); await finish.promise; };
+    const inflight = reply(enabled, crossedLead, "facebook", "inflight");
+    await dispatched.promise;
+    const crossedIntent = restored.state.whatsapp_manual_sends.find((row) => row.lead_id === crossedLead.id);
+    await Promise.all([
+      reconcileManualSends(restored, crossedLead.id, { ...later, now: Date.now() + 121_000 }),
+      resolveManualSend(restored, crossedIntent.id, { resolution: "confirmed_not_sent" }),
+    ]);
+    assert.equal(crossedIntent.status, "outcome_unknown");
+    assert.equal((await resolveManualSend(restored, crossedIntent.id, { resolution: "confirmed_not_sent" })).body.error, "dispatch_outcome_unverified");
+    assert.equal((await (await reply(enabled, crossedLead, "facebook", "cannot-retry")).json()).error, "unresolved_send");
+    finish.release();
+    assert.equal((await inflight).status, 202);
+    providerBarrier = null;
+    assert.equal(sent.length, 6);
     assert.equal(await restored.getRuntimeSetting("whatsapp_autonomous_responses_enabled"), null);
     console.log("Meta social inbound HTTP, CRM, replay and isolation: PASS");
   } finally {
