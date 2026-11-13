@@ -4,9 +4,13 @@
 //   node scripts/init-office-database.js --db-url <postgres url> --reassert   re-apply the baseline, then verify
 //   node scripts/init-office-database.js --db-url <postgres url> --verify     verification gate only (read-only)
 // Local only; there is no remote mode. The target is checked as pg will actually use it (query parameters such as
-// ?host= included), every address it resolves to must be loopback or private, and hosted Supabase hosts and any
+// ?host= included). URLs with query parameters, several hosts or a socket path are refused; every address the host
+// resolves to must be loopback or private, and the connection goes to that checked address with only host, port,
+// user, password and database (no options, service files or environment overrides). Hosted Supabase hosts and any
 // ref listed in OFFICE_DB_PROTECTED_REFS are refused. --fresh refuses a non-empty database and records a marker
-// schema; --reassert refuses a database without that marker. Must connect as postgres. The URL is never printed.
+// bound to the cluster's system identifier and the database OID; --reassert refuses a database whose marker is
+// missing or was copied from another cluster or database. The marker is a workflow check, not authentication:
+// the target guard is the safety boundary. Must connect as postgres. The URL is never printed.
 "use strict";
 
 const dns = require("node:dns").promises;
@@ -54,7 +58,11 @@ async function resolveLocalTarget(url, protectedRefs = process.env.OFFICE_DB_PRO
   if (refs.some((ref) => url.includes(ref))) throw new Error("refused: protected project");
   let config;
   try { config = parse(url); } catch { throw new Error("refused: invalid database url"); }
+  let search = "";
+  try { const u = new URL(url); search = u.search + u.hash; } catch { throw new Error("refused: invalid database url"); }
+  if (search) throw new Error("refused: query parameters are not accepted");
   const host = String(config.host || "");
+  if (host.includes(",")) throw new Error("refused: several hosts");
   if (!host || host.startsWith("/")) throw new Error("refused: target host must be explicit (no socket or empty host)");
   if (HOSTED.test(host) || /supabase/i.test(url)) throw new Error("refused: hosted Supabase target");
   if (!(host === "localhost" || net.isIP(host) || !host.includes("."))) throw new Error("refused: remote host");
@@ -62,7 +70,9 @@ async function resolveLocalTarget(url, protectedRefs = process.env.OFFICE_DB_PRO
   if (!addresses.length || !addresses.every(({ address }) => privateAddress(address))) {
     throw new Error("refused: target does not resolve only to loopback or private addresses");
   }
-  return { ...config, ssl: false };
+  // Connect to the address that was checked, with nothing else from the URL or the environment.
+  return { host: addresses[0].address, port: Number(config.port) || 5432, user: config.user, password: config.password,
+    database: config.database, ssl: false };
 }
 
 async function run({ url, mode, log = (line) => console.log(JSON.stringify(line)), lookup }) {
@@ -74,13 +84,15 @@ async function run({ url, mode, log = (line) => console.log(JSON.stringify(line)
   try {
     const { rows: [who] } = await client.query(`select current_user as role,
       (select count(*)::int from pg_class where relnamespace = 'public'::regnamespace and relkind in ('r','p')) as tables,
-      exists (select 1 from pg_namespace where nspname = $1) as marked`, [MARKER_SCHEMA]);
+      obj_description((select oid from pg_namespace where nspname = $1), 'pg_namespace') as marker,
+      (select system_identifier::text from pg_control_system()) || ':' || (select oid::text from pg_database where datname = current_database()) as identity`, [MARKER_SCHEMA]);
+    const expectedMarker = `office-local-init:${who.identity}`;
     if (who.role !== "postgres") throw new Error(`refused: connected as ${who.role}, not postgres`);
-    if (mode === "fresh" && (who.tables > 0 || who.marked)) throw new Error(`refused: not a fresh database (${who.tables} tables in public)`);
-    if (mode === "reassert" && !who.marked) throw new Error("refused: database was not initialized by this tool");
+    if (mode === "fresh" && (who.tables > 0 || who.marker !== null)) throw new Error(`refused: not a fresh database (${who.tables} tables in public)`);
+    if (mode === "reassert" && who.marker !== expectedMarker) throw new Error("refused: database was not initialized by this tool on this cluster");
     if (mode === "fresh") {
       await client.query(`create schema ${MARKER_SCHEMA}; revoke all on schema ${MARKER_SCHEMA} from public;
-        comment on schema ${MARKER_SCHEMA} is 'Created by scripts/init-office-database.js --fresh'`);
+        comment on schema ${MARKER_SCHEMA} is '${expectedMarker}'`);
     }
     for (const file of files) {
       const started = Date.now();

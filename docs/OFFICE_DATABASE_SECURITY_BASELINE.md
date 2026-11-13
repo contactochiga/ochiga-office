@@ -20,8 +20,14 @@ The repository did not record this posture. On Supabase's defaults, a fresh data
   - `service_role` read access.
 - `db/migration-order.txt` gives the initialization order for a fresh database.
 - `scripts/init-office-database.js` applies that order (`--fresh`), re-applies the baseline (`--reassert`) or runs the gate alone (`--verify`).
-  - It works on local databases only; there is no remote mode. It checks the target exactly as `pg` will use it, including query parameters such as `?host=`. Every address the target resolves to must be loopback or private. It refuses hosted Supabase hosts and any ref listed in `OFFICE_DB_PROTECTED_REFS`, an optional extra deny-list kept outside the repository.
-  - `--fresh` refuses a non-empty database and records a marker schema, `office_local_init`. `--reassert` refuses a database without that marker. All modes refuse any role other than `postgres`.
+  - It works on local databases only; there is no remote mode.
+  - It checks the target exactly as `pg` will use it. It refuses URLs with query parameters (`?host=`, `hostaddr`, `service`, `options`), several hosts, and socket paths.
+  - Every address the host resolves to must be loopback or private. The connection then goes to that checked address, using only host, port, user, password and database, so environment variables cannot redirect it.
+  - It refuses hosted Supabase hosts and any ref listed in `OFFICE_DB_PROTECTED_REFS`, an optional extra deny-list kept outside the repository.
+  - `--fresh` refuses a non-empty database. It records a marker schema, `office_local_init`, bound to the cluster's system identifier and the database OID.
+  - `--reassert` refuses a database whose marker is missing, or was copied from another cluster or database.
+  - All modes refuse any role other than `postgres`.
+  - The marker is a workflow check, not authentication. A deliberate forgery needs owner write access to the target. The target guard is the safety boundary.
 
 ## Order and later migrations
 

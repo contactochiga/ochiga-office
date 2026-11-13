@@ -68,6 +68,11 @@ async function manifestChecks() {
     ["localhost URL with ?host= public IP", "postgres://postgres:x@localhost:5432/postgres?host=203.0.113.10", "", false],
     ["empty host with ?host= override", `postgres://postgres:x@/postgres?host=db.${prod}.supabase.co`, "", false],
     ["unix socket host", "postgres://postgres:x@/postgres?host=/var/run/postgresql", "", false],
+    ["libpq hostaddr override", "postgres://postgres:x@localhost:5432/postgres?hostaddr=203.0.113.10", "", false],
+    ["libpq service override", "postgres://postgres:x@localhost:5432/postgres?service=prod", "", false],
+    ["libpq options", "postgres://postgres:x@localhost:5432/postgres?options=-c%20role%3Dx", "", false],
+    ["several hosts", "postgres://postgres:x@localhost,pg:5432/postgres", "", false],
+    ["URL fragment", "postgres://postgres:x@localhost:5432/postgres#x", "", false],
     ["protected ref anywhere in URL", `postgres://postgres:x@localhost:5432/${prod}`, prod, false],
     ["remote named host (private DNS)", "postgres://postgres:x@staging.example.com:5432/postgres", "", false],
     ["public IP literal", "postgres://postgres:x@203.0.113.10:5432/postgres", "", false],
@@ -80,6 +85,13 @@ async function manifestChecks() {
   ];
   const results = []; for (const [name, url, refs, allowed] of cases) results.push({ name, allowed, verdict: await verdict(url, refs) });
   const wrong = results.filter((r) => (r.verdict === "accepted") !== r.allowed);
+  // The connection uses only the checked address and the five URL fields: environment overrides cannot redirect it.
+  const saved = process.env.PGHOST; process.env.PGHOST = "203.0.113.10";
+  const built = await resolveLocalTarget("postgres://postgres:x@pg:6543/postgres", "", lookup).catch((e) => e.message);
+  const { Client } = require("pg"); const client = typeof built === "object" ? new Client(built) : null;
+  if (saved === undefined) delete process.env.PGHOST; else process.env.PGHOST = saved;
+  check("MF6", "connection config is exactly {host: checked address, port, user, password, database, ssl:false}; PGHOST ignored",
+    typeof built === "object" && Object.keys(built).sort().join() === "database,host,password,port,ssl,user" && built.host === "192.168.32.5" && built.port === 6543 && client.host === "192.168.32.5", built);
   check("MF5", `initializer target guard: ${cases.filter((c) => !c[3]).length} hostile targets refused (incl. misconfigured refs and ?host= override), ${cases.filter((c) => c[3]).length} local targets accepted`, wrong.length === 0, wrong);
 }
 
@@ -170,6 +182,13 @@ async function databaseChecks() {
   let refusedUnmarked = false; try { await run({ url, mode: "reassert", log: () => {} }); } catch (error) { refusedUnmarked = /not initialized by this tool/.test(error.message); }
   psql("alter schema office_local_init_hidden rename to office_local_init");
   check("SB16b", "initializer refuses --reassert on a database it did not initialize (no marker)", refusedUnmarked);
+  const marker = one("select obj_description('office_local_init'::regnamespace, 'pg_namespace')");
+  psql("comment on schema office_local_init is 'office-local-init:1234567890123456789:5'");
+  let refusedForged = false; try { await run({ url, mode: "reassert", log: () => {} }); } catch (error) { refusedForged = /not initialized by this tool on this cluster/.test(error.message); }
+  psql(`comment on schema office_local_init is '${marker}'`);
+  let acceptedOwn = true; try { await run({ url, mode: "reassert", log: () => {} }); } catch { acceptedOwn = false; }
+  check("SB16c", "marker is bound to this cluster and database: a copied/forged marker is refused, the genuine one accepted",
+    /^office-local-init:\d+:\d+$/.test(marker) && refusedForged && acceptedOwn, { marker: marker.replace(/\d{6,}/, "<sysid>") });
   let refusedRole = false;
   sh("docker", ["exec", PG, "psql", "-X", "-U", "supabase_admin", "-d", "postgres", "-h", "127.0.0.1", "-c", `alter role authenticator with password '${PW}'`]);
   const asAuthenticator = new URL(url); asAuthenticator.username = "authenticator";
