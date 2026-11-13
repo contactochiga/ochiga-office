@@ -1,4 +1,5 @@
 const assert = require("node:assert/strict");
+const { assets, extractFixtureEvents } = require("./whatsapp-webhook-fixture");
 const http = require("node:http");
 const { createConfig } = require("../src/lead-agents/config");
 const { buildServer } = require("../src/lead-agents/server");
@@ -27,7 +28,7 @@ async function main() {
   });
   const backendPort = await listen(backend);
 
-  const config = { ...createConfig(), authMode: "required_api_key", apiKeys: ["autonomy-test-key"], allowedOrigins: [], officeBackendBaseUrl: `http://127.0.0.1:${backendPort}`, officeBackendApiKey: KEY, whatsappDisplayNumber: "+234 800 000 0000" };
+  const config = { ...createConfig(), ...assets, authMode: "required_api_key", apiKeys: ["autonomy-test-key"], allowedOrigins: [], officeBackendBaseUrl: `http://127.0.0.1:${backendPort}`, officeBackendApiKey: KEY, whatsappDisplayNumber: "+234 800 000 0000" };
   const { store, filePath } = await createTempStore();
   await store.ensureAdminUser({ email: "super@ochiga.local", password_hash: hashPassword("super-pass-123"), role: "super_admin", display_name: "Super", status: "active" });
   await store.ensureAdminUser({ email: "staff@ochiga.local", password_hash: hashPassword("staff-pass-123"), role: "ochiga_staff", display_name: "Staff", status: "active" });
@@ -37,7 +38,7 @@ async function main() {
   const adapter = {
     verifyWebhook: () => null,
     verifySignature: () => ({ ok: true, reason: null }),
-    extractEvents: (body) => body.events || [],
+    extractEvents: extractFixtureEvents,
     isConfigured: () => true,
     sendTextMessage: async (m) => { sent.push({ kind: "text", ...m }); return { delivered: true, response_code: 200, external_message_id: `wamid.out.${sent.length}` }; },
     sendTemplateMessage: async (m) => { sent.push({ kind: "template", ...m }); return { delivered: true, response_code: 200, external_message_id: `wamid.tpl.${sent.length}` }; },

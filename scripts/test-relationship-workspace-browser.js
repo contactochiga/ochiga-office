@@ -1,6 +1,7 @@
 // Real-browser acceptance test for the Unified CRM Relationship Workspace: headless Google Chrome driven over the DevTools protocol against the real Office server
 // (file store, fixture data only). Skips (exit 0) when Chrome is not installed. Writes screenshots to OFFICE_RW_SHOTS if set.
 const assert = require("node:assert/strict");
+const { assets, extractFixtureEvents } = require("./whatsapp-webhook-fixture");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
@@ -21,10 +22,10 @@ const listen = (server) => new Promise((resolve, reject) => { server.once("error
 
 async function main() {
   if (!CHROME) { console.log("SKIP: Chrome not installed"); return; }
-  const config = { ...createConfig(), authMode: "required_api_key", apiKeys: ["rw-browser-key"], allowedOrigins: [], officeBackendBaseUrl: "http://127.0.0.1:1", officeBackendApiKey: "rw-bridge" };
+  const config = { ...createConfig(), ...assets, authMode: "required_api_key", apiKeys: ["rw-browser-key"], allowedOrigins: [], officeBackendBaseUrl: "http://127.0.0.1:1", officeBackendApiKey: "rw-bridge" };
   const { store } = await createTempStore();
   await store.ensureAdminUser({ email: "super@ochiga.local", password_hash: hashPassword("super-pass-123"), role: "super_admin", display_name: "Super", status: "active" });
-  const adapter = { verifyWebhook: () => null, verifySignature: () => ({ ok: true }), extractEvents: (b) => b.events || [], isConfigured: () => true, sendTextMessage: async () => ({ delivered: true, external_message_id: "wamid.out.1" }), sendTemplateMessage: async () => ({ delivered: false }), listApprovedTemplates: async () => [] };
+  const adapter = { verifyWebhook: () => null, verifySignature: () => ({ ok: true }), extractEvents: extractFixtureEvents, isConfigured: () => true, sendTextMessage: async () => ({ delivered: true, external_message_id: "wamid.out.1" }), sendTemplateMessage: async () => ({ delivered: false }), listApprovedTemplates: async () => [] };
   const server = buildServer({ config, store, rateLimiter: new MemoryRateLimiter({ windowMs: 60000, maxRequests: 5000 }), publicRateLimiter: new MemoryRateLimiter({ windowMs: 60000, maxRequests: 5000 }), officeRateLimiter: new MemoryRateLimiter({ windowMs: 60000, maxRequests: 5000 }), loginRateLimiter: new MemoryRateLimiter({ windowMs: 60000, maxRequests: 100 }), whatsappAdapter: adapter, openaiClient: {}, toolExecutor: new ToolExecutor({ store, config, log: () => {}, webhooks: new WebhookDispatcher({ config }) }) });
   const port = await listen(server), base = `http://127.0.0.1:${port}`;
 

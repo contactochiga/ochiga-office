@@ -14,6 +14,7 @@ const signatureStats = require("../src/lead-agents/webhook-signature-stats");
 // outbound sends. Fixture secret/ids only. Nothing here touches a real customer, Meta, or production.
 const SECRET = "fixture-app-secret-for-tests-only-0123456789";
 const PHONE_ID = "585884641275180";
+const WABA_ID = "531423816726977";
 const VERIFY = "fixture-verify-token";
 const listen = (server) => new Promise((resolve, reject) => { server.once("error", reject); server.listen(0, "127.0.0.1", () => resolve(server.address().port)); });
 const close = (server) => new Promise((resolve) => { server.closeAllConnections?.(); server.close(resolve); });
@@ -26,7 +27,7 @@ async function main() {
   let backendCalls = 0;
   const backend = http.createServer((req, res) => { backendCalls++; req.resume(); req.on("end", () => { res.setHeader("content-type", "application/json"); res.end(JSON.stringify({ ok: true })); }); });
   const backendPort = await listen(backend);
-  const baseConfig = { ...createConfig(), authMode: "required_api_key", apiKeys: ["sig-test-key"], allowedOrigins: [], officeBackendBaseUrl: `http://127.0.0.1:${backendPort}`, officeBackendApiKey: "sig-bridge", metaAppSecret: SECRET, whatsappVerifyToken: VERIFY, whatsappAccessToken: "fixture-access-token", whatsappPhoneNumberId: PHONE_ID };
+  const baseConfig = { ...createConfig(), authMode: "required_api_key", apiKeys: ["sig-test-key"], allowedOrigins: [], officeBackendBaseUrl: `http://127.0.0.1:${backendPort}`, officeBackendApiKey: "sig-bridge", metaAppSecret: SECRET, whatsappVerifyToken: VERIFY, whatsappAccessToken: "fixture-access-token", whatsappPhoneNumberId: PHONE_ID, whatsappBusinessAccountId: WABA_ID };
   const { store } = await createTempStore();
   const outbound = [];
   const makeAdapter = (config) => { const real = new WhatsAppCloudAdapter(config); const wrapped = Object.create(real); wrapped.sendTextMessage = async (m) => { outbound.push(m); return { delivered: true, external_message_id: "wamid.should.not.exist" }; }; wrapped.sendTemplateMessage = async (m) => { outbound.push(m); return { delivered: false }; }; return wrapped; };
@@ -38,7 +39,7 @@ async function main() {
   const base = await start(baseConfig);
   const post = (url, bytes, headers = {}) => fetch(`${url}/webhooks/whatsapp`, { method: "POST", headers: { "content-type": "application/json", ...headers }, body: bytes }).then(async (r) => ({ status: r.status, text: await r.text() }));
   const signed = (payload, { secret = SECRET, pretty = false } = {}) => { const bytes = Buffer.from(pretty ? JSON.stringify(payload, null, 2) : JSON.stringify(payload), "utf8"); return { bytes, headers: { "x-hub-signature-256": sign(bytes, secret) } }; };
-  const snapshot = () => JSON.stringify({ leads: store.state.leads.length, inbound: store.state.inbound_events.length, claims: Object.keys(store.state.whatsapp_inbound_claims).length, conversations: store.state.conversations.length, timeline: store.state.timeline_events.length, activities: (store.state.crm_activities || []).length, states: store.state.lead_channel_states.length, contacts: (store.state.crm_contacts || []).length });
+  const snapshot = () => JSON.stringify({ leads: store.state.leads.length, inbound: store.state.inbound_events.length, outbox: store.state.communication_delivery_outbox.length, claims: Object.keys(store.state.whatsapp_inbound_claims).length, conversations: store.state.conversations.length, timeline: store.state.timeline_events.length, activities: (store.state.crm_activities || []).length, states: store.state.lead_channel_states.length, contacts: (store.state.crm_contacts || []).length });
   signatureStats.resetForTests();
 
   try {
@@ -122,23 +123,77 @@ async function main() {
     const state = await store.getLeadChannelState(lead.id, "whatsapp"); assert.equal(state.human_status, "human_active", "T. a customer message does not end an active human takeover"); assert.equal(outbound.length, outBefore);
     console.log("Q/R/S/T. Duplicate delivery, status events, autonomy OFF, human takeover — PASS");
 
-    // ---- phone-number id observability, report mode, health, evidence ----
-    const foreign = signed(messagePayload({ id: "wamid.foreign.1", from: "2348011110009", phoneId: "999999999999999" })); assert.equal((await post(base, foreign.bytes, foreign.headers)).status, 200, "a validly signed event for another phone-number id is still processed (observed, not blocked)");
+    // ---- Asset authorization is independent of the app signature ----
+    const deliver = (url, payload) => {
+      const { bytes, headers } = signed(payload);
+      return post(url, bytes, headers);
+    };
+    const withoutEffects = snapshot();
+    const beforeGuardCalls = backendCalls;
+    const rejected = [
+      (p) => { delete p.entry[0].id; },
+      (p) => { p.entry[0].id = "999999999999991"; },
+      (p) => { delete p.entry[0].changes[0].value.metadata; },
+      (p) => { p.entry[0].changes[0].value.metadata.phone_number_id = "999999999999992"; },
+      (p) => { p.entry[0].id = Number(WABA_ID); },
+      (p) => { delete p.object; },
+      (p) => { p.object = "page"; },
+      (p) => { delete p.entry[0].changes[0].field; },
+      (p) => { p.entry[0].changes[0].field = "account_update"; },
+    ];
+    for (const invalidate of rejected) {
+      for (const payload of [messagePayload({ id: "wamid.foreign", from: "2348011110009" }), statusPayload("wamid.foreign.status")]) {
+        invalidate(payload);
+        const result = await deliver(base, payload);
+        assert.equal(result.status, 200);
+        assert.deepEqual(JSON.parse(result.text).results, [], "irrelevant or incomplete signed callback is acknowledged without processing");
+      }
+    }
+    for (const missing of [{ whatsappBusinessAccountId: "" }, { whatsappPhoneNumberId: " " }]) {
+      const url = await start({ ...baseConfig, ...missing });
+      for (const payload of [messagePayload({}), statusPayload("wamid.missing.config")]) {
+        const result = await deliver(url, payload);
+        assert.equal(result.status, 503);
+        assert.equal(JSON.parse(result.text).error, "webhook_not_configured");
+      }
+    }
     const reportBase = await start({ ...baseConfig, whatsappWebhookSignatureMode: "report" });
-    const reportBefore = store.state.leads.length;
     const legacy = signed(messagePayload({ id: "wamid.report.1", from: "2348011110010" }), { secret: "wrong" });
-    assert.equal((await post(reportBase, legacy.bytes, legacy.headers)).status, 200, "explicit REPORT mode keeps the legacy rollout behaviour (processes, but loudly logs and counts the failure)");
-    assert.equal(store.state.leads.length, reportBefore + 1);
+    assert.equal((await post(reportBase, legacy.bytes, legacy.headers)).status, 403, "legacy report mode cannot bypass signature verification");
+    assert.equal(snapshot(), withoutEffects, "rejected callbacks caused no CRM, claims, inbound or state changes");
+    assert.equal(backendCalls, beforeGuardCalls);
+    assert.equal(outbound.length, outBefore);
+
+    const mixed = messagePayload({ id: "wamid.mixed", from: "2348011110020" });
+    // Foreign event with the same provider message ID must not consume the valid claim.
+    const foreignEntry = messagePayload({ id: "wamid.mixed", from: "2348011110021" }).entry[0];
+    foreignEntry.id = "999999999999991";
+    const validEntry = mixed.entry[0];
+    validEntry.changes.unshift(messagePayload({ id: "wamid.bad.phone", phoneId: "999999999999992" }).entry[0].changes[0]);
+    validEntry.changes.push({ ...statusPayload("wamid.wrong.field").entry[0].changes[0], field: "account_update" });
+    validEntry.changes.push(statusPayload("wamid.mixed.status").entry[0].changes[0]);
+    mixed.entry.unshift(foreignEntry);
+    const mixedResult = await deliver(base, mixed);
+    assert.equal(mixedResult.status, 200);
+    assert.deepEqual(JSON.parse(mixedResult.text).results.map((r) => r.kind), ["message", "status"]);
+    assert.ok(store.state.leads.some((l) => l.whatsapp_phone === "2348011110020"));
+    assert.ok(!store.state.leads.some((l) => l.whatsapp_phone === "2348011110021"));
+    assert.equal(backendCalls, beforeGuardCalls + 2, "one valid message and one valid status reach Backend");
+    assert.equal(outbound.length, outBefore);
+    const again = await deliver(base, mixed);
+    assert.equal(JSON.parse(again.text).results[0].duplicate, true);
+    assert.equal(store.state.inbound_events.filter((e) => e.external_event_id === "wamid.mixed").length, 1);
+    assert.equal(backendCalls, beforeGuardCalls + 2, "the existing outbox deduplicates status forwarding too");
     const healthEnforce = await (await fetch(`${base}/healthz`)).json(); const healthReport = await (await fetch(`${reportBase}/healthz`)).json();
     assert.deepEqual(healthEnforce.whatsapp_webhook, { signature_mode: "enforce", app_secret_configured: true }, "enforce is the default");
-    assert.equal(healthReport.whatsapp_webhook.signature_mode, "report");
+    assert.equal(healthReport.whatsapp_webhook.signature_mode, "enforce");
     assert.ok(!JSON.stringify(healthEnforce).includes(SECRET));
     await signatureStats.flush(store, "enforce");
     const stats = (await store.getRuntimeSetting(signatureStats.STATS_KEY)).value;
     for (const key of ["valid_raw", "valid_escaped_unicode", "missing_signature", "malformed_signature", "signature_mismatch", "app_secret_not_configured"]) assert.ok(stats.counts[key] >= 1, `evidence counter ${key} recorded`);
     assert.ok(stats.phone_number_mismatch >= 1); assert.ok(stats.last_valid_at && stats.last_invalid_reason);
     const storedStats = JSON.stringify(stats); assert.ok(!storedStats.includes(SECRET) && !storedStats.includes("sha256=") && !storedStats.includes("2348"), "the evidence holds counters only: no secret, signature or phone number");
-    console.log("Evidence. Enforce is the default; report mode explicit and visible; counters-only stats; foreign phone-number id observed — PASS");
+    console.log("Asset guard. Missing config, wrong object/field, missing/foreign IDs, mixed batches and duplicate forwarding — PASS");
 
     // ---- the offline verification helper reports MATCH / MISMATCH only and never echoes a secret ----
     {

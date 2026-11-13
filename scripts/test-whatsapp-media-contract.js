@@ -102,7 +102,7 @@ async function main() {
     });
   });
   const backendPort = await listen(backend);
-  const config = { ...createConfig(), authMode: "required_api_key", apiKeys: ["media-test-key"], allowedOrigins: [], officeBackendBaseUrl: `http://127.0.0.1:${backendPort}`, officeBackendApiKey: "media-bridge-key", whatsappAccessToken: "test-token-not-real", whatsappPhoneNumberId: "pnid", whatsappVerifyToken: "verify", metaAppSecret: "" };
+  const config = { ...createConfig(), authMode: "required_api_key", apiKeys: ["media-test-key"], allowedOrigins: [], officeBackendBaseUrl: `http://127.0.0.1:${backendPort}`, officeBackendApiKey: "media-bridge-key", whatsappAccessToken: "test-token-not-real", whatsappBusinessAccountId: "waba", whatsappPhoneNumberId: "pnid", whatsappVerifyToken: "verify", metaAppSecret: "" };
   const { store } = await createTempStore();
   await store.ensureAdminUser({ email: "super@ochiga.local", password_hash: hashPassword("super-pass-123"), role: "super_admin", display_name: "Super", status: "active" });
   const adapter = new WhatsAppCloudAdapter(config);
