@@ -219,6 +219,15 @@ async function main() {
     ok((await activityFor("wamid.u2")).metadata.suppressed_reason === "opt_out_unverified", "Backend down: the message is recorded in the CRM and flagged");
     const r14 = await deliver(metaText("wamid.u3", "2348066666666", "STOP"));
     ok(r14.reason === "opt_out_requested" && counts().sent === before.sent, "explicit STOP while Backend is down: still recorded as an opt-out request, never answered");
+    // Backend recovers: the queued message is retried as a non-sending REPLAY; no late automatic reply, Oyi is not asked, a Meta re-delivery stays a duplicate
+    optOutState = "not_opted_out";
+    const drained = await outbox.drainOutbox(store, config, { now: () => Date.now() + 3 * 3600_000, limit: 20 });
+    const retried = webhookBodies.filter((b) => b.provider_message_id === "wamid.u2");
+    const [entry13b] = await store.findCommunicationDeliveriesByKeys(["whatsapp:message:wamid.u2"]);
+    ok(drained.some((r) => r.delivered && r.replay) && retried.length === 2 && retried[1].replay === true && entry13b.status === "delivered", "after recovery: the outbox delivers the queued message once more, as a replay (Backend never wakes goals for it)");
+    ok(counts().sent === before.sent && counts().core === before.core, "after recovery: no delayed automatic reply and no Oyi call for the suppressed message");
+    const r13b = await deliver(metaText("wamid.u2", "2348066666666", "Hello again"));
+    ok(r13b.duplicate && counts().sent === before.sent, "a Meta re-delivery of the suppressed message is a duplicate: still no reply");
     optOutState = "omitted";
     const r15 = await deliver(metaText("wamid.u4", "2348066666667", "Hi from a customer"));
     ok(r15.reason === "opt_out_unverified" && counts().sent === before.sent && counts().core === before.core, "an older Backend that does not report opt-out status: no automatic reply (fail closed)");
