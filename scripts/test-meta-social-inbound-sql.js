@@ -17,21 +17,29 @@ async function main() {
         message_role text, channel text, content text check (content <> 'force rollback'), correlation_id text, created_at timestamptz);
       create unique index conversations_correlation_id_uidx on conversations (correlation_id) where correlation_id is not null;
       create table lead_channel_states (lead_id uuid references leads(id), channel text, ai_paused boolean, last_inbound_at timestamptz, unique (lead_id, channel));
-      grant select, insert, update on leads, conversations, lead_channel_states to service_role;
+      create table whatsapp_manual_sends (lead_id uuid, channel text, recipient text, provider_message_id text, status text);
+      grant select, insert, update on leads, conversations, lead_channel_states, whatsapp_manual_sends to service_role;
     `);
     await db.exec(readFileSync(path.join(__dirname, "../db/20261113_meta_social_inbound.sql"), "utf8"));
-    const call = "select public.office_record_meta_social_message($1,$2,$3,$4,$5) as outcome";
-    const input = { channel: "facebook", senderKey: "meta-social:sender:" + "1".repeat(64), eventKey: "meta-social:event:" + "2".repeat(64), text: "fixture", occurredAt: new Date().toISOString() };
+    await db.exec(readFileSync(path.join(__dirname, "../db/20261113_meta_social_staff_replies.sql"), "utf8"));
+    const call = "select public.office_record_meta_social_reply_target($1,$2,$3,$4,$5,$6,$7,$8) as outcome";
+    const input = { channel: "facebook", senderKey: "meta-social:sender:" + "1".repeat(64), eventKey: "meta-social:event:" + "2".repeat(64), text: "fixture", occurredAt: new Date().toISOString(), asset: "111", sender: "333", optedOut: false };
     const store = new SupabaseLeadAgentsStore({ url: "http://127.0.0.1:1", serviceRoleKey: "fixture" });
     store.client = { post: async (route, payload) => {
-      assert.equal(route, "/rpc/office_record_meta_social_message");
-      const { p_channel, p_sender_key, p_event_key, p_text, p_occurred_at } = payload;
-      const { rows } = await db.query(call, [p_channel, p_sender_key, p_event_key, p_text, p_occurred_at]);
+      if (route === "/rpc/office_record_meta_social_receipt") {
+        const { p_channel, p_binding, p_mid, p_state } = payload;
+        const { rows } = await db.query("select public.office_record_meta_social_receipt($1,$2,$3,$4) as outcome", [p_channel, p_binding, p_mid, p_state]);
+        return { data: rows[0].outcome };
+      }
+      assert.equal(route, "/rpc/office_record_meta_social_reply_target");
+      const { p_channel, p_sender_key, p_event_key, p_text, p_occurred_at, p_asset, p_sender, p_opted_out } = payload;
+      const { rows } = await db.query(call, [p_channel, p_sender_key, p_event_key, p_text, p_occurred_at, p_asset, p_sender, p_opted_out]);
       return { data: rows[0].outcome };
     } };
     for (const role of ["anon", "authenticated"]) {
       await db.exec(`set role ${role}`);
       await assert.rejects(store.recordMetaSocialMessage(input), { code: "42501" });
+      await assert.rejects(store.recordMetaSocialReceipt({ channel: "facebook", binding: "111:333", mid: "fixture", state: "delivered" }), { code: "42501" });
     }
     await db.exec("set role service_role");
     const outcomes = await Promise.all(Array.from({ length: 6 }, () => store.recordMetaSocialMessage(input)));
@@ -49,6 +57,16 @@ async function main() {
     assert.equal(row.messages, 2);
     assert.equal(row.newest.toISOString(), input.occurredAt);
     assert.equal(row.paused, true);
+    await db.exec("insert into whatsapp_manual_sends (lead_id, channel, recipient, status) select id, 'facebook', '111:333', 'pending' from leads");
+    await assert.rejects(db.exec("insert into whatsapp_manual_sends (lead_id, channel, recipient, status) select id, 'facebook', '111:333', 'pending' from leads"), { code: "23505" });
+    const receipt = { channel: "facebook", binding: "111:333", mid: "fixture", state: "delivered" };
+    assert.equal(await store.recordMetaSocialReceipt(receipt), false);
+    await db.exec("update whatsapp_manual_sends set status='provider_accepted', provider_message_id='fixture'");
+    assert.equal(await store.recordMetaSocialReceipt({ ...receipt, binding: "111:444" }), true);
+    assert.equal((await db.query("select social_delivery_state from whatsapp_manual_sends")).rows[0].social_delivery_state, null);
+    assert.equal(await store.recordMetaSocialReceipt({ ...receipt, state: "read" }), true);
+    assert.equal(await store.recordMetaSocialReceipt(receipt), true);
+    assert.equal((await db.query("select social_delivery_state from whatsapp_manual_sends")).rows[0].social_delivery_state, "read");
     console.log("Meta social SQL fixture: service-role scope, dedupe, atomic rollback and timestamps PASS");
   } finally {
     await db.close();

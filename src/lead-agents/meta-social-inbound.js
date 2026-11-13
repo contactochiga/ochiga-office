@@ -6,6 +6,8 @@ const { json, methodNotAllowed, readRawBodyBuffer } = require("./http");
 const CHANNELS = new Map([["page", "facebook"], ["instagram", "instagram"]]);
 const isAssetId = (value) => typeof value === "string" && /^[0-9]{1,32}$/.test(value);
 const key = (scope, parts) => `meta-social:${scope}:${createHash("sha256").update(JSON.stringify(parts)).digest("hex")}`;
+const senderKeyFor = (channel, asset, sender) => key("sender", [channel, asset, sender]);
+const isOptOut = (text) => /^(?:stop(?: all)?|unsubscribe|opt[ -]?out|cancel|end|quit|do not (?:contact|message)(?: me)?)[.!]?$/i.test(text);
 
 function matches(expected, received) {
   if (typeof received !== "string") return false;
@@ -25,6 +27,7 @@ function parseMessages(body, config) {
   const asset = configuredAsset(config, channel);
   if (!asset) return { unconfigured: true };
   const messages = [];
+  const receipts = [];
   let skipped = 0;
   for (const entry of body.entry) {
     if (entry?.id !== asset || !Array.isArray(entry.messaging)) {
@@ -37,6 +40,17 @@ function parseMessages(body, config) {
       const text = typeof message?.text === "string" ? message.text.trim() : "";
       const mid = message?.mid;
       const timestamp = event?.timestamp;
+      const recipient = event?.recipient?.id;
+      const peer = sender === asset ? recipient : recipient === asset ? sender : null;
+      if (isAssetId(peer) && peer !== asset && (event.delivery || event.read)) {
+        const mids = channel === "facebook" ? event.delivery?.mids : [event.read?.mid];
+        for (const id of Array.isArray(mids) ? mids : []) {
+          if (typeof id === "string" && /^[!-~]{1,512}$/.test(id)) {
+            receipts.push({ channel, binding: `${asset}:${peer}`, mid: id, state: channel === "facebook" ? "delivered" : "read" });
+          }
+        }
+        continue;
+      }
       if (!isAssetId(sender) || sender === asset || event?.recipient?.id !== asset ||
           message?.is_echo || message?.is_self || message?.is_deleted || message?.is_unsupported ||
           typeof mid !== "string" || !/^[!-~]{1,512}$/.test(mid) ||
@@ -47,14 +61,17 @@ function parseMessages(body, config) {
       }
       messages.push({
         channel,
-        senderKey: key("sender", [channel, asset, sender]),
+        senderKey: senderKeyFor(channel, asset, sender),
+        asset,
+        sender,
+        optedOut: isOptOut(text),
         eventKey: key("event", [channel, asset, mid]),
         text,
         occurredAt: new Date(timestamp).toISOString(),
       });
     }
   }
-  return { messages, skipped };
+  return { messages, receipts, skipped };
 }
 
 async function handleMetaSocialWebhook({ req, res, config, store, log }) {
@@ -98,9 +115,17 @@ async function handleMetaSocialWebhook({ req, res, config, store, log }) {
       counts.failed++;
     }
   }
+  for (const receipt of parsed.receipts) {
+    try {
+      // A receipt can precede the send response being saved; retry rather than guess.
+      if (!(await store.recordMetaSocialReceipt(receipt))) counts.failed++;
+    } catch {
+      counts.failed++;
+    }
+  }
   log(counts.failed ? "error" : "info", "meta_social_webhook.batch", counts);
   // A partially written batch is retryable; the store deduplicates committed messages.
   return json(res, counts.failed ? 503 : 200, { ok: !counts.failed, ...counts });
 }
 
-module.exports = { handleMetaSocialWebhook };
+module.exports = { handleMetaSocialWebhook, configuredAsset, senderKeyFor, isOptOut };

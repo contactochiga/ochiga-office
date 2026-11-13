@@ -7,6 +7,7 @@ const { MemoryRateLimiter } = require("../src/lead-agents/rate-limit");
 const { createTempStore } = require("../src/lead-agents/testing");
 const { FileLeadAgentsStore } = require("../src/lead-agents/store-file");
 const { hashPassword } = require("../src/lead-agents/auth");
+const { createMetaSocialReplyAdapter } = require("../src/lead-agents/meta-social-replies");
 
 const secret = "local-social-fixture-secret";
 const page = "111";
@@ -25,14 +26,22 @@ async function main() {
   await store.ensureAdminUser({ email: "resident@ochiga.local", password_hash: hashPassword("fixture-pass-123"), role: "resident", display_name: "Fixture", status: "active" });
   const originalLead = await store.createLead({ name: "Existing", whatsapp_phone: sender, source: "whatsapp", primary_channel: "whatsapp" });
   const servers = [];
+  const sent = [];
+  let providerMode = "accept";
   const mk = () => new MemoryRateLimiter({ windowMs: 60_000, maxRequests: 500 });
   const noCalls = () => { assert.fail("social intake must not call WhatsApp"); };
   const start = async (overrides = {}, db = store) => {
     const config = { ...createConfig(), authMode: "required_api_key", apiKeys: ["fixture-api"], allowedOrigins: [],
       metaAppSecret: secret, metaSocialVerifyToken: "fixture-verify", facebookPageId: page, instagramBusinessAccountId: instagram,
-      officeBackendBaseUrl: "", ...overrides };
+      officeBackendBaseUrl: "", facebookPageAccessToken: "fixture-page-token", metaSocialGraphVersion: "v26.0", ...overrides };
+    const metaSocialReplyAdapter = createMetaSocialReplyAdapter(config, async (url, body, options) => {
+      sent.push({ url, body, options });
+      if (providerMode === "timeout") throw Object.assign(new Error("mock timeout"), { code: "ETIMEDOUT" });
+      if (providerMode === "reject") throw Object.assign(new Error("mock refusal"), { response: { status: 429 } });
+      return { status: 200, data: { recipient_id: body.recipient.id, message_id: "out_shared" } };
+    });
     const server = buildServer({ config, store: db, rateLimiter: mk(), publicRateLimiter: mk(), officeRateLimiter: mk(),
-      loginRateLimiter: mk(), whatsappAdapter: { extractEvents: noCalls, verifySignature: noCalls, sendTextMessage: noCalls, isConfigured: () => false }, openaiClient: {}, toolExecutor: {} });
+      loginRateLimiter: mk(), whatsappAdapter: { extractEvents: noCalls, verifySignature: noCalls, sendTextMessage: noCalls, isConfigured: () => false }, metaSocialReplyAdapter, openaiClient: {}, toolExecutor: {} });
     servers.push(server);
     await new Promise((resolve, reject) => { server.once("error", reject); server.listen(0, "127.0.0.1", resolve); });
     return `http://127.0.0.1:${server.address().port}`;
@@ -111,6 +120,70 @@ async function main() {
     assert.equal(detail.communication.whatsapp_reply.available, false);
     assert.equal(detail.thread.entries.find((entry) => entry.kind === "message").channel, "instagram");
     assert.equal(restored.state.conversations.length, 3);
+    const reply = (url, lead, channel, request, extra = {}, auth = headers) => fetch(`${url}/api/lead-agents/admin/leads/${lead.id}/${channel}/reply`, {
+      method: "POST", headers: { "content-type": "application/json", ...auth },
+      body: JSON.stringify({ body: "Fixture response", client_request_id: "fixture-request-" + request, ...extra }),
+    });
+    assert.equal((await reply(restarted, fb, "facebook", "off")).status, 403);
+    const enabled = await start({ metaSocialInboundEnabled: true, metaSocialOutboundEnabled: true }, restored);
+    assert.equal((await reply(enabled, fb, "facebook", "key", {}, { "x-api-key": "fixture-api" })).status, 403);
+    assert.equal((await reply(enabled, fb, "instagram", "wrong")).status, 409);
+    assert.equal((await reply(enabled, originalLead, "facebook", "wrong")).status, 409);
+    assert.equal((await reply(enabled, fb, "facebook", "forged", { recipient: "444" })).status, 400);
+    assert.equal(sent.length, 0);
+    const duplicate = await Promise.all([reply(enabled, fb, "facebook", "first"), reply(enabled, fb, "facebook", "first")]);
+    assert.deepEqual(duplicate.map((r) => r.status).sort(), [200, 409]);
+    assert.equal(sent.length, 1);
+    assert.equal(sent[0].url, "https://graph.facebook.com/v26.0/111/messages");
+    assert.equal(sent[0].body.recipient.id, sender);
+    assert.equal(sent[0].body.messaging_type, "RESPONSE");
+    assert.equal(sent[0].options.maxRedirects, 0);
+    assert.equal((await reply(enabled, ig, "instagram", "first")).status, 200);
+    assert.equal(sent[1].url, sent[0].url);
+    assert.equal(sent[1].body.messaging_type, undefined);
+    const thread = async (lead) => (await (await fetch(`${enabled}/api/lead-agents/admin/crm/relationships/${lead.id}`, { headers })).json()).thread.entries;
+    const outbound = async (lead) => (await thread(lead)).find((entry) => entry.direction === "outbound");
+    assert.equal((await outbound(fb)).delivery.state, "sent");
+    const receipt = (object, asset, eventData, peer = sender) => batch(object, asset, { sender: { id: peer }, recipient: { id: asset }, ...eventData });
+    await post(enabled, receipt("page", page, { delivery: { mids: ["out_shared"] } }, "444"));
+    assert.equal((await outbound(fb)).delivery.state, "sent");
+    await post(enabled, receipt("page", page, { delivery: { mids: ["out_shared"] } }));
+    await post(enabled, receipt("page", page, { delivery: { mids: ["out_shared"] } }));
+    assert.equal((await outbound(fb)).delivery.state, "delivered");
+    assert.equal((await outbound(ig)).delivery.state, "sent");
+    await post(enabled, receipt("instagram", instagram, { read: { mid: "out_shared" } }));
+    assert.equal((await outbound(ig)).delivery.state, "read");
+    providerMode = "reject";
+    assert.equal((await reply(enabled, fb, "facebook", "reject")).status, 502);
+    assert.equal((await reply(enabled, fb, "facebook", "reject")).status, 409);
+    assert.equal(sent.length, 3);
+    providerMode = "timeout";
+    const timeout = await reply(enabled, fb, "facebook", "timeout");
+    assert.equal(timeout.status, 202);
+    assert.equal((await timeout.json()).state, "outcome_unknown");
+    const blocked = await reply(enabled, fb, "facebook", "new-request");
+    assert.equal((await blocked.json()).error, "unresolved_send");
+    assert.equal(sent.length, 4);
+    const uncertain = restored.state.whatsapp_manual_sends.find((item) => item.channel === "facebook" && item.status === "outcome_unknown");
+    const resolve = (channel) => fetch(`${enabled}/api/lead-agents/admin/leads/${fb.id}/${channel}/manual-sends/${uncertain.id}/resolve`, {
+      method: "POST", headers: { "content-type": "application/json", ...headers }, body: JSON.stringify({ resolution: "confirmed_not_sent" }),
+    });
+    assert.equal((await resolve("whatsapp")).status, 404);
+    assert.equal((await resolve("instagram")).status, 404);
+    const decisions = await Promise.all([resolve("facebook"), resolve("facebook")]);
+    assert.deepEqual(decisions.map((r) => r.status).sort(), [200, 409]);
+    assert.equal(sent.length, 4);
+    providerMode = "accept";
+    assert.equal((await reply(enabled, fb, "facebook", "explicit-retry")).status, 200);
+    assert.equal(sent.length, 5);
+    const igInternal = await restored.getMetaSocialReplyLead(ig.id);
+    igInternal.meta_social_last_inbound_at = new Date(Date.now() - 24 * 60 * 60_000).toISOString();
+    assert.equal((await (await reply(enabled, ig, "instagram", "expired")).json()).error, "social_window_closed");
+    await post(enabled, batch("instagram", instagram, event(instagram, { message: { mid: "stop", text: "STOP" } })));
+    await post(enabled, batch("instagram", instagram, event(instagram, { message: { mid: "after-stop", text: "Hello" } })));
+    assert.equal((await (await reply(enabled, ig, "instagram", "opted")).json()).error, "social_opted_out");
+    assert.equal(sent.length, 5);
+    assert.equal(await restored.getRuntimeSetting("whatsapp_autonomous_responses_enabled"), null);
     console.log("Meta social inbound HTTP, CRM, replay and isolation: PASS");
   } finally {
     for (const server of servers) await new Promise((resolve) => { server.closeAllConnections?.(); server.close(resolve); });

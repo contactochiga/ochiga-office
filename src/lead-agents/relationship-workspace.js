@@ -178,12 +178,14 @@ function buildThread({ lead, conversations = [], timeline = [], activities = [],
     if (twin) {
       twin.merged_from.push({ table: "whatsapp_manual_sends", id: send.id });
       twin.manual_send = { id: send.id, status: send.status, resolved_by: send.resolved_by || null };
+      if (send.channel !== "whatsapp") twin.delivery = { state: send.social_delivery_state || (send.provider_message_id ? "sent" : "unverified"), verified: Boolean(send.provider_message_id) };
       continue;
     }
-    const providerId = clean(send.provider_message_id);
+    const social = send.channel && send.channel !== "whatsapp";
+    const providerId = social ? "" : clean(send.provider_message_id);
     let delivery;
     if (send.status === "provider_accepted") {
-      const state = deliveryFromStatuses(statusByMessage.get(providerId));
+      const state = social ? send.social_delivery_state || (send.provider_message_id ? "sent" : null) : deliveryFromStatuses(statusByMessage.get(providerId));
       delivery = state ? { state, verified: true } : { state: "unverified", verified: false };
     } else {
       delivery = { state: SEND_DELIVERY[send.status] || "unverified", verified: false };
@@ -202,7 +204,7 @@ function buildThread({ lead, conversations = [], timeline = [], activities = [],
       provider_message_id: providerId || null,
       opportunity_id: null,
       attachments: [],
-      manual_send: { id: send.id, status: send.status, resolvable: send.status === "outcome_unknown" || send.status === "pending", failure_reason: send.failure_reason || null, resolved_by: send.resolved_by || null },
+      manual_send: { id: send.id, status: send.status, resolvable: send.status === "outcome_unknown" || (!social && send.status === "pending"), failure_reason: send.failure_reason || null, resolved_by: send.resolved_by || null },
       provenance: { table: "whatsapp_manual_sends", id: send.id },
       merged_from: [],
     };

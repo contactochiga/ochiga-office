@@ -18077,6 +18077,11 @@ function relInitials(name) {
 function relDeliveryText(entry) {
   if (entry.direction !== "outbound") return "";
   const d = entry.delivery || {};
+  if (entry.channel === "facebook" || entry.channel === "instagram") {
+    if (d.state === "pending") return "Sending — not yet confirmed by Meta";
+    if (d.state === "rejected") return "Not sent — Meta refused it";
+    if (d.state === "sent") return "Accepted by Meta — delivery not confirmed";
+  }
   const map = { read: "Read", delivered: "Delivered", sent: "Sent (provider confirmed)", failed: "Failed", unverified: "Accepted by provider — delivery not confirmed", pending: "Sending — not yet confirmed by WhatsApp", outcome_unknown: "Outcome unknown — it may or may not have been sent. Do not resend.", rejected: "Not sent — WhatsApp refused it", not_sent: "Not sent", not_applicable: "" };
   return map[d.state] || "";
 }
@@ -18224,11 +18229,13 @@ function renderRelEntry(entry) {
     </div>`);
   const ms = entry.manual_send;
   if (ms && ms.resolvable && hasPermission("manage_takeover")) {
-    const actions = el(`<div class="rel-resolve"><span>Check WhatsApp, then record what happened:</span><button type="button" class="btn btn-sm" data-r="confirmed_sent">It was sent</button><button type="button" class="btn btn-sm" data-r="confirmed_not_sent">It was not sent</button></div>`);
+    const channel = ["facebook", "instagram"].includes(entry.channel) ? entry.channel : "whatsapp";
+    const label = channel === "facebook" ? "Messenger" : channel === "instagram" ? "Instagram" : "WhatsApp";
+    const actions = el(`<div class="rel-resolve"><span>Check ${label}, then record what happened:</span><button type="button" class="btn btn-sm" data-r="confirmed_sent">It was sent</button><button type="button" class="btn btn-sm" data-r="confirmed_not_sent">It was not sent</button></div>`);
     actions.querySelectorAll("button").forEach((b) => b.addEventListener("click", async () => {
       actions.querySelectorAll("button").forEach((x) => { x.disabled = true; });
       try {
-        await api(`/api/lead-agents/admin/leads/${encodeURIComponent(relState.leadId)}/whatsapp/manual-sends/${encodeURIComponent(ms.id)}/resolve`, { method: "POST", body: { resolution: b.dataset.r } });
+        await api(`/api/lead-agents/admin/leads/${encodeURIComponent(relState.leadId)}/${channel}/manual-sends/${encodeURIComponent(ms.id)}/resolve`, { method: "POST", body: { resolution: b.dataset.r } });
         toast("Recorded. Nothing was sent.");
         await relLoadThread(false);
       } catch (err) { toast(err.message || "Could not record the decision.", "error"); actions.querySelectorAll("button").forEach((x) => { x.disabled = false; }); }
@@ -18346,19 +18353,26 @@ function relRenderThreadPane(pane, data) {
 function relRenderComposer(data) {
   const wrap = el(`<div class="messages-composer-wrap rel-composer"></div>`);
   const c = data.communication;
-  if (c.inbound_only_channel) {
-    const label = c.inbound_only_channel === "instagram" ? "Instagram" : "Messenger";
-    wrap.appendChild(el(`<div class="rel-locked">${label} messages are inbound only. Replies are not available here.</div>`));
+  const social = Boolean(c.inbound_only_channel);
+  const channel = c.inbound_only_channel || "whatsapp";
+  const label = channel === "instagram" ? "Instagram" : channel === "facebook" ? "Messenger" : "WhatsApp";
+  if (social && !c.social_reply?.available) {
+    const reason = {
+      social_window_closed: "The 24-hour reply window is closed.",
+      social_opted_out: "The customer has opted out, or consent state could not be verified.",
+      social_recipient_unverified: "A new incoming message is needed before staff can reply.",
+    }[c.social_reply?.reason] || "Staff replies are not available for this conversation.";
+    wrap.appendChild(el(`<div class="rel-locked">${label}: ${reason}</div>`));
     return wrap;
   }
   const modeText = c.takeover_active ? `Human conversation${data.channel_state.human_owner ? ` — owned by ${data.channel_state.human_owner}` : ""}` : c.global_autonomous_responses === "on" ? "Autonomous responses ON (eligible conversations only)" : c.global_autonomous_responses === "off" ? "Autonomous responses OFF — Oyi will not reply" : "Autonomous response state unreadable — treated as OFF";
-  wrap.appendChild(el(`<div class="rel-modeline"><span class="rel-mode rel-mode-${escapeHtml(c.mode)}">${escapeHtml(modeText)}</span></div>`));
-  const reply = c.whatsapp_reply;
+  if (!social) wrap.appendChild(el(`<div class="rel-modeline"><span class="rel-mode rel-mode-${escapeHtml(c.mode)}">${escapeHtml(modeText)}</span></div>`));
+  const reply = social ? c.social_reply : c.whatsapp_reply;
   if (reply.available) {
     const form = el(`
       <form class="messages-composer rel-send">
-        <textarea rows="1" maxlength="4000" placeholder="Reply on WhatsApp as ${escapeHtml(currentEmail())}…" aria-label="WhatsApp reply"></textarea>
-        <button type="submit" class="btn btn-primary btn-sm">Send on WhatsApp</button>
+        <textarea rows="1" maxlength="${social ? 1000 : 4000}" placeholder="Reply on ${label} as ${escapeHtml(currentEmail())}…" aria-label="${label} reply"></textarea>
+        <button type="submit" class="btn btn-primary btn-sm">Send on ${label}</button>
       </form>`);
     const ta = form.querySelector("textarea");
     let requestId = newRelRequestId();
@@ -18369,12 +18383,12 @@ function relRenderComposer(data) {
       const btn = form.querySelector("button");
       btn.disabled = true; ta.disabled = true;
       try {
-        const res = await api(`/api/lead-agents/admin/leads/${encodeURIComponent(data.lead.id)}/whatsapp/reply`, { method: "POST", body: { body: text, client_request_id: requestId } });
+        const res = await api(`/api/lead-agents/admin/leads/${encodeURIComponent(data.lead.id)}/${channel}/reply`, { method: "POST", body: { body: text, client_request_id: requestId } });
         // A 202 means "no answer from WhatsApp": the send is stored as UNKNOWN and is never retried automatically. Each attempt gets a fresh request id afterwards.
         requestId = newRelRequestId();
         ta.value = "";
-        if (res && res.error === "outcome_unknown") toast("WhatsApp did not confirm. Do not resend: check WhatsApp, then resolve the entry in the thread.", "error");
-        else toast(res.recorded === false ? "Accepted by WhatsApp; the CRM record is still being saved and will appear shortly." : "Message accepted by WhatsApp. Delivery is confirmed separately.");
+        if (res && res.error === "outcome_unknown") toast(social ? `${label} did not confirm. Do not resend; ask an integration operator to reconcile the send.` : "WhatsApp did not confirm. Do not resend: check WhatsApp, then resolve the entry in the thread.", "error");
+        else toast(res.recorded === false ? `Accepted by ${label}; the CRM record is still being saved and will appear shortly.` : `Message accepted by ${label}. Delivery is confirmed separately.`);
         await relLoadThread(false);
       } catch (err) {
         const definitive = err.status === 409 || err.status === 502 || (err.status === 503 && err.data && err.data.state);
@@ -18408,7 +18422,7 @@ function relRenderComposer(data) {
     }
     wrap.appendChild(box);
   }
-  if (data.communication.takeover_active && reply.can_reply_permission) {
+  if (!social && data.communication.takeover_active && reply.can_reply_permission) {
     const rel = el(`<button type="button" class="btn btn-sm rel-release">Release takeover</button>`);
     rel.addEventListener("click", async () => {
       rel.disabled = true;

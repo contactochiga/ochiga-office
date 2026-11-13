@@ -44,8 +44,8 @@ async function persistAcceptedConversation(store, send) {
     lead_id: send.lead_id,
     agent_name: send.actor_email,
     message_role: "assistant",
-    channel: "whatsapp",
-    external_message_id: send.provider_message_id || null,
+    channel: send.channel || "whatsapp",
+    external_message_id: send.channel && send.channel !== "whatsapp" ? null : send.provider_message_id || null,
     content: send.body,
     correlation_id: send.id,
   });
@@ -53,27 +53,29 @@ async function persistAcceptedConversation(store, send) {
   return conversation;
 }
 
-async function performManualSend({ store, adapter, lead, actorEmail, clientRequestId, text, audit = async () => {}, log = () => {} }) {
-  const recipient = String(lead.whatsapp_phone || "").trim();
+async function performManualSend({ store, adapter, lead, actorEmail, clientRequestId, text, audit = async () => {}, log = () => {}, channel = "whatsapp", recipient = String(lead.whatsapp_phone || "").trim(), send: dispatch }) {
+  const social = channel !== "whatsapp";
+  const action = `communication.${channel}.manual_reply`;
   const requestId = String(clientRequestId || "").trim().slice(0, 80) || `srv-${crypto.randomUUID()}`;
   const bodyHash = sha256(text);
 
   // 1. persist intent first; if the durable state is unreachable nothing is sent
   let claim;
   try {
-    claim = await store.claimManualSend({ lead_id: lead.id, actor_email: actorEmail, client_request_id: requestId, channel: "whatsapp", recipient, body: text, body_hash: bodyHash });
+    claim = await store.claimManualSend({ lead_id: lead.id, actor_email: actorEmail, client_request_id: requestId, channel, recipient, body: text, body_hash: bodyHash });
   } catch (error) {
-    log("error", "manual_whatsapp_send_state_unavailable", { lead_id: lead.id, error: String(error?.message || error).slice(0, 200) });
-    await audit("communication.whatsapp.manual_reply", "failure", { reason: "send_state_unavailable", client_request_id: requestId }).catch(() => null);
+    log("error", "manual_whatsapp_send_state_unavailable", social ? { channel } : { lead_id: lead.id, error: String(error?.message || error).slice(0, 200) });
+    await audit(action, "failure", { reason: "send_state_unavailable", client_request_id: requestId }).catch(() => null);
     return { httpStatus: 503, body: { ok: false, error: "send_state_unavailable", detail: "The send could not be recorded durably, so nothing was sent." } };
   }
+  if (claim.blocked) return { httpStatus: 409, body: { ok: false, error: "unresolved_send" } };
   if (!claim.claimed) {
     const existing = claim.record;
-    if (existing.body_hash !== bodyHash) {
-      await audit("communication.whatsapp.manual_reply", "failure", { reason: "request_id_reused_with_different_content", client_request_id: requestId, send_id: existing.id }).catch(() => null);
+    if (existing.body_hash !== bodyHash || (social && (existing.channel !== channel || existing.recipient !== recipient))) {
+      await audit(action, "failure", { reason: "request_id_reused_with_different_content", client_request_id: requestId, send_id: existing.id }).catch(() => null);
       return { httpStatus: 409, body: { ok: false, error: "request_id_reused", detail: "This request id was already used for different message content.", send_id: existing.id } };
     }
-    return { httpStatus: 409, body: { ok: false, error: "duplicate_request", detail: "This message was already submitted. It was not sent again.", state: existing.status, send_id: existing.id, external_message_id: existing.provider_message_id || null } };
+    return { httpStatus: 409, body: { ok: false, error: "duplicate_request", detail: "This message was already submitted. It was not sent again.", state: existing.status, send_id: existing.id, external_message_id: social ? null : existing.provider_message_id || null } };
   }
   const send = claim.record;
 
@@ -81,15 +83,21 @@ async function performManualSend({ store, adapter, lead, actorEmail, clientReque
   let result = null;
   let providerError = null;
   try {
-    result = await adapter.sendTextMessage({ to: recipient, body: text });
+    result = await (dispatch ? dispatch() : adapter.sendTextMessage({ to: recipient, body: text }));
   } catch (error) {
     providerError = error;
   }
 
   let outcome;
   if (providerError) {
-    const failure = classifyProviderFailure(providerError);
-    outcome = { status: failure.status, provider_response_code: failure.code, failure_reason: failure.reason };
+    if (social) {
+      const code = providerError?.response?.status;
+      const rejected = Number.isInteger(code) && code >= 400 && code < 500 && code !== 408;
+      outcome = { status: rejected ? "provider_rejected" : "outcome_unknown", provider_response_code: Number.isInteger(code) ? code : null, failure_reason: rejected ? "meta_refused" : "meta_outcome_unknown" };
+    } else {
+      const failure = classifyProviderFailure(providerError);
+      outcome = { status: failure.status, provider_response_code: failure.code, failure_reason: failure.reason };
+    }
   } else if (result && result.delivered) {
     outcome = { status: "provider_accepted", provider_message_id: result.external_message_id || null, provider_response_code: result.response_code ?? null };
   } else {
@@ -98,10 +106,18 @@ async function performManualSend({ store, adapter, lead, actorEmail, clientReque
   }
 
   // 3. record the outcome durably (retried; a failure here is surfaced, never swallowed)
-  const saved = await withRetries(() => store.updateManualSend(send.id, outcome));
+  const saved = await withRetries(async () => {
+    const updated = await store.updateManualSend(send.id, outcome, social ? "pending" : undefined);
+    if (social && !updated) {
+      const current = await store.getManualSend(send.id);
+      if (current?.status === outcome.status && (current.provider_message_id || null) === (outcome.provider_message_id || null)) return current;
+      throw new Error("send_state_changed");
+    }
+    return updated;
+  });
   const stateRecorded = saved.ok;
   if (!stateRecorded) {
-    log("error", "manual_whatsapp_send_outcome_unrecorded", { lead_id: lead.id, send_id: send.id, outcome: outcome.status, provider_message_id: outcome.provider_message_id || null });
+    log("error", "manual_whatsapp_send_outcome_unrecorded", social ? { channel, outcome: outcome.status } : { lead_id: lead.id, send_id: send.id, outcome: outcome.status, provider_message_id: outcome.provider_message_id || null });
   }
 
   // 4. provider accepted -> make the message part of the relationship history
@@ -109,15 +125,25 @@ async function performManualSend({ store, adapter, lead, actorEmail, clientReque
   if (outcome.status === "provider_accepted" && stateRecorded) {
     const persisted = await withRetries(() => persistAcceptedConversation(store, { ...send, ...outcome }));
     recorded = persisted.ok;
-    if (!recorded) log("error", "manual_whatsapp_send_conversation_unrecorded", { lead_id: lead.id, send_id: send.id, error: String(persisted.error?.message || persisted.error).slice(0, 200) });
+    if (!recorded) log("error", "manual_whatsapp_send_conversation_unrecorded", social ? { channel } : { lead_id: lead.id, send_id: send.id, error: String(persisted.error?.message || persisted.error).slice(0, 200) });
+  }
+  if (social && outcome.status === "provider_accepted" && stateRecorded) {
+    await store.upsertLeadChannelState(lead.id, channel, { last_outbound_at: new Date().toISOString() }).catch(() => null);
   }
 
-  await audit("communication.whatsapp.manual_reply", outcome.status === "provider_accepted" ? "success" : "failure", {
-    send_id: send.id, client_request_id: requestId, state: outcome.status, external_message_id: outcome.provider_message_id || null, provider_response_code: outcome.provider_response_code ?? null,
+  await audit(action, outcome.status === "provider_accepted" ? "success" : "failure", {
+    send_id: send.id, client_request_id: requestId, state: outcome.status, external_message_id: social ? null : outcome.provider_message_id || null, provider_response_code: outcome.provider_response_code ?? null,
     failure_reason: outcome.failure_reason || null, state_recorded: stateRecorded, conversation_recorded: recorded, operator: actorEmail, recipient_present: Boolean(recipient),
   }).catch(() => null);
 
   const base = { send_id: send.id, state: stateRecorded ? outcome.status : outcome.status, state_recorded: stateRecorded, external_message_id: outcome.provider_message_id || null };
+  if (social) {
+    delete base.external_message_id;
+    if (outcome.status === "provider_accepted" && stateRecorded) return { httpStatus: 200, body: { ok: true, accepted: true, recorded, ...base } };
+    if (!stateRecorded || outcome.status === "outcome_unknown") return { httpStatus: 202, body: { ...base, ok: false, state: "outcome_unknown", error: "outcome_unknown" } };
+    const rejected = outcome.status === "provider_rejected";
+    return { httpStatus: rejected ? 502 : 409, body: { ...base, ok: false, error: rejected ? "provider_rejected" : "social_reply_no_longer_allowed" } };
+  }
   if (outcome.status === "provider_accepted") return { httpStatus: 200, body: { ok: true, accepted: true, delivered: true, recorded, ...base } };
   if (outcome.status === "provider_rejected") return { httpStatus: 502, body: { ok: false, accepted: false, delivered: false, error: "provider_rejected", detail: "WhatsApp refused this message. It was not sent.", ...base } };
   if (outcome.status === "not_sent") return { httpStatus: 503, body: { ok: false, accepted: false, delivered: false, error: "whatsapp_not_configured", detail: "The message did not reach WhatsApp.", ...base } };
@@ -138,7 +164,7 @@ async function reconcileManualSends(store, leadId, { now = Date.now(), staleMs =
   for (const send of sends) {
     try {
       if (send.status === "pending" && now - Date.parse(send.created_at) > staleMs) {
-        await store.updateManualSend(send.id, { status: "outcome_unknown", failure_reason: "no_provider_outcome_recorded" });
+        await store.updateManualSend(send.id, { status: "outcome_unknown", failure_reason: "no_provider_outcome_recorded" }, send.channel && send.channel !== "whatsapp" ? "pending" : undefined);
         summary.marked_unknown++;
       } else if (send.status === "provider_accepted" && !send.conversation_recorded_at) {
         await persistAcceptedConversation(store, send);
@@ -146,7 +172,7 @@ async function reconcileManualSends(store, leadId, { now = Date.now(), staleMs =
       }
     } catch (error) {
       summary.errors++;
-      log("error", "manual_whatsapp_reconcile_failed", { lead_id: leadId, send_id: send.id, error: String(error?.message || error).slice(0, 200) });
+      log("error", "manual_whatsapp_reconcile_failed", send.channel && send.channel !== "whatsapp" ? { channel: send.channel } : { lead_id: leadId, send_id: send.id, error: String(error?.message || error).slice(0, 200) });
     }
   }
   return summary;
@@ -156,14 +182,17 @@ async function reconcileManualSends(store, leadId, { now = Date.now(), staleMs =
 async function resolveManualSend(store, sendId, { resolution, providerMessageId = "", actorEmail, note = "" }) {
   const send = await store.getManualSend(sendId);
   if (!send) return { httpStatus: 404, body: { error: "send_not_found" } };
-  if (!["outcome_unknown", "pending"].includes(send.status)) return { httpStatus: 409, body: { error: "send_not_unresolved", state: send.status } };
+  const social = ["facebook", "instagram"].includes(send.channel);
+  if (!(social ? send.status === "outcome_unknown" : ["outcome_unknown", "pending"].includes(send.status))) return { httpStatus: 409, body: { error: "send_not_unresolved", state: send.status } };
   if (!["confirmed_sent", "confirmed_not_sent"].includes(resolution)) return { httpStatus: 400, body: { error: "invalid_resolution" } };
   const resolved = { resolved_by: actorEmail, resolved_at: new Date().toISOString(), resolution_note: String(note || "").slice(0, 500) || null };
   if (resolution === "confirmed_not_sent") {
-    const updated = await store.updateManualSend(sendId, { status: "not_sent", failure_reason: "staff_confirmed_not_sent", ...resolved });
+    const updated = await store.updateManualSend(sendId, { status: "not_sent", failure_reason: "staff_confirmed_not_sent", ...resolved }, social ? "outcome_unknown" : undefined);
+    if (!updated) return { httpStatus: 409, body: { error: "send_state_changed" } };
     return { httpStatus: 200, body: { ok: true, state: updated.status, send_id: sendId } };
   }
-  const updated = await store.updateManualSend(sendId, { status: "provider_accepted", provider_message_id: String(providerMessageId || "").trim() || null, failure_reason: null, ...resolved });
+  const updated = await store.updateManualSend(sendId, { status: "provider_accepted", provider_message_id: String(providerMessageId || "").trim() || null, failure_reason: null, ...resolved }, social ? "outcome_unknown" : undefined);
+  if (!updated) return { httpStatus: 409, body: { error: "send_state_changed" } };
   let recorded = false;
   try {
     await persistAcceptedConversation(store, updated);

@@ -9,6 +9,7 @@ const { createConfig } = require("./config");
 const { log } = require("./logger");
 const envelopeObservation = require("./whatsapp-envelope-observation");
 const { handleMetaSocialWebhook } = require("./meta-social-inbound");
+const { createMetaSocialReplyAdapter, replyPolicy, sendSocialReply } = require("./meta-social-replies");
 const { createStore } = require("./store-factory");
 const { OpenAIResponsesClient } = require("./openai");
 const { ToolExecutor } = require("./tools");
@@ -2080,7 +2081,7 @@ async function enrichAuthContext(authContext, store) {
   };
 }
 
-function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRateLimiter, loginRateLimiter, whatsappAdapter, openaiClient, toolExecutor }) {
+function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRateLimiter, loginRateLimiter, whatsappAdapter, metaSocialReplyAdapter = createMetaSocialReplyAdapter(config), openaiClient, toolExecutor }) {
   const startedAt = Date.now();
   const widgetRateLimiter = publicRateLimiter || rateLimiter;
   const officeInternalRateLimiter = officeRateLimiter || rateLimiter;
@@ -6970,13 +6971,16 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
         const leadOpportunities = opportunities.filter((o) => o.lead_id === leadId);
         const opportunityIds = new Set(leadOpportunities.map((o) => o.id));
         const leadDocuments = documents.filter((d) => (d.related_type === "lead" && d.related_id === leadId) || (d.related_type === "opportunity" && opportunityIds.has(d.related_id)));
-        const statusEvents = await store.listInboundStatusEventsByExternalIds([...conversations.map((c) => c.external_message_id), ...manualSends.map((m) => m.provider_message_id)].filter(Boolean)).catch(() => []);
+        const statusEvents = await store.listInboundStatusEventsByExternalIds([...conversations.filter((c) => c.channel === "whatsapp").map((c) => c.external_message_id), ...manualSends.filter((m) => m.channel === "whatsapp").map((m) => m.provider_message_id)].filter(Boolean)).catch(() => []);
         const thread = relationshipWorkspace.buildThread({
           lead, conversations, timeline, activities: leadActivities, statusEvents, documents: leadDocuments, manualSends, inboundEvents: inboundMessageEvents,
           opportunityId: params.get("opportunity_id") || "", before: params.get("before") || "", limit: params.get("limit") || 50, search: q,
         });
         const takeoverActive = Boolean(channelState && ["human_active", "human_review"].includes(channelState.human_status));
         const canReply = hasPermission(authContext, "manage_takeover");
+        const social = inboxChannel !== "whatsapp";
+        const socialLead = social && config.metaSocialOutboundEnabled ? await store.getMetaSocialReplyLead(leadId).catch(() => null) : null;
+        const socialProblem = social ? replyPolicy(config, socialLead, inboxChannel) : null;
         const autonomy = describeWhatsAppAutonomyStatus(setting, { officialNumber: config.whatsappDisplayNumber });
         const sourceInfo = relationshipWorkspace.leadSourceInfo(lead);
         json(res, 200, {
@@ -6991,6 +6995,7 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           channel_state: channelState ? { human_status: channelState.human_status, human_owner: channelState.human_owner || null, ai_paused: Boolean(channelState.ai_paused), takeover_started_at: channelState.takeover_started_at || null, last_inbound_at: channelState.last_inbound_at || null, last_outbound_at: channelState.last_outbound_at || null } : { human_status: "auto", human_owner: null, ai_paused: false },
           communication: {
             ...(inboxChannel !== "whatsapp" ? { inbound_only_channel: inboxChannel } : {}),
+            ...(social ? { social_reply: { available: authContext?.type === "session" && canReply && !socialProblem, reason: socialProblem || "staff_permission_required" } } : {}),
             global_autonomous_responses: autonomy.state === "on" ? "on" : autonomy.state === "off" ? "off" : "unknown",
             takeover_active: takeoverActive,
             mode: takeoverActive ? "human" : autonomy.state === "on" ? "autonomous_allowed" : autonomy.state === "off" ? "autonomous_off" : "autonomous_off_unreadable",
@@ -7062,6 +7067,36 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
 
       // Governed MANUAL WhatsApp reply by an authorised staff member. Independent of the autonomy switch (a human is sending), but only while that human owns the
       // conversation (active takeover), and always audited with the operator.
+      const socialReplyMatch = pathname.match(/^\/api\/lead-agents\/admin\/leads\/([^/]+)\/(facebook|instagram)\/reply$/);
+      if (socialReplyMatch) {
+        if (req.method !== "POST") { methodNotAllowed(res, "POST"); return; }
+        if (authContext?.type !== "session") { json(res, 403, { error: "staff_session_required" }); return; }
+        authorizePermission(authContext, "manage_takeover");
+        if (!config.metaSocialOutboundEnabled || !config.metaSocialInboundEnabled) {
+          json(res, 403, { error: "social_reply_disabled" });
+          return;
+        }
+        const body = await readJsonBody(req, 8192);
+        requireObject(body, "body");
+        const text = typeof body.body === "string" ? body.body.trim() : "";
+        if (!text || text.length > 1000 || text.includes("\0") ||
+            typeof body.client_request_id !== "string" || !/^[a-zA-Z0-9_-]{16,80}$/.test(body.client_request_id) ||
+            Object.keys(body).some((key) => !["body", "client_request_id"].includes(key))) {
+          json(res, 400, { error: "invalid_social_reply" });
+          return;
+        }
+        const leadId = decodeURIComponent(socialReplyMatch[1]);
+        const lead = await store.getMetaSocialReplyLead(leadId).catch(() => null);
+        if (!lead) { json(res, 404, { error: "social_recipient_unverified" }); return; }
+        const channel = socialReplyMatch[2];
+        const outcome = await sendSocialReply({
+          config, store, adapter: metaSocialReplyAdapter, lead, channel,
+          actorEmail: authContext.email, clientRequestId: body.client_request_id, text,
+          audit: (action, status, metadata) => appendAuditRecord({ store, authContext, action, resourceType: "lead", resourceId: leadId, metadata, req, status }),
+        });
+        json(res, outcome.httpStatus, outcome.body, { "x-request-id": ctx.requestId });
+        return;
+      }
       const manualReplyMatch = pathname.match(/^\/api\/lead-agents\/admin\/leads\/([^/]+)\/whatsapp\/reply$/);
       if (manualReplyMatch) {
         if (req.method !== "POST") {
@@ -7109,7 +7144,7 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
       }
 
       // Governed resolution of an UNKNOWN manual-send outcome. A staff member who has checked WhatsApp records what happened; this never sends a message.
-      const manualSendResolveMatch = pathname.match(/^\/api\/lead-agents\/admin\/leads\/([^/]+)\/whatsapp\/manual-sends\/([^/]+)\/resolve$/);
+      const manualSendResolveMatch = pathname.match(/^\/api\/lead-agents\/admin\/leads\/([^/]+)\/(whatsapp|facebook|instagram)\/manual-sends\/([^/]+)\/resolve$/);
       if (manualSendResolveMatch) {
         if (req.method !== "POST") {
           methodNotAllowed(res, "POST");
@@ -7118,15 +7153,17 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
         authorizePermission(authContext, "manage_takeover");
         const body = await readJsonBody(req);
         requireObject(body, "body");
-        const sendId = decodeURIComponent(manualSendResolveMatch[2]);
+        const channel = manualSendResolveMatch[2];
+        if (channel !== "whatsapp" && authContext?.type !== "session") { json(res, 403, { error: "staff_session_required" }); return; }
+        const sendId = decodeURIComponent(manualSendResolveMatch[3]);
         const leadIdForSend = decodeURIComponent(manualSendResolveMatch[1]);
         const record = await store.getManualSend(sendId).catch(() => null);
-        if (!record || record.lead_id !== leadIdForSend) {
+        if (!record || record.lead_id !== leadIdForSend || record.channel !== channel) {
           json(res, 404, { error: "send_not_found" }, { "x-request-id": ctx.requestId });
           return;
         }
-        const outcome = await resolveManualSend(store, sendId, { resolution: String(body.resolution || ""), providerMessageId: body.provider_message_id, actorEmail: authContext.email || "staff", note: body.note });
-        await appendAuditRecord({ store, authContext, action: "communication.whatsapp.manual_send_resolved", resourceType: "lead", resourceId: leadIdForSend, metadata: { send_id: sendId, resolution: String(body.resolution || ""), result_state: outcome.body.state || null, operator: authContext.email || "" }, req, status: outcome.httpStatus === 200 ? "success" : "failure" }).catch(() => null);
+        const outcome = await resolveManualSend(store, sendId, { resolution: String(body.resolution || ""), providerMessageId: channel === "whatsapp" ? body.provider_message_id : "", actorEmail: authContext.email || "staff", note: body.note });
+        await appendAuditRecord({ store, authContext, action: `communication.${channel}.manual_send_resolved`, resourceType: "lead", resourceId: leadIdForSend, metadata: { send_id: sendId, resolution: ["confirmed_sent", "confirmed_not_sent"].includes(body.resolution) ? body.resolution : "invalid", result_state: outcome.body.state || null, operator: authContext.email || "" }, req, status: outcome.httpStatus === 200 ? "success" : "failure" }).catch(() => null);
         json(res, outcome.httpStatus, outcome.body, { "x-request-id": ctx.requestId });
         return;
       }

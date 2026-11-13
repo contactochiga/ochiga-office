@@ -4,6 +4,7 @@ const crypto = require("crypto");
 const { normalizeEmail, normalizeLeadInput, normalizeLeadPatch, normalizeText } = require("./normalize-lead");
 const { buildDeploymentFromLead, normalizePartner } = require("./commercial-ops");
 const { buildOfficeSnapshot, createOfficeSeedData } = require("./office-data");
+const { isOptOut } = require("./meta-social-inbound");
 
 const MANUAL_SEND_PATCH_FIELDS = ["status", "provider_message_id", "provider_response_code", "failure_reason", "conversation_id", "conversation_recorded_at", "resolved_by", "resolved_at", "resolution_note"];
 
@@ -326,36 +327,44 @@ class FileLeadAgentsStore {
       metadata: normalizedPatch,
     });
     await this.persist();
-    return updated;
+    return this.visibleLead(updated);
   }
 
   async getLead(leadId) {
-    return this.state.leads.find((lead) => lead.id === leadId) || null;
+    const lead = this.state.leads.find((row) => row.id === leadId);
+    return lead ? this.visibleLead(lead) : null;
+  }
+
+  visibleLead(lead) {
+    const { meta_social_asset_id, meta_social_sender_id, meta_social_last_inbound_at, meta_social_opted_out, ...visible } = lead;
+    return visible;
+  }
+
+  async getMetaSocialReplyLead(id) {
+    return this.state.leads.find((row) => row.id === id) || null;
   }
 
   async findLeadByPhone(phone) {
     const normalized = normalizeText(phone);
     if (!normalized) return null;
-    return (
-      this.state.leads.find(
-        (lead) => lead.phone === normalized || lead.whatsapp_phone === normalized
-      ) || null
-    );
+    const lead = this.state.leads.find((row) => row.phone === normalized || row.whatsapp_phone === normalized);
+    return lead ? this.visibleLead(lead) : null;
   }
 
   async findLeadByEmail(email) {
     const normalized = normalizeEmail(email);
     if (!normalized) return null;
-    return this.state.leads.find((lead) => normalizeEmail(lead.email) === normalized) || null;
+    const lead = this.state.leads.find((row) => normalizeEmail(row.email) === normalized);
+    return lead ? this.visibleLead(lead) : null;
   }
 
   async listLeads() {
-    return [...this.state.leads].sort((a, b) =>
+    return this.state.leads.map((lead) => this.visibleLead(lead)).sort((a, b) =>
       String(b.updated_at).localeCompare(String(a.updated_at))
     );
   }
 
-  async recordMetaSocialMessage({ channel, senderKey, eventKey, text, occurredAt }) {
+  async recordMetaSocialMessage({ channel, senderKey, eventKey, text, occurredAt, asset, sender, optedOut }) {
     let lead = this.state.leads.find((row) => row.idempotency_key === senderKey);
     const existing = this.state.conversations.find((row) => row.correlation_id === eventKey);
     if (existing) {
@@ -372,6 +381,14 @@ class FileLeadAgentsStore {
     const newest = (current) => Date.parse(current) >= Date.parse(occurredAt) ? current : occurredAt;
     lead.last_contact_at = newest(lead.last_contact_at);
     lead.channel_last_seen_at = newest(lead.channel_last_seen_at);
+    if (asset && sender) {
+      lead.meta_social_asset_id = asset;
+      lead.meta_social_sender_id = sender;
+      lead.meta_social_last_inbound_at = newest(lead.meta_social_last_inbound_at);
+      lead.meta_social_opted_out = Boolean(lead.meta_social_opted_out || optedOut ||
+        (lead.meta_social_opted_out == null && this.state.conversations.some((row) =>
+          row.lead_id === lead.id && row.channel === channel && row.message_role === "user" && isOptOut(String(row.content || "").trim()))));
+    }
     lead.updated_at = now;
     this.state.conversations.push({
       id: crypto.randomUUID(), lead_id: lead.id, agent_name: "meta_social", message_role: "user",
@@ -709,6 +726,10 @@ class FileLeadAgentsStore {
     // Synchronous check-and-insert (single process); the Supabase store gets the same guarantee from the table's unique key.
     const existing = this.state.whatsapp_manual_sends.find((r) => r.lead_id === input.lead_id && r.actor_email === input.actor_email && r.client_request_id === input.client_request_id);
     if (existing) return { claimed: false, record: { ...existing } };
+    if (["facebook", "instagram"].includes(input.channel) && this.state.whatsapp_manual_sends.some((row) =>
+      row.lead_id === input.lead_id && row.channel === input.channel && ["pending", "outcome_unknown"].includes(row.status))) {
+      return { blocked: true };
+    }
     const now = this.nowIso();
     const record = {
       id: crypto.randomUUID(), lead_id: input.lead_id, actor_email: input.actor_email, client_request_id: input.client_request_id, channel: input.channel || "whatsapp",
@@ -725,9 +746,18 @@ class FileLeadAgentsStore {
     return record ? { ...record } : null;
   }
 
-  async updateManualSend(id, patch) {
+  async recordMetaSocialReceipt({ channel, binding, mid, state }) {
+    const row = this.state.whatsapp_manual_sends.find((send) => send.channel === channel && send.recipient === binding &&
+      send.provider_message_id === mid && send.status === "provider_accepted");
+    if (!row) return !this.state.whatsapp_manual_sends.some((send) => send.channel === channel && send.recipient === binding && send.status === "pending");
+    if (row.social_delivery_state !== "read") row.social_delivery_state = state;
+    await this.persist();
+    return true;
+  }
+
+  async updateManualSend(id, patch, expectedStatus) {
     const record = this.state.whatsapp_manual_sends.find((r) => r.id === id);
-    if (!record) return null;
+    if (!record || (expectedStatus && record.status !== expectedStatus)) return null;
     for (const field of MANUAL_SEND_PATCH_FIELDS) if (patch[field] !== undefined) record[field] = patch[field];
     record.updated_at = this.nowIso();
     await this.persist();

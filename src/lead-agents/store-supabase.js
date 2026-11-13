@@ -55,8 +55,9 @@ class SupabaseLeadAgentsStore {
 
   normalizeLead(row) {
     if (!row) return null;
+    const { meta_social_asset_id, meta_social_sender_id, meta_social_last_inbound_at, meta_social_opted_out, ...visible } = row;
     return {
-      ...row,
+      ...visible,
       name: row.name || "",
       company: row.company || "",
       role: row.role || "",
@@ -191,11 +192,24 @@ class SupabaseLeadAgentsStore {
     return response.data.map((row) => this.normalizeLead(row));
   }
 
-  async recordMetaSocialMessage({ channel, senderKey, eventKey, text, occurredAt }) {
-    const response = await this.client.post("/rpc/office_record_meta_social_message", {
+  async recordMetaSocialMessage({ channel, senderKey, eventKey, text, occurredAt, asset, sender, optedOut }) {
+    const response = await this.client.post("/rpc/office_record_meta_social_reply_target", {
       p_channel: channel, p_sender_key: senderKey, p_event_key: eventKey, p_text: text, p_occurred_at: occurredAt,
+      p_asset: asset, p_sender: sender, p_opted_out: optedOut,
     });
     return response.data;
+  }
+
+  async recordMetaSocialReceipt({ channel, binding, mid, state }) {
+    const response = await this.client.post("/rpc/office_record_meta_social_receipt", {
+      p_channel: channel, p_binding: binding, p_mid: mid, p_state: state,
+    });
+    return response.data === true;
+  }
+
+  async getMetaSocialReplyLead(id) {
+    const response = await this.client.get(`/leads?id=eq.${encodeURIComponent(id)}&limit=1&select=id,idempotency_key,source_channel,contactability_status,meta_social_asset_id,meta_social_sender_id,meta_social_last_inbound_at,meta_social_opted_out`);
+    return response.data?.[0] || null;
   }
 
   async appendConversation(input) {
@@ -514,11 +528,19 @@ class SupabaseLeadAgentsStore {
   // ---- Manual WhatsApp sends: durable intent / outcome ledger (see db/20261017_whatsapp_manual_sends.sql) ----
   async claimManualSend(input) {
     const key = `lead_id=eq.${encodeURIComponent(input.lead_id)}&actor_email=eq.${encodeURIComponent(input.actor_email)}&client_request_id=eq.${encodeURIComponent(input.client_request_id)}`;
-    const inserted = await this.client.post(
-      "/whatsapp_manual_sends?on_conflict=lead_id,actor_email,client_request_id",
-      { lead_id: input.lead_id, actor_email: input.actor_email, client_request_id: input.client_request_id, channel: input.channel || "whatsapp", recipient: input.recipient, body: input.body, body_hash: input.body_hash },
-      { headers: { ...this.selectHeaders(), Prefer: "resolution=ignore-duplicates,return=representation" } }
-    );
+    let inserted;
+    try {
+      inserted = await this.client.post(
+        "/whatsapp_manual_sends?on_conflict=lead_id,actor_email,client_request_id",
+        { lead_id: input.lead_id, actor_email: input.actor_email, client_request_id: input.client_request_id, channel: input.channel || "whatsapp", recipient: input.recipient, body: input.body, body_hash: input.body_hash },
+        { headers: { ...this.selectHeaders(), Prefer: "resolution=ignore-duplicates,return=representation" } }
+      );
+    } catch (error) {
+      if (!["facebook", "instagram"].includes(input.channel) || error?.response?.data?.code !== "23505") throw error;
+      const current = await this.client.get(`/whatsapp_manual_sends?${key}&limit=1`);
+      if (current.data?.[0]) return { claimed: false, record: current.data[0] };
+      return { blocked: true };
+    }
     if (!Array.isArray(inserted.data)) throw new Error("manual_send_claim_malformed");
     if (inserted.data.length === 1) return { claimed: true, record: inserted.data[0] };
     const current = await this.client.get(`/whatsapp_manual_sends?${key}&limit=1`);
@@ -531,10 +553,10 @@ class SupabaseLeadAgentsStore {
     return Array.isArray(response.data) ? response.data[0] || null : null;
   }
 
-  async updateManualSend(id, patch) {
+  async updateManualSend(id, patch, expectedStatus) {
     const body = { updated_at: new Date().toISOString() };
     for (const field of ["status", "provider_message_id", "provider_response_code", "failure_reason", "conversation_id", "conversation_recorded_at", "resolved_by", "resolved_at", "resolution_note"]) if (patch[field] !== undefined) body[field] = patch[field];
-    const response = await this.client.patch(`/whatsapp_manual_sends?id=eq.${encodeURIComponent(id)}`, body, { headers: this.selectHeaders() });
+    const response = await this.client.patch(`/whatsapp_manual_sends?id=eq.${encodeURIComponent(id)}${expectedStatus ? `&status=eq.${encodeURIComponent(expectedStatus)}` : ""}`, body, { headers: this.selectHeaders() });
     return Array.isArray(response.data) ? response.data[0] || null : null;
   }
 
