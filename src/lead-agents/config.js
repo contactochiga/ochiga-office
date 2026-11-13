@@ -160,6 +160,8 @@ function createConfig() {
     whatsappAccessToken: process.env.WHATSAPP_ACCESS_TOKEN || "",
     whatsappPhoneNumberId: process.env.WHATSAPP_PHONE_NUMBER_ID || "",
     whatsappBusinessAccountId: process.env.WHATSAPP_BUSINESS_ACCOUNT_ID || "",
+    // Shadow envelope observation (whatsapp-envelope-observation.js): an ISO timestamp; observation runs only until then (at most 7 days ahead). Empty = off.
+    whatsappEnvelopeObservationUntil: process.env.OFFICE_WHATSAPP_ENVELOPE_OBSERVATION_UNTIL || "",
     whatsappApiVersion: process.env.WHATSAPP_API_VERSION || "v22.0",
     // display only (Settings -> Integrations -> WhatsApp); never used for sending
     whatsappDisplayNumber: process.env.WHATSAPP_DISPLAY_NUMBER || "",
