@@ -43,6 +43,59 @@ The migration adds one new table, `whatsapp_sender_identities`. No existing tabl
 - **Deleting a lead** removes its identity rows and clears references to it.
 - **Access:** RLS is on and there are no policies, so the table is server-only.
 
+## Scope: business accounts within one portfolio
+
+Meta scopes a BSUID to a business **portfolio**, but the webhook carries only the WhatsApp Business Account (WABA) ID. A portfolio can hold several WABAs. Within one portfolio, the same person has the **same** BSUID under every WABA; across portfolios, the same person has **different** BSUIDs.
+
+Phase 1 scopes everything to the WABA. That means:
+- **Duplicate links are allowed per WABA.** A person who writes to two WABAs of the same portfolio gets one link per WABA. If the same phone is used, both point at the same lead. No uniqueness rule is violated, because each WABA is its own scope.
+- **No cross-WABA inference.** A link recorded under WABA A is never used for a message under WABA B, even though Meta says the BSUID would be identical within the portfolio. Office can't verify from the webhook that two WABAs share a portfolio. Treating them as linked would be an unverified assumption, so the design accepts a missed match (the existing behaviour) instead of risking a wrong one.
+- **Different portfolios:** these have different BSUIDs, so nothing can collide.
+
+Making links portfolio-wide would need the portfolio ID from configuration plus an explicit list of WABAs in it. That would be a separate, approved change.
+
+## Trusted and conflicted identities (the rule for Phase 2)
+
+Phase 1 never uses these records for matching or sending. **Any future use must follow this rule.**
+
+A BSUID may identify a lead **only** when **all** of the following hold:
+1. there is exactly one row with `state = 'linked'` for that (business account, BSUID), and it names that lead;
+2. there is **no** row with `state = 'conflict'` for the same (business account, BSUID), for any lead;
+3. the lead has no conflict row of its own in that business account (`lead_linked_to_other_user_id`);
+4. the business account is the one Office is configured for (see the Asset Guard dependency below).
+
+Anything else means the BSUID is **contested or unknown**: it must not route, match or send, and the message falls back to today's behaviour plus human review. Conflict rows are never promoted to links automatically. Only a reviewed, audited human action may resolve one; that tool is not built yet. Structurally, a conflict row can never satisfy rule 1: only `state = 'linked'` rows sit under the one-link unique indexes, and the `conflict` state carries a mandatory reason.
+
+## Dependency: WhatsApp Asset Guard (separate Office work)
+
+An app signature proves Meta sent the request to our app. It does not prove which business account the event belongs to. Phase 1 takes the business account from the webhook (`entry[].id`) and links BSUIDs to leads matched by phone, which is global. If the app were ever subscribed to another WABA, a signed event for that **foreign** WABA would record links for our leads under the foreign scope. The trusted rule above would never act on them, but they would pollute the data.
+
+The WhatsApp Asset Guard (separate work) admits only events whose WABA ID and phone-number ID both match Office's configuration. **It must be released before identity capture is switched on.** It is not needed before applying the migration, nor before deploying this code with capture off, since nothing is recorded while capture is off.
+
+## Release sequence (each step separately approved)
+
+1. **Preflight.** Confirm the production Office build and branch head are the expected base. Then run this read-only catalogue preflight; it reads no customer rows and needs authorization before running on production:
+   ```sql
+   select to_regclass('public.leads') is not null as leads_exists,
+          (select data_type from information_schema.columns where table_name = 'leads' and column_name = 'id') as leads_id_type,
+          to_regclass('public.whatsapp_sender_identities') is null as table_absent,
+          current_setting('server_version_num')::int >= 130000 as gen_random_uuid_builtin;
+   ```
+   Expected: `true`, `uuid`, `true`, `true`.
+2. **Apply the migration.** It is additive. The current production Office build (`f823eaa`) ignores the new table; its own Postgres suites pass with the table present.
+3. **Deploy Office with capture OFF.** `OFFICE_WHATSAPP_SENDER_ID_CAPTURE_ENABLED` stays `false`. Then verify:
+   - health;
+   - authentication and protected routes;
+   - that WhatsApp intake, replies, opt-outs and the Backend forward behave as before;
+   - that the status endpoint shows `capture_enabled: false` with zero counts.
+4. **Release the WhatsApp Asset Guard** (its own approval and checks).
+5. **Turn capture on** (separate approval). Monitor through the admin status endpoint, which returns counts only, and the log events. Neither exposes customer identifiers:
+   - `whatsapp_sender_identity.conflict_recorded`;
+   - `whatsapp_sender_identity.capture_failed`;
+   - `whatsapp_sender_identity.unresolved`.
+
+   Watch conflicts and failures. A steady flow of `not_linked_without_identity` with reason `missing_business_account` would point at the Asset Guard or envelope configuration.
+
 ## Rollback: non-destructive
 
 | Tier | Action | Effect on data |

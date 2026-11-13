@@ -13,6 +13,9 @@
 //   * conflicts (the BSUID is linked to another lead, or this lead is linked to another BSUID) are never merged, overwritten or reassigned: they are recorded
 //     once per (business account, BSUID, lead) and a timeline note asks a person to review.
 // Gated by OFFICE_WHATSAPP_SENDER_ID_CAPTURE_ENABLED (default OFF). Never throws into the webhook.
+// These records are NOT used for matching or sending in Phase 1. Any future use must follow the trusted-identity rule in docs/WHATSAPP_SENDER_IDENTITY.md:
+// only a single 'linked' row with NO 'conflict' row for the same (business account, BSUID) or lead, in Office's own configured business account, is trusted;
+// links are never used across business accounts; conflicts are never promoted automatically.
 
 const BSUID_PATTERN = /^[A-Z]{2}\.[A-Za-z0-9]{1,128}$/;
 const BUSINESS_ACCOUNT_PATTERN = /^[0-9]{1,32}$/;
