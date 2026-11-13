@@ -71,6 +71,7 @@ class FileLeadAgentsStore {
       office_social_posts: [],
       office_social_comments: [],
       office_social_comment_events: [],
+      office_social_comment_actions: [],
       office_reports: [],
       office_development_projects: [],
       // Oyi Runtime Contract, Domain 3 (Task) — durable link between an
@@ -160,6 +161,7 @@ class FileLeadAgentsStore {
         office_social_posts: Array.isArray(parsed.office_social_posts) ? parsed.office_social_posts : [],
         office_social_comments: Array.isArray(parsed.office_social_comments) ? parsed.office_social_comments : [],
         office_social_comment_events: Array.isArray(parsed.office_social_comment_events) ? parsed.office_social_comment_events : [],
+        office_social_comment_actions: Array.isArray(parsed.office_social_comment_actions) ? parsed.office_social_comment_actions : [],
         office_reports: Array.isArray(parsed.office_reports) ? parsed.office_reports : [],
         office_development_projects: Array.isArray(parsed.office_development_projects) ? parsed.office_development_projects : [],
         ochiga_workflow_links: Array.isArray(parsed.ochiga_workflow_links) ? parsed.ochiga_workflow_links : [],
@@ -435,6 +437,57 @@ class FileLeadAgentsStore {
     }
     await this.persist();
     return created ? "created" : "updated";
+  }
+
+  // C3 moderation ledger (single-process fixture driver; the deployed driver uses the office_*_comment_moderation functions).
+  async claimCommentModeration({ commentId, action, actorId, actorEmail, requestId, reason }) {
+    if (!["hide", "unhide"].includes(action) || !/^[A-Za-z0-9_-]{16,80}$/.test(requestId || "") || String(reason || "").trim().length < 3 || String(reason).trim().length > 500) throw new Error("invalid moderation request");
+    const comment = this.state.office_social_comments.find((c) => c.id === commentId);
+    if (!comment || comment.deleted_at || comment.author_is_page) return { outcome: "not_actionable" };
+    const actions = this.state.office_social_comment_actions;
+    const existing = actions.find((a) => a.comment_id === commentId && a.actor_user_id === actorId && a.client_request_id === requestId);
+    if (existing) return { outcome: existing.action === action ? "duplicate" : "request_reused", id: existing.id, status: existing.status, action: existing.action, failure_reason: existing.failure_reason };
+    if (actions.some((a) => a.comment_id === commentId && ["pending", "dispatched", "unknown"].includes(a.status))) return { outcome: "blocked" };
+    const now = this.nowIso();
+    const row = { id: crypto.randomUUID(), comment_id: commentId, action, actor_user_id: actorId, actor_email: actorEmail, client_request_id: requestId, reason: String(reason).trim(),
+      status: "pending", dispatch_at: null, provider_response_code: null, failure_reason: null, resolved_by: null, observed_visibility: null, created_at: now, updated_at: now, settled_at: null };
+    actions.push(row);
+    await this.persist();
+    return { outcome: "claimed", id: row.id, status: row.status, action };
+  }
+
+  async markCommentModerationDispatched(id) {
+    const row = this.state.office_social_comment_actions.find((a) => a.id === id && a.status === "pending");
+    if (!row) return false;
+    Object.assign(row, { status: "dispatched", dispatch_at: this.nowIso(), updated_at: this.nowIso() });
+    await this.persist();
+    return true;
+  }
+
+  async settleCommentModeration({ actionId, status, observed, code, failure, resolvedBy }) {
+    const row = this.state.office_social_comment_actions.find((a) => a.id === actionId);
+    if (!row) throw new Error("moderation action not found");
+    if (!["pending", "dispatched", "unknown"].includes(row.status)) return { outcome: "already_settled", status: row.status };
+    const desired = row.action === "hide" ? "hidden" : "visible";
+    if (status === "confirmed" && observed !== desired) throw new Error("confirmation requires the requested state to be observed");
+    const now = this.nowIso();
+    Object.assign(row, { status, provider_response_code: code ?? row.provider_response_code, failure_reason: status === "confirmed" ? null : failure || null,
+      resolved_by: resolvedBy || null, observed_visibility: observed || null, updated_at: now, settled_at: status === "unknown" ? null : now });
+    if (status === "confirmed") {
+      const comment = this.state.office_social_comments.find((c) => c.id === row.comment_id);
+      if (comment && !comment.deleted_at) { comment.visibility = observed; if (Date.parse(now) > Date.parse(comment.last_event_at)) comment.last_event_at = now; }
+    }
+    await this.persist();
+    return { outcome: "settled", status };
+  }
+
+  async getCommentModerationAction(id) {
+    return this.state.office_social_comment_actions.find((a) => a.id === id) || null;
+  }
+
+  async listCommentModerationActions(commentIds) {
+    const ids = new Set(commentIds);
+    return this.state.office_social_comment_actions.filter((a) => ids.has(a.comment_id)).sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)));
   }
 
   async listSocialPosts({ limit = 50 } = {}) {

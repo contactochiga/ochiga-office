@@ -230,6 +230,12 @@ async function apiGetSocialPost(id) {
 async function apiSyncSocialPosts(postId) {
   return api(postId ? `/api/lead-agents/admin/content/social-posts/${encodeURIComponent(postId)}/sync` : "/api/lead-agents/admin/content/social-posts/sync", { method: "POST", body: {} });
 }
+async function apiModerateComment(postId, commentId, body) {
+  return api(`/api/lead-agents/admin/content/social-posts/${encodeURIComponent(postId)}/comments/${encodeURIComponent(commentId)}/moderation`, { method: "POST", body });
+}
+async function apiReconcileModeration(postId, commentId, actionId) {
+  return api(`/api/lead-agents/admin/content/social-posts/${encodeURIComponent(postId)}/comments/${encodeURIComponent(commentId)}/moderation/${encodeURIComponent(actionId)}/reconcile`, { method: "POST", body: {} });
+}
 async function apiGetContent(id) {
   return api(`/api/lead-agents/admin/content/${encodeURIComponent(id)}`);
 }
@@ -7769,8 +7775,16 @@ async function renderContentComments(host, selectedId, token) {
   thread.innerHTML = "";
   const ch = SOCIAL_CHANNEL[detail.post.channel] || SOCIAL_CHANNEL.facebook;
   thread.appendChild(el(`<div class="content-comments-head"><b>${escapeHtml(contentSocialTitle(detail.post))}</b><span>${escapeHtml(ch.label)}${detail.post.origin === "office" ? " · published from Office" : " · published outside Office"}</span>
-    <span class="content-comments-readonly">Read-only. Replying and hiding comments are not enabled yet.</span></div>`));
-  renderSocialThread(thread, detail.comments);
+    <span class="content-comments-readonly">${detail.moderation_enabled && hasPermission("content.review") ? "Staff with review permission can hide or unhide comments. Replies are not enabled yet." : "Read-only. Replying and hiding comments are not enabled here."}</span></div>`));
+  const threadHost = el(`<div class="content-comments-list"></div>`);
+  thread.appendChild(threadHost);
+  const refreshThread = async () => {
+    const fresh = await apiGetSocialPost(active.id).catch(() => null);
+    if (!fresh) return;
+    threadHost.innerHTML = "";
+    renderSocialThread(threadHost, fresh.comments, { postId: active.id, channel: fresh.post.channel, moderationEnabled: fresh.moderation_enabled, refresh: refreshThread });
+  };
+  renderSocialThread(threadHost, detail.comments, { postId: active.id, channel: detail.post.channel, moderationEnabled: detail.moderation_enabled, refresh: refreshThread });
 }
 
 function renderContentTabs(active) {
@@ -7973,7 +7987,7 @@ function renderSocialPostPane(main, details, detail, token) {
           <span class="rel-faint">${post.origin === "office" ? "Published from Office" : "Published outside Office"}${post.published_at ? ` · ${escapeHtml(fmtDateTime(post.published_at))}` : ""}</span></div>
         <span class="content-social-sync">${badge(syncLabel, syncTone)}</span>
       </div>
-      <div class="content-notice content-notice-info content-social-readonly" role="note"><div class="content-notice-text">Read-only. This post lives on ${escapeHtml(ch.label)}; Office does not edit, publish, reply to or moderate it.</div></div>
+      <div class="content-notice content-notice-info content-social-readonly" role="note"><div class="content-notice-text">Read-only post. It lives on ${escapeHtml(ch.label)}; Office does not edit, publish or reply to it.${detail.moderation_enabled && hasPermission("content.review") ? " You can hide or unhide its comments." : ""}</div></div>
       <div class="content-social-media"></div>
       <div class="content-social-caption"></div>
       <div class="content-social-links"></div>
@@ -8010,7 +8024,14 @@ function renderSocialPostPane(main, details, detail, token) {
     });
     links.appendChild(btn);
   }
-  renderSocialThread(pane.querySelector(".content-social-comments"), detail.comments);
+  const commentsHost = pane.querySelector(".content-social-comments");
+  const refreshThread = async () => {
+    const fresh = await apiGetSocialPost(post.id).catch(() => null);
+    if (!fresh || contentState.activeId !== `social:${post.id}`) return;
+    commentsHost.innerHTML = "";
+    renderSocialThread(commentsHost, fresh.comments, { postId: post.id, channel: post.channel, moderationEnabled: fresh.moderation_enabled, refresh: refreshThread });
+  };
+  renderSocialThread(commentsHost, detail.comments, { postId: post.id, channel: post.channel, moderationEnabled: detail.moderation_enabled, refresh: refreshThread });
   main.appendChild(pane);
   details.innerHTML = "";
   const facts = [["Source", ch.label], ["Origin", post.origin === "office" ? "Published from Office" : "Published outside Office"],
@@ -8020,18 +8041,81 @@ function renderSocialPostPane(main, details, detail, token) {
 }
 async function apiSyncSocialPost(id) { return apiSyncSocialPosts(id); }
 
-// Threaded, read-only comments (shared by the Comments tab and the social post view).
-function renderSocialThread(host, comments) {
+// Threaded comments (shared by the Comments tab and the social post view). With moderation on, staff holding content.review can
+// hide or unhide a comment with a reason; the state shown is the confirmed one, plus any pending, failed or unconfirmed action.
+const MODERATION_REASON = {
+  token_invalid: "Office's access token has expired or was revoked.",
+  permission_denied: "Office does not have permission to moderate this comment.",
+  throttled: "The platform is limiting requests. Try again later.",
+  comment_unavailable: "The comment no longer exists on the platform.",
+  foreign_post: "The comment does not belong to this post.",
+  not_applied: "The platform did not apply the change.",
+  not_configured: "Moderation is not configured for this account.",
+};
+const moderationReason = (code, ch) => MODERATION_REASON[code] || `No clear answer from ${ch.label}.`;
+function renderSocialThread(host, comments, opts = {}) {
+  const ch = SOCIAL_CHANNEL[opts.channel] || SOCIAL_CHANNEL.facebook;
+  const canModerate = Boolean(opts.moderationEnabled && opts.postId && hasPermission("content.review"));
   const byParent = new Map();
   comments.forEach((c) => { const key = c.provider_parent_id || ""; if (!byParent.has(key)) byParent.set(key, []); byParent.get(key).push(c); });
   const known = new Set(comments.map((c) => c.provider_comment_id));
   const roots = comments.filter((c) => !c.provider_parent_id || !known.has(c.provider_parent_id));
   const draw = (c, depth) => {
-    host.appendChild(el(`<div class="content-comment${depth ? " reply" : ""}${c.visibility === "hidden" ? " is-hidden" : ""}" data-comment="${escapeHtml(c.id)}">
+    const m = c.moderation;
+    const open = m && ["pending", "dispatched", "unknown"].includes(m.state);
+    const node = el(`<div class="content-comment${depth ? " reply" : ""}${c.visibility === "hidden" ? " is-hidden" : ""}" data-comment="${escapeHtml(c.id)}">
       <div class="content-comment-meta"><b>${c.author_is_page ? "Your Page" : escapeHtml(c.author_label || "Someone")}</b><span>${escapeHtml(fmtDateTime(c.created_at))}${c.edited_at ? " · edited" : ""}</span>
         ${c.visibility === "hidden" && !c.deleted ? '<span class="content-comment-flag">Hidden</span>' : ""}</div>
       <div class="content-comment-body">${c.deleted ? '<span class="rel-faint">Deleted by its author. The text is no longer stored.</span>' : c.body ? escapeHtml(c.body) : '<span class="rel-faint">No text (for example, an image only).</span>'}</div>
-    </div>`));
+    </div>`);
+    if (m && m.state !== "confirmed") {
+      const verb = m.action === "hide" ? "hide" : "unhide";
+      const text = ["pending", "dispatched"].includes(m.state) ? `${verb === "hide" ? "Hiding" : "Unhiding"}…`
+        : m.state === "unknown" ? `Couldn't confirm the ${verb} yet. ${m.failure_reason === "not_yet_applied" ? `${ch.label} has not shown the change yet.` : moderationReason(m.failure_reason, ch)}`
+        : `The ${verb} failed. ${moderationReason(m.failure_reason, ch)}`;
+      const line = el(`<div class="content-moderation-state content-moderation-${escapeHtml(m.state)}" data-moderation-state="${escapeHtml(m.state)}" role="status">${escapeHtml(text)}</div>`);
+      if (m.state === "unknown" && canModerate) {
+        const check = el(`<button type="button" class="btn btn-ghost btn-sm content-moderation-check">Check again</button>`);
+        check.addEventListener("click", async () => {
+          check.disabled = true;
+          try { await apiReconcileModeration(opts.postId, c.id, m.id); } catch { /* the refreshed thread shows the state */ }
+          await opts.refresh?.();
+        });
+        line.appendChild(check);
+      }
+      node.appendChild(line);
+    }
+    if (canModerate && c.actionable) {
+      const hiding = c.visibility !== "hidden";
+      const btn = el(`<button type="button" class="btn btn-ghost btn-sm content-moderation-toggle" data-moderation-action="${hiding ? "hide" : "unhide"}"${open ? " disabled" : ""}>${hiding ? "Hide" : "Unhide"}</button>`);
+      btn.addEventListener("click", () => {
+        if (node.querySelector(".content-moderation-form")) return;
+        const form = el(`<form class="content-moderation-form">
+          <label class="content-moderation-label" for="mod-${escapeHtml(c.id)}">${hiding ? "Why hide this comment? It will be hidden from the public on" : "Why unhide this comment? It will be visible again on"} ${escapeHtml(ch.label)}.</label>
+          <textarea id="mod-${escapeHtml(c.id)}" class="content-moderation-reason" rows="2" maxlength="500" required minlength="3" placeholder="Reason (kept in the audit log)"></textarea>
+          <div class="content-moderation-actions"><button type="submit" class="btn btn-primary btn-sm">${hiding ? "Hide comment" : "Unhide comment"}</button><button type="button" class="btn btn-ghost btn-sm content-moderation-cancel">Cancel</button></div>
+          <div class="content-moderation-error" role="alert"></div>
+        </form>`);
+        form.querySelector(".content-moderation-cancel").addEventListener("click", () => form.remove());
+        form.addEventListener("submit", async (e) => {
+          e.preventDefault();
+          const reason = form.querySelector("textarea").value.trim();
+          if (reason.length < 3) { form.querySelector(".content-moderation-error").textContent = "Give a reason of at least 3 characters."; return; }
+          form.querySelectorAll("button").forEach((x) => { x.disabled = true; });
+          const requestId = (crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}${Math.random()}`).replace(/[^A-Za-z0-9]/g, "").slice(0, 40).padEnd(16, "0");
+          try {
+            await apiModerateComment(opts.postId, c.id, { action: hiding ? "hide" : "unhide", reason, client_request_id: requestId });
+          } catch (err) {
+            if (!/moderation_|request_id|comment_/.test(String(err.message))) form.querySelector(".content-moderation-error").textContent = err.message || "The request could not be sent.";
+          }
+          await opts.refresh?.();
+        });
+        node.appendChild(form);
+        form.querySelector("textarea").focus();
+      });
+      node.querySelector(".content-comment-meta").appendChild(btn);
+    }
+    host.appendChild(node);
     (byParent.get(c.provider_comment_id) || []).forEach((r) => draw(r, depth + 1));
   };
   if (!roots.length) host.appendChild(el(`<p class="home-panel-empty">No comments yet.</p>`));

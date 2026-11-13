@@ -11,6 +11,7 @@ const envelopeObservation = require("./whatsapp-envelope-observation");
 const { handleMetaSocialWebhook } = require("./meta-social-inbound");
 const { createMetaSocialReplyAdapter, replyPolicy, sendSocialReply } = require("./meta-social-replies");
 const { createMetaSocialPostsAdapter } = require("./meta-social-posts");
+const { createMetaSocialModerationAdapter, moderateComment, reconcileModeration } = require("./meta-social-moderation");
 const { createStore } = require("./store-factory");
 const { OpenAIResponsesClient } = require("./openai");
 const { ToolExecutor } = require("./tools");
@@ -2082,7 +2083,7 @@ async function enrichAuthContext(authContext, store) {
   };
 }
 
-function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRateLimiter, loginRateLimiter, whatsappAdapter, metaSocialReplyAdapter = createMetaSocialReplyAdapter(config), metaSocialPostsAdapter = createMetaSocialPostsAdapter(config), openaiClient, toolExecutor }) {
+function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRateLimiter, loginRateLimiter, whatsappAdapter, metaSocialReplyAdapter = createMetaSocialReplyAdapter(config), metaSocialPostsAdapter = createMetaSocialPostsAdapter(config), metaSocialModerationAdapter = createMetaSocialModerationAdapter(config), openaiClient, toolExecutor }) {
   let socialSyncBusy = false; // one Content social-post sync at a time
   const startedAt = Date.now();
   const widgetRateLimiter = publicRateLimiter || rateLimiter;
@@ -8502,6 +8503,47 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
 
       // Editorial history of ONE article: only audit events whose target is this exact content item, gated like reading the article itself (content.write).
       // Only workflow fields are returned -- the request ip / user agent and any other audit metadata stay server-side.
+      // Content → Posts & Comments, C3: staff hide/unhide of a public comment, and read-back reconciliation of an uncertain outcome.
+      const moderationMatch = pathname.match(/^\/api\/lead-agents\/admin\/content\/social-posts\/([^/]+)\/comments\/([^/]+)\/moderation(?:\/([^/]+)\/reconcile)?$/);
+      if (moderationMatch) {
+        if (req.method !== "POST") { methodNotAllowed(res, "POST"); return; }
+        authorizePermission(authContext, "content.review");
+        if (authContext?.type !== "session") { json(res, 403, { error: "staff_session_required" }); return; }
+        if (!config.metaSocialCommentsModerationEnabled) { json(res, 403, { error: "moderation_disabled" }); return; }
+        const [, postId, commentId, actionId] = moderationMatch;
+        const uuid = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i;
+        const found = uuid.test(postId) && uuid.test(commentId) ? await store.getSocialPost(postId) : null;
+        const comment = found?.comments.find((c) => c.id === commentId);
+        if (!found || !comment) { json(res, 404, { error: "comment_not_found" }); return; }
+        const assetFor = (channel) => (channel === "facebook" ? config.facebookPageId : config.instagramBusinessAccountId);
+        if (comment.post_id !== found.post.id || comment.channel !== found.post.channel || comment.asset_id !== found.post.asset_id || found.post.asset_id !== assetFor(found.post.channel)) {
+          json(res, 403, { error: "foreign_asset" }); return;
+        }
+        const audit = (stage, metadata) => appendAuditRecord({ store, authContext, action: `content.social_comment_moderation_${stage}`, resourceType: "content_social_comment",
+          resourceId: comment.id, metadata: { ...metadata, channel: found.post.channel, operator: authContext.email || "" }, req,
+          status: ["failed", "unknown", "reconciled_failed", "reconciled_unknown"].includes(stage) ? "failure" : "success" }).catch(() => null);
+        let outcome;
+        if (actionId) {
+          const action = uuid.test(actionId) ? await store.getCommentModerationAction(actionId) : null;
+          if (!action || action.comment_id !== comment.id) { json(res, 404, { error: "moderation_action_not_found" }); return; }
+          outcome = await reconcileModeration({ store, adapter: metaSocialModerationAdapter, action, comment, post: found.post, audit });
+        } else {
+          const body = await readJsonBody(req, 4096);
+          requireObject(body, "body");
+          const reason = typeof body.reason === "string" ? body.reason.trim() : "";
+          if (!["hide", "unhide"].includes(body.action) || reason.length < 3 || reason.length > 500 || reason.includes("\0") ||
+              typeof body.client_request_id !== "string" || !/^[A-Za-z0-9_-]{16,80}$/.test(body.client_request_id) ||
+              Object.keys(body).some((key) => !["action", "reason", "client_request_id"].includes(key))) {
+            json(res, 400, { error: "invalid_moderation_request" }); return;
+          }
+          if (!metaSocialModerationAdapter.configured(found.post.channel)) { json(res, 503, { error: "moderation_not_configured" }); return; }
+          outcome = await moderateComment({ store, adapter: metaSocialModerationAdapter, comment, post: found.post, action: body.action,
+            actor: { id: String(authContext.userId || ""), email: String(authContext.email || "") }, requestId: body.client_request_id, reason, audit });
+        }
+        json(res, outcome.httpStatus, outcome.body, { "x-request-id": ctx.requestId });
+        return;
+      }
+
       // Content → Posts & Comments: Facebook Page and Instagram posts with their public comments. Comments stay attached to their
       // post; commenter platform ids are never returned and nothing here touches CRM leads or DMs. GETs are read-only; the two
       // sync actions make read-only Graph lookups (no publishing, replies or moderation) and never return tokens or Graph errors.
@@ -8572,14 +8614,23 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
         }
         const found = isUuid(postId) ? await store.getSocialPost(postId) : null;
         if (!found) { json(res, 404, { error: "social_post_not_found" }, { "x-request-id": ctx.requestId }); return; }
+        const actions = await store.listCommentModerationActions(found.comments.map((c) => c.id)).catch(() => []);
+        const latest = new Map();
+        for (const a of actions) if (!latest.has(a.comment_id)) latest.set(a.comment_id, a);
         json(res, 200, {
           enabled: Boolean(config.metaSocialCommentsInboundEnabled),
           sync_enabled: Boolean(config.metaSocialPostsSyncEnabled),
+          moderation_enabled: Boolean(config.metaSocialCommentsModerationEnabled),
           post: postView(found.post, found.comments),
-          comments: found.comments.map((c) => ({ id: c.id, provider_comment_id: c.provider_comment_id, provider_parent_id: c.provider_parent_id || null,
-            author_label: c.author_label || null, author_is_page: Boolean(c.author_is_page), body: c.deleted_at ? null : c.body ?? null,
-            visibility: c.visibility, deleted: Boolean(c.deleted_at), edited_at: c.edited_at || null,
-            created_at: c.provider_created_at || c.first_seen_at })),
+          comments: found.comments.map((c) => {
+            const a = latest.get(c.id);
+            return { id: c.id, provider_comment_id: c.provider_comment_id, provider_parent_id: c.provider_parent_id || null,
+              author_label: c.author_label || null, author_is_page: Boolean(c.author_is_page), body: c.deleted_at ? null : c.body ?? null,
+              visibility: c.visibility, deleted: Boolean(c.deleted_at), edited_at: c.edited_at || null,
+              created_at: c.provider_created_at || c.first_seen_at,
+              actionable: !c.deleted_at && !c.author_is_page,
+              moderation: a ? { id: a.id, action: a.action, state: a.status, failure_reason: a.failure_reason || null, by: a.actor_email, at: a.updated_at || a.created_at } : null };
+          }),
         }, { "x-request-id": ctx.requestId });
         return;
       }

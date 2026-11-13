@@ -209,6 +209,35 @@ class SupabaseLeadAgentsStore {
     return response.data;
   }
 
+  // C3 moderation ledger (db/20261116_meta_social_comment_moderation.sql).
+  async claimCommentModeration({ commentId, action, actorId, actorEmail, requestId, reason }) {
+    const response = await this.client.post("/rpc/office_claim_comment_moderation", { p_comment: commentId, p_action: action, p_actor_id: actorId, p_actor_email: actorEmail, p_request: requestId, p_reason: reason });
+    return response.data;
+  }
+
+  async markCommentModerationDispatched(id) {
+    const response = await this.client.post("/rpc/office_mark_comment_moderation_dispatched", { p_id: id });
+    return response.data === true;
+  }
+
+  async settleCommentModeration({ actionId, status, observed, code, failure, resolvedBy }) {
+    const response = await this.client.post("/rpc/office_settle_comment_moderation", { p_id: actionId, p_status: status, p_observed: observed || null, p_code: code ?? null, p_failure: failure || null, p_resolved_by: resolvedBy || null });
+    return response.data;
+  }
+
+  async getCommentModerationAction(id) {
+    const response = await this.client.get(`/office_social_comment_actions?id=eq.${encodeURIComponent(id)}&limit=1`);
+    if (!Array.isArray(response.data)) throw new Error("moderation_actions_unreadable");
+    return response.data[0] || null;
+  }
+
+  async listCommentModerationActions(commentIds) {
+    if (!commentIds.length) return [];
+    const response = await this.client.get(`/office_social_comment_actions?comment_id=in.(${commentIds.map(encodeURIComponent).join(",")})&order=created_at.desc`);
+    if (!Array.isArray(response.data)) throw new Error("moderation_actions_unreadable");
+    return response.data;
+  }
+
   async listSocialPosts({ limit = 50 } = {}) {
     const response = await this.client.get(`/office_social_posts?select=*,comments:office_social_comments(visibility,deleted_at)&order=last_comment_at.desc.nullslast&limit=${Math.min(Math.max(Number(limit) || 50, 1), 200)}`);
     if (!Array.isArray(response.data)) throw new Error("social_posts_unreadable");

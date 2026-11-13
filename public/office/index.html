@@ -2055,6 +2055,18 @@
   .content-social-links { display: flex; flex-wrap: wrap; gap: 8px; }
   .content-social-subhead { font-size: 14px; margin: 8px 0 0; }
   .content-social-comments { display: flex; flex-direction: column; gap: 8px; }
+  .content-comments-list { display: flex; flex-direction: column; gap: 8px; }
+  .content-comment-meta .content-moderation-toggle { margin-left: auto; padding: 2px 10px; }
+  .content-moderation-toggle:disabled, .content-moderation-check:disabled { opacity: .45; cursor: not-allowed; }
+  .content-moderation-state { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 6px; font-size: 12px; color: var(--text-secondary); }
+  .content-moderation-failed { color: var(--danger, #e5534b); } .content-moderation-unknown { color: var(--warning, #d4a017); }
+  .content-moderation-form { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; }
+  .content-moderation-label { font-size: 12px; color: var(--text-secondary); }
+  .content-moderation-reason { width: 100%; box-sizing: border-box; font: inherit; font-size: 13px; padding: 6px 8px; border-radius: 6px; border: 1px solid var(--line); background: var(--graphite, transparent); color: inherit; }
+  .content-moderation-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+  .content-moderation-error { font-size: 12px; color: var(--danger, #e5534b); }
+  .content-list-pane .rel-facets { flex-wrap: wrap; }
+  #contentSourceFilter { flex: 1 1 100%; }
   .content-not-connected b { color: var(--text-secondary); font-weight: 500; }
   .content-activity .content-history-item { padding: 7px 0; }
   .content-tab-body { display: flex; flex-direction: column; gap: 18px; }
