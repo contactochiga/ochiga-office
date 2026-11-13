@@ -1,4 +1,5 @@
 const assert = require("node:assert/strict");
+const { assets, extractFixtureEvents } = require("./whatsapp-webhook-fixture");
 const http = require("node:http");
 const { createConfig } = require("../src/lead-agents/config");
 const { buildServer } = require("../src/lead-agents/server");
@@ -41,12 +42,12 @@ async function main() {
   });
   const backendPort = await listen(backendServer);
   const OUTBOX = { inlineTimeoutMs: 250, workerTimeoutMs: 1500, baseDelayMs: 40, maxDelayMs: 200, jitter: 0, maxAttempts: 4, leaseMs: 2000, tickMs: 40, batch: 10 };
-  const config = { ...createConfig(), authMode: "required_api_key", apiKeys: ["outbox-key"], allowedOrigins: [], officeBackendBaseUrl: `http://127.0.0.1:${backendPort}`, officeBackendApiKey: "backend-key", communicationOutbox: OUTBOX, communicationOutboxWorker: false };
+  const config = { ...createConfig(), ...assets, authMode: "required_api_key", apiKeys: ["outbox-key"], allowedOrigins: [], officeBackendBaseUrl: `http://127.0.0.1:${backendPort}`, officeBackendApiKey: "backend-key", communicationOutbox: OUTBOX, communicationOutboxWorker: false };
   const { store } = await createTempStore();
   await store.ensureAdminUser({ email: "super@ochiga.local", password_hash: hashPassword("super-pass-123"), role: "super_admin", display_name: "Super", status: "active" });
   await store.ensureAdminUser({ email: "staff@ochiga.local", password_hash: hashPassword("staff-pass-123"), role: "ochiga_staff", display_name: "Staff", status: "active" });
   const sent = [];
-  const adapter = { verifyWebhook: () => null, verifySignature: () => ({ ok: true }), extractEvents: (b) => b.events || [], isConfigured: () => true, sendTextMessage: async (m) => { sent.push(m); return { delivered: true, external_message_id: "wamid.out.x" }; }, sendTemplateMessage: async (m) => { sent.push(m); return { delivered: false }; }, listApprovedTemplates: async () => [] };
+  const adapter = { verifyWebhook: () => null, verifySignature: () => ({ ok: true }), extractEvents: extractFixtureEvents, isConfigured: () => true, sendTextMessage: async (m) => { sent.push(m); return { delivered: true, external_message_id: "wamid.out.x" }; }, sendTemplateMessage: async (m) => { sent.push(m); return { delivered: false }; }, listApprovedTemplates: async () => [] };
   const servers = [];
   const start = async (s, cfg = config) => { const server = buildServer({ config: cfg, store: s, rateLimiter: new MemoryRateLimiter({ windowMs: 60_000, maxRequests: 9999 }), publicRateLimiter: new MemoryRateLimiter({ windowMs: 60_000, maxRequests: 9999 }), officeRateLimiter: new MemoryRateLimiter({ windowMs: 60_000, maxRequests: 9999 }), loginRateLimiter: new MemoryRateLimiter({ windowMs: 60_000, maxRequests: 500 }), whatsappAdapter: adapter, openaiClient: {}, toolExecutor: new ToolExecutor({ store: s, config: cfg, log: () => {}, webhooks: new WebhookDispatcher({ config: cfg }) }) }); servers.push(server); return `http://127.0.0.1:${await listen(server)}`; };
   const base = await start(store);

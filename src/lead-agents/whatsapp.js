@@ -75,16 +75,26 @@ class WhatsAppCloudAdapter {
     return { ok: false, reason: "signature_mismatch" };
   }
 
-  extractEvents(body) {
+  extractEvents(body, counts = {}) {
     const events = [];
-    for (const entry of body.entry || []) {
-      for (const change of entry.changes || []) {
+    if (body?.object !== "whatsapp_business_account") {
+      counts.unsupported_object = 1;
+      return events;
+    }
+    for (const entry of Array.isArray(body.entry) ? body.entry : []) {
+      for (const change of Array.isArray(entry?.changes) ? entry.changes : []) {
+        if (change?.field !== "messages") {
+          counts.unsupported_field = (counts.unsupported_field || 0) + 1;
+          continue;
+        }
         const value = change.value || {};
-        for (const message of value.messages || []) {
+        for (const message of Array.isArray(value.messages) ? value.messages : []) {
+          if (!message || typeof message !== "object") continue;
           // text = what the customer typed or tapped; caption and media metadata are kept separately (whatsapp-media.js)
           const described = describeInboundMessage(message);
           events.push({
             kind: "message",
+            waba_id: entry.id,
             from: normalizePhone(message.from),
             message_id: message.id,
             message_type: message.type || "unknown",
@@ -97,9 +107,11 @@ class WhatsAppCloudAdapter {
             contacts: value.contacts || [],
           });
         }
-        for (const status of value.statuses || []) {
+        for (const status of Array.isArray(value.statuses) ? value.statuses : []) {
+          if (!status || typeof status !== "object") continue;
           events.push({
             kind: "status",
+            waba_id: entry.id,
             message_id: status.id,
             recipient_id: normalizePhone(status.recipient_id),
             status: status.status,

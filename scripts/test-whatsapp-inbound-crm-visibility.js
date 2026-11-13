@@ -1,4 +1,5 @@
 const assert = require("node:assert/strict");
+const { assets, extractFixtureEvents } = require("./whatsapp-webhook-fixture");
 const http = require("node:http");
 const { createConfig } = require("../src/lead-agents/config");
 const { buildServer } = require("../src/lead-agents/server");
@@ -20,12 +21,12 @@ async function main() {
   let goalActive = false, coreMode = "ok";
   const backend = http.createServer((req, res) => { req.resume(); req.on("end", () => { res.setHeader("content-type", "application/json"); if (req.url === "/office/communications/webhook-event") return res.end(JSON.stringify({ ok: true, goal_active: goalActive, opted_out: false, opt_out_status: "not_opted_out" })); if (req.url === "/office/conversation/corporate") { if (coreMode === "fail") { res.statusCode = 500; return res.end("{}"); } return res.end(JSON.stringify({ ok: true, answer: "Hello from Oyi", conversation_thread_id: "t1" })); } res.statusCode = 404; res.end("{}"); }); });
   const backendPort = await listen(backend);
-  const config = { ...createConfig(), authMode: "required_api_key", apiKeys: ["vis-key"], allowedOrigins: [], officeBackendBaseUrl: `http://127.0.0.1:${backendPort}`, officeBackendApiKey: "vis-bridge" };
+  const config = { ...createConfig(), ...assets, authMode: "required_api_key", apiKeys: ["vis-key"], allowedOrigins: [], officeBackendBaseUrl: `http://127.0.0.1:${backendPort}`, officeBackendApiKey: "vis-bridge" };
   const { store } = await createTempStore();
   await store.ensureAdminUser({ email: "super@ochiga.local", password_hash: hashPassword("super-pass-123"), role: "super_admin", display_name: "Super", status: "active" });
   await store.ensureAdminUser({ email: "staff@ochiga.local", password_hash: hashPassword("staff-pass-123"), role: "ochiga_staff", display_name: "Staff", status: "active" });
   const sent = [];
-  const adapter = { verifyWebhook: () => null, verifySignature: () => ({ ok: true }), extractEvents: (b) => b.events || [], isConfigured: () => true, sendTextMessage: async (m) => { sent.push(m); return { delivered: true, response_code: 200, external_message_id: `wamid.out.${sent.length}` }; }, sendTemplateMessage: async () => ({ delivered: false }), listApprovedTemplates: async () => [] };
+  const adapter = { verifyWebhook: () => null, verifySignature: () => ({ ok: true }), extractEvents: extractFixtureEvents, isConfigured: () => true, sendTextMessage: async (m) => { sent.push(m); return { delivered: true, response_code: 200, external_message_id: `wamid.out.${sent.length}` }; }, sendTemplateMessage: async () => ({ delivered: false }), listApprovedTemplates: async () => [] };
   const servers = [];
   const start = async (s) => { const server = buildServer({ config, store: s, rateLimiter: new MemoryRateLimiter({ windowMs: 60_000, maxRequests: 9999 }), publicRateLimiter: new MemoryRateLimiter({ windowMs: 60_000, maxRequests: 9999 }), officeRateLimiter: new MemoryRateLimiter({ windowMs: 60_000, maxRequests: 9999 }), loginRateLimiter: new MemoryRateLimiter({ windowMs: 60_000, maxRequests: 500 }), whatsappAdapter: adapter, openaiClient: {}, toolExecutor: new ToolExecutor({ store: s, config, log: () => {}, webhooks: new WebhookDispatcher({ config }) }) }); servers.push(server); return `http://127.0.0.1:${await listen(server)}`; };
   const base = await start(store);

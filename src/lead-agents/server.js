@@ -2461,7 +2461,7 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           environment: config.environment,
           store_driver: config.storeDriver,
           // booleans / a mode name only: lets an operator confirm that webhook authentication is enforced without exposing any secret
-          whatsapp_webhook: { signature_mode: config.whatsappWebhookSignatureMode === "report" ? "report" : "enforce", app_secret_configured: Boolean(config.metaAppSecret) },
+          whatsapp_webhook: { signature_mode: "enforce", app_secret_configured: Boolean(config.metaAppSecret) },
           tier1: {
             auth: {
               mode: config.authMode,
@@ -2516,21 +2516,24 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           // 1. the EXACT request bytes (never decoded or re-serialised); 2. authenticate them; 3. only then parse, extract events, touch the CRM or Backend.
           const rawBuffer = await readRawBodyBuffer(req);
           const signatureCheck = whatsappAdapter.verifySignature(rawBuffer, req.headers["x-hub-signature-256"]);
-          const signatureMode = config.whatsappWebhookSignatureMode === "report" ? "report" : "enforce";
-          signatureStats.record(signatureCheck, { mode: signatureMode, store });
+          signatureStats.record(signatureCheck, { store });
           if (!signatureCheck.ok) {
-            log(signatureMode === "enforce" ? "warn" : "error", signatureMode === "enforce" ? "whatsapp_webhook.signature_rejected" : "whatsapp_webhook.signature_failed_REPORT_MODE_PROCESSING_ANYWAY", {
+            log("warn", "whatsapp_webhook.signature_rejected", {
               request_id: ctx.requestId,
               reason: signatureCheck.reason,
               has_signature_header: Boolean(req.headers["x-hub-signature-256"]),
               body_bytes: rawBuffer.length,
-              mode: signatureMode,
             });
-            if (signatureMode === "enforce") {
-              const status = signatureCheck.reason === "app_secret_not_configured" ? 503 : signatureCheck.reason === "signature_mismatch" ? 403 : 401;
-              json(res, status, { error: status === 503 ? "webhook_not_configured" : "invalid_signature" }, { "x-request-id": ctx.requestId });
-              return;
-            }
+            const status = signatureCheck.reason === "app_secret_not_configured" ? 503 : signatureCheck.reason === "signature_mismatch" ? 403 : 401;
+            json(res, status, { error: status === 503 ? "webhook_not_configured" : "invalid_signature" }, { "x-request-id": ctx.requestId });
+            return;
+          }
+          const expectedWaba = String(config.whatsappBusinessAccountId || "").trim();
+          const expectedPhone = String(config.whatsappPhoneNumberId || "").trim();
+          if (!expectedWaba || !expectedPhone) {
+            log("error", "whatsapp_webhook.asset_guard", { missing_configuration: 1 });
+            json(res, 503, { error: "webhook_not_configured" }, { "x-request-id": ctx.requestId });
+            return;
           }
           let body = {};
           if (rawBuffer.length) {
@@ -2541,26 +2544,22 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
               return;
             }
           }
-          const events = whatsappAdapter.extractEvents(body);
-          log("info", "whatsapp_webhook.received", { request_id: ctx.requestId, event_count: events.length });
-          // Observability only (no behaviour change): events addressed to a phone-number id other than the configured official one are counted and logged.
-          const foreignPhone = config.whatsappPhoneNumberId ? events.filter((e) => e.metadata?.phone_number_id && String(e.metadata.phone_number_id) !== String(config.whatsappPhoneNumberId)).length : 0;
-          if (foreignPhone) { signatureStats.notePhoneMismatch(foreignPhone); log("warn", "whatsapp_webhook.phone_number_id_mismatch", { request_id: ctx.requestId, count: foreignPhone }); }
+          const counts = { accepted: 0, missing_waba: 0, missing_phone: 0, foreign_waba: 0, foreign_phone: 0 };
+          const events = whatsappAdapter.extractEvents(body, counts).filter((event) => {
+            const waba = event.waba_id;
+            const phone = event.metadata?.phone_number_id;
+            if (typeof waba !== "string" || !waba.trim()) counts.missing_waba++;
+            else if (waba !== expectedWaba) counts.foreign_waba++;
+            if (typeof phone !== "string" || !phone.trim()) counts.missing_phone++;
+            else if (phone !== expectedPhone) counts.foreign_phone++;
+            return waba === expectedWaba && phone === expectedPhone;
+          });
+          counts.accepted = events.length;
+          if (counts.foreign_phone) signatureStats.notePhoneMismatch(counts.foreign_phone);
+          log("info", "whatsapp_webhook.asset_guard", counts);
           const results = [];
+          let failed = 0;
           for (const event of events) {
-            log("info", "whatsapp_webhook.event", {
-              request_id: ctx.requestId,
-              kind: event.kind,
-              message_type: event.message_type || null,
-              status: event.status || null,
-              error_code: event.status === "failed" ? (event.raw?.errors?.[0]?.code ?? null) : null,
-              error_title: event.status === "failed" ? (event.raw?.errors?.[0]?.title || event.raw?.errors?.[0]?.message || null) : null,
-              message_id: event.message_id || null,
-              phone_number_id: event.metadata?.phone_number_id || null,
-              waba_display_number: event.metadata?.display_phone_number || null,
-              sender_present: Boolean(event.from),
-              timestamp: event.timestamp || null,
-            });
             let outcome;
             try {
               outcome = await processWhatsAppEvent({
@@ -2570,31 +2569,13 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
                 config,
                 requestId: ctx.requestId,
               });
-              log("info", "whatsapp_webhook.event_processed", {
-                request_id: ctx.requestId,
-                kind: event.kind,
-                message_id: event.message_id || null,
-                lead_id: outcome?.lead_id || null,
-                paused: Boolean(outcome?.paused),
-              });
-            } catch (processError) {
+            } catch {
+              failed++;
               outcome = { kind: event.kind, error: true };
-              log("error", "whatsapp_webhook.event_failed", {
-                request_id: ctx.requestId,
-                kind: event.kind,
-                message_id: event.message_id || null,
-                error: processError?.message || String(processError),
-                // Diagnostic only -- HTTP status/PostgREST error code and
-                // hint, never the request payload (could carry message
-                // text) or any credential.
-                http_status: processError?.response?.status || null,
-                provider_error_code: processError?.response?.data?.code || null,
-                provider_error_hint: processError?.response?.data?.hint || null,
-                request_url: processError?.config?.url || null,
-              });
             }
             results.push(outcome);
           }
+          if (failed) log("error", "whatsapp_webhook.processing_failed", { failed, request_id: ctx.requestId });
           json(res, 200, { ok: true, results }, { "x-request-id": ctx.requestId });
           return;
         }

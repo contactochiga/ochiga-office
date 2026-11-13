@@ -28,6 +28,7 @@ const commands = [
   "npm run office:documents-workspace:test",
   "npm run office:team-lifecycle-meetings-trash:test",
   "npm run office:messages-workspace:test",
+  "npm run office:webhook-signature:test",
 ];
 
 for (const command of commands) {

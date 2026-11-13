@@ -1,4 +1,5 @@
 const assert = require("node:assert/strict");
+const { assets, extractFixtureEvents } = require("./whatsapp-webhook-fixture");
 const http = require("node:http");
 const { createConfig } = require("../src/lead-agents/config");
 const { buildServer } = require("../src/lead-agents/server");
@@ -16,14 +17,14 @@ const listen = (server) => new Promise((resolve, reject) => { server.once("error
 const close = (server) => new Promise((resolve) => server.close(resolve));
 
 async function main() {
-  const config = { ...createConfig(), authMode: "required_api_key", apiKeys: ["rw-test-key"], allowedOrigins: [], officeBackendBaseUrl: "http://127.0.0.1:1", officeBackendApiKey: "rw-bridge" };
+  const config = { ...createConfig(), ...assets, authMode: "required_api_key", apiKeys: ["rw-test-key"], allowedOrigins: [], officeBackendBaseUrl: "http://127.0.0.1:1", officeBackendApiKey: "rw-bridge" };
   const { store } = await createTempStore();
   await store.ensureAdminUser({ email: "super@ochiga.local", password_hash: hashPassword("super-pass-123"), role: "super_admin", display_name: "Super", status: "active" });
   await store.ensureAdminUser({ email: "staff@ochiga.local", password_hash: hashPassword("staff-pass-123"), role: "ochiga_staff", display_name: "Staff", status: "active" });
   await store.ensureAdminUser({ email: "resident@ochiga.local", password_hash: hashPassword("resident-pass-123"), role: "resident", display_name: "Resident", status: "active" });
   const sent = [];
   const adapter = {
-    verifyWebhook: () => null, verifySignature: () => ({ ok: true }), extractEvents: (b) => b.events || [], isConfigured: () => true,
+    verifyWebhook: () => null, verifySignature: () => ({ ok: true }), extractEvents: extractFixtureEvents, isConfigured: () => true,
     sendTextMessage: async (m) => { sent.push(m); return { delivered: true, response_code: 200, external_message_id: `wamid.out.${sent.length}` }; },
     sendTemplateMessage: async () => ({ delivered: false }), listApprovedTemplates: async () => [],
   };
