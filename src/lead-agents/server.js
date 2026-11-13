@@ -134,6 +134,7 @@ const { appendAuditRecord } = require("./audit");
 const { PERMISSION_KEYS, ROLE_PERMISSIONS, hasPermission } = require("./permissions");
 const relationshipWorkspace = require("./relationship-workspace");
 const whatsappMedia = require("./whatsapp-media");
+const whatsappSenderIdentity = require("./whatsapp-sender-identity");
 const { handleCatalogueRequest } = require("./catalogue-api");
 const { handlePublicCatalogueRequest } = require("./catalogue-public-api");
 const signatureStats = require("./webhook-signature-stats");
@@ -1816,6 +1817,9 @@ async function processWhatsAppMessageEvent({ event, store, adapter, config, requ
     channel_last_seen_at: new Date().toISOString(),
   });
   if (["claimed", "takeover"].includes(claim.status)) await store.updateInboundClaim(event.message_id, { lead_id: lead.id }).catch(() => null);
+  // WhatsApp sender identity, Phase 1 (OFFICE_WHATSAPP_SENDER_ID_CAPTURE_ENABLED, default OFF): associate Meta's business-scoped user ID with the lead the
+  // phone-based matching above chose. Never changes that lead, the reply decision, the recipient, goals or opt-outs; conflicts are recorded for review.
+  await whatsappSenderIdentity.linkSenderIdentity(store, config, { identity: event.sender_identity, leadId: lead.id, phonePresent: Boolean(event.from), providerMessageId: event.message_id, requestId, log });
   // A takeover of a stale claim must not store the inbound message a second time.
   const alreadyStored = claim.status === "takeover" ? await store.hasInboundEvent({ channel: "whatsapp", eventType: "message", externalEventId: event.message_id }).catch(() => false) : false;
   let inboundEventRow = null;
@@ -7008,6 +7012,23 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
         const summary = await inboundVisibility.repairInboundVisibility(store, { dryRun, limit: Math.min(Math.max(Number(body.limit) || 1000, 1), 2000), log });
         await appendAuditRecord({ store, authContext, action: dryRun ? "whatsapp.inbound_visibility.dry_run" : "whatsapp.inbound_visibility.repair", resourceType: "whatsapp_inbound", resourceId: "inbound_events", metadata: { raw_missing_event_rows: summary.raw_missing_event_rows, unique_missing_messages: summary.unique_missing_messages, duplicate_event_rows: summary.duplicate_event_rows, invalid_records: summary.invalid_records, conflicting_lead_groups: summary.conflicting_lead_groups, created: summary.created, skipped_existing: summary.skipped_existing, skipped_claimed_elsewhere: summary.skipped_claimed_elsewhere, failed: summary.failed, operator: authContext.email || "" }, req, status: "success" }).catch(() => null);
         json(res, 200, { ok: true, ...summary }, { "x-request-id": ctx.requestId });
+        return;
+      }
+
+      // WhatsApp sender identity status (admin only, read-only). Counts only: linked, conflicts by reason, and capture health since this process started.
+      // No business-scoped user ids, phone numbers, leads or message ids.
+      if (pathname === "/api/lead-agents/admin/whatsapp-identity/status") {
+        if (req.method !== "GET") { methodNotAllowed(res, "GET"); return; }
+        authorizePermission(authContext, "manage_integrations"); // admin-only (view_integrations is also held by ordinary staff)
+        let counts = null;
+        try {
+          counts = typeof store.whatsAppSenderIdentitySummary === "function" ? await store.whatsAppSenderIdentitySummary() : null;
+        } catch (error) {
+          log("error", "whatsapp_sender_identity.status_failed", { request_id: ctx.requestId, error: String(error?.code || error?.message || error).replace(/https?:\/\/\S+/gi, "[url]").slice(0, 200) });
+          json(res, 503, { error: "identity_status_unavailable" }, { "x-request-id": ctx.requestId });
+          return;
+        }
+        json(res, 200, { whatsapp_sender_identity: { capture_enabled: whatsappSenderIdentity.captureEnabled(config), identifier_only_messaging: "not_enabled", health: { ...whatsappSenderIdentity.health }, ...(counts || { unavailable: true }) } }, { "x-request-id": ctx.requestId });
         return;
       }
 

@@ -36,6 +36,8 @@ assert(envExample.includes("OFFICE_BACKEND_INTERNAL_CONVERSATION_PATH=/office/co
 assert(envExample.includes("OFFICE_BACKEND_EVENTS_ENABLED=false"), "Office material events must be disabled by default in .env.example");
 assert(envExample.includes("OFFICE_BACKEND_EVENT_PATH=/office/events/material"), "Office material event path must be documented");
 assert(envExample.includes("OFFICE_BACKEND_EVENT_MAX_ATTEMPTS=2"), "Office material event retry limit must be documented");
+assert(envExample.includes("OFFICE_WHATSAPP_SENDER_ID_CAPTURE_ENABLED=false"), "WhatsApp sender identity capture must be disabled by default in the env example");
+assert(/OFFICE_WHATSAPP_SENDER_ID_CAPTURE_ENABLED\s*\n\s*value:\s*"false"/.test(render), "Render must declare WhatsApp sender identity capture as disabled");
 // b256550 moved API routing into fail-closed middleware. Never restore the old
 // unconditional production rewrites just to satisfy an obsolete assertion.
 require("node:child_process").execFileSync(process.execPath, ["scripts/test-office-api-routing.mjs"], { stdio: "inherit" });

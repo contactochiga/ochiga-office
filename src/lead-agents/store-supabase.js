@@ -3,6 +3,7 @@ const crypto = require("crypto");
 const { normalizeEmail, normalizeLeadInput, normalizeLeadPatch, normalizeText } = require("./normalize-lead");
 const { buildDeploymentFromLead, normalizePartner } = require("./commercial-ops");
 const { buildOfficeSnapshot, createOfficeSeedData } = require("./office-data");
+const { summarizeSenderIdentities } = require("./whatsapp-sender-identity");
 
 class SupabaseLeadAgentsStore {
   constructor({ url, serviceRoleKey, requestTimeoutMs }) {
@@ -534,6 +535,43 @@ class SupabaseLeadAgentsStore {
   async listManualSendsForLead(leadId, limit = 200) {
     const response = await this.client.get(`/whatsapp_manual_sends?lead_id=eq.${encodeURIComponent(leadId)}&order=created_at.asc&limit=${Math.min(Math.max(Number(limit) || 200, 1), 500)}`);
     return response.data;
+  }
+
+  // ---- WhatsApp sender identity (see db/20261113_whatsapp_sender_identities.sql and whatsapp-sender-identity.js) ----
+  // rows in this business account for this BSUID (any state), plus this lead's linked row
+  async findWhatsAppSenderIdentities({ businessAccountId, businessScopedUserId, leadId }) {
+    const q = (v) => `"${String(v).replace(/"/g, "")}"`;
+    const filter = encodeURIComponent(`(business_scoped_user_id.eq.${q(businessScopedUserId)},and(lead_id.eq.${q(leadId)},state.eq.linked))`);
+    const response = await this.client.get(`/whatsapp_sender_identities?business_account_id=eq.${encodeURIComponent(businessAccountId)}&or=${filter}&select=business_scoped_user_id,lead_id,state,conflict_reason`);
+    if (!Array.isArray(response.data)) throw new Error("sender_identity_read_malformed");
+    return response.data;
+  }
+
+  // A PLAIN insert: the one-link-per-BSUID and one-link-per-lead rules are PARTIAL unique indexes, which ON CONFLICT cannot target (42P10). The database
+  // decides a race: exactly one insert wins; a loser gets 23505 and the caller re-reads.
+  async insertWhatsAppSenderIdentityLink(row) {
+    try {
+      const response = await this.client.post("/whatsapp_sender_identities", row, { headers: this.selectHeaders() });
+      return { created: Array.isArray(response.data) && response.data.length === 1 };
+    } catch (error) {
+      if (error?.response?.status === 409 && String(error.response.data?.code || "") === "23505") return { created: false, duplicate: true };
+      throw error;
+    }
+  }
+
+  // one conflict row per (business account, BSUID, lead): a FULL unique constraint, so ON CONFLICT DO NOTHING is valid here
+  async insertWhatsAppSenderIdentityConflict(row) {
+    const response = await this.client.post(
+      "/whatsapp_sender_identities?on_conflict=business_account_id,business_scoped_user_id,lead_id",
+      row,
+      { headers: { ...this.selectHeaders(), Prefer: "resolution=ignore-duplicates,return=representation" } }
+    );
+    return { created: Array.isArray(response.data) && response.data.length === 1 };
+  }
+
+  async whatsAppSenderIdentitySummary() {
+    const response = await this.client.get("/whatsapp_sender_identities?select=state,conflict_reason&limit=100000");
+    return summarizeSenderIdentities(response.data || []);
   }
 
   // ---- Communication delivery outbox (see db/20261018_communication_delivery_outbox.sql and communication-outbox.js) ----
