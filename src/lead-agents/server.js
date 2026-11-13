@@ -7,6 +7,7 @@ const crypto = require("crypto");
 const axios = require("axios");
 const { createConfig } = require("./config");
 const { log } = require("./logger");
+const webhookFailure = require("./whatsapp-webhook-failure");
 const { createStore } = require("./store-factory");
 const { OpenAIResponsesClient } = require("./openai");
 const { ToolExecutor } = require("./tools");
@@ -2569,13 +2570,16 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
                 config,
                 requestId: ctx.requestId,
               });
-            } catch {
+            } catch (error) {
               failed++;
               outcome = { kind: event.kind, error: true };
+              // per-event diagnosis, sanitized: correlation id, event kind, HTTP status and an ALLOWLISTED error code only (whatsapp-webhook-failure.js) --
+              // never the exception text, payload, customer or provider identifiers, URLs or credentials
+              log("error", "whatsapp_webhook.event_failed", webhookFailure.eventFailureLogFields({ requestId: ctx.requestId, event, error }));
             }
             results.push(outcome);
           }
-          if (failed) log("error", "whatsapp_webhook.processing_failed", { failed, request_id: ctx.requestId });
+          if (failed) log("error", "whatsapp_webhook.processing_failed", { failed, request_id: webhookFailure.safeRequestId(ctx.requestId) });
           json(res, 200, { ok: true, results }, { "x-request-id": ctx.requestId });
           return;
         }
