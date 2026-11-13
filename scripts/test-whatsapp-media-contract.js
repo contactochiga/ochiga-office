@@ -80,12 +80,24 @@ async function main() {
 
   const webhookBodies = [];
   const coreRequests = [];
-  let goalActive = false, optedOut = false;
+  // Backend stub: optOutState "not_opted_out" | "opted_out" | "unknown" (lookup failed) | "omitted" (an older Backend) | "down" (HTTP 503);
+  // noticeApplied=false imitates an older Backend whose answer builder has no uninspected-attachment guard
+  let goalActive = false, optOutState = "not_opted_out", noticeApplied = true;
   const backend = http.createServer((req, res) => {
     let raw = ""; req.on("data", (c) => (raw += c)); req.on("end", () => {
       res.setHeader("content-type", "application/json");
-      if (req.url === "/office/communications/webhook-event") { webhookBodies.push(JSON.parse(raw)); return res.end(JSON.stringify({ ok: true, goal_active: goalActive, ...(optedOut ? { opted_out: true } : {}) })); }
-      if (req.url === "/office/conversation/corporate") { coreRequests.push(JSON.parse(raw)); return res.end(JSON.stringify({ ok: true, answer: "Thanks, we have it.", conversation_thread_id: "oyi-thread-1" })); }
+      if (req.url === "/office/communications/webhook-event") {
+        webhookBodies.push(JSON.parse(raw));
+        if (optOutState === "down") { res.statusCode = 503; return res.end(JSON.stringify({ ok: false })); }
+        return res.end(JSON.stringify({ ok: true, goal_active: goalActive, opted_out: optOutState === "opted_out", ...(optOutState === "omitted" ? {} : { opt_out_status: optOutState }) }));
+      }
+      if (req.url === "/office/conversation/corporate") {
+        const request = JSON.parse(raw);
+        coreRequests.push(request);
+        const kinds = request.metadata?.inbound_message?.attachment_kinds;
+        const guarded = kinds && noticeApplied;
+        return res.end(JSON.stringify({ ok: true, answer: guarded ? "Thanks, we have it.\n\nI can't open attachments in this chat, so I haven't seen the photo you sent; my reply is based on your message only." : "Thanks, we have it.", conversation_thread_id: "oyi-thread-1", safe_metadata: guarded ? { inbound_attachments: { kinds, inspected: false, notice_applied: true, removed_claims: 0 } } : {} }));
+      }
       res.statusCode = 404; res.end("{}");
     });
   });
@@ -144,6 +156,7 @@ async function main() {
     ok(b3.text === "" && b3.caption === "Here is my site plan" && b3.attachments.length === 1, "caption: forwarded as caption (not as text)");
     const core3 = coreRequests.at(-1);
     ok(counts().core === before.core + 1 && core3.message === "Here is my site plan" && core3.metadata.inbound_message.message_type === "image" && core3.metadata.inbound_message.caption_present === true && core3.metadata.inbound_message.attachment_kinds.join() === "image" && counts().sent === before.sent + 1 && r3.outbound, "caption: Oyi answers the caption; the attachment is described in metadata, not in the message");
+    ok(/haven't seen the photo you sent/.test(sent.at(-1).body), "caption: the reply sent to the customer says the media was not opened (Backend-confirmed notice)");
     ok((await activityFor("wamid.i2")).body === "Here is my site plan" && (await activityFor("wamid.i2")).metadata.caption === "Here is my site plan", "caption: shown in the CRM record and kept in its own field");
 
     // 4. STOP as a video caption, and as text: no automatic reply
@@ -154,10 +167,10 @@ async function main() {
     ok(r5.reason === "opt_out_requested" && counts().sent === before.sent && counts().core === before.core, "STOP as text: never answered automatically (previously Office still replied)");
 
     // 5. Backend reports the sender as opted out
-    optedOut = true;
+    optOutState = "opted_out";
     before = counts();
     const r6 = await deliver(metaText("wamid.t3", "2348033333333", "hello again"));
-    optedOut = false;
+    optOutState = "not_opted_out";
     ok(r6.reason === "opted_out" && counts().sent === before.sent && counts().core === before.core, "opted-out sender (per Backend): no automatic reply to later messages");
 
     // 6. Location / document without caption
@@ -192,7 +205,43 @@ async function main() {
     goalActive = false;
     ok(r11.deferred_to_goal && counts().sent === before.sent && counts().core === before.core, "single responder: an active Backend goal owns the reply to a captioned image");
 
-    // 10. Nothing that could reach media bytes, a provider URL or a private storage URL was forwarded
+    // 10. Opt-out eligibility that cannot be verified: fail closed (no automatic reply), but the message is still recorded, forwarded and retried
+    before = counts();
+    optOutState = "unknown";
+    const r12 = await deliver(metaText("wamid.u1", "2348066666666", "Hello, is anyone there?"));
+    ok(r12.reason === "opt_out_unverified" && counts().core === before.core && counts().sent === before.sent && bodyFor("wamid.u1").length === 1, "opt-out lookup failed on Backend: no automatic reply, Oyi not asked, message forwarded");
+    const a12 = await activityFor("wamid.u1");
+    ok(a12 && a12.body === "Hello, is anyone there?" && a12.metadata.suppressed_reason === "opt_out_unverified" && a12.metadata.ai_replied === false, "opt-out unverified: the CRM record exists and is flagged for a human");
+    optOutState = "down";
+    const r13 = await deliver(metaText("wamid.u2", "2348066666666", "Hello again"));
+    const [entry13] = await store.findCommunicationDeliveriesByKeys(["whatsapp:message:wamid.u2"]);
+    ok(r13.reason === "opt_out_unverified" && counts().sent === before.sent && entry13 && entry13.status === "pending" && entry13.last_error === "backend_http_503", "Backend down: no automatic reply; the delivery stays queued for retry with its error visible");
+    ok((await activityFor("wamid.u2")).metadata.suppressed_reason === "opt_out_unverified", "Backend down: the message is recorded in the CRM and flagged");
+    const r14 = await deliver(metaText("wamid.u3", "2348066666666", "STOP"));
+    ok(r14.reason === "opt_out_requested" && counts().sent === before.sent, "explicit STOP while Backend is down: still recorded as an opt-out request, never answered");
+    optOutState = "omitted";
+    const r15 = await deliver(metaText("wamid.u4", "2348066666667", "Hi from a customer"));
+    ok(r15.reason === "opt_out_unverified" && counts().sent === before.sent && counts().core === before.core, "an older Backend that does not report opt-out status: no automatic reply (fail closed)");
+    optOutState = "not_opted_out";
+    const lead14 = (await store.listLeads()).find((l) => l.whatsapp_phone === "2348066666666");
+    const timeline14 = await store.listTimelineForLead(lead14.id);
+    ok(timeline14.some((t) => t.event_type === "whatsapp_autonomous_reply_suppressed" && t.metadata?.reason === "opt_out_unverified" && /consent could not be confirmed/.test(t.body)), "opt-out unverified: the timeline note explains why no reply was sent");
+    ok(outbox.enqueueAndAttempt && (await outbox.enqueueAndAttempt(store, {}, { payload: {} })).optOutStatus === "unverified", "Backend bridge not configured: opt-out status is unverified");
+    // with a verified status, text and list replies are answered exactly as before
+    const r16 = await deliver({ from: "2348066666666", id: "wamid.u5", timestamp: ts(), type: "interactive", interactive: { type: "list_reply", list_reply: { id: "visit", title: "Book a site visit" } } });
+    ok(r16.outbound && coreRequests.at(-1).message === "Book a site visit" && counts().sent === before.sent + 1, "verified not opted out: a list reply is answered as before");
+
+    // 11. Media-aware reply: an older Backend that cannot confirm the not-opened notice gets no reply sent for captioned media
+    before = counts();
+    noticeApplied = false;
+    const r17 = await deliver(metaImage("wamid.i6", "2348077777777", "What do you think of this house?"));
+    noticeApplied = true;
+    ok(r17.reason === "attachment_notice_unconfirmed" && counts().core === before.core + 1 && counts().sent === before.sent, "captioned media without Backend's not-opened confirmation: the answer is not sent");
+    ok((await activityFor("wamid.i6")).metadata.suppressed_reason === "attachment_notice_unconfirmed", "and the CRM record is flagged for a human");
+    const r18 = await deliver(metaText("wamid.t9", "2348077777777", "And the price?"));
+    ok(r18.outbound && counts().sent === before.sent + 1 && !/attachments/.test(sent.at(-1).body), "text turns never need (or get) the attachment notice");
+
+    // 12. Nothing that could reach media bytes, a provider URL or a private storage URL was forwarded
     const everything = JSON.stringify(webhookBodies);
     ok(!/https?:\/\/|lookaside|fbsbx|\/api\/lead-agents\/admin\/storage|data:/i.test(everything) && webhookBodies.every((b) => (b.attachments || []).every((a) => Object.keys(a).sort().join() === "animated,filename,kind,mime_type,provider_media_id,sha256,size_bytes,voice")), "no media bytes, provider URL or storage URL in any Backend request; attachments carry only the agreed metadata keys");
     ok(webhookBodies.every((b) => typeof b.text === "string" && !/content not available|\[(image|video|audio|document|location)/i.test(b.text)), "no placeholder ever sent to Backend as customer text");

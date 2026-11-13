@@ -82,6 +82,8 @@ const TIMELINE_REASON_TEXT = {
   deferred_to_goal: "An active follow-up goal owns this conversation, so Office sent no separate reply.",
   opt_out_requested: "The customer asked not to be contacted, so no automatic reply was sent.",
   opted_out: "This customer has opted out of messages, so no automatic reply was sent.",
+  opt_out_unverified: "Messaging consent could not be confirmed (Oyi Backend unavailable), so no automatic reply was sent. A team member should review it.",
+  attachment_notice_unconfirmed: "Oyi's reply to this media could not be confirmed as honest about the unopened media, so it was not sent. A team member should review it.",
   media_without_text: "Media without text: Oyi cannot see media, so no automatic reply was sent. A team member should review it.",
   no_customer_text: "No readable text (for example a location, contact card or reaction), so no automatic reply was sent. A team member should review it.",
 };

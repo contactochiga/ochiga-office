@@ -1729,6 +1729,8 @@ async function suppressAutonomousWhatsAppReply({ store, lead, event, requestId, 
 const AUTOMATIC_REPLY_CONTENT_REASONS = Object.freeze({
   opt_out_requested: "The customer asked not to be contacted, so no automatic reply was sent.",
   opted_out: "This customer has opted out of messages, so no automatic reply was sent.",
+  opt_out_unverified: "This customer's messaging consent could not be confirmed (the Oyi Backend was unavailable or could not check), so no automatic reply was sent; a team member should review it.",
+  attachment_notice_unconfirmed: "The customer sent media with a caption, but Oyi's reply could not be confirmed to say the media was not opened, so it was not sent; a team member should review it.",
   media_without_text: "The customer sent media without any text. Oyi cannot see media, so no automatic reply was sent; a team member should review it.",
   no_customer_text: "The message has no text Oyi can read (for example a location, contact card or reaction), so no automatic reply was sent; a team member should review it.",
 });
@@ -1907,7 +1909,7 @@ async function processWhatsAppMessageEvent({ event, store, adapter, config, requ
   // The message's own content, before any reply is generated: an opt-out request (typed or as a caption), a sender Backend reports as opted out, or a
   // message with no customer-authored text (media without a caption, location, contacts, reaction...) never draws an automatic reply.
   const contentBlock = whatsappMedia.isOptOutRequest(customerText) ? "opt_out_requested"
-    : forwardResult.optedOut ? "opted_out"
+    : forwardResult.optedOut || forwardResult.optOutStatus === "opted_out" ? "opted_out"
     : !customerText ? (described.attachments.length ? "media_without_text" : "no_customer_text")
     : null;
   if (contentBlock) return withCrmStatus(await suppressAutonomousWhatsAppReply({ store, lead, event, requestId, reason: contentBlock, stage: "before_generation" }));
@@ -1916,6 +1918,12 @@ async function processWhatsAppMessageEvent({ event, store, adapter, config, requ
   const earlyPolicy = await evaluateAutonomousWhatsAppPolicy(store);
   if (!earlyPolicy.allowed) {
     return withCrmStatus(await suppressAutonomousWhatsAppReply({ store, lead, event, requestId, reason: earlyPolicy.reason, stage: "before_generation" }));
+  }
+
+  // Consent must be positively verified: when Backend could not confirm the sender is not opted out (Backend down, not configured, an older Backend, or its
+  // lookup failed) no automatic reply is generated -- fail closed. The message is still recorded, flagged for a person, and the outbox keeps retrying it.
+  if (forwardResult.optOutStatus !== "not_opted_out") {
+    return withCrmStatus(await suppressAutonomousWhatsAppReply({ store, lead, event, requestId, reason: "opt_out_unverified", stage: "before_generation" }));
   }
 
   const session = buildPublicIntelligenceSession({
@@ -1938,6 +1946,11 @@ async function processWhatsAppMessageEvent({ event, store, adapter, config, requ
   // the turn's media is described structurally (never as words in the customer's message): Oyi answers the caption and can tell media was attached
   if (described.attachments.length) oyiCoreRequest.metadata.inbound_message = { message_type: described.message_type, caption_present: Boolean(described.caption), attachment_kinds: described.attachments.map((a) => a.kind) };
   const oyiCoreResult = await callOyiCoreCorporateConversation(config, oyiCoreRequest);
+  // Oyi never receives the media, so its answer must say so and claim nothing about it: Backend's answer builder guarantees that and confirms it
+  // (safe_metadata.inbound_attachments.notice_applied). Without that confirmation (an older Backend) the answer is not sent.
+  if (described.attachments.length && oyiCoreResult.ok && oyiCoreResult.response?.safe_metadata?.inbound_attachments?.notice_applied !== true) {
+    return withCrmStatus(await suppressAutonomousWhatsAppReply({ store, lead, event, requestId, reason: "attachment_notice_unconfirmed", stage: "before_send" }));
+  }
   const assistantMessage = oyiCoreResult.ok
     ? oyiCoreResult.response.answer
     : "Ochiga Intelligence is temporarily unavailable. We have your WhatsApp message and the Office team can follow up, but I cannot continue the automated conversation right now.";
