@@ -28,7 +28,8 @@
       "codex/unified-engagement-office": false,
       "codex/content-workspace-refinement": false,
       "codex/whatsapp-media-contract": false,
-      "codex/whatsapp-envelope-observation": false
+      "codex/whatsapp-envelope-observation": false,
+      "codex/meta-social-staff-replies": false
     }
   }
 }
