@@ -5,7 +5,7 @@
 // grant only service_role), that later objects are covered (and where they are not, the verification gate
 // fails until the baseline is re-applied), that PostgREST refuses anon/authenticated reads while
 // service_role keeps working, and that the baseline is repeatable.
-// Manifest checks always run; database checks require Docker and the images below.
+// Manifest checks always run; database checks require Docker and the images below, and the suite FAILS if they are missing.
 "use strict";
 const crypto = require("crypto");
 const fs = require("fs");
@@ -96,7 +96,7 @@ async function manifestChecks() {
 }
 
 async function databaseChecks() {
-  for (const img of [PG_IMAGE, PGRST_IMAGE]) if (sh("docker", ["image", "inspect", img]).status !== 0) { console.log(`SKIP: docker image ${img} not available`); return; }
+  for (const img of [PG_IMAGE, PGRST_IMAGE, "node:22-bookworm-slim"]) if (sh("docker", ["image", "inspect", img]).status !== 0) throw new Error(`BLOCKED: Docker or the image ${img} is not available (this suite fails rather than skipping)`);
   // PostgREST and the probe client run on an --internal network (no internet). Postgres is also published on
   // loopback only, so the initializer (run from this process) can connect.
   sh("docker", ["network", "create", "--internal", NET]); cleanup.push(() => sh("docker", ["network", "rm", NET]));
@@ -206,8 +206,7 @@ async function databaseChecks() {
       const r = await fetch("http://${REST}:3000" + c.path, { method: c.method || "GET", headers: h, body: c.body ? JSON.stringify(c.body) : undefined }); const t = await r.text(); let j = null; try { j = JSON.parse(t); } catch {}
       out.push({ id: c.id, status: r.status, code: j && j.code || null, rows: Array.isArray(j) ? j.length : null, value: Array.isArray(j) ? null : (typeof j === "string" || typeof j === "boolean" ? j : null) }); }
     console.log(JSON.stringify(out)); })();`]); try { return JSON.parse(out.stdout.trim().split("\n").pop()); } catch { return [{ error: out.stderr.slice(0, 300) }]; } };
-  if (sh("docker", ["image", "inspect", "node:22-bookworm-slim"]).status !== 0) { console.log("SKIP: node:22-bookworm-slim image not available for the PostgREST probe"); return; }
-  psql(`insert into public.leads (name, source, status) values ('Synthetic baseline lead', 'test', 'new')`);
+    psql(`insert into public.leads (name, source, status) values ('Synthetic baseline lead', 'test', 'new')`);
   const reads = [];
   for (const t of PROBE_TABLES) for (const [who, token] of [["anon", null], ["authenticated", jwt("authenticated")]]) reads.push({ id: `${who}:${t}`, path: `/${t}?select=*&limit=1`, jwt: token });
   reads.push({ id: "anon:rpc", method: "POST", path: "/rpc/office_record_meta_social_receipt", body: { p_channel: "facebook", p_binding: "1:2", p_mid: "m", p_state: "read" } });

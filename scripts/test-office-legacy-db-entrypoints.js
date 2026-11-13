@@ -1,5 +1,6 @@
 // Legacy Office database entry points cannot bypass the security baseline or overwrite the Track B dispatch fence.
-// Static checks always run; database checks use a DISPOSABLE Supabase Postgres (never a real project) published on loopback.
+// Static checks always run; database checks use a DISPOSABLE Supabase Postgres (never a real project) published on loopback,
+// and the suite FAILS if Docker or the image is missing.
 // - crm:apply-schema (scripts/apply-supabase-schema.js) refuses fresh databases, is a read-only dry run by default,
 //   applies only with an exact --confirm-target, rejects URL overrides, and rolls back if it would add a violation.
 // - no script applies db/*.sql in filename order; test fixtures use the approved manifest (scripts/office-db-fixture.js).
@@ -63,7 +64,7 @@ function staticChecks() {
 }
 
 async function databaseChecks() {
-  if (sh("docker", ["image", "inspect", PG_IMAGE]).status !== 0) { console.log(`SKIP: docker image ${PG_IMAGE} not available`); return; }
+  if (sh("docker", ["image", "inspect", PG_IMAGE]).status !== 0) throw new Error(`BLOCKED: Docker or the image ${PG_IMAGE} is not available (this suite fails rather than skipping)`);
   const port = await freePort();
   const r = sh("docker", ["run", "-d", "--rm", "--name", PG, "-p", `127.0.0.1:${port}:5432`, "-e", `POSTGRES_PASSWORD=${PW}`, PG_IMAGE]);
   if (r.status !== 0) throw new Error("BLOCKED: postgres container: " + r.stderr);

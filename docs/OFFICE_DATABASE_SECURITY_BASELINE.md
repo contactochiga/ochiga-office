@@ -46,6 +46,12 @@ The repository did not record this posture. On Supabase's defaults, a fresh data
 
 Postgres test fixtures build their databases from the manifest through `scripts/office-db-fixture.js`. A test that exercises one migration excludes it from the manifest and applies that migration itself.
 
+Both fixtures are registered as `office:catalogue-postgres:test` and `office:intake-receipts-postgres:test`.
+
+`npm run office:regression` runs every script whose name ends in `:test` (`office:test` and every `office:*:test`), discovered from `package.json`, then check, lint, secrets, build, `deployment:validate` and `validate:release`.
+
+The Docker suites fail rather than skip when Docker or an image is missing. `office:regression-registry:test` enforces this, and also that every Postgres suite is registered.
+
 No script applies `db/*.sql` in filename order. `npm run office:legacy-db-entrypoints:test` enforces this. It also shows that filename order replaces the fenced receipt function, while the manifest keeps it.
 
 ## Order and later migrations
