@@ -41,13 +41,13 @@ check("RR5", "catalogue and intake fixtures initialize from the approved manifes
 // from the environment or .env files (the security suite's PGHOST override test only sets and restores it), and
 // each starts its own container.
 check("RR6", "the Docker suites use disposable local containers only (no hosted or environment-supplied database)",
-  ["test-catalogue-postgres.js", "test-intake-receipts-postgres.js", "test-office-security-baseline-postgres.js", "test-office-legacy-db-entrypoints.js"]
-    .every((f) => !/process\.env\.(SUPABASE|DATABASE_URL|PG(HOST|PASSWORD|USER|DATABASE)\b)|dotenv|\.env\.lead-agents/.test(source(f).replace(/^.*\bsaved\b.*process\.env\.PGHOST.*$/gm, "")) && /docker", \["run"/.test(source(f))));
+  ["test-catalogue-postgres.js", "test-intake-receipts-postgres.js", "test-office-security-baseline-postgres.js", "test-office-legacy-db-entrypoints.js", "test-office-opportunity-outcome-authority-sql.js"]
+    .every((f) => !/process\.env\.(SUPABASE|DATABASE_URL|PG(HOST|PASSWORD|USER|DATABASE)\b)|dotenv|\.env\.lead-agents/.test(source(f).replace(/^.*\bsaved\b.*process\.env\.PGHOST.*$/gm, "")) && /docker", \["run"|docker\("run"/.test(source(f))));
 
 // A missing image (or no Docker) must fail the suite, not skip it. The bogus image name never reaches a registry:
 // each suite checks `docker image inspect` before running anything.
 const missing = {};
-for (const file of ["test-catalogue-postgres.js", "test-intake-receipts-postgres.js", "test-office-security-baseline-postgres.js", "test-office-legacy-db-entrypoints.js", "test-meta-social-concurrency.js"]) {
+for (const file of ["test-catalogue-postgres.js", "test-intake-receipts-postgres.js", "test-office-security-baseline-postgres.js", "test-office-legacy-db-entrypoints.js", "test-meta-social-concurrency.js", "test-office-opportunity-outcome-authority-sql.js"]) {
   const run = spawnSync(process.execPath, [path.join(ROOT, "scripts", file)], { cwd: ROOT, encoding: "utf8", timeout: 120_000,
     env: { ...process.env, PG_IMAGE: "office-regression-registry.invalid/no-such-image:0" } });
   missing[file] = { status: run.status, blocked: /BLOCKED/.test(run.stdout + run.stderr), skipped: /\bSKIP\b/.test(run.stdout + run.stderr) };
@@ -94,6 +94,17 @@ const local = suiteFiles.filter((file) => file !== "scripts/" + path.basename(__
 check("RR12", `no registered suite (${suiteFiles.length} files) reads a machine-specific path such as ~/Downloads`, local.length === 0, local);
 const generated = spawnSync(process.execPath, [path.join(ROOT, "scripts", "fixtures", "build-ingestion-fixtures.js"), "--check"], { encoding: "utf8" });
 check("RR13", "the committed synthetic ingestion workbooks match their deterministic generator", generated.status === 0, generated.stderr || generated.stdout);
+
+// No suite may depend on a database container that something else must already be running (for example another
+// repository's local Supabase stack): every suite that uses `docker exec` starts its own named container, and no suite
+// names a fixed external container or takes one from the environment.
+const external = suiteFiles.filter((file) => file !== "scripts/" + path.basename(__filename)).filter((file) => {
+  const code = fs.readFileSync(path.join(ROOT, file), "utf8");
+  const execs = /docker", \[?"exec"|"docker", \["exec"|docker\("exec"|\["exec", /.test(code) || /docker exec/.test(code);
+  const startsOwn = /"run"[^\n]*"--name"|docker\("run"[^\n]*"--name"/.test(code);
+  return (execs && !startsOwn) || /supabase_db_|process\.env\.[A-Z_]*CONTAINER\b/.test(code);
+});
+check("RR14", "no registered suite depends on a pre-existing or externally named database container", external.length === 0, external);
 
 console.log(`\n${checks - failures}/${checks} checks passed`);
 console.log(failures ? "Office regression registry: FAIL" : "Office regression registry: PASS");
