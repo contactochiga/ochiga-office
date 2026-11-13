@@ -83,6 +83,8 @@ services:
         value: "false"
       - key: OFFICE_BACKEND_EVENT_PATH
         value: /office/events/material
+      - key: OFFICE_WHATSAPP_SENDER_ID_CAPTURE_ENABLED
+        value: "false"
       - key: OFFICE_EMAIL_PROVIDER
         sync: false
       - key: RESEND_API_KEY

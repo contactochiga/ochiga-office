@@ -257,6 +257,9 @@ function createConfig() {
     // bridge entirely without touching any call site — that IS the
     // rollback mechanism.
     officeWorkflowBridgeEnabled: booleanFromEnv(process.env.OFFICE_WORKFLOW_BRIDGE_ENABLED, true),
+    // WhatsApp sender identity Phase 1: when ON, Meta's business-scoped user ID is associated with the phone-matched lead (whatsapp-sender-identity.js).
+    // Default OFF; requires db/20261113_whatsapp_sender_identities.sql. Never changes matching, replies, goals or opt-outs.
+    whatsappSenderIdCaptureEnabled: booleanFromEnv(process.env.OFFICE_WHATSAPP_SENDER_ID_CAPTURE_ENABLED, false),
     officeWorkflowsPath: process.env.OFFICE_WORKFLOWS_PATH || "/office/workflows",
     // Tasks Domain UI — Office's own additive bridge into the Shared
     // Automation Runtime (Ochiga-backend src/routes/scenes.ts). Unlike

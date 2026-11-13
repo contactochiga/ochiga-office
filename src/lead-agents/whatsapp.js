@@ -2,6 +2,7 @@ const axios = require("axios");
 const crypto = require("crypto");
 const { normalizePhone } = require("./normalize-lead");
 const { describeInboundMessage } = require("./whatsapp-media");
+const { looksLikeBusinessScopedId, senderIdentityFromMessage } = require("./whatsapp-sender-identity");
 
 // Writes every UTF-16 code unit above U+007F as a lower-case \uXXXX escape (surrogate pairs become two escapes), leaving ASCII untouched.
 function escapeNonAscii(text) {
@@ -85,7 +86,10 @@ class WhatsAppCloudAdapter {
           const described = describeInboundMessage(message);
           events.push({
             kind: "message",
-            from: normalizePhone(message.from),
+            // the sender's PHONE number only: a business-scoped user ID ("US.…") is never turned into digits and used as a phone
+            from: looksLikeBusinessScopedId(message.from) ? "" : normalizePhone(message.from),
+            // Meta business-scoped user ID + the business account it is scoped to (whatsapp-sender-identity.js); never used for matching or sending in Phase 1
+            sender_identity: senderIdentityFromMessage({ message, contacts: value.contacts, businessAccountId: entry.id }),
             message_id: message.id,
             message_type: message.type || "unknown",
             timestamp: message.timestamp,
@@ -101,7 +105,7 @@ class WhatsAppCloudAdapter {
           events.push({
             kind: "status",
             message_id: status.id,
-            recipient_id: normalizePhone(status.recipient_id),
+            recipient_id: looksLikeBusinessScopedId(status.recipient_id) ? "" : normalizePhone(status.recipient_id),
             status: status.status,
             timestamp: status.timestamp,
             raw: status,

@@ -4,6 +4,7 @@ const crypto = require("crypto");
 const { normalizeEmail, normalizeLeadInput, normalizeLeadPatch, normalizeText } = require("./normalize-lead");
 const { buildDeploymentFromLead, normalizePartner } = require("./commercial-ops");
 const { buildOfficeSnapshot, createOfficeSeedData } = require("./office-data");
+const { summarizeSenderIdentities } = require("./whatsapp-sender-identity");
 
 const MANUAL_SEND_PATCH_FIELDS = ["status", "provider_message_id", "provider_response_code", "failure_reason", "conversation_id", "conversation_recorded_at", "resolved_by", "resolved_at", "resolution_note"];
 
@@ -50,6 +51,7 @@ class FileLeadAgentsStore {
       whatsapp_inbound_claims: {},
       whatsapp_manual_sends: [],
       communication_delivery_outbox: [],
+      whatsapp_sender_identities: [],
       office_support_mappings: [],
       office_handoffs: [],
       office_staff_profiles: [],
@@ -129,6 +131,7 @@ class FileLeadAgentsStore {
         runtime_settings: parsed.runtime_settings && typeof parsed.runtime_settings === "object" && !Array.isArray(parsed.runtime_settings) ? parsed.runtime_settings : {},
         whatsapp_manual_sends: Array.isArray(parsed.whatsapp_manual_sends) ? parsed.whatsapp_manual_sends : [],
         communication_delivery_outbox: Array.isArray(parsed.communication_delivery_outbox) ? parsed.communication_delivery_outbox : [],
+        whatsapp_sender_identities: Array.isArray(parsed.whatsapp_sender_identities) ? parsed.whatsapp_sender_identities : [],
         whatsapp_inbound_claims: parsed.whatsapp_inbound_claims && typeof parsed.whatsapp_inbound_claims === "object" && !Array.isArray(parsed.whatsapp_inbound_claims) ? parsed.whatsapp_inbound_claims : {},
         // product catalogue (catalogue-store.js FileCatalogueStore) and its supplier registry (CORPORATE_COLLECTIONS.suppliers)
         ...(parsed.catalogue && typeof parsed.catalogue === "object" && !Array.isArray(parsed.catalogue) ? { catalogue: parsed.catalogue } : {}),
@@ -704,6 +707,38 @@ class FileLeadAgentsStore {
 
   async listManualSendsForLead(leadId, limit = 200) {
     return this.state.whatsapp_manual_sends.filter((r) => r.lead_id === leadId).sort((a, b) => String(a.created_at).localeCompare(String(b.created_at))).slice(-limit).map((r) => ({ ...r }));
+  }
+
+  // ---- WhatsApp sender identity (see db/20261113_whatsapp_sender_identities.sql and whatsapp-sender-identity.js) ----
+  // rows in this business account for this BSUID (any state), plus this lead's linked row
+  async findWhatsAppSenderIdentities({ businessAccountId, businessScopedUserId, leadId }) {
+    return this.state.whatsapp_sender_identities
+      .filter((r) => r.business_account_id === businessAccountId && (r.business_scoped_user_id === businessScopedUserId || (r.lead_id === leadId && r.state === "linked")))
+      .map((r) => ({ ...r }));
+  }
+
+  // the two partial unique indexes: one linked lead per (account, BSUID), one linked BSUID per (account, lead); plus one row per (account, BSUID, lead)
+  async insertWhatsAppSenderIdentityLink(row) {
+    const rows = this.state.whatsapp_sender_identities.filter((r) => r.business_account_id === row.business_account_id);
+    if (rows.some((r) => (r.state === "linked" && (r.business_scoped_user_id === row.business_scoped_user_id || r.lead_id === row.lead_id)) || (r.business_scoped_user_id === row.business_scoped_user_id && r.lead_id === row.lead_id))) return { created: false, duplicate: true };
+    const now = this.nowIso();
+    const created = { id: crypto.randomUUID(), conflict_reason: null, conflicting_lead_id: null, first_seen_at: now, created_at: now, updated_at: now, ...row };
+    this.state.whatsapp_sender_identities.push(created);
+    await this.persist();
+    return { created: true, row: { ...created } };
+  }
+
+  async insertWhatsAppSenderIdentityConflict(row) {
+    if (this.state.whatsapp_sender_identities.some((r) => r.business_account_id === row.business_account_id && r.business_scoped_user_id === row.business_scoped_user_id && r.lead_id === row.lead_id)) return { created: false };
+    const now = this.nowIso();
+    const created = { id: crypto.randomUUID(), first_seen_at: now, created_at: now, updated_at: now, ...row };
+    this.state.whatsapp_sender_identities.push(created);
+    await this.persist();
+    return { created: true, row: { ...created } };
+  }
+
+  async whatsAppSenderIdentitySummary() {
+    return summarizeSenderIdentities(this.state.whatsapp_sender_identities);
   }
 
   // ---- Communication delivery outbox (see db/20261018_communication_delivery_outbox.sql and communication-outbox.js) ----
