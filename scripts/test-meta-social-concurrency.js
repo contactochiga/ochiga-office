@@ -1,5 +1,6 @@
 const assert = require("node:assert/strict");
 const { execFileSync } = require("node:child_process");
+const net = require("node:net");
 const { readFileSync } = require("node:fs");
 const path = require("node:path");
 const { Client } = require("pg");
@@ -7,18 +8,20 @@ const { Client } = require("pg");
 const docker = (...args) => execFileSync("docker", args, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
 const sql = (name) => readFileSync(path.join(__dirname, "../db", name + ".sql"), "utf8");
 const PG_IMAGE = process.env.PG_IMAGE || "postgres:16-alpine";
+const freePort = () => new Promise((resolve) => { const s = net.createServer(); s.listen(0, "127.0.0.1", () => { const { port } = s.address(); s.close(() => resolve(port)); }); });
 
 async function main() {
   // A missing prerequisite fails the suite (and its parent npm script); it never passes by skipping.
   try { docker("image", "inspect", PG_IMAGE); }
   catch { throw new Error(`BLOCKED: Docker or the image ${PG_IMAGE} is unavailable`); }
   const name = "office-social-test-" + process.pid;
-  docker("run", "--rm", "-d", "--name", name, "-e", "POSTGRES_PASSWORD=fixture", "-p", "127.0.0.1::5432", PG_IMAGE);
+  // An explicit loopback port (as the other Docker suites use) works with every Docker setup, including host networking.
+  const port = await freePort();
+  docker("run", "--rm", "-d", "--name", name, "-e", "POSTGRES_PASSWORD=fixture", "-p", `127.0.0.1:${port}:5432`, PG_IMAGE);
   const clients = [];
   try {
-    const port = Number(docker("port", name, "5432/tcp").split(":").pop());
     const connect = async () => {
-      const client = new Client({ host: "127.0.0.1", port, user: "postgres", password: "fixture", database: "postgres", statement_timeout: 10_000 });
+      const client = new Client({ host: "127.0.0.1", port, user: "postgres", password: "fixture", database: "postgres", statement_timeout: 10_000, connectionTimeoutMillis: 3_000 });
       try { await client.connect(); } catch (error) { await client.end(); throw error; }
       clients.push(client);
       return client;
