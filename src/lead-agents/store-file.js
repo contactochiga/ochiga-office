@@ -68,6 +68,9 @@ class FileLeadAgentsStore {
       staff_message_attachments: [],
       staff_message_reactions: [],
       office_content_items: [],
+      office_social_posts: [],
+      office_social_comments: [],
+      office_social_comment_events: [],
       office_reports: [],
       office_development_projects: [],
       // Oyi Runtime Contract, Domain 3 (Task) — durable link between an
@@ -154,6 +157,9 @@ class FileLeadAgentsStore {
         staff_message_attachments: Array.isArray(parsed.staff_message_attachments) ? parsed.staff_message_attachments : [],
         staff_message_reactions: Array.isArray(parsed.staff_message_reactions) ? parsed.staff_message_reactions : [],
         office_content_items: Array.isArray(parsed.office_content_items) ? parsed.office_content_items : [],
+        office_social_posts: Array.isArray(parsed.office_social_posts) ? parsed.office_social_posts : [],
+        office_social_comments: Array.isArray(parsed.office_social_comments) ? parsed.office_social_comments : [],
+        office_social_comment_events: Array.isArray(parsed.office_social_comment_events) ? parsed.office_social_comment_events : [],
         office_reports: Array.isArray(parsed.office_reports) ? parsed.office_reports : [],
         office_development_projects: Array.isArray(parsed.office_development_projects) ? parsed.office_development_projects : [],
         ochiga_workflow_links: Array.isArray(parsed.ochiga_workflow_links) ? parsed.ochiga_workflow_links : [],
@@ -364,6 +370,56 @@ class FileLeadAgentsStore {
     return this.state.leads.map((lead) => this.visibleLead(lead)).sort((a, b) =>
       String(b.updated_at).localeCompare(String(a.updated_at))
     );
+  }
+
+  // Content → Posts & Comments (single-process fixture driver; the deployed driver uses office_record_social_comment_event).
+  async recordSocialCommentEvent({ channel, asset, post, comment, parent, verb, eventKey, occurredAt, author, authorLabel, authorIsPage, body }) {
+    if (this.state.office_social_comment_events.some((row) => row.event_key === eventKey)) { await this.pendingWrite; return "duplicate"; }
+    let postRow = this.state.office_social_posts.find((row) => row.channel === channel && row.asset_id === asset && row.provider_post_id === post);
+    if (!postRow) {
+      postRow = { id: crypto.randomUUID(), channel, asset_id: asset, provider_post_id: post, content_item_id: null, origin: "external", media_kind: null, first_seen_at: this.nowIso(), last_comment_at: null };
+      this.state.office_social_posts.push(postRow);
+    }
+    let row = this.state.office_social_comments.find((c) => c.channel === channel && c.asset_id === asset && c.provider_comment_id === comment);
+    let applied = true;
+    if (!row) {
+      row = { id: crypto.randomUUID(), post_id: postRow.id, channel, asset_id: asset, provider_comment_id: comment, provider_parent_id: parent || null,
+        author_provider_id: author || null, author_label: authorLabel || null, author_is_page: Boolean(authorIsPage),
+        body: verb === "remove" ? null : body ?? null, visibility: verb === "hide" ? "hidden" : "visible",
+        deleted_at: verb === "remove" ? occurredAt : null, edited_at: verb === "edited" ? occurredAt : null,
+        provider_created_at: verb === "add" ? occurredAt : null, first_seen_at: this.nowIso(), last_event_at: occurredAt };
+      this.state.office_social_comments.push(row);
+    } else if (row.post_id !== postRow.id) {
+      throw new Error("social comment post conflict");
+    } else if (row.deleted_at || Date.parse(occurredAt) < Date.parse(row.last_event_at)) {
+      applied = false;
+    } else {
+      if (verb === "remove") { row.body = null; row.deleted_at = occurredAt; }
+      else if ((verb === "add" || verb === "edited") && body != null) row.body = body;
+      if (verb === "hide") row.visibility = "hidden";
+      if (verb === "unhide") row.visibility = "visible";
+      if (verb === "edited") row.edited_at = occurredAt;
+      if (verb === "add" && !row.provider_created_at) row.provider_created_at = occurredAt;
+      row.provider_parent_id = row.provider_parent_id || parent || null;
+      row.author_provider_id = row.author_provider_id || author || null;
+      row.author_label = row.author_label || authorLabel || null;
+      row.last_event_at = occurredAt;
+    }
+    this.state.office_social_comment_events.push({ id: crypto.randomUUID(), comment_id: row.id, event_key: eventKey, verb, provider_time: occurredAt, received_at: this.nowIso(), applied });
+    if (!postRow.last_comment_at || Date.parse(occurredAt) > Date.parse(postRow.last_comment_at)) postRow.last_comment_at = occurredAt;
+    await this.persist();
+    return applied ? "accepted" : "stale";
+  }
+
+  async listSocialPosts({ limit = 50 } = {}) {
+    return [...this.state.office_social_posts].sort((a, b) => String(b.last_comment_at || "").localeCompare(String(a.last_comment_at || ""))).slice(0, limit)
+      .map((post) => ({ ...post, comments: this.state.office_social_comments.filter((c) => c.post_id === post.id).map(({ visibility, deleted_at }) => ({ visibility, deleted_at })) }));
+  }
+
+  async getSocialPost(id) {
+    const post = this.state.office_social_posts.find((row) => row.id === id);
+    if (!post) return null;
+    return { post, comments: this.state.office_social_comments.filter((c) => c.post_id === id) };
   }
 
   async recordMetaSocialMessage({ channel, senderKey, eventKey, text, occurredAt, asset, sender, optedOut }) {

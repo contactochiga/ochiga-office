@@ -34,5 +34,6 @@ lead-agents-schema.sql
 20261113_meta_social_inbound.sql
 20261113_meta_social_staff_replies.sql
 20261113_meta_social_dispatch_fence.sql
+20261114_meta_social_posts_comments.sql
 security/office-security-baseline.sql
 security/office-security-verify.sql

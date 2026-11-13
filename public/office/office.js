@@ -221,6 +221,12 @@ async function apiCreateLetterheadDocument(body) {
 async function apiListContent(status) {
   return api(`/api/lead-agents/admin/content${status ? `?status=${encodeURIComponent(status)}` : ""}`);
 }
+async function apiListSocialPosts() {
+  return api("/api/lead-agents/admin/content/social-posts");
+}
+async function apiGetSocialPost(id) {
+  return api(`/api/lead-agents/admin/content/social-posts/${encodeURIComponent(id)}`);
+}
 async function apiGetContent(id) {
   return api(`/api/lead-agents/admin/content/${encodeURIComponent(id)}`);
 }
@@ -7542,7 +7548,7 @@ const CONTENT_TABS = [
   { key: "overview", label: "Overview", route: "content/overview" },
   { key: "posts", label: "Posts", route: "content" },
   { key: "calendar", label: "Calendar", route: "content/calendar" },
-  { key: "comments", label: "Comments", soon: "Comments need the website, Facebook and Instagram integrations." },
+  { key: "comments", label: "Comments", route: "content/comments", soon: "Comments need the website, Facebook and Instagram integrations." },
   { key: "analytics", label: "Analytics", soon: "Analytics need a connected analytics source." },
 ];
 const CONTENT_STATUS_FILTERS = [["", "All status"], ["draft", "Draft"], ["in_review", "In review"], ["approved", "Approved"], ["scheduled", "Scheduled"], ["published", "Published"], ["unpublished", "Unpublished"]];
@@ -7669,7 +7675,7 @@ function contentHistoryRow(entry) {
 
 async function renderContentRoute(outlet, rest, token) {
   const [sub = ""] = rest;
-  const tabKey = ["overview", "calendar", "table"].includes(sub) ? sub : "posts";
+  const tabKey = ["overview", "calendar", "table", "comments"].includes(sub) ? sub : "posts";
   const postId = tabKey === "posts" && sub ? sub : null;
   setTopbar("Content", tabKey === "table" ? "Posts" : titleCase(tabKey));
   // Already showing the Posts workspace: change the selected post in place (no rebuild), like the CRM leads workspace.
@@ -7679,7 +7685,10 @@ async function renderContentRoute(outlet, rest, token) {
   }
   let items;
   try {
-    items = (await apiListContent()).items || [];
+    // Facebook/Instagram posts with comments are optional: when they cannot be read, the Comments tab simply stays unavailable.
+    const [list, social] = await Promise.all([apiListContent(), apiListSocialPosts().catch(() => null)]);
+    items = list.items || [];
+    contentState.social = social && Array.isArray(social.posts) ? social : { enabled: false, posts: [] };
   } catch (err) {
     if (token !== state.renderToken) return;
     outlet.innerHTML = "";
@@ -7701,6 +7710,7 @@ async function renderContentRoute(outlet, rest, token) {
     outlet.appendChild(body);
     if (tabKey === "overview") renderContentOverview(body, items);
     else if (tabKey === "calendar") renderContentCalendar(body, items);
+    else if (tabKey === "comments") await renderContentComments(body, rest[1] || null, token);
     else renderContentTable(body, items);
     return;
   }
@@ -7708,10 +7718,76 @@ async function renderContentRoute(outlet, rest, token) {
   await contentSelect(postId, token);
 }
 
+// Content → Comments: public comments on Facebook Page and Instagram posts, shown with the post they belong to. Read-only in this
+// slice (no replies or moderation). Comments are never CRM leads and never linked to Messenger/Instagram DM conversations.
+function contentCommentsAvailable() {
+  return Boolean(contentState.social && (contentState.social.enabled || contentState.social.posts.length));
+}
+const SOCIAL_CHANNEL = { facebook: { label: "Facebook Page", cls: "rel-src-fb", glyph: "f" }, instagram: { label: "Instagram", cls: "rel-src-ig", glyph: "IG" } };
+
+async function renderContentComments(host, selectedId, token) {
+  const social = contentState.social || { enabled: false, posts: [] };
+  if (!contentCommentsAvailable()) {
+    host.appendChild(el(`<div class="content-not-connected" data-panel-kind="comments"><b>Not connected</b><span>Comments from Facebook and Instagram are not collected yet.</span></div>`));
+    return;
+  }
+  const layout = el(`<div class="content-comments"><div class="content-comments-posts" role="list" aria-label="Posts with comments"></div><div class="content-comments-thread"></div></div>`);
+  host.appendChild(layout);
+  const list = layout.querySelector(".content-comments-posts");
+  const thread = layout.querySelector(".content-comments-thread");
+  if (!social.enabled) list.appendChild(el(`<p class="home-panel-empty">Collection is switched off. Stored comments are shown read-only.</p>`));
+  if (!social.posts.length) {
+    list.appendChild(el(`<p class="home-panel-empty">No Facebook or Instagram post has received a comment yet.</p>`));
+    thread.appendChild(el(`<p class="home-panel-empty">Comments appear here, under the post they were left on.</p>`));
+    return;
+  }
+  const active = social.posts.find((p) => p.id === selectedId) || social.posts[0];
+  social.posts.forEach((post) => {
+    const ch = SOCIAL_CHANNEL[post.channel] || SOCIAL_CHANNEL.facebook;
+    const c = post.comment_counts || { visible: 0, hidden: 0, deleted: 0 };
+    const row = el(`<button type="button" role="listitem" class="content-comments-post ${post.id === active.id ? "active" : ""}" data-social-post="${escapeHtml(post.id)}">
+      <span class="rel-src sm ${ch.cls}"><b>${escapeHtml(ch.glyph)}</b></span>
+      <span class="content-comments-post-text"><b>${escapeHtml(ch.label)} post</b><span>${c.visible} visible${c.hidden ? ` · ${c.hidden} hidden` : ""}${c.deleted ? ` · ${c.deleted} deleted` : ""}${post.last_comment_at ? ` · ${escapeHtml(fmtRelative(post.last_comment_at))}` : ""}</span></span>
+    </button>`);
+    row.addEventListener("click", () => navigate(`content/comments/${post.id}`));
+    list.appendChild(row);
+  });
+  thread.appendChild(el(`<p class="rel-faint">Loading comments…</p>`));
+  let detail;
+  try {
+    detail = await apiGetSocialPost(active.id);
+  } catch (err) {
+    if (token !== state.renderToken) return;
+    thread.innerHTML = "";
+    thread.appendChild(errorPanel(err.message || "Could not load comments."));
+    return;
+  }
+  if (token !== state.renderToken) return;
+  thread.innerHTML = "";
+  const ch = SOCIAL_CHANNEL[detail.post.channel] || SOCIAL_CHANNEL.facebook;
+  thread.appendChild(el(`<div class="content-comments-head"><b>${escapeHtml(ch.label)} post</b><span>Post ${escapeHtml(detail.post.provider_post_id)}${detail.post.origin === "office" ? " · published from Office" : " · published outside Office"}</span>
+    <span class="content-comments-readonly">Read-only. Replying and hiding comments are not enabled yet.</span></div>`));
+  const byParent = new Map();
+  detail.comments.forEach((c) => { const key = c.provider_parent_id || ""; if (!byParent.has(key)) byParent.set(key, []); byParent.get(key).push(c); });
+  const known = new Set(detail.comments.map((c) => c.provider_comment_id));
+  const roots = detail.comments.filter((c) => !c.provider_parent_id || !known.has(c.provider_parent_id));
+  const renderComment = (c, depth) => {
+    const node = el(`<div class="content-comment${depth ? " reply" : ""}${c.visibility === "hidden" ? " is-hidden" : ""}" data-comment="${escapeHtml(c.id)}">
+      <div class="content-comment-meta"><b>${c.author_is_page ? "Your Page" : escapeHtml(c.author_label || "Someone")}</b><span>${escapeHtml(fmtDateTime(c.created_at))}${c.edited_at ? " · edited" : ""}</span>
+        ${c.visibility === "hidden" && !c.deleted ? '<span class="content-comment-flag">Hidden</span>' : ""}</div>
+      <div class="content-comment-body">${c.deleted ? '<span class="rel-faint">Deleted by its author. The text is no longer stored.</span>' : c.body ? escapeHtml(c.body) : '<span class="rel-faint">No text (for example, an image only).</span>'}</div>
+    </div>`);
+    thread.appendChild(node);
+    (byParent.get(c.provider_comment_id) || []).forEach((r) => renderComment(r, depth + 1));
+  };
+  if (!roots.length) thread.appendChild(el(`<p class="home-panel-empty">This post has no comments.</p>`));
+  roots.forEach((c) => renderComment(c, 0));
+}
+
 function renderContentTabs(active) {
   const tabs = el(`<div class="crm-tabs content-tabs"></div>`);
   CONTENT_TABS.forEach((tab) => {
-    if (tab.soon) {
+    if (tab.soon && !(tab.key === "comments" && contentCommentsAvailable())) {
       tabs.appendChild(el(`<button type="button" class="crm-tab content-tab-soon" disabled aria-disabled="true" title="${escapeHtml(`Coming soon. ${tab.soon}`)}">${escapeHtml(tab.label)} <span class="content-soon">Soon</span></button>`));
       return;
     }

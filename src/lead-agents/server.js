@@ -8500,6 +8500,39 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
 
       // Editorial history of ONE article: only audit events whose target is this exact content item, gated like reading the article itself (content.write).
       // Only workflow fields are returned -- the request ip / user agent and any other audit metadata stay server-side.
+      // Content → Posts & Comments: Facebook Page and Instagram posts with their public comments (read-only). Comments stay
+      // attached to their post; commenter platform ids are never returned and nothing here touches CRM leads or DMs.
+      if (pathname === "/api/lead-agents/admin/content/social-posts" || /^\/api\/lead-agents\/admin\/content\/social-posts\/[^/]+$/.test(pathname)) {
+        if (req.method !== "GET") { methodNotAllowed(res, "GET"); return; }
+        authorizePermission(authContext, "content.write");
+        const counts = (comments) => ({
+          total: comments.length,
+          visible: comments.filter((c) => !c.deleted_at && c.visibility === "visible").length,
+          hidden: comments.filter((c) => !c.deleted_at && c.visibility === "hidden").length,
+          deleted: comments.filter((c) => c.deleted_at).length,
+        });
+        const postView = (post, comments) => ({ id: post.id, channel: post.channel, provider_post_id: post.provider_post_id, origin: post.origin,
+          content_item_id: post.content_item_id || null, media_kind: post.media_kind || null, first_seen_at: post.first_seen_at,
+          last_comment_at: post.last_comment_at || null, comment_counts: counts(comments || []) });
+        const postId = pathname.split("/").pop();
+        if (postId === "social-posts") {
+          const posts = await store.listSocialPosts({ limit: 100 });
+          json(res, 200, { enabled: Boolean(config.metaSocialCommentsInboundEnabled), posts: posts.map((p) => postView(p, p.comments)) }, { "x-request-id": ctx.requestId });
+          return;
+        }
+        const found = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(postId) ? await store.getSocialPost(postId) : null;
+        if (!found) { json(res, 404, { error: "social_post_not_found" }, { "x-request-id": ctx.requestId }); return; }
+        json(res, 200, {
+          enabled: Boolean(config.metaSocialCommentsInboundEnabled),
+          post: postView(found.post, found.comments),
+          comments: found.comments.map((c) => ({ id: c.id, provider_comment_id: c.provider_comment_id, provider_parent_id: c.provider_parent_id || null,
+            author_label: c.author_label || null, author_is_page: Boolean(c.author_is_page), body: c.deleted_at ? null : c.body ?? null,
+            visibility: c.visibility, deleted: Boolean(c.deleted_at), edited_at: c.edited_at || null,
+            created_at: c.provider_created_at || c.first_seen_at })),
+        }, { "x-request-id": ctx.requestId });
+        return;
+      }
+
       const contentHistoryMatch = pathname.match(/^\/api\/lead-agents\/admin\/content\/([^/]+)\/history$/);
       if (contentHistoryMatch) {
         if (req.method !== "GET") {

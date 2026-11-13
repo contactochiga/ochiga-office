@@ -169,6 +169,8 @@ function createConfig() {
     metaAppSecret: process.env.META_APP_SECRET || "",
     metaSocialInboundEnabled: process.env.OFFICE_META_SOCIAL_INBOUND_ENABLED === "true",
     metaSocialOutboundEnabled: process.env.OFFICE_META_SOCIAL_OUTBOUND_ENABLED === "true",
+    // Content → Posts & Comments: public comments on Facebook Page and Instagram posts (ingestion only). Independent of DMs.
+    metaSocialCommentsInboundEnabled: process.env.OFFICE_META_COMMENTS_INBOUND_ENABLED === "true",
     metaSocialOperatorIds: stringListFromEnv(process.env.OFFICE_META_SOCIAL_OPERATOR_IDS)
       .filter((id) => /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(id)).map((id) => id.toLowerCase()),
     metaSocialGraphVersion: process.env.META_SOCIAL_GRAPH_VERSION || "",

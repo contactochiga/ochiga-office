@@ -192,6 +192,30 @@ class SupabaseLeadAgentsStore {
     return response.data.map((row) => this.normalizeLead(row));
   }
 
+  // Content → Posts & Comments: one atomic, idempotent RPC per webhook event (db/20261114_meta_social_posts_comments.sql).
+  async recordSocialCommentEvent({ channel, asset, post, comment, parent, verb, eventKey, occurredAt, author, authorLabel, authorIsPage, body }) {
+    const response = await this.client.post("/rpc/office_record_social_comment_event", {
+      p_channel: channel, p_asset: asset, p_post: post, p_comment: comment, p_parent: parent || null, p_verb: verb, p_event_key: eventKey,
+      p_provider_time: occurredAt, p_author: author || null, p_author_label: authorLabel || null, p_author_is_page: Boolean(authorIsPage), p_body: body ?? null,
+    });
+    return response.data;
+  }
+
+  async listSocialPosts({ limit = 50 } = {}) {
+    const response = await this.client.get(`/office_social_posts?select=*,comments:office_social_comments(visibility,deleted_at)&order=last_comment_at.desc.nullslast&limit=${Math.min(Math.max(Number(limit) || 50, 1), 200)}`);
+    if (!Array.isArray(response.data)) throw new Error("social_posts_unreadable");
+    return response.data;
+  }
+
+  async getSocialPost(id) {
+    const posts = await this.client.get(`/office_social_posts?id=eq.${encodeURIComponent(id)}&limit=1`);
+    if (!Array.isArray(posts.data)) throw new Error("social_posts_unreadable");
+    if (!posts.data[0]) return null;
+    const comments = await this.client.get(`/office_social_comments?post_id=eq.${encodeURIComponent(id)}&order=provider_created_at.asc.nullslast,first_seen_at.asc`);
+    if (!Array.isArray(comments.data)) throw new Error("social_comments_unreadable");
+    return { post: posts.data[0], comments: comments.data };
+  }
+
   async recordMetaSocialMessage({ channel, senderKey, eventKey, text, occurredAt, asset, sender, optedOut }) {
     const response = await this.client.post("/rpc/office_record_meta_social_reply_target", {
       p_channel: channel, p_sender_key: senderKey, p_event_key: eventKey, p_text: text, p_occurred_at: occurredAt,

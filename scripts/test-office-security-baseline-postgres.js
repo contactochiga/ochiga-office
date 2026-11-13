@@ -37,7 +37,7 @@ const SNAPSHOT = `select md5(string_agg(x, '|' order by x)) from (
   union all select 'a:'||attrelid::regclass||'.'||attname||':'||attacl::text from pg_attribute where attacl is not null and attrelid in (select oid from pg_class where relnamespace = 'public'::regnamespace)
   union all select 'p:'||oid::regprocedure||':'||coalesce(proacl::text,'') from pg_proc where pronamespace = 'public'::regnamespace
   union all select 'd:'||defaclrole::regrole||':'||defaclnamespace||':'||defaclobjtype||':'||defaclacl::text from pg_default_acl) s`;
-const PROBE_TABLES = ["leads", "conversations", "lead_channel_states", "admin_users", "audit_events", "whatsapp_manual_sends", "office_meta_social_pending_receipts", "catalogue_products", "office_intake_receipts"];
+const PROBE_TABLES = ["leads", "conversations", "lead_channel_states", "admin_users", "audit_events", "whatsapp_manual_sends", "office_meta_social_pending_receipts", "office_social_posts", "office_social_comments", "office_social_comment_events", "catalogue_products", "office_intake_receipts"];
 
 async function manifestChecks() {
   const order = migrationOrder();

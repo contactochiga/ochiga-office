@@ -78,8 +78,53 @@ function parseMessages(body, config) {
   return { messages, receipts, skipped };
 }
 
+// Content → Posts & Comments. Public comments arrive as entry[].changes[] on the same signed callback as DMs
+// (Facebook field "feed" with item "comment"; Instagram field "comments"). They are recorded against the post they were
+// left on, never against a CRM lead or a DM identity. Ingestion only: nothing is sent to Meta.
+const COMMENT_ID = /^[A-Za-z0-9_.:-]{1,200}$/;
+const FEED_VERBS = new Set(["add", "edited", "remove", "hide", "unhide"]);
+const seconds = (value) => (Number.isFinite(value) && value > 0 ? (value > 1e12 ? value : value * 1000) : NaN);
+function parseComments(body, config) {
+  const channel = CHANNELS.get(body?.object);
+  const asset = channel && configuredAsset(config, channel);
+  const comments = [];
+  let skipped = 0;
+  if (!asset) return { comments, skipped };
+  for (const entry of body.entry) {
+    if (!Array.isArray(entry?.changes)) continue;
+    if (entry.id !== asset) { skipped += entry.changes.length; continue; }
+    for (const change of entry.changes) {
+      const value = change?.value || {};
+      let event = null;
+      if (channel === "facebook" && change?.field === "feed" && value.item === "comment" && FEED_VERBS.has(value.verb)) {
+        event = { verb: value.verb, comment: value.comment_id, post: value.post_id, parent: value.parent_id && value.parent_id !== value.post_id ? value.parent_id : null,
+          author: value.from?.id, label: value.from?.name, text: value.message, time: seconds(entry.time) || seconds(value.created_time) };
+      } else if (channel === "instagram" && change?.field === "comments") {
+        event = { verb: "add", comment: value.id, post: value.media?.id, parent: value.parent_id || null,
+          author: value.from?.id, label: value.from?.username, text: value.text, time: seconds(entry.time) };
+      }
+      const text = typeof event?.text === "string" ? event.text.trim() : "";
+      if (!event || !COMMENT_ID.test(event.comment || "") || !COMMENT_ID.test(event.post || "") || (event.parent && !COMMENT_ID.test(event.parent)) ||
+          !Number.isFinite(event.time) || event.time > Date.now() + 5 * 60_000 || text.length > 8000 || text.includes("\0")) {
+        skipped++;
+        continue;
+      }
+      const occurredAt = new Date(event.time).toISOString();
+      const author = typeof event.author === "string" && isAssetId(event.author) ? event.author : null;
+      comments.push({
+        channel, asset, post: event.post, comment: event.comment, parent: event.parent, verb: event.verb, occurredAt,
+        author, authorLabel: typeof event.label === "string" ? event.label.slice(0, 200) : null, authorIsPage: author === asset,
+        body: text || null,
+        eventKey: `meta-comment:event:${createHash("sha256").update(JSON.stringify([channel, asset, event.comment, event.verb, occurredAt,
+          createHash("sha256").update(JSON.stringify(value)).digest("hex")])).digest("hex")}`,
+      });
+    }
+  }
+  return { comments, skipped };
+}
+
 async function handleMetaSocialWebhook({ req, res, config, store, log }) {
-  if (!config.metaSocialInboundEnabled) return json(res, 404, { error: "not_found" });
+  if (!config.metaSocialInboundEnabled && !config.metaSocialCommentsInboundEnabled) return json(res, 404, { error: "not_found" });
   if (!config.metaAppSecret || !config.metaSocialVerifyToken ||
       ![...CHANNELS.values()].some((channel) => configuredAsset(config, channel))) {
     return json(res, 503, { error: "webhook_not_configured" });
@@ -109,7 +154,22 @@ async function handleMetaSocialWebhook({ req, res, config, store, log }) {
   const parsed = parseMessages(body, config);
   if (!parsed) return json(res, 400, { error: "invalid_envelope" });
   if (parsed.unconfigured) return json(res, 503, { error: "webhook_not_configured" });
-  const counts = { accepted: 0, duplicate: 0, skipped: parsed.skipped, failed: 0 };
+  // Each surface is processed only when its own switch is on; entries for a disabled surface are counted as skipped.
+  // parseMessages counts an entry without messaging[] as skipped; change-only entries belong to the comments path instead.
+  parsed.skipped -= body.entry.filter((entry) => Array.isArray(entry?.changes) && !Array.isArray(entry?.messaging)).length;
+  if (!config.metaSocialInboundEnabled) { parsed.skipped += parsed.messages.length + parsed.receipts.length; parsed.messages = []; parsed.receipts = []; }
+  const commentBatch = config.metaSocialCommentsInboundEnabled ? parseComments(body, config) : { comments: [], skipped: body.entry.reduce((n, e) => n + (Array.isArray(e?.changes) ? e.changes.length : 0), 0) };
+  const counts = { accepted: 0, duplicate: 0, skipped: parsed.skipped + commentBatch.skipped, failed: 0,
+    ...(config.metaSocialCommentsInboundEnabled ? { comments_accepted: 0, comments_duplicate: 0, comments_stale: 0 } : {}) };
+  for (const comment of commentBatch.comments) {
+    try {
+      const result = await store.recordSocialCommentEvent(comment);
+      if (!["accepted", "duplicate", "stale"].includes(result)) throw new Error("invalid_store_result");
+      counts[`comments_${result}`]++;
+    } catch {
+      counts.failed++;
+    }
+  }
   for (const message of parsed.messages) {
     try {
       const result = await store.recordMetaSocialMessage(message);
@@ -132,4 +192,4 @@ async function handleMetaSocialWebhook({ req, res, config, store, log }) {
   return json(res, counts.failed ? 503 : 200, { ok: !counts.failed, ...counts });
 }
 
-module.exports = { handleMetaSocialWebhook, configuredAsset, senderKeyFor, isOptOut };
+module.exports = { handleMetaSocialWebhook, configuredAsset, senderKeyFor, isOptOut, parseComments };
