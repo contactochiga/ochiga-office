@@ -86,6 +86,15 @@ check("RR11", "the proposed CI workflow is dormant, read-only, secret-free, SHA-
   /npm ci --ignore-scripts/.test(wf) && /run: npm run office:regression$/m.test(wf) &&
   ["public.ecr.aws/supabase/postgres", "public.ecr.aws/supabase/postgrest", "node sha256", "postgres sha256"].every((image) => wf.includes(image)));
 
+// Portability: registered suites read only repository files (no ~/Downloads, home-directory or machine paths), and the
+// committed synthetic ingestion workbooks are exactly what the generator produces.
+const suiteFiles = [...new Set(Object.entries(scripts).filter(([name]) => /:test$/.test(name))
+  .flatMap(([, command]) => [...command.matchAll(/scripts\/[\w.-]+\.(?:c|m)?js/g)].map((m) => m[0])))];
+const local = suiteFiles.filter((file) => file !== "scripts/" + path.basename(__filename)).filter((file) => /Downloads|\/Users\/[A-Za-z]|homedir\(\)/.test(fs.readFileSync(path.join(ROOT, file), "utf8")));
+check("RR12", `no registered suite (${suiteFiles.length} files) reads a machine-specific path such as ~/Downloads`, local.length === 0, local);
+const generated = spawnSync(process.execPath, [path.join(ROOT, "scripts", "fixtures", "build-ingestion-fixtures.js"), "--check"], { encoding: "utf8" });
+check("RR13", "the committed synthetic ingestion workbooks match their deterministic generator", generated.status === 0, generated.stderr || generated.stdout);
+
 console.log(`\n${checks - failures}/${checks} checks passed`);
 console.log(failures ? "Office regression registry: FAIL" : "Office regression registry: PASS");
 process.exit(failures ? 1 : 0);
