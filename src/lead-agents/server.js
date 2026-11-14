@@ -8,7 +8,7 @@ const axios = require("axios");
 const { createConfig } = require("./config");
 const { log } = require("./logger");
 const envelopeObservation = require("./whatsapp-envelope-observation");
-const { handleMetaSocialWebhook } = require("./meta-social-inbound");
+const { handleMetaSocialWebhook, dmChannelEnabled } = require("./meta-social-inbound");
 const { createMetaSocialReplyAdapter, replyPolicy, sendSocialReply } = require("./meta-social-replies");
 const { createMetaSocialPostsAdapter } = require("./meta-social-posts");
 const { createMetaSocialModerationAdapter, moderateComment, reconcileModeration } = require("./meta-social-moderation");
@@ -7101,7 +7101,7 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           return;
         }
         if (req.method !== "POST") { methodNotAllowed(res, "POST"); return; }
-        if (!config.metaSocialOutboundEnabled || !config.metaSocialInboundEnabled) {
+        if (!config.metaSocialOutboundEnabled || !dmChannelEnabled(config, channel)) {
           json(res, 403, { error: "social_reply_disabled" });
           return;
         }
@@ -9689,6 +9689,10 @@ async function start() {
     store_driver: config.storeDriver,
     model: config.openaiModel,
   });
+  // Fail-closed DM channel list: say why Messenger/Instagram DMs are off instead of failing silently.
+  if (config.metaSocialInboundChannelsInvalid || (config.metaSocialInboundEnabled && !config.metaSocialInboundChannels.length)) {
+    log("warn", "meta_social_inbound.no_channels", { reason: config.metaSocialInboundChannelsInvalid ? "invalid_channel_list" : "channel_list_empty" });
+  }
 
   const shutdown = () => {
     log("info", "lead_agents_server.stopping");
