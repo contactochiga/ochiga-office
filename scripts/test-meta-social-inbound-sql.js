@@ -31,6 +31,21 @@ async function main() {
     await db.exec(fenceSql);
     const takeoverSql = readFileSync(path.join(__dirname, "../db/20261117_meta_social_takeover.sql"), "utf8");
     await db.exec(takeoverSql);
+    const ownershipFenceDefinition = (await db.query(`select pg_get_functiondef(
+      'public.office_fence_meta_social_dispatch(uuid,text,text,text)'::regprocedure) as definition`)).rows[0].definition;
+    const rollbackCompatibilitySql = readFileSync(path.join(__dirname,
+      "../db/rollback/20261117_social_dispatch_legacy_fail_closed.sql"), "utf8");
+    await db.exec(rollbackCompatibilitySql);
+    const rollbackFence = await db.query(`select public.office_fence_meta_social_dispatch(
+      null::uuid, 'facebook', 'legacy-sender') as outcome`);
+    assert.equal(rollbackFence.rows[0].outcome, "social_dispatch_claim_lost");
+    const ownershipFenceAfterRollback = (await db.query(`select pg_get_functiondef(
+      'public.office_fence_meta_social_dispatch(uuid,text,text,text)'::regprocedure) as definition`)).rows[0].definition;
+    assert.equal(ownershipFenceAfterRollback, ownershipFenceDefinition,
+      "rollback compatibility must not alter the four-argument ownership fence");
+    await assert.rejects(db.exec(`set role anon; select public.office_fence_meta_social_dispatch(
+      null::uuid, 'facebook', 'legacy-sender');`), { code: "42501" });
+    await db.exec("reset role");
     const call = "select public.office_record_meta_social_reply_target($1,$2,$3,$4,$5,$6,$7,$8) as outcome";
     const input = { channel: "facebook", senderKey: "meta-social:sender:" + "1".repeat(64), eventKey: "meta-social:event:" + "2".repeat(64), text: "fixture", occurredAt: new Date().toISOString(), asset: "111", sender: "333", optedOut: false };
     const store = new SupabaseLeadAgentsStore({ url: "http://127.0.0.1:1", serviceRoleKey: "fixture" });
