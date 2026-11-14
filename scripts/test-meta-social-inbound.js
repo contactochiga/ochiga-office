@@ -176,6 +176,7 @@ async function main() {
     const detail = await (await fetch(inbox + "/" + ig.id, { headers })).json();
     assert.equal(detail.communication.inbound_only_channel, "instagram");
     assert.equal(detail.communication.whatsapp_reply.available, false);
+    assert.equal(detail.communication.social_takeover.available, true);
     assert.equal(detail.thread.entries.find((entry) => entry.kind === "message").channel, "instagram");
     assert.equal(restored.state.conversations.length, 3);
     const reply = (url, lead, channel, request, extra = {}, auth = headers) => fetch(`${url}/api/lead-agents/admin/leads/${lead.id}/${channel}/reply`, {
@@ -192,26 +193,56 @@ async function main() {
       return (await response.json()).communication.social_reply;
     };
     for (const lead of [fb, ig]) {
-      assert.deepEqual(await replyAvailability(lead), { available: true, reason: null });
+      assert.deepEqual(await replyAvailability(lead), { available: false, reason: "social_takeover_required" });
       assert.deepEqual(await replyAvailability(lead, unapproved), { available: false, reason: "staff_permission_required" });
     }
+    const ownershipPath = (lead, channel, action) => `${enabled}/api/lead-agents/admin/leads/${lead.id}/${channel}/${action}`;
+    const ownershipRequest = (url, auth, requestId, extra = {}) => fetch(url, { method: "POST",
+      headers: { "content-type": "application/json", ...auth },
+      body: JSON.stringify({ client_request_id: requestId, ...extra }) });
+    const fbTakeoverId = "11000000-0000-4000-8000-000000000001";
+    assert.equal((await ownershipRequest(ownershipPath(fb, "facebook", "takeover"), unapproved, fbTakeoverId)).status, 403);
+    assert.equal((await ownershipRequest(ownershipPath(fb, "facebook", "takeover"), await staffHeaders("resident@ochiga.local"), "11000000-0000-4000-8000-000000000011")).status, 403);
+    assert.equal((await ownershipRequest(ownershipPath(fb, "facebook", "takeover"), headers, "invalid-request-id")).status, 400);
+    const takeoverResponse = await ownershipRequest(ownershipPath(fb, "facebook", "takeover"), headers, fbTakeoverId);
+    assert.equal(takeoverResponse.status, 200);
+    assert.equal((await takeoverResponse.json()).outcome, "taken_over");
+    const repeatedTakeovers = await Promise.all([
+      ownershipRequest(ownershipPath(fb, "facebook", "takeover"), headers, fbTakeoverId),
+      ownershipRequest(ownershipPath(fb, "facebook", "takeover"), headers, fbTakeoverId),
+    ]);
+    assert.deepEqual(await Promise.all(repeatedTakeovers.map(async (response) => (await response.json()).outcome)), ["taken_over", "taken_over"]);
+    assert.equal(restored.state.notifications.filter((row) => row.type === "social_conversation_ownership" && row.metadata?.request_id === fbTakeoverId).length, 1);
+    assert.equal((await replyAvailability(fb)).available, true);
+    const stateAfterTakeover = await restored.getLeadChannelState(fb.id, "facebook");
+    assert.equal(stateAfterTakeover.human_owner, "social@ochiga.local");
+    assert.equal(stateAfterTakeover.ai_paused, true);
+    assert.equal((await ownershipRequest(ownershipPath(fb, "facebook", "takeover"), headers, "11000000-0000-4000-8000-000000000002", { actor_id: "forged" })).status, 400);
+    const otherId = (await restored.getAdminUserByEmail("unapproved@ochiga.local")).id;
+    const multiOperator = await start({ ...pilot, metaSocialOperatorIds: [operator.id, otherId] }, restored);
+    const otherOwner = await staffHeaders("unapproved@ochiga.local");
+    const competingClaim = await ownershipRequest(`${multiOperator}/api/lead-agents/admin/leads/${fb.id}/facebook/takeover`, otherOwner,
+      "11000000-0000-4000-8000-000000000003");
+    assert.equal(competingClaim.status, 409);
+    assert.equal((await competingClaim.json()).outcome, "owned_by_another");
     assert.equal((await (await reply(enabled, fb, "facebook", "no-pilot", {}, unapproved)).json()).error, "social_operator_required");
     const noOperators = await start({ ...pilot, metaSocialOperatorIds: [] }, restored);
     assert.equal((await (await reply(noOperators, fb, "facebook", "empty-pilot")).json()).error, "social_operator_required");
     assert.equal((await reply(enabled, fb, "facebook", "key", {}, { "x-api-key": "fixture-api" })).status, 403);
     assert.equal((await reply(enabled, fb, "instagram", "wrong")).status, 409);
     assert.equal((await reply(enabled, originalLead, "facebook", "wrong")).status, 409);
+    assert.equal((await ownershipRequest(ownershipPath(originalLead, "facebook", "takeover"), headers,
+      "11000000-0000-4000-8000-000000000012")).status, 404);
     assert.equal((await reply(enabled, fb, "facebook", "forged", { recipient: "444" })).status, 400);
-    await restored.upsertLeadChannelState(fb.id, "facebook", { human_status: "human_active", human_owner: "other@ochiga.local" });
-    const blockedOwner = await (await fetch(`${enabled}/api/lead-agents/admin/crm/relationships/${fb.id}`, { headers })).json();
-    assert.deepEqual(blockedOwner.communication.social_reply, { available: false, reason: "social_takeover_owner_required" });
-    assert.equal((await (await reply(enabled, fb, "facebook", "not-owner")).json()).error, "social_takeover_owner_required");
     assert.equal((await fetch(`${enabled}/api/lead-agents/leads/${fb.id}/channel-state/facebook`, {
       method: "PATCH", headers: { "content-type": "application/json", ...headers },
       body: JSON.stringify({ human_status: "auto", human_owner: "social@ochiga.local" }),
     })).status, 403);
-    await restored.upsertLeadChannelState(fb.id, "facebook", { human_status: "human_active", human_owner: "SOCIAL@ochiga.local" });
+    const igTakeover = await ownershipRequest(ownershipPath(ig, "instagram", "takeover"), headers,
+      "11000000-0000-4000-8000-000000000004");
+    assert.equal(igTakeover.status, 200);
     assert.deepEqual(await replyAvailability(fb), { available: true, reason: null });
+    assert.deepEqual(await replyAvailability(ig), { available: true, reason: null });
     assert.equal(sent.length, 0);
     const duplicate = await Promise.all([reply(enabled, fb, "facebook", "first"), reply(enabled, fb, "facebook", "first")]);
     assert.deepEqual(duplicate.map((r) => r.status).sort(), [200, 409]);
@@ -292,8 +323,26 @@ async function main() {
     assert.equal(sent.length, 4);
     const newLead = async (peer) => {
       await post(enabled, batch("page", page, event(page, { sender: { id: peer }, message: { mid: "in_" + peer, text: "Hello" } })));
-      return restored.state.leads.find((row) => row.meta_social_sender_id === peer);
+      const lead = restored.state.leads.find((row) => row.meta_social_sender_id === peer);
+      const claimed = await ownershipRequest(ownershipPath(lead, "facebook", "takeover"), headers,
+        `22000000-0000-4000-8000-${String(peer).padStart(12, "0")}`);
+      assert.equal(claimed.status, 200);
+      return lead;
     };
+    const simultaneousLead = await newLead("908");
+    await ownershipRequest(ownershipPath(simultaneousLead, "facebook", "release"), headers,
+      "11000000-0000-4000-8000-000000000007");
+    const simultaneousClaims = await Promise.all([
+      ownershipRequest(`${multiOperator}/api/lead-agents/admin/leads/${simultaneousLead.id}/facebook/takeover`, headers,
+        "11000000-0000-4000-8000-000000000008"),
+      ownershipRequest(`${multiOperator}/api/lead-agents/admin/leads/${simultaneousLead.id}/facebook/takeover`, otherOwner,
+        "11000000-0000-4000-8000-000000000009"),
+    ]);
+    assert.deepEqual((await Promise.all(simultaneousClaims.map(async (response) => (await response.json()).outcome))).sort(), ["owned_by_another", "taken_over"]);
+    const actualOwner = await restored.getLeadChannelState(simultaneousLead.id, "facebook");
+    const actualOwnerHeaders = actualOwner.human_owner === "social@ochiga.local" ? headers : otherOwner;
+    assert.equal((await ownershipRequest(`${multiOperator}/api/lead-agents/admin/leads/${simultaneousLead.id}/facebook/release`, actualOwnerHeaders,
+      "11000000-0000-4000-8000-000000000010")).status, 200);
     const deferred = () => { let release; const promise = new Promise((resolve) => { release = resolve; }); return { promise, release }; };
     const delayed = await newLead("901");
     const lookup = restored.getMetaSocialReplyLead.bind(restored);
@@ -376,6 +425,10 @@ async function main() {
     await crossed.promise;
     const activeIntent = restored.state.whatsapp_manual_sends.find((row) => row.lead_id === ordering.id);
     assert.ok(activeIntent.social_dispatch_at);
+    const releaseWhileDispatching = await ownershipRequest(ownershipPath(ordering, "facebook", "release"), headers,
+      "11000000-0000-4000-8000-000000000005");
+    assert.equal(releaseWhileDispatching.status, 409);
+    assert.equal((await releaseWhileDispatching.json()).outcome, "send_outcome_unresolved");
     const callback = receipt("page", page, { delivery: { mids: ["out_ordered"] } }, "905");
     assert.equal((await post(enabled, callback)).status, 200);
     assert.equal((await resolveManualSend(restored, activeIntent.id, { resolution: "confirmed_not_sent" })).httpStatus, 409);
@@ -384,6 +437,16 @@ async function main() {
     assert.equal((await post(enabled, callback)).status, 200);
     assert.equal((await post(enabled, callback)).status, 200);
     assert.equal((await outbound(ordering)).delivery.state, "delivered");
+    const released = await ownershipRequest(ownershipPath(ordering, "facebook", "release"), headers,
+      "11000000-0000-4000-8000-000000000006");
+    assert.equal(released.status, 200);
+    const releasedPayload = await released.json();
+    assert.equal(releasedPayload.outcome, "released");
+    assert.equal(releasedPayload.channel_state.ai_paused, true);
+    assert.equal(releasedPayload.channel_state.human_owner, null);
+    assert.equal((await ownershipRequest(ownershipPath(ordering, "facebook", "release"), headers,
+      "11000000-0000-4000-8000-000000000006")).status, 200);
+    assert.equal((await (await reply(enabled, ordering, "facebook", "released")).json()).error, "social_takeover_required");
     const crossedLead = await newLead("906");
     const { socialReplyAttempts } = await import("../public/office/social-reply-attempt.mjs");
     const browserStorage = new Map();

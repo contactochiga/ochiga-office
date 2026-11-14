@@ -6999,7 +6999,8 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
         const socialOperator = authContext?.type === "session" &&
           config.metaSocialOperatorIds?.includes(String(authContext.userId || "").toLowerCase());
         const socialLead = social && socialOutboundChannelEnabled(config, inboxChannel) ? await store.getMetaSocialReplyLead(leadId).catch(() => null) : null;
-        const socialProblem = social ? (unresolved === null ? "send_state_unavailable" : unresolved.length ? "unresolved_send" :
+        const socialProblem = social ? (!socialOperator || !canReply ? "staff_permission_required" :
+          unresolved === null ? "send_state_unavailable" : unresolved.length ? "unresolved_send" :
           replyPolicy(config, socialLead, inboxChannel) || (channelState === undefined ? "social_takeover_state_unavailable" : socialTakeoverRefusal(channelState, authContext.email))) : null;
         const socialReplyAvailable = Boolean(social && socialOperator && canReply && !socialProblem);
         const autonomy = describeWhatsAppAutonomyStatus(setting, { officialNumber: config.whatsappDisplayNumber });
@@ -7021,6 +7022,7 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           communication: {
             ...(inboxChannel !== "whatsapp" ? { inbound_only_channel: inboxChannel } : {}),
             ...(social ? { social_reply: { available: socialReplyAvailable, reason: socialReplyAvailable ? null : socialProblem || "staff_permission_required" } } : {}),
+            ...(social ? { social_takeover: { available: Boolean(socialOperator && canReply), owned_by_me: Boolean(takeoverActive && authContext.email && String(channelState?.human_owner || "").toLowerCase() === String(authContext.email).toLowerCase()) } } : {}),
             global_autonomous_responses: autonomy.state === "on" ? "on" : autonomy.state === "off" ? "off" : "unknown",
             takeover_active: takeoverActive,
             mode: takeoverActive ? "human" : autonomy.state === "on" ? "autonomous_allowed" : autonomy.state === "off" ? "autonomous_off" : "autonomous_off_unreadable",
@@ -7087,6 +7089,61 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
         }
         await appendAuditRecord({ store, authContext, action: `communication.outbox.${action}`, resourceType: "communication_outbox", resourceId: action, metadata: { dry_run: action === "reconcile" ? result.dry_run : undefined, scanned_events: result.scanned_events, missing_deliveries: result.missing_deliveries, enqueued: result.enqueued, delivered: result.delivered, error: result.error || null, operator: authContext.email || "" }, req, status: result.ok === false ? "failure" : "success" }).catch(() => null);
         json(res, result.ok === false ? 404 : 200, { ok: result.ok !== false, ...result }, { "x-request-id": ctx.requestId });
+        return;
+      }
+
+      // Social ownership actions are session-only, operator-allowlisted, and use
+      // database RPCs so ownership transitions serialize against dispatch.
+      const socialOwnershipMatch = pathname.match(/^\/api\/lead-agents\/admin\/leads\/([^/]+)\/(facebook|instagram)\/(takeover|release)$/);
+      if (socialOwnershipMatch) {
+        if (req.method !== "POST") { methodNotAllowed(res, "POST"); return; }
+        if (authContext?.type !== "session") { json(res, 403, { error: "staff_session_required" }); return; }
+        authorizePermission(authContext, "manage_takeover");
+        if (!config.metaSocialOperatorIds?.includes(String(authContext.userId || "").toLowerCase())) {
+          json(res, 403, { error: "social_operator_required" }); return;
+        }
+        const leadId = decodeURIComponent(socialOwnershipMatch[1]);
+        const channel = socialOwnershipMatch[2];
+        const action = socialOwnershipMatch[3];
+        const body = await readJsonBody(req, 4096);
+        requireObject(body, "body");
+        const requestId = String(body.client_request_id || "");
+        if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(requestId) ||
+            Object.keys(body).some((key) => key !== "client_request_id")) {
+          json(res, 400, { error: "invalid_social_ownership_request" }, { "x-request-id": ctx.requestId }); return;
+        }
+        const socialLead = await store.getMetaSocialReplyLead(leadId).catch(() => null);
+        const conversations = socialLead ? await store.listConversationsForLead(leadId, 500).catch(() => []) : [];
+        if (!socialLead || !conversations.some((row) => row.channel === channel && row.message_role === "user")) {
+          await appendAudit(store, authContext, `communication.${channel}.${action}`, "lead", leadId, { outcome: "social_conversation_not_found" }, req, "failure").catch(() => null);
+          json(res, 404, { error: "social_conversation_not_found" }, { "x-request-id": ctx.requestId }); return;
+        }
+        let result;
+        try {
+          result = await store.transitionMetaSocialOwnership({
+            leadId, channel, action, actorId: authContext.userId, actorEmail: authContext.email, requestId,
+          });
+        } catch {
+          await appendAudit(store, authContext, `communication.${channel}.${action}`, "lead", leadId, { outcome: "ownership_state_unavailable" }, req, "failure").catch(() => null);
+          json(res, 503, { error: "ownership_state_unavailable" }, { "x-request-id": ctx.requestId }); return;
+        }
+        const outcome = result?.outcome || "ownership_state_unavailable";
+        const success = ["taken_over", "already_owned", "released"].includes(outcome);
+        await appendAudit(store, authContext, `communication.${channel}.${action}`, "lead", leadId,
+          { outcome, revision: result?.state?.social_ownership_revision ?? null, request_id: requestId }, req, success ? "success" : "failure").catch(() => null);
+        if (success && !result.replayed && ["taken_over", "released"].includes(outcome)) {
+          await store.createNotification({
+            lead_id: leadId, type: "social_conversation_ownership", urgency: "low", channel: "internal",
+            recipient_email: authContext.email, related_type: "lead", related_id: leadId,
+            reason: outcome,
+            summary: outcome === "taken_over"
+              ? `You took ownership of this ${channel === "facebook" ? "Messenger" : "Instagram"} conversation. AI replies remain paused.`
+              : `You released ownership of this ${channel === "facebook" ? "Messenger" : "Instagram"} conversation. AI replies remain paused.`,
+            metadata: { channel, outcome, ownership_revision: result.state?.social_ownership_revision ?? null, request_id: requestId },
+          }).catch(() => null);
+        }
+        const status = success ? 200 : outcome === "not_owner" ? 403 : outcome === "social_conversation_not_found" ? 404 : 409;
+        json(res, status, { ok: success, error: success ? null : outcome, outcome, channel_state: result?.state || null }, { "x-request-id": ctx.requestId });
         return;
       }
 

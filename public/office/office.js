@@ -18438,7 +18438,11 @@ function relSourceIcon(info, size = "") {
   return `<span class="rel-src rel-src-${glyph.cls} ${size}" title="${escapeHtml(label)}">${glyph.svg || `<b>${glyph.text}</b>`}</span>`;
 }
 function newRelRequestId() {
-  return (window.crypto && crypto.randomUUID) ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  if (window.crypto && crypto.randomUUID) return crypto.randomUUID();
+  return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (c) => {
+    const r = Math.floor(Math.random() * 16);
+    return (c === "x" ? r : (r & 0x3) | 0x8).toString(16);
+  });
 }
 function relInitials(name) {
   return String(name || "?").split(/\s+/).filter(Boolean).slice(0, 2).map((p) => p[0].toUpperCase()).join("") || "?";
@@ -18769,9 +18773,35 @@ function relRenderComposer(data) {
     });
     wrap.appendChild(check);
   }
+  if (social && c.social_takeover?.available) {
+    const ownedByMe = Boolean(c.social_takeover.owned_by_me);
+    if (c.takeover_active && !ownedByMe) {
+      wrap.appendChild(el(`<div class="rel-note">This conversation is owned by ${escapeHtml(data.channel_state.human_owner || "another staff member")}.</div>`));
+    } else {
+      const action = ownedByMe ? "release" : "takeover";
+      const button = el(`<button type="button" class="btn ${ownedByMe ? "btn-sm" : "btn-primary btn-sm"} rel-social-ownership">${ownedByMe ? "Release ownership" : "Take over conversation"}</button>`);
+      button.addEventListener("click", async () => {
+        button.disabled = true;
+        try {
+          const requestId = newRelRequestId();
+          await api(`/api/lead-agents/admin/leads/${encodeURIComponent(data.lead.id)}/${channel}/${action}`, {
+            method: "POST", body: { client_request_id: requestId },
+          });
+          toast(ownedByMe ? "Ownership released. AI replies remain paused." : "You now own this conversation. AI replies remain paused.");
+          await relLoadThread(false);
+        } catch (err) {
+          toast(err.data?.error || err.message || `Could not ${action === "takeover" ? "take over" : "release"} this conversation.`, "error");
+          button.disabled = false;
+        }
+      });
+      wrap.appendChild(button);
+      if (ownedByMe) wrap.appendChild(el('<div class="rel-note">Releasing ownership does not resume AI replies.</div>'));
+    }
+  }
   if (social && !c.social_reply?.available) {
     const reason = {
       social_window_closed: "The 24-hour reply window is closed.",
+      social_takeover_required: "Take over this conversation before replying.",
       social_takeover_owner_required: "Only the staff member who took over this conversation can send a reply.",
       social_takeover_state_unavailable: "Conversation ownership could not be verified. No reply was sent.",
       social_opted_out: "The customer has opted out, or consent state could not be verified.",

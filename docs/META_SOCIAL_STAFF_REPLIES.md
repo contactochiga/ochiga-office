@@ -16,9 +16,9 @@ path with no safe provider idempotency; it remains unchanged.
   The deployed send path requires Supabase; the file store is fixture-only
   for social outbound because it cannot coordinate multiple processes.
 - Only a permitted staff session whose immutable user ID is explicitly
-  listed in `OFFICE_META_SOCIAL_OPERATOR_IDS` can submit plain text or
-  check the status of its own attempt. The list defaults empty and CRM
-  management alone is insufficient. The request cannot specify
+  listed in `OFFICE_META_SOCIAL_OPERATOR_IDS` can claim/release a social
+  conversation, submit plain text or check the status of its own attempt.
+  The list defaults empty and CRM management alone is insufficient. The request cannot specify
   an actor, recipient, asset, tag, template, or permission override.
 - The target comes from the latest signed channel/asset/sender binding, not
   phone, email, or mutable CRM last-contact dates. The server rechecks the
@@ -60,6 +60,32 @@ path with no safe provider idempotency; it remains unchanged.
   delivery state. An unmatched receipt cannot prove acceptance on its own.
   Retention for unmatched receipts requires an operator policy before scale.
 
+## Social ownership and dispatch fencing (local D2A)
+
+- The CRM exposes explicit session-authenticated `takeover` and `release`
+  operations for Facebook and Instagram. The authenticated session supplies
+  both the immutable staff UUID and email; request bodies accept only an
+  idempotency UUID. The server requires `manage_takeover` (`crm.manage`), the
+  social operator UUID allowlist and an existing inbound conversation on the
+  requested channel. The legacy social channel-state PATCH remains blocked.
+- The ownership RPC serializes transitions on the lead/channel state row and
+  stores request outcomes for duplicate recovery. Takeover sets `human_active`,
+  assigns the session email, and pauses AI. Release clears ownership but keeps
+  `ai_paused` unchanged. There is deliberately no resume-AI action in this
+  feature.
+- Dispatch locks the send, lead and ownership rows, then verifies the current
+  owner equals the authenticated sender before writing `social_dispatch_at`.
+  Release/claim checks the same ownership row and refuses while a fenced send
+  is pending or outcome-unknown. Therefore release-before-fence makes dispatch
+  fail owner validation; fence-before-release makes release wait and then
+  refuse until provider outcome is resolved. Unknown attempts stay blocking.
+- `social_ownership_revision` is incremented on each ownership transition.
+  Request results are persisted in a private RLS-enabled table. Only the
+  service role can call the transition and dispatch RPCs. Audit records capture
+  the actor, channel, outcome and revision. The existing internal notification
+  and CRM timeline are reused for successful non-replayed transitions; no new
+  notification subsystem is introduced.
+
 ## D1 isolated rollout (not authorized by this change)
 
 Deploy only after separate approval, with `OFFICE_META_SOCIAL_OUTBOUND_ENABLED=false` and
@@ -71,13 +97,14 @@ autonomy, Content or website intake. No new migration is introduced by D1.
 | --- | --- |
 | 1. Messenger only | In the approved pilot, set `OFFICE_META_SOCIAL_OUTBOUND_ENABLED=true`, `OFFICE_META_SOCIAL_OUTBOUND_CHANNELS=facebook`, `OFFICE_META_SOCIAL_OPERATOR_IDS` to the approved Office staff UUIDs, `FACEBOOK_PAGE_ACCESS_TOKEN` to the approved Page credential, and `META_SOCIAL_GRAPH_VERSION=v26.0` if validated on the pilot assets. Keep the existing Page/IG IDs and app/verify secrets. A separate eligible Meta app-role test account initiates a fresh DM. The approved operator sends one text reply, verifies its exact-ID delivery callback, checks Instagram's composer and direct POST stay blocked, and confirms reload does not resend. |
 | 2. Instagram only | Keep the same master, operator and tested Graph settings; replace the outbound channel list with `instagram`, not both. Use the linked professional account and eligible Instagram app-role tester, separate from the business. Verify the Page-token grant covers Instagram. Check linked-Page URL and IGSID, exact-ID `messaging_seen` if approved for the pilot, and confirm Messenger sends are blocked but inbound still works. If Meta expands where messages can be delivered beyond app-role testers, use isolated test assets before any production send. |
-| 3. Unified takeover and handback | No new environment variable or Meta grant is proposed. Keep the Stage 2 outbound settings or disable outbound for workflow-only validation. Use two approved staff accounts. Add separate audited claim/release/resume actions with atomic ownership checks at the fence; today D1 honors an existing human owner and bars changes through the legacy social PATCH. The pilot must not install a new social ownership writer until atomic fencing is ready. Verify takeover, owner-only replies, concurrent claims, reload and handback without enabling AI. |
+| 3. Unified takeover and handback | Local D2A adds audited claim/release and atomic ownership checks at dispatch. Keep outbound off during staging setup. Use two approved staff accounts and verify conflicting claims, owner-only replies, dispatch/release races, duplicate requests and reload. Release does not resume AI. |
 | 4. Supervised AI | Not implemented. Proposed default-OFF gate: `OFFICE_META_SOCIAL_SUPERVISED_DRAFTS_ENABLED=false` (not read by D1), plus the independently approved manual outbound channel. No new Meta send grant beyond the applicable channel. An approved Oyi Core draft is reviewed and explicitly sent by the allowlisted operator; an edited draft or changed recipient/owner must invalidate stale approval. No automatic sending and no WhatsApp autonomy change. |
 
 For Stages 1 and 2, roll back by setting `OFFICE_META_SOCIAL_OUTBOUND_ENABLED=false` and clearing
 `OFFICE_META_SOCIAL_OUTBOUND_CHANNELS`. Let already-dispatched attempts and callbacks reconcile; never resend an UNKNOWN attempt or
 delete history. Preserve inbound and verify the existing WhatsApp, Messenger and Instagram CRM paths. Stage 3 rollback
-withdraws the new ownership controls with social outbound off; do not clear ownership records. Stage 4 rollback disables
+first disables social outbound; wait for all dispatched sends to resolve, then release ownership through the audited API.
+Do not clear ownership records with direct SQL. The legacy PATCH stays blocked. Stage 4 rollback disables
 drafts and revokes outstanding draft approvals, returning to manual-only. These switches apply when the new process
 loads configuration; they cannot revoke a provider request already in flight. Do not roll back to pre-D1 code
 while the old global outbound switch is true.
@@ -96,30 +123,32 @@ or IGSID for Instagram; the request fixtures pin v26.0, not live approval of a p
   and the UUID of a staging Office staff account with `manage_takeover`. These are prerequisites,
   not values supplied by the release candidate. Do not reuse production threads, credentials, or accounts.
 - Use a separate database and staging-only service-role key, session secret, Meta signing secret and
-  verify token. Confirm the existing schema and dispatch-fence RPC are present before any sends. Keep
+  verify token. Apply the inbound, staff-replies, dispatch-fence and social-takeover migrations in order;
+  verify the ownership and dispatch RPCs exist before any sends. Keep
   staging disconnected from production Office, Backend, WhatsApp, email and AI. Use synthetic leads only.
 - Verify that the staging Page token is for the expected app and Page, has `pages_messaging`, and was
   authorized by a user with the Page messaging task. Confirm `pages_manage_metadata` for subscription and
   validate the pinned Graph version before sending. Bind a staging-only HTTPS `/webhooks/meta-social`
   callback to the staging Page's `messages` and `message_deliveries` fields; do not repoint a production
   callback. If Meta setup cannot isolate that callback and test asset, stop.
-- Keep social outbound off until isolation, the signed callback and the allowed operator are verified.
-  After separate send approval, allow only `facebook`, confirm a direct Instagram send is refused, reply
-  once to the fresh test DM and check the ledger, reload, exact-ID receipt and absence of duplicate sends.
+- Keep social outbound off until isolation, signed callback and allowed operator are verified. The
+  operator must claim the synthetic Messenger conversation in CRM; confirm `ai_paused=true` and owner
+  identity comes from the session. After separate send approval, allow only `facebook`, confirm Instagram
+  send is refused, reply once to the fresh test DM and check the ledger, reload and exact-ID receipt. Release
+  ownership afterward and verify AI remains paused. Never use direct database writes to claim or release.
   If anything differs, disable outbound and preserve all ledger records.
-
-**Mandatory Stage 3 gate:** Keep the legacy social ownership PATCH blocked and add no other social
-ownership writer until owner changes and dispatch claims are serialized by a shared database lock or
-atomic revision check. The current pre-fence recheck is not a replacement for that atomic guarantee.
 
 ## Existing staging schema and provider checks
 
 1. Review `20261113_meta_social_inbound.sql` then
    `20261113_meta_social_staff_replies.sql` then
-   `20261113_meta_social_dispatch_fence.sql` in that order, with the existing
+   `20261113_meta_social_dispatch_fence.sql` then
+   `20261117_meta_social_takeover.sql` in that order, with the existing
    manual-send ledger migration already present. The proposal adds private
    reply-binding columns, a delivery column, two social-only indexes and
-   service-role-only invoker functions. Recheck Office table grants/RLS and
+   service-role-only invoker functions. The takeover migration adds a revision,
+   request-idempotency table, atomic transition RPC and ownership-aware dispatch
+   fence replacement. Recheck Office table grants/RLS and
    the staging PostgREST contract before applying anything. The fence migration
    conservatively marks previously unresolved social sends as potentially
    dispatched. The scripts were exercised only in a disposable SQL fixture.

@@ -89,6 +89,9 @@ async function main() {
         const hash = `#/crm/leads/${lead.id}`;
         await send("Page.navigate", { url: url + hash });
         await waitFor(`document.querySelector('#relThreadPane')?.textContent.includes("${label} fixture question")`, label + " thread rendered");
+        await waitFor(`!!document.querySelector('.rel-social-ownership') && document.querySelector('.rel-social-ownership').textContent.includes('Take over')`, label + " takeover control");
+        await evalJs(`document.querySelector('.rel-social-ownership').click()`);
+        await waitFor(`document.querySelector('.rel-social-ownership')?.textContent.includes('Release ownership')`, label + " ownership claimed");
         if (object === "instagram") {
           assert.ok(await evalJs(`document.querySelector('.rel-locked')?.textContent.includes("Instagram")`), "Instagram shows its locked composer");
           assert.equal(await evalJs(`document.querySelectorAll('.rel-send').length`), 0);
@@ -112,6 +115,11 @@ async function main() {
         });
         await send("Page.navigate", { url: url + "&restored=1" + hash });
         await waitFor(`document.querySelector('#relThreadPane')?.textContent.includes("${label} fixture staff reply")`, label + " reply survives browser reload");
+        assert.ok(await evalJs(`document.querySelector('.rel-social-ownership')?.textContent.includes('Release ownership')`), `${label} ownership survives browser reload`);
+        await evalJs(`document.querySelector('.rel-social-ownership').click()`);
+        await waitFor(`document.querySelector('.rel-social-ownership')?.textContent.includes('Take over')`, label + " ownership released");
+        const releasedState = await store.getLeadChannelState(lead.id, object === "page" ? "facebook" : "instagram");
+        assert.equal(releasedState.ai_paused, true, `${label} release does not resume AI`);
       }
       assert.deepEqual(socialSends, [
         { to: "333", body: "Messenger fixture staff reply", channel: "facebook" },

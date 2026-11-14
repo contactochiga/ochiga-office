@@ -1,6 +1,7 @@
 # Office database initialization order for a FRESH environment (one file per line, relative to db/).
 # Applied by scripts/init-office-database.js. Do NOT apply db/*.sql by filename order: the Track B trio
-# (20261113_meta_social_*) must run inbound -> staff_replies -> dispatch_fence, and alphabetical order would
+# (20261113_meta_social_*) must run inbound -> staff_replies -> dispatch_fence; takeover fencing then runs
+# after the existing Meta schema migrations. Alphabetical order would
 # run dispatch_fence first and then let staff_replies replace its office_record_meta_social_receipt.
 # The security baseline runs first (so default privileges cover every later object) and again at the end
 # (RLS on new tables), followed by the read-only verification gate.
@@ -37,5 +38,6 @@ lead-agents-schema.sql
 20261114_meta_social_posts_comments.sql
 20261115_meta_social_post_sync.sql
 20261116_meta_social_comment_moderation.sql
+20261117_meta_social_takeover.sql
 security/office-security-baseline.sql
 security/office-security-verify.sql

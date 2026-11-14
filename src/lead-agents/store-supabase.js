@@ -663,12 +663,21 @@ class SupabaseLeadAgentsStore {
     return Array.isArray(response.data) ? response.data[0] || null : null;
   }
 
-  async fenceMetaSocialDispatch(id, channel, senderKey) {
+  async transitionMetaSocialOwnership({ leadId, channel, action, actorId, actorEmail, requestId }) {
+    const response = await this.client.post("/rpc/office_transition_meta_social_ownership", {
+      p_lead: leadId, p_channel: channel, p_action: action,
+      p_actor_id: actorId, p_actor_email: actorEmail, p_request_id: requestId,
+    });
+    if (!response.data || typeof response.data.outcome !== "string") throw new Error("social_ownership_transition_malformed");
+    return response.data;
+  }
+
+  async fenceMetaSocialDispatch(id, channel, senderKey, actorEmail) {
     const response = await this.client.post("/rpc/office_fence_meta_social_dispatch", {
-      p_send: id, p_channel: channel, p_sender_key: senderKey,
+      p_send: id, p_channel: channel, p_sender_key: senderKey, p_actor_email: actorEmail,
     });
     if (!["acquired", "social_dispatch_claim_lost", "social_recipient_unverified", "social_opted_out",
-      "social_window_closed", "social_claim_expired"].includes(response.data)) throw new Error("invalid_dispatch_fence_response");
+      "social_window_closed", "social_claim_expired", "social_takeover_required", "social_takeover_owner_required"].includes(response.data)) throw new Error("invalid_dispatch_fence_response");
     return response.data;
   }
 

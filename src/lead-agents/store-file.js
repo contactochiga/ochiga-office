@@ -36,6 +36,7 @@ class FileLeadAgentsStore {
       office_partnership_relationships: [],
       office_meetings: [],
       lead_channel_states: [],
+      meta_social_ownership_requests: [],
       inbound_events: [],
       office_packages: [],
       office_estates: [],
@@ -85,6 +86,7 @@ class FileLeadAgentsStore {
       ochiga_workflow_links: [],
     };
     this.pendingWrite = Promise.resolve();
+    this.socialOwnershipLock = Promise.resolve();
   }
 
   async init() {
@@ -120,6 +122,9 @@ class FileLeadAgentsStore {
         office_meetings: Array.isArray(parsed.office_meetings) ? parsed.office_meetings : [],
         lead_channel_states: Array.isArray(parsed.lead_channel_states)
           ? parsed.lead_channel_states
+          : [],
+        meta_social_ownership_requests: Array.isArray(parsed.meta_social_ownership_requests)
+          ? parsed.meta_social_ownership_requests
           : [],
         inbound_events: Array.isArray(parsed.inbound_events) ? parsed.inbound_events : [],
         office_packages: Array.isArray(parsed.office_packages) ? parsed.office_packages : [],
@@ -187,6 +192,12 @@ class FileLeadAgentsStore {
 
   nowIso() {
     return new Date().toISOString();
+  }
+
+  withSocialOwnershipLock(work) {
+    const result = this.socialOwnershipLock.then(work, work);
+    this.socialOwnershipLock = result.then(() => undefined, () => undefined);
+    return result;
   }
 
   async ensureOfficeSeedData() {
@@ -883,12 +894,64 @@ class FileLeadAgentsStore {
     return record ? { ...record } : null;
   }
 
-  async fenceMetaSocialDispatch(id, channel, senderKey) {
+  async transitionMetaSocialOwnership({ leadId, channel, action, actorId, actorEmail, requestId }) {
+    return this.withSocialOwnershipLock(async () => {
+    if (!["facebook", "instagram"].includes(channel) || !["takeover", "release"].includes(action) || !actorId || !actorEmail || !requestId) {
+      return { outcome: "invalid_request" };
+    }
+    const prior = this.state.meta_social_ownership_requests.find((r) => r.lead_id === leadId && r.channel === channel && r.request_id === requestId);
+    if (prior) {
+      if (prior.actor_id !== actorId || prior.action !== action || prior.actor_email.toLowerCase() !== actorEmail.toLowerCase()) {
+        return { outcome: "request_identity_conflict" };
+      }
+      return { ...structuredClone(prior.result), replayed: true };
+    }
+    const lead = this.state.leads.find((row) => row.id === leadId);
+    const hasConversation = this.state.conversations.some((row) => row.lead_id === leadId && row.channel === channel && row.message_role === "user");
+    if (!lead?.meta_social_asset_id || !lead?.meta_social_sender_id || !hasConversation) return { outcome: "social_conversation_not_found" };
+    const unresolvedDispatch = this.state.whatsapp_manual_sends.some((row) => row.lead_id === leadId && row.channel === channel && row.social_dispatch_at && ["pending", "outcome_unknown"].includes(row.status));
+    let state = await this.getLeadChannelState(leadId, channel);
+    if (!state) state = await this.upsertLeadChannelState(leadId, channel, { human_status: "auto", resume_mode: "manual_only" });
+    let outcome;
+    if (unresolvedDispatch) outcome = "send_outcome_unresolved";
+    else if (action === "takeover" && ["human_active", "human_review"].includes(state.human_status)) {
+      outcome = String(state.human_owner || "").toLowerCase() === actorEmail.toLowerCase() ? "already_owned" : "owned_by_another";
+    } else if (action === "takeover") {
+      state = await this.upsertLeadChannelState(leadId, channel, {
+        human_status: "human_active", human_owner: actorEmail, ai_paused: true,
+        takeover_started_at: this.nowIso(), takeover_reason: "social_staff_takeover", resume_mode: "manual_only",
+        social_ownership_revision: Number(state.social_ownership_revision || 0) + 1,
+      });
+      outcome = "taken_over";
+    } else if (!["human_active", "human_review"].includes(state.human_status)) outcome = "not_owned";
+    else if (String(state.human_owner || "").toLowerCase() !== actorEmail.toLowerCase()) outcome = "not_owner";
+    else {
+      state = await this.upsertLeadChannelState(leadId, channel, {
+        human_status: "auto", human_owner: null, takeover_started_at: null,
+        takeover_reason: "social_staff_release", social_ownership_revision: Number(state.social_ownership_revision || 0) + 1,
+      });
+      outcome = "released";
+    }
+    const result = { outcome, replayed: false, state: {
+      human_status: state.human_status, human_owner: state.human_owner || null, ai_paused: Boolean(state.ai_paused),
+      takeover_started_at: state.takeover_started_at || null, social_ownership_revision: Number(state.social_ownership_revision || 0),
+    } };
+    this.state.meta_social_ownership_requests.push({ lead_id: leadId, channel, request_id: requestId, action, actor_id: actorId, actor_email: actorEmail, result });
+    await this.persist();
+    return structuredClone(result);
+    });
+  }
+
+  async fenceMetaSocialDispatch(id, channel, senderKey, actorEmail) {
+    return this.withSocialOwnershipLock(async () => {
     const row = this.state.whatsapp_manual_sends.find((send) => send.id === id && send.channel === channel);
     if (!row || !["facebook", "instagram"].includes(channel) || row.status !== "pending" || row.social_dispatch_at) return "social_dispatch_claim_lost";
     const target = this.state.leads.find((lead) => lead.id === row.lead_id);
     if (!target || target.idempotency_key !== senderKey || !target.meta_social_asset_id || !target.meta_social_sender_id ||
       row.recipient !== `${target.meta_social_asset_id}:${target.meta_social_sender_id}`) return "social_recipient_unverified";
+    const ownerState = this.state.lead_channel_states.find((state) => state.lead_id === row.lead_id && state.channel === channel);
+    if (!ownerState || !["human_active", "human_review"].includes(ownerState.human_status)) return "social_takeover_required";
+    if (String(ownerState.human_owner || "").toLowerCase() !== String(actorEmail || "").toLowerCase()) return "social_takeover_owner_required";
     if (target.meta_social_opted_out !== false || target.contactability_status === "denied") return "social_opted_out";
     const now = Date.now();
     const last = Date.parse(target.meta_social_last_inbound_at);
@@ -897,6 +960,7 @@ class FileLeadAgentsStore {
     row.social_dispatch_at = this.nowIso();
     await this.persist();
     return "acquired";
+    });
   }
 
   async expireMetaSocialClaim(id, channel, dispatched) {
@@ -1101,10 +1165,10 @@ class FileLeadAgentsStore {
       lead_id: leadId,
       channel,
       ai_paused: patch.ai_paused ?? (index === -1 ? false : this.state.lead_channel_states[index].ai_paused),
-      human_owner: patch.human_owner ?? (index === -1 ? "" : this.state.lead_channel_states[index].human_owner),
+      human_owner: patch.human_owner !== undefined ? patch.human_owner : (index === -1 ? "" : this.state.lead_channel_states[index].human_owner),
       human_status: patch.human_status || (index === -1 ? "auto" : this.state.lead_channel_states[index].human_status),
       takeover_started_at:
-        patch.takeover_started_at ?? (index === -1 ? null : this.state.lead_channel_states[index].takeover_started_at),
+        patch.takeover_started_at !== undefined ? patch.takeover_started_at : (index === -1 ? null : this.state.lead_channel_states[index].takeover_started_at),
       takeover_reason:
         patch.takeover_reason ?? (index === -1 ? "" : this.state.lead_channel_states[index].takeover_reason),
       resume_mode: patch.resume_mode || (index === -1 ? "manual_only" : this.state.lead_channel_states[index].resume_mode),
@@ -1120,6 +1184,7 @@ class FileLeadAgentsStore {
         patch.last_inbound_at ?? (index === -1 ? null : this.state.lead_channel_states[index].last_inbound_at),
       last_outbound_at:
         patch.last_outbound_at ?? (index === -1 ? null : this.state.lead_channel_states[index].last_outbound_at),
+      social_ownership_revision: patch.social_ownership_revision ?? (index === -1 ? 0 : this.state.lead_channel_states[index].social_ownership_revision || 0),
       created_at: index === -1 ? this.nowIso() : this.state.lead_channel_states[index].created_at,
       updated_at: this.nowIso(),
     };

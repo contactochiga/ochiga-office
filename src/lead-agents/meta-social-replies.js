@@ -23,7 +23,7 @@ function socialOutboundChannelEnabled(config, channel) {
 }
 
 function socialTakeoverRefusal(state, actorEmail) {
-  if (!["human_active", "human_review"].includes(state?.human_status)) return null;
+  if (!["human_active", "human_review"].includes(state?.human_status)) return "social_takeover_required";
   const identity = (value) => String(value || "").trim().toLowerCase();
   return identity(actorEmail) && identity(state.human_owner) === identity(actorEmail) ? null : "social_takeover_owner_required";
 }
@@ -92,7 +92,7 @@ async function sendSocialReply({ config, store, adapter, lead, channel, actorEma
       if (refusal) return { refusal };
       const started = performance.now();
       // A failed RPC response may conceal a committed grant; never classify it as Meta rejection.
-      const fence = await store.fenceMetaSocialDispatch(intent.id, channel, fresh.idempotency_key)
+      const fence = await store.fenceMetaSocialDispatch(intent.id, channel, fresh.idempotency_key, actorEmail)
         .catch(() => { throw new Error("social_dispatch_fence_unconfirmed"); });
       if (fence !== "acquired") return { refusal: fence };
       if (performance.now() - started >= 5_000) throw new Error("social_dispatch_grant_stale");
