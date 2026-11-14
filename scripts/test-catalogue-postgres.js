@@ -14,6 +14,7 @@ const path = require("path");
 const { spawn, spawnSync } = require("child_process");
 const { hashPassword } = require("../src/lead-agents/auth");
 const { runCatalogueScenarios, startRevalidator, testUsers } = require("./catalogue-scenarios");
+const { fixtureFiles } = require("./office-db-fixture");
 const { runPackageScenarios } = require("./package-scenarios");
 
 const ROOT = path.resolve(__dirname, "..");
@@ -66,25 +67,15 @@ async function setup() {
   let good = 0;
   for (let i = 0; i < 400 && good < 3; i += 1) { const x = sh("docker", ["exec", PG, "psql", "-X", "-At", "-U", "postgres", "-h", "127.0.0.1", "-c", "select count(*) from pg_roles where rolname in ('anon','authenticated','service_role','authenticator')"]); good = x.stdout && x.stdout.trim() === "4" ? good + 1 : 0; await sleep(300); }
   if (good < 3) throw new Error("BLOCKED: postgres not ready");
-  psql(fs.readFileSync(path.join(ROOT, "db", "lead-agents-schema.sql"), "utf8"), { stop: false });
-  const second = psql(fs.readFileSync(path.join(ROOT, "db", "lead-agents-schema.sql"), "utf8"), { stop: false });
-  check("M00", "bootstrap schema: second pass is clean", !/ERROR/.test(second.err), second.err.slice(0, 300));
-  const dated = fs.readdirSync(path.join(ROOT, "db")).filter((f) => /^2026\d+.*\.sql$/.test(f) && f !== path.basename(MIGRATION) && !CATALOGUE_FOLLOWUPS.includes(f)).sort();
-  const failed = dated.map((f) => ({ f, r: applyFile(path.join(ROOT, "db", f)) })).filter((x) => x.r.status !== 0);
-  check("M01", "every earlier dated migration (incl. 20261101 intake receipts) applies", failed.length === 0, failed.map((x) => x.f + ": " + x.r.err.slice(0, 200)));
-  // the production hardening state measured in R11 (RLS everywhere, nothing for PUBLIC/anon/authenticated, schema USAGE closed)
-  const p0 = psql(`
-    revoke all on all tables in schema public from public, anon, authenticated;
-    revoke all on all sequences in schema public from public, anon, authenticated;
-    revoke all on all functions in schema public from public, anon, authenticated;
-    do $$ declare r record; begin for r in select c.oid::regclass as rel from pg_class c where c.relnamespace = 'public'::regnamespace and c.relkind in ('r','p') loop execute format('alter table %s enable row level security', r.rel); end loop; end $$;
-    grant usage on schema public to service_role, authenticator, postgres;
-    revoke usage on schema public from public, anon, authenticated;
-    alter default privileges in schema public revoke all on tables from anon, authenticated;
-    alter default privileges in schema public revoke all on functions from anon, authenticated;
-    alter default privileges in schema public grant all on tables to service_role;
-    alter default privileges in schema public grant all on functions to service_role;`);
-  check("M02", "production hardening state (and production's default privileges for service_role) applied to the fixture", p0.status === 0, p0.err.slice(0, 300));
+  // the approved manifest without the catalogue migrations this test applies itself: security baseline, schema (one
+  // pass), every other dated migration, Track B in its documented order, baseline again, verification gate
+  const plan = fixtureFiles([MIGRATION, ...CATALOGUE_FOLLOWUPS]);
+  const applied = plan.map((f) => ({ f, r: applyFile(path.join(ROOT, "db", f)) }));
+  const failed = applied.filter((x) => x.r.status !== 0 && !x.f.endsWith("office-security-verify.sql"));
+  check("M00", "fixture initialized from db/migration-order.txt (baseline first, schema in one pass, Track B inbound -> staff_replies -> dispatch_fence)", plan[0] === "security/office-security-baseline.sql" && failed.length === 0, failed.map((x) => x.f + ": " + x.r.err.slice(0, 200)));
+  check("M01", "every earlier dated migration (incl. 20261101 intake receipts) is in the plan", plan.includes("20261101_office_intake_receipts.sql") && plan.filter((f) => /^\d/.test(f)).length > 0);
+  const gate = applied.at(-1);
+  check("M02", "fixture matches the verified production posture (security baseline re-applied, verification gate passes)", gate.f === "security/office-security-verify.sql" && gate.r.status === 0, gate.r.err.slice(0, 300));
   sh("docker", ["exec", PG, "psql", "-X", "-U", "supabase_admin", "-d", "postgres", "-h", "127.0.0.1", "-c", `alter role authenticator with password '${PW}'`]);
   const restPort = await freePort();
   r = sh("docker", ["run", "-d", "--rm", "--name", REST, "--network", NET, "-p", `127.0.0.1:${restPort}:3000`, "-e", `PGRST_DB_URI=postgres://authenticator:${PW}@pg:5432/postgres`, "-e", "PGRST_DB_SCHEMAS=public", "-e", "PGRST_DB_ANON_ROLE=anon", "-e", `PGRST_JWT_SECRET=${JWT_SECRET}`, "-e", "PGRST_SERVER_PORT=3000", "-e", "PGRST_DB_POOL=20", PGRST_IMAGE]);

@@ -4,6 +4,7 @@ const crypto = require("crypto");
 const { normalizeEmail, normalizeLeadInput, normalizeLeadPatch, normalizeText } = require("./normalize-lead");
 const { buildDeploymentFromLead, normalizePartner } = require("./commercial-ops");
 const { buildOfficeSnapshot, createOfficeSeedData } = require("./office-data");
+const { isOptOut } = require("./meta-social-inbound");
 
 const MANUAL_SEND_PATCH_FIELDS = ["status", "provider_message_id", "provider_response_code", "failure_reason", "conversation_id", "conversation_recorded_at", "resolved_by", "resolved_at", "resolution_note"];
 
@@ -49,6 +50,7 @@ class FileLeadAgentsStore {
       runtime_settings: {},
       whatsapp_inbound_claims: {},
       whatsapp_manual_sends: [],
+      meta_social_pending_receipts: {},
       communication_delivery_outbox: [],
       office_support_mappings: [],
       office_handoffs: [],
@@ -66,6 +68,10 @@ class FileLeadAgentsStore {
       staff_message_attachments: [],
       staff_message_reactions: [],
       office_content_items: [],
+      office_social_posts: [],
+      office_social_comments: [],
+      office_social_comment_events: [],
+      office_social_comment_actions: [],
       office_reports: [],
       office_development_projects: [],
       // Oyi Runtime Contract, Domain 3 (Task) — durable link between an
@@ -128,6 +134,7 @@ class FileLeadAgentsStore {
         office_letterhead_config: parsed.office_letterhead_config && typeof parsed.office_letterhead_config === "object" ? parsed.office_letterhead_config : null,
         runtime_settings: parsed.runtime_settings && typeof parsed.runtime_settings === "object" && !Array.isArray(parsed.runtime_settings) ? parsed.runtime_settings : {},
         whatsapp_manual_sends: Array.isArray(parsed.whatsapp_manual_sends) ? parsed.whatsapp_manual_sends : [],
+        meta_social_pending_receipts: parsed.meta_social_pending_receipts || {},
         communication_delivery_outbox: Array.isArray(parsed.communication_delivery_outbox) ? parsed.communication_delivery_outbox : [],
         whatsapp_inbound_claims: parsed.whatsapp_inbound_claims && typeof parsed.whatsapp_inbound_claims === "object" && !Array.isArray(parsed.whatsapp_inbound_claims) ? parsed.whatsapp_inbound_claims : {},
         // product catalogue (catalogue-store.js FileCatalogueStore) and its supplier registry (CORPORATE_COLLECTIONS.suppliers)
@@ -151,6 +158,10 @@ class FileLeadAgentsStore {
         staff_message_attachments: Array.isArray(parsed.staff_message_attachments) ? parsed.staff_message_attachments : [],
         staff_message_reactions: Array.isArray(parsed.staff_message_reactions) ? parsed.staff_message_reactions : [],
         office_content_items: Array.isArray(parsed.office_content_items) ? parsed.office_content_items : [],
+        office_social_posts: Array.isArray(parsed.office_social_posts) ? parsed.office_social_posts : [],
+        office_social_comments: Array.isArray(parsed.office_social_comments) ? parsed.office_social_comments : [],
+        office_social_comment_events: Array.isArray(parsed.office_social_comment_events) ? parsed.office_social_comment_events : [],
+        office_social_comment_actions: Array.isArray(parsed.office_social_comment_actions) ? parsed.office_social_comment_actions : [],
         office_reports: Array.isArray(parsed.office_reports) ? parsed.office_reports : [],
         office_development_projects: Array.isArray(parsed.office_development_projects) ? parsed.office_development_projects : [],
         ochiga_workflow_links: Array.isArray(parsed.ochiga_workflow_links) ? parsed.ochiga_workflow_links : [],
@@ -326,33 +337,208 @@ class FileLeadAgentsStore {
       metadata: normalizedPatch,
     });
     await this.persist();
-    return updated;
+    return this.visibleLead(updated);
   }
 
   async getLead(leadId) {
-    return this.state.leads.find((lead) => lead.id === leadId) || null;
+    const lead = this.state.leads.find((row) => row.id === leadId);
+    return lead ? this.visibleLead(lead) : null;
+  }
+
+  visibleLead(lead) {
+    const { meta_social_asset_id, meta_social_sender_id, meta_social_last_inbound_at, meta_social_opted_out, ...visible } = lead;
+    return visible;
+  }
+
+  async getMetaSocialReplyLead(id) {
+    return this.state.leads.find((row) => row.id === id) || null;
   }
 
   async findLeadByPhone(phone) {
     const normalized = normalizeText(phone);
     if (!normalized) return null;
-    return (
-      this.state.leads.find(
-        (lead) => lead.phone === normalized || lead.whatsapp_phone === normalized
-      ) || null
-    );
+    const lead = this.state.leads.find((row) => row.phone === normalized || row.whatsapp_phone === normalized);
+    return lead ? this.visibleLead(lead) : null;
   }
 
   async findLeadByEmail(email) {
     const normalized = normalizeEmail(email);
     if (!normalized) return null;
-    return this.state.leads.find((lead) => normalizeEmail(lead.email) === normalized) || null;
+    const lead = this.state.leads.find((row) => normalizeEmail(row.email) === normalized);
+    return lead ? this.visibleLead(lead) : null;
   }
 
   async listLeads() {
-    return [...this.state.leads].sort((a, b) =>
+    return this.state.leads.map((lead) => this.visibleLead(lead)).sort((a, b) =>
       String(b.updated_at).localeCompare(String(a.updated_at))
     );
+  }
+
+  // Content → Posts & Comments (single-process fixture driver; the deployed driver uses office_record_social_comment_event).
+  async recordSocialCommentEvent({ channel, asset, post, comment, parent, verb, eventKey, occurredAt, author, authorLabel, authorIsPage, body }) {
+    if (this.state.office_social_comment_events.some((row) => row.event_key === eventKey)) { await this.pendingWrite; return "duplicate"; }
+    let postRow = this.state.office_social_posts.find((row) => row.channel === channel && row.asset_id === asset && row.provider_post_id === post);
+    if (!postRow) {
+      postRow = { id: crypto.randomUUID(), channel, asset_id: asset, provider_post_id: post, content_item_id: null, origin: "external", media_kind: null, first_seen_at: this.nowIso(), last_comment_at: null };
+      this.state.office_social_posts.push(postRow);
+    }
+    let row = this.state.office_social_comments.find((c) => c.channel === channel && c.asset_id === asset && c.provider_comment_id === comment);
+    let applied = true;
+    if (!row) {
+      row = { id: crypto.randomUUID(), post_id: postRow.id, channel, asset_id: asset, provider_comment_id: comment, provider_parent_id: parent || null,
+        author_provider_id: author || null, author_label: authorLabel || null, author_is_page: Boolean(authorIsPage),
+        body: verb === "remove" ? null : body ?? null, visibility: verb === "hide" ? "hidden" : "visible",
+        deleted_at: verb === "remove" ? occurredAt : null, edited_at: verb === "edited" ? occurredAt : null,
+        provider_created_at: verb === "add" ? occurredAt : null, first_seen_at: this.nowIso(), last_event_at: occurredAt };
+      this.state.office_social_comments.push(row);
+    } else if (row.post_id !== postRow.id) {
+      throw new Error("social comment post conflict");
+    } else if (row.deleted_at || Date.parse(occurredAt) < Date.parse(row.last_event_at)) {
+      applied = false;
+    } else {
+      if (verb === "remove") { row.body = null; row.deleted_at = occurredAt; }
+      else if ((verb === "add" || verb === "edited") && body != null) row.body = body;
+      if (verb === "hide") row.visibility = "hidden";
+      if (verb === "unhide") row.visibility = "visible";
+      if (verb === "edited") row.edited_at = occurredAt;
+      if (verb === "add" && !row.provider_created_at) row.provider_created_at = occurredAt;
+      row.provider_parent_id = row.provider_parent_id || parent || null;
+      row.author_provider_id = row.author_provider_id || author || null;
+      row.author_label = row.author_label || authorLabel || null;
+      row.last_event_at = occurredAt;
+    }
+    this.state.office_social_comment_events.push({ id: crypto.randomUUID(), comment_id: row.id, event_key: eventKey, verb, provider_time: occurredAt, received_at: this.nowIso(), applied });
+    if (!postRow.last_comment_at || Date.parse(occurredAt) > Date.parse(postRow.last_comment_at)) postRow.last_comment_at = occurredAt;
+    await this.persist();
+    return applied ? "accepted" : "stale";
+  }
+
+  async upsertSocialPostSnapshot({ channel, asset, providerPostId, status, error, caption, permalink, mediaType, previewUrl, publishedAt, providerUpdatedAt }) {
+    if (channel === "facebook" && !String(providerPostId).startsWith(`${asset}_`)) throw new Error("invalid social post snapshot");
+    let row = this.state.office_social_posts.find((p) => p.channel === channel && p.asset_id === asset && p.provider_post_id === providerPostId);
+    const created = !row;
+    if (!row) {
+      row = { id: crypto.randomUUID(), channel, asset_id: asset, provider_post_id: providerPostId, content_item_id: null, origin: "external", media_kind: null,
+        first_seen_at: this.nowIso(), last_comment_at: null, sync_status: "not_synced" };
+      this.state.office_social_posts.push(row);
+    }
+    const now = this.nowIso();
+    if (status === "synced") {
+      const newer = !providerUpdatedAt || !row.provider_updated_at || Date.parse(providerUpdatedAt) >= Date.parse(row.provider_updated_at);
+      if (newer) { row.caption = caption ?? null; row.media_preview_url = previewUrl ?? null; }
+      row.permalink_url = permalink || row.permalink_url || null;
+      row.media_type = mediaType || row.media_type || null;
+      row.published_at = row.published_at || publishedAt || null;
+      if (providerUpdatedAt && (!row.provider_updated_at || Date.parse(providerUpdatedAt) > Date.parse(row.provider_updated_at))) row.provider_updated_at = providerUpdatedAt;
+      Object.assign(row, { sync_status: "synced", sync_error: null, synced_at: now, unavailable_since: null });
+    } else {
+      Object.assign(row, { sync_status: status, sync_error: error || null, synced_at: now,
+        unavailable_since: status === "unavailable" ? row.unavailable_since || now : row.unavailable_since || null });
+    }
+    await this.persist();
+    return created ? "created" : "updated";
+  }
+
+  // C3 moderation ledger (single-process fixture driver; the deployed driver uses the office_*_comment_moderation functions).
+  async claimCommentModeration({ commentId, action, actorId, actorEmail, requestId, reason }) {
+    if (!["hide", "unhide"].includes(action) || !/^[A-Za-z0-9_-]{16,80}$/.test(requestId || "") || String(reason || "").trim().length < 3 || String(reason).trim().length > 500) throw new Error("invalid moderation request");
+    const comment = this.state.office_social_comments.find((c) => c.id === commentId);
+    if (!comment || comment.deleted_at || comment.author_is_page) return { outcome: "not_actionable" };
+    const actions = this.state.office_social_comment_actions;
+    const existing = actions.find((a) => a.comment_id === commentId && a.actor_user_id === actorId && a.client_request_id === requestId);
+    if (existing) return { outcome: existing.action === action ? "duplicate" : "request_reused", id: existing.id, status: existing.status, action: existing.action, failure_reason: existing.failure_reason };
+    if (actions.some((a) => a.comment_id === commentId && ["pending", "dispatched", "unknown"].includes(a.status))) return { outcome: "blocked" };
+    const now = this.nowIso();
+    const row = { id: crypto.randomUUID(), comment_id: commentId, action, actor_user_id: actorId, actor_email: actorEmail, client_request_id: requestId, reason: String(reason).trim(),
+      status: "pending", dispatch_at: null, provider_response_code: null, failure_reason: null, resolved_by: null, observed_visibility: null, created_at: now, updated_at: now, settled_at: null };
+    actions.push(row);
+    await this.persist();
+    return { outcome: "claimed", id: row.id, status: row.status, action };
+  }
+
+  async markCommentModerationDispatched(id) {
+    const row = this.state.office_social_comment_actions.find((a) => a.id === id && a.status === "pending");
+    if (!row) return false;
+    Object.assign(row, { status: "dispatched", dispatch_at: this.nowIso(), updated_at: this.nowIso() });
+    await this.persist();
+    return true;
+  }
+
+  async settleCommentModeration({ actionId, status, observed, code, failure, resolvedBy }) {
+    const row = this.state.office_social_comment_actions.find((a) => a.id === actionId);
+    if (!row) throw new Error("moderation action not found");
+    if (!["pending", "dispatched", "unknown"].includes(row.status)) return { outcome: "already_settled", status: row.status };
+    const desired = row.action === "hide" ? "hidden" : "visible";
+    if (status === "confirmed" && observed !== desired) throw new Error("confirmation requires the requested state to be observed");
+    const now = this.nowIso();
+    Object.assign(row, { status, provider_response_code: code ?? row.provider_response_code, failure_reason: status === "confirmed" ? null : failure || null,
+      resolved_by: resolvedBy || null, observed_visibility: observed || null, updated_at: now, settled_at: status === "unknown" ? null : now });
+    if (status === "confirmed") {
+      const comment = this.state.office_social_comments.find((c) => c.id === row.comment_id);
+      if (comment && !comment.deleted_at) { comment.visibility = observed; if (Date.parse(now) > Date.parse(comment.last_event_at)) comment.last_event_at = now; }
+    }
+    await this.persist();
+    return { outcome: "settled", status };
+  }
+
+  async getCommentModerationAction(id) {
+    return this.state.office_social_comment_actions.find((a) => a.id === id) || null;
+  }
+
+  async listCommentModerationActions(commentIds) {
+    const ids = new Set(commentIds);
+    return this.state.office_social_comment_actions.filter((a) => ids.has(a.comment_id)).sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)));
+  }
+
+  async listSocialPosts({ limit = 50 } = {}) {
+    return [...this.state.office_social_posts].sort((a, b) => String(b.last_comment_at || "").localeCompare(String(a.last_comment_at || ""))).slice(0, limit)
+      .map((post) => ({ ...post, comments: this.state.office_social_comments.filter((c) => c.post_id === post.id).map(({ visibility, deleted_at }) => ({ visibility, deleted_at })) }));
+  }
+
+  async getSocialPost(id) {
+    const post = this.state.office_social_posts.find((row) => row.id === id);
+    if (!post) return null;
+    return { post, comments: this.state.office_social_comments.filter((c) => c.post_id === id) };
+  }
+
+  async recordMetaSocialMessage({ channel, senderKey, eventKey, text, occurredAt, asset, sender, optedOut }) {
+    let lead = this.state.leads.find((row) => row.idempotency_key === senderKey);
+    const existing = this.state.conversations.find((row) => row.correlation_id === eventKey);
+    if (existing) {
+      if (existing.lead_id !== lead?.id || existing.channel !== channel) throw new Error("social message identity conflict");
+      await this.pendingWrite;
+      return "duplicate";
+    }
+    const now = this.nowIso();
+    if (!lead) {
+      const name = channel === "facebook" ? "Messenger contact" : "Instagram contact";
+      lead = { id: crypto.randomUUID(), ...this.withDefaults({ name, source: channel, primary_channel: channel, status: "new" }), idempotency_key: senderKey, created_at: now };
+      this.state.leads.push(lead);
+    }
+    const newest = (current) => Date.parse(current) >= Date.parse(occurredAt) ? current : occurredAt;
+    lead.last_contact_at = newest(lead.last_contact_at);
+    lead.channel_last_seen_at = newest(lead.channel_last_seen_at);
+    if (asset && sender) {
+      lead.meta_social_asset_id = asset;
+      lead.meta_social_sender_id = sender;
+      lead.meta_social_last_inbound_at = newest(lead.meta_social_last_inbound_at);
+      lead.meta_social_opted_out = Boolean(lead.meta_social_opted_out || optedOut ||
+        (lead.meta_social_opted_out == null && this.state.conversations.some((row) =>
+          row.lead_id === lead.id && row.channel === channel && row.message_role === "user" && isOptOut(String(row.content || "").trim()))));
+    }
+    lead.updated_at = now;
+    this.state.conversations.push({
+      id: crypto.randomUUID(), lead_id: lead.id, agent_name: "meta_social", message_role: "user",
+      channel, content: text, correlation_id: eventKey, created_at: occurredAt,
+    });
+    const state = this.state.lead_channel_states.find((row) => row.lead_id === lead.id && row.channel === channel);
+    if (state) state.last_inbound_at = newest(state.last_inbound_at);
+    else this.state.lead_channel_states.push({
+      id: crypto.randomUUID(), lead_id: lead.id, channel, ai_paused: true, human_status: "auto",
+      resume_mode: "manual_only", last_inbound_at: occurredAt, created_at: now, updated_at: now,
+    });
+    await this.persist();
+    return "accepted";
   }
 
   async appendConversation(input) {
@@ -677,6 +863,10 @@ class FileLeadAgentsStore {
     // Synchronous check-and-insert (single process); the Supabase store gets the same guarantee from the table's unique key.
     const existing = this.state.whatsapp_manual_sends.find((r) => r.lead_id === input.lead_id && r.actor_email === input.actor_email && r.client_request_id === input.client_request_id);
     if (existing) return { claimed: false, record: { ...existing } };
+    if (["facebook", "instagram"].includes(input.channel) && this.state.whatsapp_manual_sends.some((row) =>
+      row.lead_id === input.lead_id && row.channel === input.channel && ["pending", "outcome_unknown"].includes(row.status))) {
+      return { blocked: true };
+    }
     const now = this.nowIso();
     const record = {
       id: crypto.randomUUID(), lead_id: input.lead_id, actor_email: input.actor_email, client_request_id: input.client_request_id, channel: input.channel || "whatsapp",
@@ -693,9 +883,72 @@ class FileLeadAgentsStore {
     return record ? { ...record } : null;
   }
 
-  async updateManualSend(id, patch) {
+  async fenceMetaSocialDispatch(id, channel, senderKey) {
+    const row = this.state.whatsapp_manual_sends.find((send) => send.id === id && send.channel === channel);
+    if (!row || !["facebook", "instagram"].includes(channel) || row.status !== "pending" || row.social_dispatch_at) return "social_dispatch_claim_lost";
+    const target = this.state.leads.find((lead) => lead.id === row.lead_id);
+    if (!target || target.idempotency_key !== senderKey || !target.meta_social_asset_id || !target.meta_social_sender_id ||
+      row.recipient !== `${target.meta_social_asset_id}:${target.meta_social_sender_id}`) return "social_recipient_unverified";
+    if (target.meta_social_opted_out !== false || target.contactability_status === "denied") return "social_opted_out";
+    const now = Date.now();
+    const last = Date.parse(target.meta_social_last_inbound_at);
+    if (!Number.isFinite(last) || last > now || last <= now - 86_400_000) return "social_window_closed";
+    if (Date.parse(row.created_at) <= now - 120_000) return "social_claim_expired";
+    row.social_dispatch_at = this.nowIso();
+    await this.persist();
+    return "acquired";
+  }
+
+  async expireMetaSocialClaim(id, channel, dispatched) {
+    const row = this.state.whatsapp_manual_sends.find((send) => send.id === id && send.channel === channel);
+    if (!row || row.status !== "pending" || Boolean(row.social_dispatch_at) !== dispatched) return null;
+    return this.updateManualSend(id, {
+      status: dispatched ? "outcome_unknown" : "not_sent",
+      failure_reason: dispatched ? "no_provider_outcome_recorded" : "social_claim_expired",
+    }, "pending");
+  }
+
+  async recordMetaSocialReceipt({ channel, binding, mid, state }) {
+    const row = this.state.whatsapp_manual_sends.find((send) => send.channel === channel && send.recipient === binding &&
+      send.provider_message_id === mid && send.status === "provider_accepted");
+    if (!row) {
+      if (!this.state.whatsapp_manual_sends.some((send) => send.channel === channel && send.recipient === binding &&
+        send.social_dispatch_at && ["pending", "outcome_unknown"].includes(send.status))) return true;
+      const receipts = this.state.meta_social_pending_receipts;
+      const key = JSON.stringify([channel, binding, mid]);
+      receipts[key] = receipts[key] === "read" ? "read" : state;
+      await this.persist();
+      return true;
+    }
+    if (row.social_delivery_state !== "read") row.social_delivery_state = state;
+    await this.persist();
+    return true;
+  }
+
+  async findMetaSocialSend(leadId, channel, actorEmail, requestId) {
+    const row = this.state.whatsapp_manual_sends.find((send) => send.lead_id === leadId && send.channel === channel &&
+      send.actor_email === actorEmail && send.client_request_id === requestId);
+    return row ? { ...row } : null;
+  }
+
+  async acceptMetaSocialSend(send, outcome) {
+    const row = this.state.whatsapp_manual_sends.find((item) => item.id === send.id && item.channel === send.channel && item.recipient === send.recipient);
+    const mid = outcome.provider_message_id;
+    if (!row?.social_dispatch_at || !/^[!-~]{1,512}$/.test(mid || "") ||
+        !(row.status === "provider_accepted" ? row.provider_message_id === mid : ["pending", "outcome_unknown"].includes(row.status) && !row.provider_message_id)) return false;
+    if (this.state.whatsapp_manual_sends.some((item) => item !== row && item.channel === row.channel && item.recipient === row.recipient && item.provider_message_id === mid)) return false;
+    const key = JSON.stringify([row.channel, row.recipient, mid]);
+    const receipts = this.state.meta_social_pending_receipts;
+    Object.assign(row, outcome, { failure_reason: null, updated_at: this.nowIso(),
+      social_delivery_state: row.social_delivery_state === "read" ? "read" : receipts[key] || row.social_delivery_state });
+    delete receipts[key];
+    await this.persist();
+    return true;
+  }
+
+  async updateManualSend(id, patch, expectedStatus) {
     const record = this.state.whatsapp_manual_sends.find((r) => r.id === id);
-    if (!record) return null;
+    if (!record || (expectedStatus && record.status !== expectedStatus)) return null;
     for (const field of MANUAL_SEND_PATCH_FIELDS) if (patch[field] !== undefined) record[field] = patch[field];
     record.updated_at = this.nowIso();
     await this.persist();
@@ -704,6 +957,14 @@ class FileLeadAgentsStore {
 
   async listManualSendsForLead(leadId, limit = 200) {
     return this.state.whatsapp_manual_sends.filter((r) => r.lead_id === leadId).sort((a, b) => String(a.created_at).localeCompare(String(b.created_at))).slice(-limit).map((r) => ({ ...r }));
+  }
+
+  async listSocialManualSends(leadId, channel, { unresolved = false, repair = false, limit = 200, offset = 0 } = {}) {
+    return this.state.whatsapp_manual_sends.filter((row) => row.lead_id === leadId && row.channel === channel &&
+      (unresolved ? ["pending", "outcome_unknown"].includes(row.status) :
+        !repair || (row.status === "provider_accepted" && !row.conversation_recorded_at)))
+      .sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at) || b.id.localeCompare(a.id))
+      .slice(offset, offset + limit).map((row) => ({ ...row }));
   }
 
   // ---- Communication delivery outbox (see db/20261018_communication_delivery_outbox.sql and communication-outbox.js) ----
@@ -811,7 +1072,8 @@ class FileLeadAgentsStore {
 
   async listLeadChannelStatesForLeads(leadIds, channel = "whatsapp") {
     const wanted = new Set(leadIds || []);
-    return this.state.lead_channel_states.filter((item) => wanted.has(item.lead_id) && item.channel === channel);
+    const channels = new Set(Array.isArray(channel) ? channel : [channel]);
+    return this.state.lead_channel_states.filter((item) => wanted.has(item.lead_id) && channels.has(item.channel));
   }
 
   async listInboundStatusEventsByExternalIds(externalIds) {

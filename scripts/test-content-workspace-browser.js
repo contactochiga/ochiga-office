@@ -205,8 +205,8 @@ async function main() {
 
     // 1. Posts workspace: tabs, three panes, list, default selection, honest publishing/engagement panels
     await open("content", `!!document.querySelector('.content-page .content-form')`, "posts workspace");
-    ok(await evalJs(`[...document.querySelectorAll('.content-tabs .crm-tab')].map((t) => t.textContent.replace(/\\s+/g, ' ').trim()).join('|')`) === "Overview|Posts|Calendar|Comments Soon|Analytics Soon", "tabs: Overview | Posts | Calendar | Comments (soon) | Analytics (soon)");
-    ok(await evalJs(`document.querySelector('.content-tabs .crm-tab.active').textContent.trim() === 'Posts' && [...document.querySelectorAll('.content-tab-soon')].every((t) => t.disabled)`), "Posts is active; Comments and Analytics are disabled");
+    ok(await evalJs(`[...document.querySelectorAll('.content-tabs .crm-tab')].map((t) => t.textContent.replace(/\\s+/g, ' ').trim()).join('|')`) === "Overview|Posts|Calendar|Comments|Analytics Soon", "tabs: Overview | Posts | Calendar | Comments (shows its connection state) | Analytics (soon)");
+    ok(await evalJs(`document.querySelector('.content-tabs .crm-tab.active').textContent.trim() === 'Posts' && [...document.querySelectorAll('.content-tab-soon')].every((t) => t.disabled) && !!document.querySelector('[data-content-tab=comments]')`), "Posts is active; Comments is available and Analytics is disabled");
     ok(await evalJs(`!!document.querySelector('.content-new-post') && document.querySelector('.content-new-post').textContent.trim() === 'New Post'`), "a simple New Post button");
     ok(await evalJs(`['.content-list-pane', '.content-main-pane', '.content-details-pane'].every((s) => document.querySelector(s).getBoundingClientRect().width > 200)`), "three visible panes at desktop width");
     ok(await evalJs(`document.querySelectorAll('.content-row').length`) === TOTAL && (await text("#contentCount")) === `(${TOTAL})`, "every post is listed, with the count");

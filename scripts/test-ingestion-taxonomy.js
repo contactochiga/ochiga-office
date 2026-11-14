@@ -9,10 +9,10 @@ async function main(){
  const req=async(route,body,who='importer',raw=false)=>{const r=await fetch(app.base+'/api/lead-agents/admin/catalogue'+route,{method:body===undefined?'GET':'POST',headers:{cookie:cookies[who]||'',origin:app.base,'content-type':raw?'application/octet-stream':'application/json'},body:body===undefined?undefined:raw?body:JSON.stringify(body)});return {status:r.status,data:await r.json()};};
  try{
  const asset=await fetch(app.base+'/office/catalogue/ingestion-taxonomy.mjs');assert.equal(asset.status,200);assert.match(await asset.text(),/renderBatchTaxonomy/);assert.equal((await fetch(app.base+'/office/catalogue/ingestion-taxonomy.mjs',{method:'POST'})).status,405);pass('batch UI module is served through reviewed GET-only static route');
- const bytes=fs.readFileSync('/Users/ochigaidoko/Downloads/GetOyi_Hardware_Catalogue_V2_Research_Master.xlsx');
+ const bytes=fs.readFileSync(require('./fixtures/build-ingestion-fixtures').fixturePath('master'));
  const upload=async who=>(await req('/imports?name=research-master.xlsx&version=2',bytes,who||'importer',true)).data;
  let preview=await upload();const original=preview, id=preview.id,initial=preview.taxonomy_groups;
- assert.equal(preview.total,50);assert.equal(initial.filter(g=>g.kind==='category').length,25);assert.equal(initial.filter(g=>g.kind==='brand').length,21);pass('real workbook: 50 candidates grouped into 25 category paths and 21 manufacturer labels');
+ assert.equal(preview.total,50);assert.equal(initial.filter(g=>g.kind==='category').length,25);assert.equal(initial.filter(g=>g.kind==='brand').length,21);pass('synthetic research-master fixture: 50 candidates grouped into 25 category paths and 21 manufacturer labels');
  const cat=catalogueStoreFor(app.store),registry=await cat.listCategories();
  assert.equal(registry.length,6);assert.equal((await cat.listBrands()).length,0);assert.equal(preview.counts.ready,0);pass('actual six-category / zero-brand baseline reproduced');
  const post=body=>req(`/imports/${id}/taxonomy`,body);

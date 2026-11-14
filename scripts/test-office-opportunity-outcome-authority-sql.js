@@ -2,17 +2,44 @@
 // Real-Postgres proof: the migration itself (proposals.opportunity_id),
 // and true concurrent-CAS behavior (two genuinely simultaneous,
 // contradictory UPDATE statements racing the same WHERE precondition --
-// something a single-threaded file-store test cannot exercise). Reuses
-// the shared local Supabase Postgres container already running for the
-// Backend repository's own SQL smokes (a raw Postgres server process, no
-// Backend schema/data touched -- a fresh, isolated throwaway database is
-// created and dropped for this test only), matching the exact
-// docker-exec-psql convention established across that programme.
+// something a single-threaded file-store test cannot exercise). Runs in
+// a disposable Postgres container that this test starts (no network,
+// synthetic rows only) and always removes. A missing Docker or image
+// fails the suite with BLOCKED; it never depends on a container from
+// another repository.
 const assert = require("assert/strict");
-const { spawn } = require("child_process");
+const { spawn, spawnSync } = require("child_process");
 
-const container = process.env.OYI_LOCAL_POSTGRES_CONTAINER || "supabase_db_Ochiga-backend";
+const PG_IMAGE = process.env.PG_IMAGE || "public.ecr.aws/supabase/postgres:17.6.1.131";
+const LABEL = "office-test=opportunity-outcome-authority-sql";
+const container = `office-opportunity-sql-${process.pid}-${Date.now()}`;
 const db = "office_wave8_slice4_" + Date.now();
+const DEADLINE_MS = Number(process.env.OFFICE_SQL_TEST_DEADLINE_MS) || 5 * 60_000;
+const docker = (...args) => spawnSync("docker", args, { encoding: "utf8" });
+let removed = false;
+function removeContainer() {
+  if (removed) return;
+  removed = true;
+  docker("rm", "-f", container);
+}
+for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) process.on(signal, () => { removeContainer(); process.exit(130); });
+process.on("exit", removeContainer);
+
+async function startDatabase() {
+  if (docker("image", "inspect", PG_IMAGE).status !== 0) throw new Error(`BLOCKED: Docker or the image ${PG_IMAGE} is not available`);
+  // A run killed outright (SIGKILL) cannot clean up; remove its leftovers, which hold only synthetic rows.
+  const stale = docker("ps", "-aq", "--filter", `label=${LABEL}`).stdout.trim().split("\n").filter(Boolean);
+  if (stale.length) docker("rm", "-f", ...stale);
+  const run = docker("run", "-d", "--rm", "--name", container, "--label", LABEL, "--network", "none", "-e", "POSTGRES_PASSWORD=synthetic-test-only", PG_IMAGE);
+  if (run.status !== 0) throw new Error("BLOCKED: postgres container: " + run.stderr);
+  // The image restarts once during initialization; wait for three consecutive successful queries.
+  for (let ok = 0, i = 0; ok < 3; i++) {
+    if (i > 400) throw new Error("BLOCKED: postgres container not ready");
+    const probe = docker("exec", container, "psql", "-X", "-qAt", "-U", "postgres", "-d", "postgres", "-c", "select 1");
+    ok = probe.status === 0 && probe.stdout.trim() === "1" ? ok + 1 : 0;
+    await new Promise((resolve) => setTimeout(resolve, 300));
+  }
+}
 
 // Extracted verbatim from db/lead-agents-schema.sql (crm_contacts/
 // crm_organizations/leads omitted -- crm_opportunities/proposals'
@@ -78,6 +105,9 @@ create index if not exists proposals_opportunity_id_idx on proposals (opportunit
 `;
 
 (async function main() {
+  const deadline = setTimeout(() => { console.error(`FAIL: exceeded ${DEADLINE_MS / 1000} s`); removeContainer(); process.exit(1); }, DEADLINE_MS);
+  deadline.unref();
+  await startDatabase();
   await sql(`create database ${db}`, "postgres");
   try {
     console.log("\n=== Migration proof (Section 24) ===");
@@ -150,8 +180,10 @@ create index if not exists proposals_opportunity_id_idx on proposals (opportunit
     console.log(`\n=== test-office-opportunity-outcome-authority-sql: ${passed} checks passed ===`);
   } finally {
     await sql(`drop database if exists ${db}`, "postgres").catch(() => {});
+    removeContainer();
   }
 })().catch((error) => {
   console.error(error.stack || error.message || String(error));
+  removeContainer();
   process.exit(1);
 });

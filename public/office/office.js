@@ -1,3 +1,5 @@
+import { socialReplyAttempts } from "/office/social-reply-attempt.mjs";
+
 // Ochiga Office — corporate shell (Phase 4: Private + Partnerships +
 // Documents / Proposals / Quotations).
 //
@@ -218,6 +220,21 @@ async function apiCreateLetterheadDocument(body) {
 }
 async function apiListContent(status) {
   return api(`/api/lead-agents/admin/content${status ? `?status=${encodeURIComponent(status)}` : ""}`);
+}
+async function apiListSocialPosts() {
+  return api("/api/lead-agents/admin/content/social-posts");
+}
+async function apiGetSocialPost(id) {
+  return api(`/api/lead-agents/admin/content/social-posts/${encodeURIComponent(id)}`);
+}
+async function apiSyncSocialPosts(postId) {
+  return api(postId ? `/api/lead-agents/admin/content/social-posts/${encodeURIComponent(postId)}/sync` : "/api/lead-agents/admin/content/social-posts/sync", { method: "POST", body: {} });
+}
+async function apiModerateComment(postId, commentId, body) {
+  return api(`/api/lead-agents/admin/content/social-posts/${encodeURIComponent(postId)}/comments/${encodeURIComponent(commentId)}/moderation`, { method: "POST", body });
+}
+async function apiReconcileModeration(postId, commentId, actionId) {
+  return api(`/api/lead-agents/admin/content/social-posts/${encodeURIComponent(postId)}/comments/${encodeURIComponent(commentId)}/moderation/${encodeURIComponent(actionId)}/reconcile`, { method: "POST", body: {} });
 }
 async function apiGetContent(id) {
   return api(`/api/lead-agents/admin/content/${encodeURIComponent(id)}`);
@@ -7540,7 +7557,7 @@ const CONTENT_TABS = [
   { key: "overview", label: "Overview", route: "content/overview" },
   { key: "posts", label: "Posts", route: "content" },
   { key: "calendar", label: "Calendar", route: "content/calendar" },
-  { key: "comments", label: "Comments", soon: "Comments need the website, Facebook and Instagram integrations." },
+  { key: "comments", label: "Comments", route: "content/comments", soon: "Comments need the website, Facebook and Instagram integrations." },
   { key: "analytics", label: "Analytics", soon: "Analytics need a connected analytics source." },
 ];
 const CONTENT_STATUS_FILTERS = [["", "All status"], ["draft", "Draft"], ["in_review", "In review"], ["approved", "Approved"], ["scheduled", "Scheduled"], ["published", "Published"], ["unpublished", "Unpublished"]];
@@ -7570,7 +7587,7 @@ const CONTENT_HISTORY_LABELS = {
 const CONTENT_GLOBE_SVG = `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><circle cx="8" cy="8" r="6"/><path d="M2 8h12M8 2c2.2 2.2 2.2 9.8 0 12M8 2C5.8 4.2 5.8 11.8 8 14"/></svg>`;
 const CONTENT_DOC_SVG = `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" aria-hidden="true"><path d="M4 2h5l3 3v9H4z"/><path d="M9 2v3h3M6 8h4M6 10.5h4"/></svg>`;
 
-const contentState = { items: [], q: "", status: "", time: "", activeId: null, explicit: false, item: null, mode: "edit", dirty: false, busy: false, hash: "", page: null, editor: null, historyCache: new Map(), calendarMonth: null };
+const contentState = { items: [], q: "", status: "", time: "", source: "", activeId: null, explicit: false, item: null, mode: "edit", dirty: false, busy: false, hash: "", page: null, editor: null, historyCache: new Map(), calendarMonth: null };
 
 // ---- shared helpers --------------------------------------------------------------------------------------------------------------------------
 
@@ -7667,7 +7684,7 @@ function contentHistoryRow(entry) {
 
 async function renderContentRoute(outlet, rest, token) {
   const [sub = ""] = rest;
-  const tabKey = ["overview", "calendar", "table"].includes(sub) ? sub : "posts";
+  const tabKey = ["overview", "calendar", "table", "comments"].includes(sub) ? sub : "posts";
   const postId = tabKey === "posts" && sub ? sub : null;
   setTopbar("Content", tabKey === "table" ? "Posts" : titleCase(tabKey));
   // Already showing the Posts workspace: change the selected post in place (no rebuild), like the CRM leads workspace.
@@ -7677,7 +7694,10 @@ async function renderContentRoute(outlet, rest, token) {
   }
   let items;
   try {
-    items = (await apiListContent()).items || [];
+    // Facebook/Instagram posts with comments are optional: when they cannot be read, the Comments tab simply stays unavailable.
+    const [list, social] = await Promise.all([apiListContent(), apiListSocialPosts().catch(() => null)]);
+    items = list.items || [];
+    contentState.social = social && Array.isArray(social.posts) ? social : { enabled: false, posts: [] };
   } catch (err) {
     if (token !== state.renderToken) return;
     outlet.innerHTML = "";
@@ -7699,6 +7719,7 @@ async function renderContentRoute(outlet, rest, token) {
     outlet.appendChild(body);
     if (tabKey === "overview") renderContentOverview(body, items);
     else if (tabKey === "calendar") renderContentCalendar(body, items);
+    else if (tabKey === "comments") await renderContentComments(body, rest[1] || null, token);
     else renderContentTable(body, items);
     return;
   }
@@ -7706,10 +7727,89 @@ async function renderContentRoute(outlet, rest, token) {
   await contentSelect(postId, token);
 }
 
+// Content → Comments: public comments on Facebook Page and Instagram posts, shown with the post they belong to. Read-only in this
+// slice (no replies or moderation). Comments are never CRM leads and never linked to Messenger/Instagram DM conversations.
+function contentCommentsAvailable() {
+  return Boolean(contentState.social && (contentState.social.connection || contentState.social.enabled || contentState.social.posts.length));
+}
+const SOCIAL_CHANNEL = { facebook: { label: "Facebook Page", cls: "rel-src-fb", glyph: "f" }, instagram: { label: "Instagram", cls: "rel-src-ig", glyph: "IG" } };
+// Connection state of the Facebook Page / Instagram account, as reported by the API: connected, disconnected or demonstration.
+function contentSocialConnection() {
+  const c = contentState.social?.connection;
+  return c && ["connected", "disconnected", "demonstration", "setup_pending"].includes(c.state) ? c : { state: "disconnected", channels: {} };
+}
+function contentSocialStatusChip() {
+  const c = contentSocialConnection();
+  if (c.state === "demonstration") return el(`<span class="content-connection content-connection-demo" data-connection="demonstration" role="status">${badge("Demonstration", "warning")}<span>Sample posts and comments, not from your Facebook Page or Instagram. Nothing is synced or sent.</span></span>`);
+  if (c.state === "setup_pending") return el(`<span class="content-connection" data-connection="setup_pending" role="status">${badge("Setup pending", "default")}<span>Facebook and Instagram are not connected yet. Posts and comments will appear here once setup is complete.</span></span>`);
+  if (c.state === "connected") {
+    const names = ["facebook", "instagram"].filter((k) => c.channels?.[k]).map((k) => SOCIAL_CHANNEL[k].label).join(" and ");
+    return el(`<span class="content-connection" data-connection="connected" role="status">${badge("Connected", "success")}<span>${escapeHtml(names)}.${c.moderation ? "" : " Hiding comments is off."} Replies and publishing are not enabled.</span></span>`);
+  }
+  return el(`<span class="content-connection" data-connection="disconnected" role="status">${badge("Not connected", "default")}<span>Facebook and Instagram posts appear here once the Page and Instagram account are connected.</span></span>`);
+}
+const contentDemoNotice = () => el(`<div class="content-notice content-notice-warn content-demo-notice" role="note" data-connection="demonstration"><div class="content-notice-text"><b>Demonstration.</b> This is sample data, not a real Facebook or Instagram post. Nothing here is stored, synced, hidden or sent.</div></div>`);
+
+async function renderContentComments(host, selectedId, token) {
+  const social = contentState.social || { enabled: false, posts: [] };
+  const connState = contentSocialConnection().state;
+  if (!contentCommentsAvailable() || connState === "setup_pending" || (connState === "disconnected" && !social.posts.length)) {
+    const pending = connState === "setup_pending";
+    host.appendChild(el(`<div class="content-not-connected" data-panel-kind="comments" data-connection="${pending ? "setup_pending" : "disconnected"}"><b>${pending ? "Setup pending" : "Not connected"}</b><span>Comments from Facebook and Instagram are not collected yet. They appear here, under their post, once the Page and Instagram account are connected.</span></div>`));
+    return;
+  }
+  if (contentSocialConnection().state === "demonstration") host.appendChild(contentDemoNotice());
+  const layout = el(`<div class="content-comments"><div class="content-comments-posts" role="list" aria-label="Posts with comments"></div><div class="content-comments-thread"></div></div>`);
+  host.appendChild(layout);
+  const list = layout.querySelector(".content-comments-posts");
+  const thread = layout.querySelector(".content-comments-thread");
+  if (!social.enabled && contentSocialConnection().state !== "demonstration") list.appendChild(el(`<p class="home-panel-empty">Collection is switched off. Stored comments are shown read-only.</p>`));
+  if (!social.posts.length) {
+    list.appendChild(el(`<p class="home-panel-empty">No Facebook or Instagram post has received a comment yet.</p>`));
+    thread.appendChild(el(`<p class="home-panel-empty">Comments appear here, under the post they were left on.</p>`));
+    return;
+  }
+  const active = social.posts.find((p) => p.id === selectedId) || social.posts[0];
+  social.posts.forEach((post) => {
+    const ch = SOCIAL_CHANNEL[post.channel] || SOCIAL_CHANNEL.facebook;
+    const c = post.comment_counts || { visible: 0, hidden: 0, deleted: 0 };
+    const row = el(`<button type="button" role="listitem" class="content-comments-post ${post.id === active.id ? "active" : ""}" data-social-post="${escapeHtml(post.id)}">
+      <span class="rel-src sm ${ch.cls}"><b>${escapeHtml(ch.glyph)}</b></span>
+      <span class="content-comments-post-text"><b>${escapeHtml(contentSocialTitle(post))}</b><span>${c.visible} visible${c.hidden ? ` · ${c.hidden} hidden` : ""}${c.deleted ? ` · ${c.deleted} deleted` : ""}${post.last_comment_at ? ` · ${escapeHtml(fmtRelative(post.last_comment_at))}` : ""}</span></span>
+    </button>`);
+    row.addEventListener("click", () => navigate(`content/comments/${post.id}`));
+    list.appendChild(row);
+  });
+  thread.appendChild(el(`<p class="rel-faint">Loading comments…</p>`));
+  let detail;
+  try {
+    detail = await apiGetSocialPost(active.id);
+  } catch (err) {
+    if (token !== state.renderToken) return;
+    thread.innerHTML = "";
+    thread.appendChild(errorPanel(err.message || "Could not load comments."));
+    return;
+  }
+  if (token !== state.renderToken) return;
+  thread.innerHTML = "";
+  const ch = SOCIAL_CHANNEL[detail.post.channel] || SOCIAL_CHANNEL.facebook;
+  thread.appendChild(el(`<div class="content-comments-head"><b>${escapeHtml(contentSocialTitle(detail.post))}</b><span>${escapeHtml(ch.label)}${detail.post.demo ? " · sample post" : detail.post.origin === "office" ? " · published from Office" : " · published outside Office"}</span>
+    <span class="content-comments-readonly">${detail.moderation_enabled && hasPermission("content.review") ? "Staff with review permission can hide or unhide comments. Replies are not enabled yet." : "Read-only. Replying and hiding comments are not enabled here."}</span></div>`));
+  const threadHost = el(`<div class="content-comments-list"></div>`);
+  thread.appendChild(threadHost);
+  const refreshThread = async () => {
+    const fresh = await apiGetSocialPost(active.id).catch(() => null);
+    if (!fresh) return;
+    threadHost.innerHTML = "";
+    renderSocialThread(threadHost, fresh.comments, { postId: active.id, channel: fresh.post.channel, moderationEnabled: fresh.moderation_enabled, refresh: refreshThread });
+  };
+  renderSocialThread(threadHost, detail.comments, { postId: active.id, channel: detail.post.channel, moderationEnabled: detail.moderation_enabled, refresh: refreshThread });
+}
+
 function renderContentTabs(active) {
   const tabs = el(`<div class="crm-tabs content-tabs"></div>`);
   CONTENT_TABS.forEach((tab) => {
-    if (tab.soon) {
+    if (tab.soon && !(tab.key === "comments" && contentCommentsAvailable())) {
       tabs.appendChild(el(`<button type="button" class="crm-tab content-tab-soon" disabled aria-disabled="true" title="${escapeHtml(`Coming soon. ${tab.soon}`)}">${escapeHtml(tab.label)} <span class="content-soon">Soon</span></button>`));
       return;
     }
@@ -7741,6 +7841,7 @@ function renderContentWorkspace(outlet) {
             <select id="contentTimeFilter" class="rel-select content-select" aria-label="Filter by last update">${CONTENT_TIME_FILTERS.map(([value, label]) => `<option value="${value}">${escapeHtml(label)}</option>`).join("")}</select>
           </div>
         </div>
+        <div class="content-social-bar" id="contentSocialBar" hidden></div>
         <div class="rel-list content-list" id="contentList" role="list"></div>
       </div>
       <div class="content-main-pane" id="contentMain"></div>
@@ -7756,6 +7857,7 @@ function renderContentWorkspace(outlet) {
   page.querySelector("#contentStatusFilter").addEventListener("change", (e) => { contentState.status = e.target.value; drawContentList(); });
   page.querySelector("#contentTimeFilter").addEventListener("change", (e) => { contentState.time = e.target.value; drawContentList(); });
   page.querySelector("#contentTableLink").addEventListener("click", () => navigate("content/table"));
+  contentSetupSocialBar(page);
   outlet.appendChild(page);
   contentState.page = page;
   drawContentList();
@@ -7765,15 +7867,280 @@ function drawContentList() {
   const page = contentState.page;
   if (!page) return;
   const list = page.querySelector("#contentList");
-  const rows = contentState.items.filter(contentMatchesFilters);
-  const filtered = rows.length !== contentState.items.length;
-  page.querySelector("#contentCount").textContent = filtered ? `(${rows.length} of ${contentState.items.length})` : `(${contentState.items.length})`;
+  const social = contentSocialAvailable() ? contentState.social.posts : [];
+  const showWebsite = !contentState.source || contentState.source === "website";
+  const rows = showWebsite ? contentState.items.filter(contentMatchesFilters) : [];
+  const socialRows = social.filter(contentSocialMatchesFilters);
+  const total = contentState.items.length + social.length;
+  const shown = rows.length + socialRows.length;
+  page.querySelector("#contentCount").textContent = shown !== total ? `(${shown} of ${total})` : `(${total})`;
   list.innerHTML = "";
-  if (!rows.length) {
-    list.appendChild(el(`<div class="rel-empty">${contentState.items.length ? "No posts match these filters." : "No posts yet. Start with New Post."}</div>`));
+  if (!shown) {
+    list.appendChild(el(`<div class="rel-empty">${total ? "No posts match these filters." : "No posts yet. Start with New Post."}</div>`));
     return;
   }
   rows.forEach((item) => list.appendChild(contentRow(item)));
+  if (socialRows.length) {
+    if (rows.length) list.appendChild(el(`<div class="content-list-group" role="presentation">Facebook &amp; Instagram</div>`));
+    socialRows.forEach((post) => list.appendChild(contentSocialRow(post)));
+  }
+}
+
+// ---- Posts workspace: Facebook Page and Instagram posts (C2) ------------------------------------------------------------------------------------
+// Posts made on Facebook or Instagram are shown read-only next to website articles, marked by source and sync state. They are not Sanity articles:
+// they never open the editor, enter the approval workflow or publish. Comments shown with them are public comments, never CRM leads or DMs.
+const SOCIAL_SYNC_LABEL = { not_synced: ["Not synced", "default"], synced: ["Synced", "success"], unavailable: ["No longer available", "warning"], restricted: ["Access restricted", "danger"], error: ["Sync failed", "warning"] };
+function contentSocialAvailable() {
+  return Boolean(contentState.social && (contentState.social.connection || contentState.social.enabled || contentState.social.sync_enabled || contentState.social.posts.length));
+}
+function contentSocialTitle(post) {
+  const ch = SOCIAL_CHANNEL[post.channel] || SOCIAL_CHANNEL.facebook;
+  const text = String(post.caption || "").replace(/\s+/g, " ").trim();
+  return text ? (text.length > 90 ? `${text.slice(0, 89)}…` : text) : `${ch.label} post`;
+}
+function contentSocialMatchesFilters(post) {
+  if (contentState.source && contentState.source !== post.channel) return false;
+  if (contentState.status) return false; // workflow status applies to website articles only
+  const days = (CONTENT_TIME_FILTERS.find(([key]) => key === contentState.time) || [])[2];
+  const when = post.published_at || post.last_comment_at || post.first_seen_at;
+  if (days && !(when && Date.now() - new Date(when).getTime() <= days * 86400000)) return false;
+  const q = contentState.q.trim().toLowerCase();
+  return !q || String(post.caption || "").toLowerCase().includes(q) || (SOCIAL_CHANNEL[post.channel]?.label || "").toLowerCase().includes(q);
+}
+function contentSocialThumb(post) {
+  const ch = SOCIAL_CHANNEL[post.channel] || SOCIAL_CHANNEL.facebook;
+  const empty = el(`<span class="content-thumb content-thumb-social"><span class="rel-src sm ${ch.cls}"><b>${escapeHtml(ch.glyph)}</b></span></span>`);
+  if (!post.media_preview_url) return empty;
+  const img = el(`<img class="content-thumb" src="${escapeHtml(post.media_preview_url)}" alt="" loading="lazy" referrerpolicy="no-referrer" />`);
+  img.addEventListener("error", () => img.replaceWith(empty));
+  return img;
+}
+function contentSocialRow(post) {
+  const ch = SOCIAL_CHANNEL[post.channel] || SOCIAL_CHANNEL.facebook;
+  const [syncLabel, syncTone] = SOCIAL_SYNC_LABEL[post.sync_status] || SOCIAL_SYNC_LABEL.not_synced;
+  const id = `social:${post.id}`;
+  const when = post.published_at || post.last_comment_at || post.first_seen_at;
+  const count = post.comment_counts ? post.comment_counts.visible + post.comment_counts.hidden : 0;
+  const row = el(`
+    <div class="content-row content-row-social${id === contentState.activeId ? " active" : ""}" role="listitem" tabindex="0" data-content-id="${escapeHtml(id)}" data-source="${escapeHtml(post.channel)}">
+      <div class="content-row-main">
+        <div class="content-row-top"><span class="content-row-title">${escapeHtml(contentSocialTitle(post))}</span><span class="rel-row-time">${escapeHtml(when ? fmtRelative(when) : "")}</span></div>
+        <div class="content-row-meta">
+          <span class="rel-chip content-source-chip" data-source-chip="${escapeHtml(post.channel)}">${escapeHtml(ch.label)}</span>
+          ${post.demo ? badge("Sample", "warning") : badge(syncLabel, syncTone)}
+          ${count ? `<span class="rel-chip">${count} comment${count === 1 ? "" : "s"}</span>` : ""}
+        </div>
+      </div>
+    </div>
+  `);
+  row.prepend(contentSocialThumb(post));
+  row.addEventListener("click", () => contentOpen(id));
+  row.addEventListener("keydown", (e) => { if (e.key === "Enter") contentOpen(id); });
+  return row;
+}
+function contentSetupSocialBar(page) {
+  if (!contentSocialAvailable()) return;
+  const facets = page.querySelector(".rel-facets");
+  const source = el(`<select id="contentSourceFilter" class="rel-select content-select" aria-label="Filter by source">
+    <option value="">All sources</option><option value="website">Website</option><option value="facebook">Facebook Page</option><option value="instagram">Instagram</option></select>`);
+  source.value = contentState.source;
+  source.addEventListener("change", (e) => { contentState.source = e.target.value; drawContentList(); });
+  facets.appendChild(source);
+  const bar = page.querySelector("#contentSocialBar");
+  bar.hidden = false;
+  bar.appendChild(contentSocialStatusChip());
+  if (contentState.social.posts_unavailable) bar.appendChild(el(`<span class="rel-faint content-social-status" data-posts-unavailable role="status">Stored Facebook and Instagram posts could not be loaded.</span>`));
+  if (!contentState.social.sync_enabled || !hasPermission("content.write")) return;
+  const btn = el(`<button type="button" class="btn btn-ghost btn-sm" id="contentSocialSync">Sync Facebook &amp; Instagram</button>`);
+  const status = el(`<span class="rel-faint content-social-status" role="status"></span>`);
+  btn.addEventListener("click", async () => {
+    btn.disabled = true;
+    status.textContent = "Syncing…";
+    try {
+      const r = await apiSyncSocialPosts();
+      const problems = (r.restricted || 0) + (r.error || 0);
+      status.textContent = `${r.created || 0} new · ${r.updated || 0} updated${problems ? ` · ${problems} could not be read` : ""}`;
+      contentState.social = await apiListSocialPosts();
+      drawContentList();
+    } catch (err) {
+      status.textContent = err.message || "Sync failed.";
+    } finally {
+      btn.disabled = false;
+    }
+  });
+  bar.appendChild(btn);
+  bar.appendChild(status);
+}
+
+async function contentSelectSocial(id, token) {
+  const page = contentState.page;
+  const main = page.querySelector("#contentMain");
+  const details = page.querySelector("#contentDetails");
+  setSelectedObject(null);
+  contentState.item = null;
+  main.innerHTML = "";
+  main.appendChild(skeletonPanel(3));
+  details.innerHTML = "";
+  let detail;
+  try {
+    detail = await apiGetSocialPost(id.slice("social:".length));
+  } catch (err) {
+    if (token !== state.renderToken || contentState.activeId !== id) return;
+    main.innerHTML = "";
+    main.appendChild(errorPanel(err.message || "This post could not be found."));
+    return;
+  }
+  if (token !== state.renderToken || contentState.activeId !== id) return;
+  renderSocialPostPane(main, details, detail, token);
+}
+
+function renderSocialPostPane(main, details, detail, token) {
+  const post = detail.post;
+  const ch = SOCIAL_CHANNEL[post.channel] || SOCIAL_CHANNEL.facebook;
+  const [syncLabel, syncTone] = SOCIAL_SYNC_LABEL[post.sync_status] || SOCIAL_SYNC_LABEL.not_synced;
+  main.innerHTML = "";
+  const pane = el(`
+    <div class="content-social-view" data-social-post="${escapeHtml(post.id)}">
+      <button type="button" class="btn btn-ghost btn-sm content-back" aria-label="Back to posts">← Posts</button>
+      <div class="content-social-head">
+        <span class="rel-src ${ch.cls}"><b>${escapeHtml(ch.glyph)}</b></span>
+        <div class="content-social-head-text"><h2>${escapeHtml(ch.label)} post</h2>
+          <span class="rel-faint">${post.demo ? "Sample post" : post.origin === "office" ? "Published from Office" : "Published outside Office"}${post.published_at ? ` · ${escapeHtml(fmtDateTime(post.published_at))}` : ""}</span></div>
+        <span class="content-social-sync">${post.demo ? badge("Sample", "warning") : badge(syncLabel, syncTone)}</span>
+      </div>
+      <div class="content-notice content-notice-info content-social-readonly" role="note"><div class="content-notice-text">Read-only post. It lives on ${escapeHtml(ch.label)}; Office does not edit, publish or reply to it.${detail.moderation_enabled && hasPermission("content.review") ? " You can hide or unhide its comments." : ""}</div></div>
+      <div class="content-social-media"></div>
+      <div class="content-social-caption"></div>
+      <div class="content-social-links"></div>
+      <h3 class="content-social-subhead">Comments</h3>
+      <div class="content-social-comments"></div>
+    </div>
+  `);
+  pane.querySelector(".content-back").addEventListener("click", () => { contentState.page?.classList.remove("content-item-open"); navigate("content"); });
+  if (post.demo) pane.querySelector(".content-social-readonly").replaceWith(contentDemoNotice());
+  if (post.media_preview_url) {
+    const img = el(`<img class="content-social-preview" src="${escapeHtml(post.media_preview_url)}" alt="Preview of the ${escapeHtml(ch.label)} post" loading="lazy" referrerpolicy="no-referrer" />`);
+    img.addEventListener("error", () => img.remove());
+    pane.querySelector(".content-social-media").appendChild(img);
+  }
+  const caption = pane.querySelector(".content-social-caption");
+  if (post.caption) caption.textContent = post.caption;
+  else caption.appendChild(el(`<span class="rel-faint">${post.sync_status === "not_synced" && !post.demo ? "Not synced yet, so the caption is not shown." : "This post has no caption."}</span>`));
+  if (post.sync_status === "unavailable") caption.prepend(el(`<p class="content-social-warning">This post is no longer available on ${escapeHtml(ch.label)}. The last synced details are kept.</p>`));
+  if (post.sync_status === "restricted") caption.prepend(el(`<p class="content-social-warning">Office's access to this post is restricted. Check the Page or Instagram account permissions.</p>`));
+  const links = pane.querySelector(".content-social-links");
+  if (post.permalink_url) links.appendChild(el(`<a class="btn btn-ghost btn-sm" href="${escapeHtml(post.permalink_url)}" target="_blank" rel="noopener noreferrer">Open on ${escapeHtml(ch.label)}</a>`));
+  if (detail.sync_enabled && hasPermission("content.write")) {
+    const btn = el(`<button type="button" class="btn btn-ghost btn-sm content-social-refresh">Refresh from ${escapeHtml(ch.label)}</button>`);
+    btn.addEventListener("click", async () => {
+      btn.disabled = true;
+      try {
+        await apiSyncSocialPost(post.id);
+        contentState.social = await apiListSocialPosts();
+        drawContentList();
+        if (contentState.activeId === `social:${post.id}`) renderSocialPostPane(main, details, await apiGetSocialPost(post.id), token);
+      } catch (err) {
+        btn.disabled = false;
+        btn.textContent = err.message || "Refresh failed";
+      }
+    });
+    links.appendChild(btn);
+  }
+  const commentsHost = pane.querySelector(".content-social-comments");
+  const refreshThread = async () => {
+    const fresh = await apiGetSocialPost(post.id).catch(() => null);
+    if (!fresh || contentState.activeId !== `social:${post.id}`) return;
+    commentsHost.innerHTML = "";
+    renderSocialThread(commentsHost, fresh.comments, { postId: post.id, channel: post.channel, moderationEnabled: fresh.moderation_enabled, refresh: refreshThread });
+  };
+  renderSocialThread(commentsHost, detail.comments, { postId: post.id, channel: post.channel, moderationEnabled: detail.moderation_enabled, refresh: refreshThread });
+  main.appendChild(pane);
+  details.innerHTML = "";
+  const facts = [["Source", ch.label], ["Origin", post.demo ? "Demonstration sample" : post.origin === "office" ? "Published from Office" : "Published outside Office"],
+    ["Published", post.published_at ? fmtDateTime(post.published_at) : "—"], ["Sync", post.demo ? "Not applicable" : syncLabel],
+    ["Last synced", post.synced_at ? fmtRelative(post.synced_at) : "Never"], ["Comments", String((post.comment_counts?.visible || 0) + (post.comment_counts?.hidden || 0))]];
+  details.appendChild(el(`<details class="rel-section content-section" open><summary>Post</summary><div class="rel-section-body">${facts.map(([label, value]) => `<div class="rel-fact"><span>${escapeHtml(label)}</span><b>${escapeHtml(value)}</b></div>`).join("")}</div></details>`));
+}
+async function apiSyncSocialPost(id) { return apiSyncSocialPosts(id); }
+
+// Threaded comments (shared by the Comments tab and the social post view). With moderation on, staff holding content.review can
+// hide or unhide a comment with a reason; the state shown is the confirmed one, plus any pending, failed or unconfirmed action.
+const MODERATION_REASON = {
+  token_invalid: "Office's access token has expired or was revoked.",
+  permission_denied: "Office does not have permission to moderate this comment.",
+  throttled: "The platform is limiting requests. Try again later.",
+  comment_unavailable: "The comment no longer exists on the platform.",
+  foreign_post: "The comment does not belong to this post.",
+  not_configured: "Moderation is not configured for this account.",
+};
+const moderationReason = (code, ch) => MODERATION_REASON[code] || `No clear answer from ${ch.label}.`;
+function renderSocialThread(host, comments, opts = {}) {
+  const ch = SOCIAL_CHANNEL[opts.channel] || SOCIAL_CHANNEL.facebook;
+  const canModerate = Boolean(opts.moderationEnabled && opts.postId && hasPermission("content.review"));
+  const byParent = new Map();
+  comments.forEach((c) => { const key = c.provider_parent_id || ""; if (!byParent.has(key)) byParent.set(key, []); byParent.get(key).push(c); });
+  const known = new Set(comments.map((c) => c.provider_comment_id));
+  const roots = comments.filter((c) => !c.provider_parent_id || !known.has(c.provider_parent_id));
+  const draw = (c, depth) => {
+    const m = c.moderation;
+    const open = m && ["pending", "dispatched", "unknown"].includes(m.state);
+    const node = el(`<div class="content-comment${depth ? " reply" : ""}${c.visibility === "hidden" ? " is-hidden" : ""}" data-comment="${escapeHtml(c.id)}">
+      <div class="content-comment-meta"><b>${c.author_is_page ? "Your Page" : escapeHtml(c.author_label || "Someone")}</b><span>${escapeHtml(fmtDateTime(c.created_at))}${c.edited_at ? " · edited" : ""}</span>
+        ${c.visibility === "hidden" && !c.deleted ? '<span class="content-comment-flag">Hidden</span>' : ""}</div>
+      <div class="content-comment-body">${c.deleted ? '<span class="rel-faint">Deleted by its author. The text is no longer stored.</span>' : c.body ? escapeHtml(c.body) : '<span class="rel-faint">No text (for example, an image only).</span>'}</div>
+    </div>`);
+    if (m && m.state !== "confirmed") {
+      const verb = m.action === "hide" ? "hide" : "unhide";
+      const text = ["pending", "dispatched"].includes(m.state) ? `${verb === "hide" ? "Hiding" : "Unhiding"}…`
+        : m.state === "unknown" ? `Couldn't confirm the ${verb} yet. ${m.failure_reason === "not_yet_applied" ? `${ch.label} has not shown the change yet and may still apply it.` : moderationReason(m.failure_reason, ch)} It won't be sent again.`
+        : `The ${verb} failed. ${moderationReason(m.failure_reason, ch)}`;
+      const line = el(`<div class="content-moderation-state content-moderation-${escapeHtml(m.state)}" data-moderation-state="${escapeHtml(m.state)}" role="status">${escapeHtml(text)}</div>`);
+      if (m.state === "unknown" && canModerate) {
+        const check = el(`<button type="button" class="btn btn-ghost btn-sm content-moderation-check">Check again</button>`);
+        check.addEventListener("click", async () => {
+          check.disabled = true;
+          try { await apiReconcileModeration(opts.postId, c.id, m.id); } catch { /* the refreshed thread shows the state */ }
+          await opts.refresh?.();
+        });
+        line.appendChild(check);
+      }
+      node.appendChild(line);
+    }
+    if (canModerate && c.actionable) {
+      const hiding = c.visibility !== "hidden";
+      const btn = el(`<button type="button" class="btn btn-ghost btn-sm content-moderation-toggle" data-moderation-action="${hiding ? "hide" : "unhide"}"${open ? " disabled" : ""}>${hiding ? "Hide" : "Unhide"}</button>`);
+      btn.addEventListener("click", () => {
+        if (node.querySelector(".content-moderation-form")) return;
+        const form = el(`<form class="content-moderation-form">
+          <label class="content-moderation-label" for="mod-${escapeHtml(c.id)}">${hiding ? "Why hide this comment? It will be hidden from the public on" : "Why unhide this comment? It will be visible again on"} ${escapeHtml(ch.label)}.</label>
+          <textarea id="mod-${escapeHtml(c.id)}" class="content-moderation-reason" rows="2" maxlength="500" required minlength="3" placeholder="Reason (kept in the audit log)"></textarea>
+          <div class="content-moderation-actions"><button type="submit" class="btn btn-primary btn-sm">${hiding ? "Hide comment" : "Unhide comment"}</button><button type="button" class="btn btn-ghost btn-sm content-moderation-cancel">Cancel</button></div>
+          <div class="content-moderation-error" role="alert"></div>
+        </form>`);
+        form.querySelector(".content-moderation-cancel").addEventListener("click", () => form.remove());
+        form.addEventListener("submit", async (e) => {
+          e.preventDefault();
+          const reason = form.querySelector("textarea").value.trim();
+          if (reason.length < 3) { form.querySelector(".content-moderation-error").textContent = "Give a reason of at least 3 characters."; return; }
+          form.querySelectorAll("button").forEach((x) => { x.disabled = true; });
+          const requestId = (crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}${Math.random()}`).replace(/[^A-Za-z0-9]/g, "").slice(0, 40).padEnd(16, "0");
+          try {
+            await apiModerateComment(opts.postId, c.id, { action: hiding ? "hide" : "unhide", reason, client_request_id: requestId });
+          } catch (err) {
+            if (!/moderation_|request_id|comment_/.test(String(err.message))) form.querySelector(".content-moderation-error").textContent = err.message || "The request could not be sent.";
+          }
+          await opts.refresh?.();
+        });
+        node.appendChild(form);
+        form.querySelector("textarea").focus();
+      });
+      node.querySelector(".content-comment-meta").appendChild(btn);
+    }
+    host.appendChild(node);
+    (byParent.get(c.provider_comment_id) || []).forEach((r) => draw(r, depth + 1));
+  };
+  if (!roots.length) host.appendChild(el(`<p class="home-panel-empty">No comments yet.</p>`));
+  roots.forEach((c) => draw(c, 0));
 }
 
 function contentRow(item) {
@@ -7821,6 +8188,7 @@ function contentMarkActive() {
 
 async function contentSelect(postId, token) {
   const page = contentState.page;
+  if (postId) postId = decodeURIComponent(postId);
   const explicit = Boolean(postId);
   // No post in the URL: show the most recently updated post (as the CRM workspace selects the latest lead); on a phone the list stays in front.
   const id = postId || (contentState.items.filter(contentMatchesFilters)[0] || contentState.items[0] || {}).id || null;
@@ -7842,6 +8210,7 @@ async function contentSelect(postId, token) {
     details.innerHTML = "";
     return;
   }
+  if (id.startsWith("social:")) { await contentSelectSocial(id, token); return; }
   main.innerHTML = "";
   main.appendChild(skeletonPanel(4));
   details.innerHTML = "";
@@ -18077,6 +18446,11 @@ function relInitials(name) {
 function relDeliveryText(entry) {
   if (entry.direction !== "outbound") return "";
   const d = entry.delivery || {};
+  if (entry.channel === "facebook" || entry.channel === "instagram") {
+    if (d.state === "pending") return "Sending — not yet confirmed by Meta";
+    if (d.state === "rejected") return "Not sent — Meta refused it";
+    if (d.state === "sent") return "Accepted by Meta — delivery not confirmed";
+  }
   const map = { read: "Read", delivered: "Delivered", sent: "Sent (provider confirmed)", failed: "Failed", unverified: "Accepted by provider — delivery not confirmed", pending: "Sending — not yet confirmed by WhatsApp", outcome_unknown: "Outcome unknown — it may or may not have been sent. Do not resend.", rejected: "Not sent — WhatsApp refused it", not_sent: "Not sent", not_applicable: "" };
   return map[d.state] || "";
 }
@@ -18224,11 +18598,13 @@ function renderRelEntry(entry) {
     </div>`);
   const ms = entry.manual_send;
   if (ms && ms.resolvable && hasPermission("manage_takeover")) {
-    const actions = el(`<div class="rel-resolve"><span>Check WhatsApp, then record what happened:</span><button type="button" class="btn btn-sm" data-r="confirmed_sent">It was sent</button><button type="button" class="btn btn-sm" data-r="confirmed_not_sent">It was not sent</button></div>`);
+    const channel = ["facebook", "instagram"].includes(entry.channel) ? entry.channel : "whatsapp";
+    const label = channel === "facebook" ? "Messenger" : channel === "instagram" ? "Instagram" : "WhatsApp";
+    const actions = el(`<div class="rel-resolve"><span>Check ${label}, then record what happened:</span><button type="button" class="btn btn-sm" data-r="confirmed_sent">It was sent</button><button type="button" class="btn btn-sm" data-r="confirmed_not_sent">It was not sent</button></div>`);
     actions.querySelectorAll("button").forEach((b) => b.addEventListener("click", async () => {
       actions.querySelectorAll("button").forEach((x) => { x.disabled = true; });
       try {
-        await api(`/api/lead-agents/admin/leads/${encodeURIComponent(relState.leadId)}/whatsapp/manual-sends/${encodeURIComponent(ms.id)}/resolve`, { method: "POST", body: { resolution: b.dataset.r } });
+        await api(`/api/lead-agents/admin/leads/${encodeURIComponent(relState.leadId)}/${channel}/manual-sends/${encodeURIComponent(ms.id)}/resolve`, { method: "POST", body: { resolution: b.dataset.r } });
         toast("Recorded. Nothing was sent.");
         await relLoadThread(false);
       } catch (err) { toast(err.message || "Could not record the decision.", "error"); actions.querySelectorAll("button").forEach((x) => { x.disabled = false; }); }
@@ -18339,6 +18715,13 @@ function relRenderThreadPane(pane, data) {
   relRenderEntries(holder, data.thread.entries);
   Array.from(holder.childNodes).forEach((n) => scroll.appendChild(n));
   pane.appendChild(scroll);
+  if (data.unresolved_sends?.length) {
+    const notice = el(`<div class="rel-note" role="status"></div>`);
+    notice.textContent = data.unresolved_sends.some((send) => send.may_have_dispatched)
+      ? "A reply may have reached Meta. Do not resend; ask an integration operator to verify the outcome."
+      : "A reply is still being prepared. Refresh the thread before trying again.";
+    pane.appendChild(notice);
+  }
   pane.appendChild(relRenderComposer(data));
   requestAnimationFrame(() => { scroll.scrollTop = scroll.scrollHeight; });
 }
@@ -18346,14 +18729,65 @@ function relRenderThreadPane(pane, data) {
 function relRenderComposer(data) {
   const wrap = el(`<div class="messages-composer-wrap rel-composer"></div>`);
   const c = data.communication;
+  const social = Boolean(c.inbound_only_channel);
+  const channel = c.inbound_only_channel || "whatsapp";
+  const label = channel === "instagram" ? "Instagram" : channel === "facebook" ? "Messenger" : "WhatsApp";
+  const replyPath = `/api/lead-agents/admin/leads/${encodeURIComponent(data.lead.id)}/${channel}/reply`;
+  const attemptKey = "office:social-reply:" + JSON.stringify([state.admin?.id || currentEmail(), data.lead.id, channel]);
+  let attempts;
+  let previous;
+  if (social) {
+    try {
+      if (!navigator.locks || !window.crypto?.subtle) throw new Error("Secure browser storage required");
+      attempts = socialReplyAttempts({ storage: localStorage, locks: navigator.locks, createId: newRelRequestId,
+        digest: async (text) => Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text))),
+          (byte) => byte.toString(16).padStart(2, "0")).join("") });
+      previous = attempts.read(attemptKey);
+    } catch {
+      wrap.appendChild(el('<div class="rel-locked">Secure browser storage is unavailable. Social replies are paused.</div>'));
+      return wrap;
+    }
+  }
+  const recover = async (id) => {
+    const result = await api(replyPath + "/" + encodeURIComponent(id), { cache: "no-store" });
+    await attempts.settle(attemptKey, id, result.state);
+    return result.state;
+  };
+  if (previous) {
+    const check = el('<button type="button" class="btn btn-sm">Check previous reply</button>');
+    check.addEventListener("click", async () => {
+      check.disabled = true;
+      try {
+        const outcome = await recover(previous.id);
+        toast(outcome === "unrecorded" ? "No recorded attempt yet. Retry only with the original reply text." :
+          `Previous reply: ${String(outcome).replace(/_/g, " ")}.`);
+        await relLoadThread(false);
+      } catch {
+        toast("Could not verify the previous reply. Do not submit a replacement.", "error");
+        check.disabled = false;
+      }
+    });
+    wrap.appendChild(check);
+  }
+  if (social && !c.social_reply?.available) {
+    const reason = {
+      social_window_closed: "The 24-hour reply window is closed.",
+      social_opted_out: "The customer has opted out, or consent state could not be verified.",
+      social_recipient_unverified: "A new incoming message is needed before staff can reply.",
+      unresolved_send: "A previous send is unresolved. Do not resend. Ask an integration operator to review the outcome.",
+      send_state_unavailable: "Send history could not be verified. Replies are paused.",
+    }[c.social_reply?.reason] || "Staff replies are not available for this conversation.";
+    wrap.appendChild(el(`<div class="rel-locked">${label}: ${reason}</div>`));
+    return wrap;
+  }
   const modeText = c.takeover_active ? `Human conversation${data.channel_state.human_owner ? ` — owned by ${data.channel_state.human_owner}` : ""}` : c.global_autonomous_responses === "on" ? "Autonomous responses ON (eligible conversations only)" : c.global_autonomous_responses === "off" ? "Autonomous responses OFF — Oyi will not reply" : "Autonomous response state unreadable — treated as OFF";
-  wrap.appendChild(el(`<div class="rel-modeline"><span class="rel-mode rel-mode-${escapeHtml(c.mode)}">${escapeHtml(modeText)}</span></div>`));
-  const reply = c.whatsapp_reply;
+  if (!social) wrap.appendChild(el(`<div class="rel-modeline"><span class="rel-mode rel-mode-${escapeHtml(c.mode)}">${escapeHtml(modeText)}</span></div>`));
+  const reply = social ? c.social_reply : c.whatsapp_reply;
   if (reply.available) {
     const form = el(`
       <form class="messages-composer rel-send">
-        <textarea rows="1" maxlength="4000" placeholder="Reply on WhatsApp as ${escapeHtml(currentEmail())}…" aria-label="WhatsApp reply"></textarea>
-        <button type="submit" class="btn btn-primary btn-sm">Send on WhatsApp</button>
+        <textarea rows="1" maxlength="${social ? 1000 : 4000}" placeholder="Reply on ${label} as ${escapeHtml(currentEmail())}…" aria-label="${label} reply"></textarea>
+        <button type="submit" class="btn btn-primary btn-sm">Send on ${label}</button>
       </form>`);
     const ta = form.querySelector("textarea");
     let requestId = newRelRequestId();
@@ -18364,14 +18798,36 @@ function relRenderComposer(data) {
       const btn = form.querySelector("button");
       btn.disabled = true; ta.disabled = true;
       try {
-        const res = await api(`/api/lead-agents/admin/leads/${encodeURIComponent(data.lead.id)}/whatsapp/reply`, { method: "POST", body: { body: text, client_request_id: requestId } });
+        if (social) {
+          const pending = attempts.read(attemptKey);
+          if (pending && await recover(pending.id) !== "unrecorded") {
+            ta.value = "";
+            toast("Previous reply checked. Review its status before sending another.");
+            await relLoadThread(false);
+            return;
+          }
+          requestId = await attempts.prepare(attemptKey, text, pending?.id);
+        }
+        const res = await api(replyPath, { method: "POST", body: { body: text, client_request_id: requestId } });
+        if (social) await attempts.settle(attemptKey, requestId, res?.state);
         // A 202 means "no answer from WhatsApp": the send is stored as UNKNOWN and is never retried automatically. Each attempt gets a fresh request id afterwards.
         requestId = newRelRequestId();
         ta.value = "";
-        if (res && res.error === "outcome_unknown") toast("WhatsApp did not confirm. Do not resend: check WhatsApp, then resolve the entry in the thread.", "error");
-        else toast(res.recorded === false ? "Accepted by WhatsApp; the CRM record is still being saved and will appear shortly." : "Message accepted by WhatsApp. Delivery is confirmed separately.");
+        if (res && res.error === "outcome_unknown") toast(social ? `${label} did not confirm. Do not resend; ask an integration operator to reconcile the send.` : "WhatsApp did not confirm. Do not resend: check WhatsApp, then resolve the entry in the thread.", "error");
+        else toast(res.recorded === false ? `Accepted by ${label}; the CRM record is still being saved and will appear shortly.` : `Message accepted by ${label}. Delivery is confirmed separately.`);
         await relLoadThread(false);
       } catch (err) {
+        if (social) {
+          const settled = await attempts.settle(attemptKey, requestId, err.data?.state).catch(() => false);
+          toast(err.data?.error || err.message || "Reply not verified. Check the previous attempt before resending.", "error");
+          if (settled) {
+            ta.value = "";
+            await relLoadThread(false);
+            return;
+          }
+          btn.disabled = false; ta.disabled = false;
+          return;
+        }
         const definitive = err.status === 409 || err.status === 502 || (err.status === 503 && err.data && err.data.state);
         if (err.status === 409 && err.data && err.data.error === "duplicate_request") toast(`Already submitted (${String(err.data.state || "recorded").replace(/_/g, " ")}). It was not sent again.`, "error");
         else toast(err.message || "The message was not sent.", "error");
@@ -18403,7 +18859,7 @@ function relRenderComposer(data) {
     }
     wrap.appendChild(box);
   }
-  if (data.communication.takeover_active && reply.can_reply_permission) {
+  if (!social && data.communication.takeover_active && reply.can_reply_permission) {
     const rel = el(`<button type="button" class="btn btn-sm rel-release">Release takeover</button>`);
     rel.addEventListener("click", async () => {
       rel.disabled = true;

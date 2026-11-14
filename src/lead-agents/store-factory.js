@@ -2,6 +2,9 @@ const { FileLeadAgentsStore } = require("./store-file");
 const { SupabaseLeadAgentsStore } = require("./store-supabase");
 
 function createStore(config) {
+  if (config.metaSocialOutboundEnabled && config.storeDriver !== "supabase") {
+    throw new Error("Social outbound requires the Supabase dispatch fence");
+  }
   if (config.storeDriver === "supabase") {
     if (!config.supabaseUrl || !config.supabaseServiceRoleKey) {
       throw new Error(

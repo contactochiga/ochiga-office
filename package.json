@@ -55,7 +55,20 @@
     "office:content-workspace:test": "node scripts/test-content-workspace-browser.js",
     "office:content-featured-image:test": "node scripts/test-content-featured-image.js",
     "office:whatsapp-media-contract:test": "node scripts/test-whatsapp-media-contract.js",
-    "office:whatsapp-envelope-observation:test": "node scripts/test-whatsapp-envelope-observation.js"
+    "office:whatsapp-envelope-observation:test": "node scripts/test-whatsapp-envelope-observation.js",
+    "office:meta-social-inbound:test": "node scripts/test-meta-social-inbound.js && node scripts/test-meta-social-inbound-sql.js && node scripts/test-meta-social-concurrency.js",
+    "office:meta-social-comments:test": "node scripts/test-meta-social-comments.js",
+    "office:meta-social-post-sync:test": "node scripts/test-meta-social-post-sync.js",
+    "office:content-social-posts:test": "node scripts/test-content-social-posts-browser.js",
+    "office:meta-social-comment-moderation:test": "node scripts/test-meta-social-comment-moderation.js",
+    "office:content-comment-moderation:test": "node scripts/test-content-comment-moderation-browser.js",
+    "office:content-social-connection:test": "node scripts/test-content-social-connection-browser.js",
+    "office:security-baseline:test": "node scripts/test-office-security-baseline-postgres.js",
+    "office:legacy-db-entrypoints:test": "node scripts/test-office-legacy-db-entrypoints.js",
+    "office:catalogue-postgres:test": "node scripts/test-catalogue-postgres.js",
+    "office:intake-receipts-postgres:test": "node scripts/test-intake-receipts-postgres.js",
+    "office:regression-registry:test": "node scripts/test-office-regression-registry.js",
+    "office:regression": "node scripts/run-office-regression.js"
   },
   "dependencies": {
     "@sanity/client": "^6.29.1",

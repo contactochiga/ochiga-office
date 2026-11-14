@@ -1,0 +1,41 @@
+# Office database initialization order for a FRESH environment (one file per line, relative to db/).
+# Applied by scripts/init-office-database.js. Do NOT apply db/*.sql by filename order: the Track B trio
+# (20261113_meta_social_*) must run inbound -> staff_replies -> dispatch_fence, and alphabetical order would
+# run dispatch_fence first and then let staff_replies replace its office_record_meta_social_receipt.
+# The security baseline runs first (so default privileges cover every later object) and again at the end
+# (RLS on new tables), followed by the read-only verification gate.
+security/office-security-baseline.sql
+lead-agents-schema.sql
+20260812_office_operational_workflows.sql
+20260812_office_private_partnership_task_links.sql
+20260813_crm_contacts_organizations_activities_tasks_columns.sql
+20260815_admin_users_office_position.sql
+20260815_content_publishing.sql
+20260815_notifications_recipient_targeting.sql
+20260815_staff_messaging.sql
+20260816_development_projects.sql
+20260816_development_projects_order_cover_image.sql
+20260816_document_share_token.sql
+20260816_reports_approvals.sql
+20260901_messages_workspace.sql
+20260925120000_proposals_opportunity_id.sql
+20261014_office_runtime_settings.sql
+20261015_whatsapp_inbound_claims.sql
+20261017_whatsapp_manual_sends.sql
+20261018_communication_delivery_outbox.sql
+20261101_office_intake_receipts.sql
+20261102_catalogue_foundation.sql
+20261103_catalogue_archived_review_guard.sql
+20261104_catalogue_media.sql
+20261105_catalogue_public_release.sql
+20261106_catalogue_merchandising.sql
+20261107_catalogue_ingestion_receipts.sql
+20261109_catalogue_packages.sql
+20261113_meta_social_inbound.sql
+20261113_meta_social_staff_replies.sql
+20261113_meta_social_dispatch_fence.sql
+20261114_meta_social_posts_comments.sql
+20261115_meta_social_post_sync.sql
+20261116_meta_social_comment_moderation.sql
+security/office-security-baseline.sql
+security/office-security-verify.sql

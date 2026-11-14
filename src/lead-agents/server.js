@@ -8,6 +8,11 @@ const axios = require("axios");
 const { createConfig } = require("./config");
 const { log } = require("./logger");
 const envelopeObservation = require("./whatsapp-envelope-observation");
+const { handleMetaSocialWebhook } = require("./meta-social-inbound");
+const { createMetaSocialReplyAdapter, replyPolicy, sendSocialReply } = require("./meta-social-replies");
+const { createMetaSocialPostsAdapter } = require("./meta-social-posts");
+const { createMetaSocialModerationAdapter, moderateComment, reconcileModeration } = require("./meta-social-moderation");
+const { demoPosts, isDemoId } = require("./content-social-demo");
 const { createStore } = require("./store-factory");
 const { OpenAIResponsesClient } = require("./openai");
 const { ToolExecutor } = require("./tools");
@@ -2079,7 +2084,9 @@ async function enrichAuthContext(authContext, store) {
   };
 }
 
-function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRateLimiter, loginRateLimiter, whatsappAdapter, openaiClient, toolExecutor }) {
+function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRateLimiter, loginRateLimiter, whatsappAdapter, metaSocialReplyAdapter = createMetaSocialReplyAdapter(config), metaSocialPostsAdapter = createMetaSocialPostsAdapter(config), metaSocialModerationAdapter = createMetaSocialModerationAdapter(config), openaiClient, toolExecutor }) {
+  let socialSyncBusy = false; // one Content social-post sync at a time
+  let socialSetupPendingLogged = false; // the "tables not installed yet" state is logged once per process, not on every page view
   const startedAt = Date.now();
   const widgetRateLimiter = publicRateLimiter || rateLimiter;
   const officeInternalRateLimiter = officeRateLimiter || rateLimiter;
@@ -2364,6 +2371,7 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
         pathname === "/office/brand/icon-512.png" ||
         pathname === "/office/brand/icon-maskable-512.png" ||
         pathname === "/office/shared/oyi-core/docking.mjs" ||
+        pathname === "/office/social-reply-attempt.mjs" ||
         pathname === "/office/shared/oyi-core/presence.mjs" ||
         pathname === "/office/shared/oyi-core/responseNormalizer.mjs" ||
         pathname === "/office/catalogue/catalogue.mjs" ||
@@ -2384,6 +2392,10 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
         pathname === "/api/lead-agents/admin/session/invite/accept" ||
         pathname === "/api/lead-agents/admin/session/reset/confirm";
       const isPublicWhatsappPath = pathname === "/webhooks/whatsapp";
+      if (pathname === "/webhooks/meta-social") {
+        await handleMetaSocialWebhook({ req, res, config, store, log });
+        return;
+      }
       // A document share link is meant to be opened by an external
       // recipient (a lead/client with no Office login) — the token
       // itself (validated inside the route handler) is what gates
@@ -3425,6 +3437,11 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
         return;
       }
 
+      if (pathname === "/office/social-reply-attempt.mjs") {
+        if (req.method !== "GET") { methodNotAllowed(res, "GET"); return; }
+        await serveFile(res, path.join(process.cwd(), "public", "office", "social-reply-attempt.mjs"));
+        return;
+      }
       if (pathname === "/office/shared/oyi-core/docking.mjs") {
         if (req.method !== "GET") {
           methodNotAllowed(res, "GET");
@@ -6930,8 +6947,9 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           const offset = Math.max(Number(params.get("offset")) || 0, 0);
           const pageLeads = scoped.slice(offset, offset + limit);
           const pageIds = pageLeads.map((lead) => lead.id);
-          const [latest, states, allActivities] = await Promise.all([store.listLatestConversationsForLeads(pageIds), store.listLeadChannelStatesForLeads(pageIds, "whatsapp"), listCorporateRecords(store, "activities")]);
-          const stateByLead = new Map(states.map((state) => [state.lead_id, state]));
+          const inboxChannels = new Map(pageLeads.map((lead) => [lead.id, relationshipWorkspace.inboxChannel(lead)]));
+          const [latest, states, allActivities] = await Promise.all([store.listLatestConversationsForLeads(pageIds), store.listLeadChannelStatesForLeads(pageIds, [...new Set(inboxChannels.values())]), listCorporateRecords(store, "activities")]);
+          const stateByLead = new Map(states.filter((state) => inboxChannels.get(state.lead_id) === state.channel).map((state) => [state.lead_id, state]));
           const pageSet = new Set(pageIds);
           const activitiesByLead = new Map();
           for (const activity of allActivities) if (activity.lead_id && pageSet.has(activity.lead_id)) (activitiesByLead.get(activity.lead_id) || activitiesByLead.set(activity.lead_id, []).get(activity.lead_id)).push(activity);
@@ -6947,29 +6965,36 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           json(res, 404, { error: "lead_not_found" }, { "x-request-id": ctx.requestId });
           return;
         }
-        // Local repair only (never calls WhatsApp): stale pending sends become "outcome unknown"; accepted sends missing their conversation record get it written.
-        await reconcileManualSends(store, leadId, { log }).catch(() => null);
-        const [conversations, timeline, activities, documents, channelState, setting, manualSends, inboundMessageEvents] = await Promise.all([
+        // Local repair only: expire stale claims and project accepted sends missing from history.
+        const inboxChannel = relationshipWorkspace.inboxChannel(lead);
+        const social = inboxChannel !== "whatsapp";
+        await reconcileManualSends(store, leadId, { log, channel: inboxChannel }).catch(() => null);
+        const [conversations, timeline, activities, documents, channelState, setting, manualSends, inboundMessageEvents, unresolved] = await Promise.all([
           store.listConversationsForLead(leadId, 500),
           store.listTimelineForLead(leadId, 500),
           listCorporateRecords(store, "activities"),
           hasPermission(authContext, "documents.generate") ? store.listOfficeDocuments().catch(() => []) : Promise.resolve([]),
-          store.getLeadChannelState(leadId, "whatsapp").catch(() => null),
+          store.getLeadChannelState(leadId, inboxChannel).catch(() => null),
           readWhatsAppAutonomySetting(store),
-          store.listManualSendsForLead(leadId, 200).catch(() => []),
+          social ? store.listSocialManualSends(leadId, inboxChannel).catch(() => []) : store.listManualSendsForLead(leadId, 200).catch(() => []),
           store.listInboundMessageEvents({ leadId, limit: 500 }).catch(() => []),
+          social ? store.listSocialManualSends(leadId, inboxChannel, { unresolved: true }).catch(() => null) : null,
         ]);
         const leadActivities = activities.filter((a) => a.lead_id === leadId);
         const leadOpportunities = opportunities.filter((o) => o.lead_id === leadId);
         const opportunityIds = new Set(leadOpportunities.map((o) => o.id));
         const leadDocuments = documents.filter((d) => (d.related_type === "lead" && d.related_id === leadId) || (d.related_type === "opportunity" && opportunityIds.has(d.related_id)));
-        const statusEvents = await store.listInboundStatusEventsByExternalIds([...conversations.map((c) => c.external_message_id), ...manualSends.map((m) => m.provider_message_id)].filter(Boolean)).catch(() => []);
+        const statusEvents = await store.listInboundStatusEventsByExternalIds([...conversations.filter((c) => c.channel === "whatsapp").map((c) => c.external_message_id), ...manualSends.filter((m) => m.channel === "whatsapp").map((m) => m.provider_message_id)].filter(Boolean)).catch(() => []);
         const thread = relationshipWorkspace.buildThread({
           lead, conversations, timeline, activities: leadActivities, statusEvents, documents: leadDocuments, manualSends, inboundEvents: inboundMessageEvents,
           opportunityId: params.get("opportunity_id") || "", before: params.get("before") || "", limit: params.get("limit") || 50, search: q,
         });
         const takeoverActive = Boolean(channelState && ["human_active", "human_review"].includes(channelState.human_status));
         const canReply = hasPermission(authContext, "manage_takeover");
+        const socialOperator = authContext?.type === "session" &&
+          config.metaSocialOperatorIds?.includes(String(authContext.userId || "").toLowerCase());
+        const socialLead = social && config.metaSocialOutboundEnabled ? await store.getMetaSocialReplyLead(leadId).catch(() => null) : null;
+        const socialProblem = social ? (unresolved === null ? "send_state_unavailable" : unresolved.length ? "unresolved_send" : replyPolicy(config, socialLead, inboxChannel)) : null;
         const autonomy = describeWhatsAppAutonomyStatus(setting, { officialNumber: config.whatsappDisplayNumber });
         const sourceInfo = relationshipWorkspace.leadSourceInfo(lead);
         json(res, 200, {
@@ -6980,13 +7005,19 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           },
           source: sourceInfo,
           thread,
+          ...(social ? { unresolved_sends: (unresolved || []).map((send) => ({
+            id: send.id, state: send.status, channel: send.channel, created_at: send.created_at,
+            may_have_dispatched: Boolean(send.social_dispatch_at),
+          })) } : {}),
           opportunities: leadOpportunities.map((o) => ({ id: o.id, business_unit: o.business_unit, inquiry_type: o.inquiry_type, stage: o.stage, status: o.status, owner: o.owner || null })),
           channel_state: channelState ? { human_status: channelState.human_status, human_owner: channelState.human_owner || null, ai_paused: Boolean(channelState.ai_paused), takeover_started_at: channelState.takeover_started_at || null, last_inbound_at: channelState.last_inbound_at || null, last_outbound_at: channelState.last_outbound_at || null } : { human_status: "auto", human_owner: null, ai_paused: false },
           communication: {
+            ...(inboxChannel !== "whatsapp" ? { inbound_only_channel: inboxChannel } : {}),
+            ...(social ? { social_reply: { available: Boolean(socialOperator && canReply && !socialProblem), reason: socialProblem || "staff_permission_required" } } : {}),
             global_autonomous_responses: autonomy.state === "on" ? "on" : autonomy.state === "off" ? "off" : "unknown",
             takeover_active: takeoverActive,
             mode: takeoverActive ? "human" : autonomy.state === "on" ? "autonomous_allowed" : autonomy.state === "off" ? "autonomous_off" : "autonomous_off_unreadable",
-            whatsapp_reply: { available: Boolean(lead.whatsapp_phone) && canReply && takeoverActive && whatsappAdapter.isConfigured(), can_reply_permission: canReply, takeover_required: !takeoverActive, whatsapp_number_known: Boolean(lead.whatsapp_phone) },
+            whatsapp_reply: { available: inboxChannel === "whatsapp" && Boolean(lead.whatsapp_phone) && canReply && takeoverActive && whatsappAdapter.isConfigured(), can_reply_permission: canReply, takeover_required: !takeoverActive, whatsapp_number_known: Boolean(lead.whatsapp_phone) },
           },
           integrations: {
             whatsapp: { connected: whatsappAdapter.isConfigured(), media_ingestion: "not_verified" },
@@ -7052,8 +7083,53 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
         return;
       }
 
-      // Governed MANUAL WhatsApp reply by an authorised staff member. Independent of the autonomy switch (a human is sending), but only while that human owns the
-      // conversation (active takeover), and always audited with the operator.
+      // Social replies and attempt status are restricted to allowlisted staff sessions.
+      const socialReplyMatch = pathname.match(/^\/api\/lead-agents\/admin\/leads\/([^/]+)\/(facebook|instagram)\/reply(?:\/([a-zA-Z0-9_-]{16,80}))?$/);
+      if (socialReplyMatch) {
+        if (authContext?.type !== "session") { json(res, 403, { error: "staff_session_required" }); return; }
+        authorizePermission(authContext, "manage_takeover");
+        if (!config.metaSocialOperatorIds?.includes(String(authContext.userId || "").toLowerCase())) {
+          json(res, 403, { error: "social_operator_required" });
+          return;
+        }
+        const leadId = decodeURIComponent(socialReplyMatch[1]);
+        const channel = socialReplyMatch[2];
+        if (socialReplyMatch[3]) {
+          if (req.method !== "GET") { methodNotAllowed(res, "GET"); return; }
+          const row = await store.findMetaSocialSend(leadId, channel, authContext.email, socialReplyMatch[3]);
+          json(res, 200, { state: row?.status || "unrecorded" }, { "cache-control": "no-store" });
+          return;
+        }
+        if (req.method !== "POST") { methodNotAllowed(res, "POST"); return; }
+        if (!config.metaSocialOutboundEnabled || !config.metaSocialInboundEnabled) {
+          json(res, 403, { error: "social_reply_disabled" });
+          return;
+        }
+        const body = await readJsonBody(req, 8192);
+        requireObject(body, "body");
+        const text = typeof body.body === "string" ? body.body.trim() : "";
+        if (!text || text.length > 1000 || text.includes("\0") ||
+            typeof body.client_request_id !== "string" || !/^[a-zA-Z0-9_-]{16,80}$/.test(body.client_request_id) ||
+            Object.keys(body).some((key) => !["body", "client_request_id"].includes(key))) {
+          json(res, 400, { error: "invalid_social_reply" });
+          return;
+        }
+        const audit = (action, status, metadata) => appendAuditRecord({ store, authContext, action, resourceType: "lead", resourceId: leadId, metadata, req, status });
+        const lead = await store.getMetaSocialReplyLead(leadId);
+        if (!lead) {
+          await audit(`communication.${channel}.manual_reply`, "failure", { failure_reason: "social_recipient_unverified" }).catch(() => null);
+          json(res, 404, { error: "social_recipient_unverified" });
+          return;
+        }
+        const outcome = await sendSocialReply({
+          config, store, adapter: metaSocialReplyAdapter, lead, channel,
+          actorEmail: authContext.email, clientRequestId: body.client_request_id, text,
+          audit,
+        });
+        json(res, outcome.httpStatus, outcome.body, { "x-request-id": ctx.requestId });
+        return;
+      }
+      // WhatsApp keeps its existing active-takeover gate and audit path.
       const manualReplyMatch = pathname.match(/^\/api\/lead-agents\/admin\/leads\/([^/]+)\/whatsapp\/reply$/);
       if (manualReplyMatch) {
         if (req.method !== "POST") {
@@ -7101,7 +7177,7 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
       }
 
       // Governed resolution of an UNKNOWN manual-send outcome. A staff member who has checked WhatsApp records what happened; this never sends a message.
-      const manualSendResolveMatch = pathname.match(/^\/api\/lead-agents\/admin\/leads\/([^/]+)\/whatsapp\/manual-sends\/([^/]+)\/resolve$/);
+      const manualSendResolveMatch = pathname.match(/^\/api\/lead-agents\/admin\/leads\/([^/]+)\/(whatsapp|facebook|instagram)\/manual-sends\/([^/]+)\/resolve$/);
       if (manualSendResolveMatch) {
         if (req.method !== "POST") {
           methodNotAllowed(res, "POST");
@@ -7110,15 +7186,21 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
         authorizePermission(authContext, "manage_takeover");
         const body = await readJsonBody(req);
         requireObject(body, "body");
-        const sendId = decodeURIComponent(manualSendResolveMatch[2]);
+        const channel = manualSendResolveMatch[2];
+        if (channel !== "whatsapp" && authContext?.type !== "session") { json(res, 403, { error: "staff_session_required" }); return; }
+        if (channel !== "whatsapp" && !config.metaSocialOperatorIds?.includes(String(authContext.userId || "").toLowerCase())) {
+          json(res, 403, { error: "social_operator_required" });
+          return;
+        }
+        const sendId = decodeURIComponent(manualSendResolveMatch[3]);
         const leadIdForSend = decodeURIComponent(manualSendResolveMatch[1]);
         const record = await store.getManualSend(sendId).catch(() => null);
-        if (!record || record.lead_id !== leadIdForSend) {
+        if (!record || record.lead_id !== leadIdForSend || record.channel !== channel) {
           json(res, 404, { error: "send_not_found" }, { "x-request-id": ctx.requestId });
           return;
         }
-        const outcome = await resolveManualSend(store, sendId, { resolution: String(body.resolution || ""), providerMessageId: body.provider_message_id, actorEmail: authContext.email || "staff", note: body.note });
-        await appendAuditRecord({ store, authContext, action: "communication.whatsapp.manual_send_resolved", resourceType: "lead", resourceId: leadIdForSend, metadata: { send_id: sendId, resolution: String(body.resolution || ""), result_state: outcome.body.state || null, operator: authContext.email || "" }, req, status: outcome.httpStatus === 200 ? "success" : "failure" }).catch(() => null);
+        const outcome = await resolveManualSend(store, sendId, { resolution: String(body.resolution || ""), providerMessageId: channel === "whatsapp" ? body.provider_message_id : "", actorEmail: authContext.email || "staff", note: body.note });
+        await appendAuditRecord({ store, authContext, action: `communication.${channel}.manual_send_resolved`, resourceType: "lead", resourceId: leadIdForSend, metadata: { send_id: sendId, resolution: ["confirmed_sent", "confirmed_not_sent"].includes(body.resolution) ? body.resolution : "invalid", result_state: outcome.body.state || null, operator: authContext.email || "" }, req, status: outcome.httpStatus === 200 ? "success" : "failure" }).catch(() => null);
         json(res, outcome.httpStatus, outcome.body, { "x-request-id": ctx.requestId });
         return;
       }
@@ -8423,6 +8505,168 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
 
       // Editorial history of ONE article: only audit events whose target is this exact content item, gated like reading the article itself (content.write).
       // Only workflow fields are returned -- the request ip / user agent and any other audit metadata stay server-side.
+      // Content → Posts & Comments, C3: staff hide/unhide of a public comment, and read-back reconciliation of an uncertain outcome.
+      const moderationMatch = pathname.match(/^\/api\/lead-agents\/admin\/content\/social-posts\/([^/]+)\/comments\/([^/]+)\/moderation(?:\/([^/]+)\/reconcile)?$/);
+      if (moderationMatch) {
+        if (req.method !== "POST") { methodNotAllowed(res, "POST"); return; }
+        authorizePermission(authContext, "content.review");
+        if (authContext?.type !== "session") { json(res, 403, { error: "staff_session_required" }); return; }
+        if (!config.metaSocialCommentsModerationEnabled) { json(res, 403, { error: "moderation_disabled" }); return; }
+        const [, postId, commentId, actionId] = moderationMatch;
+        const uuid = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i;
+        const found = uuid.test(postId) && uuid.test(commentId) && !isDemoId(postId) ? await store.getSocialPost(postId) : null;
+        const comment = found?.comments.find((c) => c.id === commentId);
+        if (!found || !comment) { json(res, 404, { error: "comment_not_found" }); return; }
+        const assetFor = (channel) => (channel === "facebook" ? config.facebookPageId : config.instagramBusinessAccountId);
+        if (comment.post_id !== found.post.id || comment.channel !== found.post.channel || comment.asset_id !== found.post.asset_id || found.post.asset_id !== assetFor(found.post.channel)) {
+          json(res, 403, { error: "foreign_asset" }); return;
+        }
+        const audit = (stage, metadata) => appendAuditRecord({ store, authContext, action: `content.social_comment_moderation_${stage}`, resourceType: "content_social_comment",
+          resourceId: comment.id, metadata: { ...metadata, channel: found.post.channel, operator: authContext.email || "" }, req,
+          status: ["failed", "unknown", "reconciled_failed", "reconciled_unknown"].includes(stage) ? "failure" : "success" }).catch(() => null);
+        let outcome;
+        if (actionId) {
+          const action = uuid.test(actionId) ? await store.getCommentModerationAction(actionId) : null;
+          if (!action || action.comment_id !== comment.id) { json(res, 404, { error: "moderation_action_not_found" }); return; }
+          outcome = await reconcileModeration({ store, adapter: metaSocialModerationAdapter, action, comment, post: found.post, audit });
+        } else {
+          const body = await readJsonBody(req, 4096);
+          requireObject(body, "body");
+          const reason = typeof body.reason === "string" ? body.reason.trim() : "";
+          if (!["hide", "unhide"].includes(body.action) || reason.length < 3 || reason.length > 500 || reason.includes("\0") ||
+              typeof body.client_request_id !== "string" || !/^[A-Za-z0-9_-]{16,80}$/.test(body.client_request_id) ||
+              Object.keys(body).some((key) => !["action", "reason", "client_request_id"].includes(key))) {
+            json(res, 400, { error: "invalid_moderation_request" }); return;
+          }
+          if (!metaSocialModerationAdapter.configured(found.post.channel)) { json(res, 503, { error: "moderation_not_configured" }); return; }
+          outcome = await moderateComment({ store, adapter: metaSocialModerationAdapter, comment, post: found.post, action: body.action,
+            actor: { id: String(authContext.userId || ""), email: String(authContext.email || "") }, requestId: body.client_request_id, reason, audit });
+        }
+        json(res, outcome.httpStatus, outcome.body, { "x-request-id": ctx.requestId });
+        return;
+      }
+
+      // Content → Posts & Comments: Facebook Page and Instagram posts with their public comments. Comments stay attached to their
+      // post; commenter platform ids are never returned and nothing here touches CRM leads or DMs. GETs are read-only; the two
+      // sync actions make read-only Graph lookups (no publishing, replies or moderation) and never return tokens or Graph errors.
+      if (pathname === "/api/lead-agents/admin/content/social-posts" || /^\/api\/lead-agents\/admin\/content\/social-posts\/[^/]+(\/sync)?$/.test(pathname)) {
+        const segments = pathname.split("/");
+        const isSync = segments.at(-1) === "sync";
+        const postId = isSync ? (segments.at(-2) === "social-posts" ? null : segments.at(-2)) : (segments.at(-1) === "social-posts" ? null : segments.at(-1));
+        const counts = (comments) => ({
+          total: comments.length,
+          visible: comments.filter((c) => !c.deleted_at && c.visibility === "visible").length,
+          hidden: comments.filter((c) => !c.deleted_at && c.visibility === "hidden").length,
+          deleted: comments.filter((c) => c.deleted_at).length,
+        });
+        const postView = (post, comments) => ({ id: post.id, channel: post.channel, origin: post.origin,
+          content_item_id: post.content_item_id || null, first_seen_at: post.first_seen_at, last_comment_at: post.last_comment_at || null,
+          caption: post.caption ?? null, permalink_url: post.permalink_url || null, media_type: post.media_type || null,
+          media_preview_url: post.media_preview_url || null, published_at: post.published_at || null,
+          sync_status: post.sync_status || "not_synced", synced_at: post.synced_at || null, unavailable_since: post.unavailable_since || null,
+          comment_counts: counts(comments || []) });
+        const isUuid = (v) => /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(v || "");
+        // connected = Page/Instagram credentials are configured; demonstration = sample data while nothing is connected.
+        const channels = { facebook: metaSocialPostsAdapter.configured("facebook"), instagram: metaSocialPostsAdapter.configured("instagram") };
+        const live = channels.facebook || channels.instagram;
+        const demo = !live && Boolean(config.contentSocialDemoEnabled);
+        // setup_pending = the Content social tables are not installed yet (before the production migration). Detected below.
+        const connection = { state: live ? "connected" : demo ? "demonstration" : "disconnected", channels,
+          comments_inbound: !demo && Boolean(config.metaSocialCommentsInboundEnabled), post_sync: !demo && Boolean(config.metaSocialPostsSyncEnabled),
+          moderation: !demo && Boolean(config.metaSocialCommentsModerationEnabled) && live, replies: false, publishing: false };
+
+        if (isSync) {
+          if (req.method !== "POST") { methodNotAllowed(res, "POST"); return; }
+          authorizePermission(authContext, "content.write");
+          if (authContext?.type !== "session") { json(res, 403, { error: "staff_session_required" }); return; }
+          if (!config.metaSocialPostsSyncEnabled || demo) { json(res, 403, { error: "social_sync_disabled" }); return; }
+          if (socialSyncBusy) { json(res, 409, { error: "social_sync_in_progress" }); return; }
+          socialSyncBusy = true;
+          try {
+            const tally = { created: 0, updated: 0, unavailable: 0, restricted: 0, error: 0, rejected: 0 };
+            if (postId) {
+              const found = isUuid(postId) ? await store.getSocialPost(postId) : null;
+              if (!found) { json(res, 404, { error: "social_post_not_found" }); return; }
+              const result = await metaSocialPostsAdapter.lookup(found.post.channel, found.post.provider_post_id);
+              if (result.status === "synced") tally[await store.upsertSocialPostSnapshot({ ...result.snapshot, status: "synced" })]++;
+              else if (result.error === "foreign_asset") tally.rejected++;
+              else {
+                await store.upsertSocialPostSnapshot({ channel: found.post.channel, asset: found.post.asset_id, providerPostId: found.post.provider_post_id, status: result.status, error: result.error });
+                tally[result.status]++;
+              }
+            } else {
+              for (const channel of ["facebook", "instagram"]) {
+                if (!metaSocialPostsAdapter.configured(channel)) continue;
+                const result = await metaSocialPostsAdapter.listRecent(channel);
+                tally.rejected += result.rejected || 0;
+                if (result.status !== "synced") { tally[result.status] = (tally[result.status] || 0) + 1; continue; }
+                for (const snapshot of result.posts) tally[await store.upsertSocialPostSnapshot({ ...snapshot, status: "synced" })]++;
+              }
+            }
+            await appendAuditRecord({ store, authContext, action: "content.social_posts_synced", resourceType: "content_social_posts", resourceId: postId || "recent",
+              metadata: { ...tally, operator: authContext.email || "" }, req, status: tally.error || tally.restricted ? "failure" : "success" }).catch(() => null);
+            if (!postId) { json(res, 200, { ok: true, ...tally }, { "x-request-id": ctx.requestId }); return; }
+            const fresh = await store.getSocialPost(postId);
+            json(res, 200, { ok: true, ...tally, post: postView(fresh.post, fresh.comments) }, { "x-request-id": ctx.requestId });
+          } finally {
+            socialSyncBusy = false;
+          }
+          return;
+        }
+
+        if (req.method !== "GET") { methodNotAllowed(res, "GET"); return; }
+        authorizePermission(authContext, "content.write");
+        if (demo) {
+          // Demonstration: sample posts only, never stored rows; sync and moderation stay off.
+          const samples = demoPosts();
+          if (!postId) { json(res, 200, { enabled: false, sync_enabled: false, connection, posts: samples.map((d) => d.post) }, { "x-request-id": ctx.requestId }); return; }
+          const sample = samples.find((d) => d.post.id === postId);
+          if (!sample) { json(res, 404, { error: "social_post_not_found" }, { "x-request-id": ctx.requestId }); return; }
+          json(res, 200, { enabled: false, sync_enabled: false, moderation_enabled: false, connection, post: sample.post, comments: sample.comments }, { "x-request-id": ctx.requestId });
+          return;
+        }
+        if (!postId) {
+          // Before the Content social tables exist the status renders as "Setup pending" (logged once per process); any other read
+          // failure is a real error: logged, and stored posts are marked unavailable.
+          let posts = [], postsUnavailable = false;
+          try { posts = await store.listSocialPosts({ limit: 100 }); } catch (error) {
+            if (error?.code === "social_setup_pending") {
+              Object.assign(connection, { state: "setup_pending", comments_inbound: false, post_sync: false, moderation: false });
+              if (!socialSetupPendingLogged) { socialSetupPendingLogged = true; log("info", "content_social_posts.setup_pending", { request_id: ctx.requestId }); }
+            } else {
+              postsUnavailable = true;
+              log("error", "content_social_posts.unreadable", { request_id: ctx.requestId, error: String(error?.message || error).slice(0, 120) });
+            }
+          }
+          const setupPending = connection.state === "setup_pending";
+          json(res, 200, { enabled: Boolean(config.metaSocialCommentsInboundEnabled) && !setupPending, sync_enabled: Boolean(config.metaSocialPostsSyncEnabled) && !postsUnavailable && !setupPending,
+            connection, posts_unavailable: postsUnavailable, posts: posts.map((p) => postView(p, p.comments)) }, { "x-request-id": ctx.requestId });
+          return;
+        }
+        const found = isUuid(postId) && !isDemoId(postId) ? await store.getSocialPost(postId).catch((error) => { if (error?.code === "social_setup_pending") return null; throw error; }) : null;
+        if (!found) { json(res, 404, { error: "social_post_not_found" }, { "x-request-id": ctx.requestId }); return; }
+        const actions = await store.listCommentModerationActions(found.comments.map((c) => c.id)).catch(() => []);
+        const latest = new Map();
+        for (const a of actions) if (!latest.has(a.comment_id)) latest.set(a.comment_id, a);
+        json(res, 200, {
+          enabled: Boolean(config.metaSocialCommentsInboundEnabled),
+          sync_enabled: Boolean(config.metaSocialPostsSyncEnabled),
+          moderation_enabled: Boolean(config.metaSocialCommentsModerationEnabled),
+          connection,
+          post: postView(found.post, found.comments),
+          comments: found.comments.map((c) => {
+            const a = latest.get(c.id);
+            return { id: c.id, provider_comment_id: c.provider_comment_id, provider_parent_id: c.provider_parent_id || null,
+              author_label: c.author_label || null, author_is_page: Boolean(c.author_is_page), body: c.deleted_at ? null : c.body ?? null,
+              visibility: c.visibility, deleted: Boolean(c.deleted_at), edited_at: c.edited_at || null,
+              created_at: c.provider_created_at || c.first_seen_at,
+              actionable: !c.deleted_at && !c.author_is_page,
+              moderation: a ? { id: a.id, action: a.action, state: a.status, failure_reason: a.failure_reason || null, by: a.actor_email, at: a.updated_at || a.created_at } : null };
+          }),
+        }, { "x-request-id": ctx.requestId });
+        return;
+      }
+
       const contentHistoryMatch = pathname.match(/^\/api\/lead-agents\/admin\/content\/([^/]+)\/history$/);
       if (contentHistoryMatch) {
         if (req.method !== "GET") {

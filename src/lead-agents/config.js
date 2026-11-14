@@ -167,6 +167,20 @@ function createConfig() {
     whatsappDisplayNumber: process.env.WHATSAPP_DISPLAY_NUMBER || "",
     metaAppId: process.env.META_APP_ID || "",
     metaAppSecret: process.env.META_APP_SECRET || "",
+    metaSocialInboundEnabled: process.env.OFFICE_META_SOCIAL_INBOUND_ENABLED === "true",
+    metaSocialOutboundEnabled: process.env.OFFICE_META_SOCIAL_OUTBOUND_ENABLED === "true",
+    // Content → Posts & Comments: public comments on Facebook Page and Instagram posts (ingestion only). Independent of DMs.
+    metaSocialCommentsInboundEnabled: process.env.OFFICE_META_COMMENTS_INBOUND_ENABLED === "true",
+    // Staff-requested, read-only Graph lookups of Page posts and Instagram media for Content → Posts (C2).
+    metaSocialPostsSyncEnabled: process.env.OFFICE_META_POSTS_SYNC_ENABLED === "true",
+    // Staff hide/unhide of public comments with read-back confirmation (C3). No deletion, no replies, nothing automatic.
+    metaSocialCommentsModerationEnabled: process.env.OFFICE_META_COMMENTS_MODERATION_ENABLED === "true",
+    // Sample Facebook/Instagram posts in Content, clearly marked, only while no Page or Instagram account is connected. Never stored or sent.
+    contentSocialDemoEnabled: process.env.OFFICE_CONTENT_SOCIAL_DEMO_ENABLED === "true",
+    metaSocialOperatorIds: stringListFromEnv(process.env.OFFICE_META_SOCIAL_OPERATOR_IDS)
+      .filter((id) => /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(id)).map((id) => id.toLowerCase()),
+    metaSocialGraphVersion: process.env.META_SOCIAL_GRAPH_VERSION || "",
+    metaSocialVerifyToken: process.env.META_SOCIAL_VERIFY_TOKEN || "",
     // "enforce" (default): unsigned / badly signed / unauthenticatable WhatsApp webhooks are refused before anything is parsed or stored. "report" exists ONLY as an
     // explicit, temporary rollout aid (legacy behaviour: failures are logged and counted but processed); it must be set deliberately and is shown in /healthz.
     whatsappWebhookSignatureMode: String(process.env.WHATSAPP_WEBHOOK_SIGNATURE_MODE || "enforce").trim().toLowerCase() === "report" ? "report" : "enforce",

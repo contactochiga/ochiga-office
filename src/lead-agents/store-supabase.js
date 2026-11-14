@@ -55,8 +55,9 @@ class SupabaseLeadAgentsStore {
 
   normalizeLead(row) {
     if (!row) return null;
+    const { meta_social_asset_id, meta_social_sender_id, meta_social_last_inbound_at, meta_social_opted_out, ...visible } = row;
     return {
-      ...row,
+      ...visible,
       name: row.name || "",
       company: row.company || "",
       role: row.role || "",
@@ -189,6 +190,136 @@ class SupabaseLeadAgentsStore {
   async listLeads() {
     const response = await this.client.get("/leads?order=updated_at.desc");
     return response.data.map((row) => this.normalizeLead(row));
+  }
+
+  // Content → Posts & Comments: one atomic, idempotent RPC per webhook event (db/20261114_meta_social_posts_comments.sql).
+  async recordSocialCommentEvent({ channel, asset, post, comment, parent, verb, eventKey, occurredAt, author, authorLabel, authorIsPage, body }) {
+    const response = await this.client.post("/rpc/office_record_social_comment_event", {
+      p_channel: channel, p_asset: asset, p_post: post, p_comment: comment, p_parent: parent || null, p_verb: verb, p_event_key: eventKey,
+      p_provider_time: occurredAt, p_author: author || null, p_author_label: authorLabel || null, p_author_is_page: Boolean(authorIsPage), p_body: body ?? null,
+    });
+    return response.data;
+  }
+
+  async upsertSocialPostSnapshot({ channel, asset, providerPostId, status, error, caption, permalink, mediaType, previewUrl, publishedAt, providerUpdatedAt }) {
+    const response = await this.client.post("/rpc/office_upsert_social_post_snapshot", {
+      p_channel: channel, p_asset: asset, p_post: providerPostId, p_status: status, p_error: error || null, p_caption: caption ?? null,
+      p_permalink: permalink || null, p_media_type: mediaType || null, p_preview: previewUrl || null, p_published: publishedAt || null, p_updated: providerUpdatedAt || null,
+    });
+    return response.data;
+  }
+
+  // C3 moderation ledger (db/20261116_meta_social_comment_moderation.sql).
+  async claimCommentModeration({ commentId, action, actorId, actorEmail, requestId, reason }) {
+    const response = await this.client.post("/rpc/office_claim_comment_moderation", { p_comment: commentId, p_action: action, p_actor_id: actorId, p_actor_email: actorEmail, p_request: requestId, p_reason: reason });
+    return response.data;
+  }
+
+  async markCommentModerationDispatched(id) {
+    const response = await this.client.post("/rpc/office_mark_comment_moderation_dispatched", { p_id: id });
+    return response.data === true;
+  }
+
+  async settleCommentModeration({ actionId, status, observed, code, failure, resolvedBy }) {
+    const response = await this.client.post("/rpc/office_settle_comment_moderation", { p_id: actionId, p_status: status, p_observed: observed || null, p_code: code ?? null, p_failure: failure || null, p_resolved_by: resolvedBy || null });
+    return response.data;
+  }
+
+  async getCommentModerationAction(id) {
+    const response = await this.client.get(`/office_social_comment_actions?id=eq.${encodeURIComponent(id)}&limit=1`);
+    if (!Array.isArray(response.data)) throw new Error("moderation_actions_unreadable");
+    return response.data[0] || null;
+  }
+
+  async listCommentModerationActions(commentIds) {
+    if (!commentIds.length) return [];
+    const response = await this.client.get(`/office_social_comment_actions?comment_id=in.(${commentIds.map(encodeURIComponent).join(",")})&order=created_at.desc`);
+    if (!Array.isArray(response.data)) throw new Error("moderation_actions_unreadable");
+    return response.data;
+  }
+
+  // The Content social tables (db/20261114+) may not be installed yet. A missing table is "setup pending", not a failure: it is
+  // remembered for a minute so Content page views neither re-query nor re-log it, and any other error still surfaces.
+  socialSetupPending(error) {
+    const data = error?.response?.data || {};
+    const missing = error?.response?.status === 404 || ["PGRST205", "PGRST200", "42P01"].includes(data.code);
+    if (!missing) return null;
+    this.socialTablesMissingAt = Date.now();
+    const pending = new Error("social_setup_pending");
+    pending.code = "social_setup_pending";
+    return pending;
+  }
+
+  assertSocialTablesMaybePresent() {
+    if (this.socialTablesMissingAt && Date.now() - this.socialTablesMissingAt < 60000) {
+      const pending = new Error("social_setup_pending");
+      pending.code = "social_setup_pending";
+      throw pending;
+    }
+  }
+
+  async listSocialPosts({ limit = 50 } = {}) {
+    this.assertSocialTablesMaybePresent();
+    let response;
+    try {
+      response = await this.client.get(`/office_social_posts?select=*,comments:office_social_comments(visibility,deleted_at)&order=last_comment_at.desc.nullslast&limit=${Math.min(Math.max(Number(limit) || 50, 1), 200)}`);
+    } catch (error) {
+      throw this.socialSetupPending(error) || error;
+    }
+    if (!Array.isArray(response.data)) throw new Error("social_posts_unreadable");
+    this.socialTablesMissingAt = 0;
+    return response.data;
+  }
+
+  async getSocialPost(id) {
+    this.assertSocialTablesMaybePresent();
+    let posts;
+    try {
+      posts = await this.client.get(`/office_social_posts?id=eq.${encodeURIComponent(id)}&limit=1`);
+    } catch (error) {
+      throw this.socialSetupPending(error) || error;
+    }
+    if (!Array.isArray(posts.data)) throw new Error("social_posts_unreadable");
+    if (!posts.data[0]) return null;
+    const comments = await this.client.get(`/office_social_comments?post_id=eq.${encodeURIComponent(id)}&order=provider_created_at.asc.nullslast,first_seen_at.asc`);
+    if (!Array.isArray(comments.data)) throw new Error("social_comments_unreadable");
+    return { post: posts.data[0], comments: comments.data };
+  }
+
+  async recordMetaSocialMessage({ channel, senderKey, eventKey, text, occurredAt, asset, sender, optedOut }) {
+    const response = await this.client.post("/rpc/office_record_meta_social_reply_target", {
+      p_channel: channel, p_sender_key: senderKey, p_event_key: eventKey, p_text: text, p_occurred_at: occurredAt,
+      p_asset: asset, p_sender: sender, p_opted_out: optedOut,
+    });
+    return response.data;
+  }
+
+  async recordMetaSocialReceipt({ channel, binding, mid, state }) {
+    const response = await this.client.post("/rpc/office_record_meta_social_receipt", {
+      p_channel: channel, p_binding: binding, p_mid: mid, p_state: state,
+    });
+    return response.data === true;
+  }
+
+  async getMetaSocialReplyLead(id) {
+    const response = await this.client.get(`/leads?id=eq.${encodeURIComponent(id)}&limit=1&select=id,idempotency_key,source_channel,contactability_status,meta_social_asset_id,meta_social_sender_id,meta_social_last_inbound_at,meta_social_opted_out`);
+    return response.data?.[0] || null;
+  }
+
+  async findMetaSocialSend(leadId, channel, actorEmail, requestId) {
+    const query = new URLSearchParams({ lead_id: `eq.${leadId}`, channel: `eq.${channel}`,
+      actor_email: `eq.${actorEmail}`, client_request_id: `eq.${requestId}`, limit: "1" });
+    const response = await this.client.get(`/whatsapp_manual_sends?${query}`);
+    if (!Array.isArray(response.data)) throw new Error("social_attempt_unreadable");
+    return response.data[0] || null;
+  }
+
+  async acceptMetaSocialSend(send, outcome) {
+    const response = await this.client.post("/rpc/office_accept_meta_social_send", {
+      p_send: send.id, p_channel: send.channel, p_binding: send.recipient,
+      p_mid: outcome.provider_message_id, p_code: outcome.provider_response_code,
+    });
+    return response.data === true;
   }
 
   async appendConversation(input) {
@@ -507,11 +638,19 @@ class SupabaseLeadAgentsStore {
   // ---- Manual WhatsApp sends: durable intent / outcome ledger (see db/20261017_whatsapp_manual_sends.sql) ----
   async claimManualSend(input) {
     const key = `lead_id=eq.${encodeURIComponent(input.lead_id)}&actor_email=eq.${encodeURIComponent(input.actor_email)}&client_request_id=eq.${encodeURIComponent(input.client_request_id)}`;
-    const inserted = await this.client.post(
-      "/whatsapp_manual_sends?on_conflict=lead_id,actor_email,client_request_id",
-      { lead_id: input.lead_id, actor_email: input.actor_email, client_request_id: input.client_request_id, channel: input.channel || "whatsapp", recipient: input.recipient, body: input.body, body_hash: input.body_hash },
-      { headers: { ...this.selectHeaders(), Prefer: "resolution=ignore-duplicates,return=representation" } }
-    );
+    let inserted;
+    try {
+      inserted = await this.client.post(
+        "/whatsapp_manual_sends?on_conflict=lead_id,actor_email,client_request_id",
+        { lead_id: input.lead_id, actor_email: input.actor_email, client_request_id: input.client_request_id, channel: input.channel || "whatsapp", recipient: input.recipient, body: input.body, body_hash: input.body_hash },
+        { headers: { ...this.selectHeaders(), Prefer: "resolution=ignore-duplicates,return=representation" } }
+      );
+    } catch (error) {
+      if (!["facebook", "instagram"].includes(input.channel) || error?.response?.data?.code !== "23505") throw error;
+      const current = await this.client.get(`/whatsapp_manual_sends?${key}&limit=1`);
+      if (current.data?.[0]) return { claimed: false, record: current.data[0] };
+      return { blocked: true };
+    }
     if (!Array.isArray(inserted.data)) throw new Error("manual_send_claim_malformed");
     if (inserted.data.length === 1) return { claimed: true, record: inserted.data[0] };
     const current = await this.client.get(`/whatsapp_manual_sends?${key}&limit=1`);
@@ -524,15 +663,41 @@ class SupabaseLeadAgentsStore {
     return Array.isArray(response.data) ? response.data[0] || null : null;
   }
 
-  async updateManualSend(id, patch) {
+  async fenceMetaSocialDispatch(id, channel, senderKey) {
+    const response = await this.client.post("/rpc/office_fence_meta_social_dispatch", {
+      p_send: id, p_channel: channel, p_sender_key: senderKey,
+    });
+    if (!["acquired", "social_dispatch_claim_lost", "social_recipient_unverified", "social_opted_out",
+      "social_window_closed", "social_claim_expired"].includes(response.data)) throw new Error("invalid_dispatch_fence_response");
+    return response.data;
+  }
+
+  async expireMetaSocialClaim(id, channel, dispatched) {
+    const response = await this.client.patch(
+      `/whatsapp_manual_sends?id=eq.${encodeURIComponent(id)}&channel=eq.${encodeURIComponent(channel)}&status=eq.pending&social_dispatch_at=${dispatched ? "not.is.null" : "is.null"}`,
+      { status: dispatched ? "outcome_unknown" : "not_sent", failure_reason: dispatched ? "no_provider_outcome_recorded" : "social_claim_expired", updated_at: new Date().toISOString() },
+      { headers: this.selectHeaders() }
+    );
+    return response.data?.[0] || null;
+  }
+
+  async updateManualSend(id, patch, expectedStatus) {
     const body = { updated_at: new Date().toISOString() };
     for (const field of ["status", "provider_message_id", "provider_response_code", "failure_reason", "conversation_id", "conversation_recorded_at", "resolved_by", "resolved_at", "resolution_note"]) if (patch[field] !== undefined) body[field] = patch[field];
-    const response = await this.client.patch(`/whatsapp_manual_sends?id=eq.${encodeURIComponent(id)}`, body, { headers: this.selectHeaders() });
+    const response = await this.client.patch(`/whatsapp_manual_sends?id=eq.${encodeURIComponent(id)}${expectedStatus ? `&status=eq.${encodeURIComponent(expectedStatus)}` : ""}`, body, { headers: this.selectHeaders() });
     return Array.isArray(response.data) ? response.data[0] || null : null;
   }
 
   async listManualSendsForLead(leadId, limit = 200) {
     const response = await this.client.get(`/whatsapp_manual_sends?lead_id=eq.${encodeURIComponent(leadId)}&order=created_at.asc&limit=${Math.min(Math.max(Number(limit) || 200, 1), 500)}`);
+    return response.data;
+  }
+
+  async listSocialManualSends(leadId, channel, { unresolved = false, repair = false, limit = 200, offset = 0 } = {}) {
+    const filter = unresolved ? "&status=in.(pending,outcome_unknown)"
+      : repair ? "&status=eq.provider_accepted&conversation_recorded_at=is.null" : "";
+    const response = await this.client.get(`/whatsapp_manual_sends?lead_id=eq.${encodeURIComponent(leadId)}&channel=eq.${encodeURIComponent(channel)}&order=created_at.desc,id.desc&limit=${limit}&offset=${offset}${filter}`);
+    if (!Array.isArray(response.data)) throw new Error("social_send_ledger_unreadable");
     return response.data;
   }
 
@@ -664,7 +829,7 @@ class SupabaseLeadAgentsStore {
     const ids = [...new Set((leadIds || []).filter(Boolean))];
     if (!ids.length) return [];
     const response = await this.client.get(
-      `/lead_channel_states?lead_id=in.(${ids.map(encodeURIComponent).join(",")})&channel=eq.${encodeURIComponent(channel)}`
+      `/lead_channel_states?lead_id=in.(${ids.map(encodeURIComponent).join(",")})${Array.isArray(channel) ? `&channel=in.(${channel.map(encodeURIComponent).join(",")})` : `&channel=eq.${encodeURIComponent(channel)}`}`
     );
     return response.data;
   }
