@@ -9,6 +9,7 @@ function assert(condition, message) {
 }
 
 const pkg = readJson("package.json");
+const vercelConfig = readJson("vercel.json");
 const render = fs.readFileSync("render.yaml", "utf8");
 const vercel = fs.readFileSync("vercel.json", "utf8");
 const server = fs.readFileSync("src/lead-agents/server.js", "utf8");
@@ -42,5 +43,9 @@ assert(!/OFFICE_WHATSAPP_ENVELOPE_OBSERVATION_UNTIL/.test(render), "Render must 
 // unconditional production rewrites just to satisfy an obsolete assertion.
 require("node:child_process").execFileSync(process.execPath, ["scripts/test-office-api-routing.mjs"], { stdio: "inherit" });
 assert(vercel.includes('"destination": "/office/"'), "Vercel compatibility root must open the new Office shell");
+assert(vercelConfig.git?.deploymentEnabled?.["codex/office-facebook-pilot-recipient-allowlist"] === false,
+  "the Messenger pilot release branch must not trigger Vercel preview deployments");
+assert(vercelConfig.git?.deploymentEnabled?.["codex/office-extraction"] !== false,
+  "the production branch must not be disabled by the review-branch preview exclusion");
 
 console.log("validate-deployment-config: PASS");

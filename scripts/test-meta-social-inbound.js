@@ -1,7 +1,7 @@
 const assert = require("node:assert/strict");
 const { createHmac } = require("node:crypto");
 const { rm } = require("node:fs/promises");
-const { createConfig } = require("../src/lead-agents/config");
+const { createConfig, metaSocialRecipientBindingsFromEnv } = require("../src/lead-agents/config");
 const { buildServer } = require("../src/lead-agents/server");
 const { MemoryRateLimiter } = require("../src/lead-agents/rate-limit");
 const { createTempStore } = require("../src/lead-agents/testing");
@@ -10,6 +10,7 @@ const { SupabaseLeadAgentsStore } = require("../src/lead-agents/store-supabase")
 const { createStore } = require("../src/lead-agents/store-factory");
 const { hashPassword } = require("../src/lead-agents/auth");
 const { createMetaSocialReplyAdapter } = require("../src/lead-agents/meta-social-replies");
+const { senderKeyFor } = require("../src/lead-agents/meta-social-inbound");
 const { reconcileManualSends, resolveManualSend } = require("../src/lead-agents/manual-whatsapp-send");
 
 const secret = "local-social-fixture-secret";
@@ -36,6 +37,15 @@ async function main() {
   const channelGates = {
     metaSocialInboundEnabled: true, metaSocialInboundChannels: ["facebook", "instagram"], metaSocialOutboundEnabled: true,
   };
+  assert.deepEqual(metaSocialRecipientBindingsFromEnv(undefined), []);
+  assert.deepEqual(metaSocialRecipientBindingsFromEnv("bad,facebook:111:333,instagram:222:333,facebook:111:333"), [
+    "facebook:111:333", "instagram:222:333",
+  ]);
+  assert.deepEqual(metaSocialRecipientBindingsFromEnv("facebook:111:*,facebook:bad:333,whatsapp:111:333"), []);
+  const priorRecipients = process.env.OFFICE_META_SOCIAL_OUTBOUND_RECIPIENTS;
+  delete process.env.OFFICE_META_SOCIAL_OUTBOUND_RECIPIENTS;
+  assert.deepEqual(createConfig().metaSocialOutboundRecipientBindings, []);
+  if (priorRecipients !== undefined) process.env.OFFICE_META_SOCIAL_OUTBOUND_RECIPIENTS = priorRecipients;
   const fileConfig = { storeDriver: "file", storePath: "unused-fixture-path" };
   for (const config of [
     {},
@@ -184,7 +194,8 @@ async function main() {
       body: JSON.stringify({ body: "Fixture response", client_request_id: "fixture-request-" + request, ...extra }),
     });
     assert.equal((await reply(restarted, fb, "facebook", "off")).status, 403);
-    const pilot = { metaSocialInboundEnabled: true, metaSocialOutboundEnabled: true, metaSocialOutboundChannels: ["facebook", "instagram"] };
+    const pilot = { metaSocialInboundEnabled: true, metaSocialOutboundEnabled: true, metaSocialOutboundChannels: ["facebook", "instagram"],
+      metaSocialOutboundRecipientBindings: ["facebook:111:333", "instagram:222:333", ...["908", "901", "902", "903", "904", "907", "905", "906"].map((peer) => `facebook:${page}:${peer}`)] };
     const enabled = await start(pilot, restored);
     const unapproved = await staffHeaders("unapproved@ochiga.local");
     const replyAvailability = async (lead, auth = headers) => {
@@ -329,6 +340,47 @@ async function main() {
       assert.equal(claimed.status, 200);
       return lead;
     };
+    const restrictedBindings = [`facebook:${page}:${sender}`];
+    const restricted = await start({ ...pilot, metaSocialOutboundChannels: ["facebook"], metaSocialOutboundRecipientBindings: restrictedBindings }, restored);
+    const sentBeforeRecipientChecks = sent.length;
+    const restrictedWrongSender = await newLead("999");
+    const rejectedRecipient = await reply(restricted, restrictedWrongSender, "facebook", "recipient-not-allowed");
+    assert.equal(rejectedRecipient.status, 409);
+    assert.equal((await rejectedRecipient.json()).error, "social_recipient_not_allowlisted");
+    assert.equal(restored.state.audit_events.some((row) => row.metadata?.failure_reason === "social_recipient_not_allowlisted"), true);
+    const rejectedChannel = await reply(restricted, ig, "instagram", "wrong-channel");
+    assert.equal(rejectedChannel.status, 403);
+    assert.equal((await rejectedChannel.json()).error, "social_reply_disabled");
+    const wrongPage = await start({ ...pilot, facebookPageId: "999", metaSocialOutboundRecipientBindings: restrictedBindings }, restored);
+    const rejectedPage = await reply(wrongPage, fb, "facebook", "wrong-page");
+    assert.equal(rejectedPage.status, 409);
+    assert.equal((await rejectedPage.json()).error, "social_recipient_unverified");
+    assert.equal(sent.length, sentBeforeRecipientChecks);
+
+    const raceLead = await newLead("998");
+    const raceBindings = [`facebook:${page}:998`];
+    const raceConfig = { ...pilot, metaSocialOutboundRecipientBindings: raceBindings };
+    const raceServer = await start(raceConfig, restored);
+    const originalLookup = restored.getMetaSocialReplyLead.bind(restored);
+    let recipientReads = 0;
+    restored.getMetaSocialReplyLead = async (id) => {
+      if (id === raceLead.id && ++recipientReads === 2) {
+        const latest = await originalLookup(id);
+        latest.meta_social_sender_id = "997";
+        latest.idempotency_key = senderKeyFor("facebook", page, "997");
+        return latest;
+      }
+      return originalLookup(id);
+    };
+    const recipientRace = await reply(raceServer, raceLead, "facebook", "recipient-race");
+    assert.equal(recipientRace.status, 409);
+    assert.equal((await recipientRace.json()).error, "social_recipient_unverified");
+    const raceAttempt = restored.state.whatsapp_manual_sends.find((row) => row.client_request_id === "fixture-request-recipient-race");
+    assert.equal(raceAttempt.failure_reason, "social_recipient_unverified");
+    assert.equal(raceAttempt.social_dispatch_at, undefined);
+    restored.getMetaSocialReplyLead = originalLookup;
+    assert.equal(sent.length, sentBeforeRecipientChecks);
+
     const simultaneousLead = await newLead("908");
     await ownershipRequest(ownershipPath(simultaneousLead, "facebook", "release"), headers,
       "11000000-0000-4000-8000-000000000007");

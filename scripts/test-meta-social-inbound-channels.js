@@ -125,7 +125,8 @@ async function main() {
     pass("signature verification: unsigned and wrongly signed deliveries are rejected (403) on an enabled channel; nothing recorded");
 
     // ---- both inbound channels stay on; only the outbound allowlist changes
-    const replyConfig = { metaSocialInboundEnabled: true, metaSocialInboundChannels: ["facebook", "instagram"], metaSocialOutboundEnabled: true };
+    const replyConfig = { metaSocialInboundEnabled: true, metaSocialInboundChannels: ["facebook", "instagram"], metaSocialOutboundEnabled: true,
+      metaSocialOutboundRecipientBindings: [`facebook:${PAGE}:777000`] };
     const out = await start({ ...replyConfig, metaSocialOutboundChannels: ["facebook"] });
     const login = await fetch(`${out}/api/lead-agents/admin/session/login`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ email: "operator@synthetic.invalid", password: "synthetic-pass-123" }) });
     const cookie = login.headers.get("set-cookie").split(";")[0];
