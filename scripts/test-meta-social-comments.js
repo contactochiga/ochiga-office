@@ -87,7 +87,7 @@ async function main() {
   const noCalls = () => assert.fail("comment ingestion must not call WhatsApp");
   const start = async (overrides = {}) => {
     const cfg = { ...createConfig(), authMode: "required_api_key", apiKeys: ["synthetic-api"], allowedOrigins: [], metaAppSecret: SECRET, metaSocialVerifyToken: "synthetic-verify",
-      facebookPageId: PAGE, instagramBusinessAccountId: IG, officeBackendBaseUrl: "", metaSocialInboundEnabled: false, metaSocialCommentsInboundEnabled: false, ...overrides };
+      facebookPageId: PAGE, instagramBusinessAccountId: IG, officeBackendBaseUrl: "", metaSocialInboundEnabled: false, metaSocialInboundChannels: ["facebook", "instagram"], metaSocialCommentsInboundEnabled: false, ...overrides };
     const server = buildServer({ config: cfg, store, rateLimiter: mk(), publicRateLimiter: mk(), officeRateLimiter: mk(), loginRateLimiter: mk(),
       whatsappAdapter: { extractEvents: noCalls, verifySignature: noCalls, sendTextMessage: noCalls, isConfigured: () => false },
       metaSocialReplyAdapter: { sendTextMessage: async () => { graphCalls.push(1); assert.fail("comment ingestion must not call Graph"); } }, openaiClient: {}, toolExecutor: {} });

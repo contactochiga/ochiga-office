@@ -16,6 +16,14 @@ function matches(expected, received) {
   return a.length === b.length && timingSafeEqual(a, b);
 }
 
+// A DM channel is live only when the global inbound switch is on AND OFFICE_META_SOCIAL_INBOUND_CHANNELS lists it.
+// Anything else (switch off, list missing/empty/invalid, channel not listed) is off: fail-closed.
+function dmChannelEnabled(config, channel) {
+  return config.metaSocialInboundEnabled === true && Array.isArray(config.metaSocialInboundChannels) &&
+    config.metaSocialInboundChannels.includes(channel);
+}
+const dmInboundActive = (config) => [...CHANNELS.values()].some((channel) => dmChannelEnabled(config, channel));
+
 function configuredAsset(config, channel) {
   const id = channel === "facebook" ? config.facebookPageId : config.instagramBusinessAccountId;
   return isAssetId(id) ? id : null;
@@ -124,7 +132,7 @@ function parseComments(body, config) {
 }
 
 async function handleMetaSocialWebhook({ req, res, config, store, log }) {
-  if (!config.metaSocialInboundEnabled && !config.metaSocialCommentsInboundEnabled) return json(res, 404, { error: "not_found" });
+  if (!dmInboundActive(config) && !config.metaSocialCommentsInboundEnabled) return json(res, 404, { error: "not_found" });
   if (!config.metaAppSecret || !config.metaSocialVerifyToken ||
       ![...CHANNELS.values()].some((channel) => configuredAsset(config, channel))) {
     return json(res, 503, { error: "webhook_not_configured" });
@@ -153,11 +161,16 @@ async function handleMetaSocialWebhook({ req, res, config, store, log }) {
   }
   const parsed = parseMessages(body, config);
   if (!parsed) return json(res, 400, { error: "invalid_envelope" });
-  if (parsed.unconfigured) return json(res, 503, { error: "webhook_not_configured" });
+  const dmOn = dmChannelEnabled(config, CHANNELS.get(body.object));
+  if (parsed.unconfigured) {
+    // Retry only if this object's surface is actually switched on; otherwise acknowledge and drop.
+    if (dmOn || config.metaSocialCommentsInboundEnabled) return json(res, 503, { error: "webhook_not_configured" });
+    return json(res, 200, { ok: true, accepted: 0, duplicate: 0, skipped: body.entry.length, failed: 0 });
+  }
   // Each surface is processed only when its own switch is on; entries for a disabled surface are counted as skipped.
   // parseMessages counts an entry without messaging[] as skipped; change-only entries belong to the comments path instead.
   parsed.skipped -= body.entry.filter((entry) => Array.isArray(entry?.changes) && !Array.isArray(entry?.messaging)).length;
-  if (!config.metaSocialInboundEnabled) { parsed.skipped += parsed.messages.length + parsed.receipts.length; parsed.messages = []; parsed.receipts = []; }
+  if (!dmOn) { parsed.skipped += parsed.messages.length + parsed.receipts.length; parsed.messages = []; parsed.receipts = []; }
   const commentBatch = config.metaSocialCommentsInboundEnabled ? parseComments(body, config) : { comments: [], skipped: body.entry.reduce((n, e) => n + (Array.isArray(e?.changes) ? e.changes.length : 0), 0) };
   const counts = { accepted: 0, duplicate: 0, skipped: parsed.skipped + commentBatch.skipped, failed: 0,
     ...(config.metaSocialCommentsInboundEnabled ? { comments_accepted: 0, comments_duplicate: 0, comments_stale: 0 } : {}) };
@@ -192,4 +205,4 @@ async function handleMetaSocialWebhook({ req, res, config, store, log }) {
   return json(res, counts.failed ? 503 : 200, { ok: !counts.failed, ...counts });
 }
 
-module.exports = { handleMetaSocialWebhook, configuredAsset, senderKeyFor, isOptOut, parseComments };
+module.exports = { handleMetaSocialWebhook, configuredAsset, senderKeyFor, isOptOut, parseComments, dmChannelEnabled };

@@ -66,7 +66,7 @@ async function main() {
   const start = async (overrides = {}, db = store) => {
     const config = { ...createConfig(), authMode: "required_api_key", apiKeys: ["fixture-api"], allowedOrigins: [],
       metaAppSecret: secret, metaSocialVerifyToken: "fixture-verify", facebookPageId: page, instagramBusinessAccountId: instagram,
-      officeBackendBaseUrl: "", facebookPageAccessToken: "fixture-page-token", metaSocialGraphVersion: "v26.0", metaSocialOperatorIds: [operator.id], ...overrides };
+      officeBackendBaseUrl: "", facebookPageAccessToken: "fixture-page-token", metaSocialGraphVersion: "v26.0", metaSocialOperatorIds: [operator.id], metaSocialInboundChannels: ["facebook", "instagram"], ...overrides };
     const metaSocialReplyAdapter = createMetaSocialReplyAdapter(config, async (url, body, options) => {
       sent.push({ url, body, options });
       if (providerBarrier) await providerBarrier();

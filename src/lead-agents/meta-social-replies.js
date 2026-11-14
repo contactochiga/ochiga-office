@@ -2,7 +2,7 @@
 
 const axios = require("axios");
 const { performManualSend } = require("./manual-whatsapp-send");
-const { configuredAsset, senderKeyFor } = require("./meta-social-inbound");
+const { configuredAsset, senderKeyFor, dmChannelEnabled } = require("./meta-social-inbound");
 
 const WINDOW_MS = 24 * 60 * 60_000;
 const idPattern = /^[0-9]{1,32}$/;
@@ -17,7 +17,7 @@ function replyTarget(config, lead, channel) {
 }
 
 function replyPolicy(config, lead, channel, now = Date.now()) {
-  if (!config.metaSocialInboundEnabled || !config.metaSocialOutboundEnabled) return "social_reply_disabled";
+  if (!dmChannelEnabled(config, channel) || !config.metaSocialOutboundEnabled) return "social_reply_disabled";
   if (!replyTarget(config, lead, channel)) return "social_recipient_unverified";
   if (lead.meta_social_opted_out !== false || lead.contactability_status === "denied") return "social_opted_out";
   const last = Date.parse(lead.meta_social_last_inbound_at);

@@ -29,7 +29,8 @@
       "codex/content-workspace-refinement": false,
       "codex/whatsapp-media-contract": false,
       "codex/whatsapp-envelope-observation": false,
-      "codex/meta-social-staff-replies": false
+      "codex/meta-social-staff-replies": false,
+      "codex/meta-social-inbound-channels": false
     }
   }
 }

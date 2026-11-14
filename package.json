@@ -57,6 +57,7 @@
     "office:whatsapp-media-contract:test": "node scripts/test-whatsapp-media-contract.js",
     "office:whatsapp-envelope-observation:test": "node scripts/test-whatsapp-envelope-observation.js",
     "office:meta-social-inbound:test": "node scripts/test-meta-social-inbound.js && node scripts/test-meta-social-inbound-sql.js && node scripts/test-meta-social-concurrency.js",
+    "office:meta-social-inbound-channels:test": "node scripts/test-meta-social-inbound-channels.js",
     "office:meta-social-comments:test": "node scripts/test-meta-social-comments.js",
     "office:meta-social-post-sync:test": "node scripts/test-meta-social-post-sync.js",
     "office:content-social-posts:test": "node scripts/test-content-social-posts-browser.js",

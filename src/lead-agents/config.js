@@ -5,6 +5,15 @@ function numberFromEnv(value, fallback) {
   return Number.isFinite(parsed) ? parsed : fallback;
 }
 
+// Meta social DM channels the inbound switch covers. Fail-closed: a missing or empty value, or any entry other than
+// facebook / instagram, enables NO channel (the whole value is rejected rather than partially applied).
+const META_SOCIAL_DM_CHANNELS = new Set(["facebook", "instagram"]);
+function metaSocialInboundChannelsFromEnv(value) {
+  const entries = stringListFromEnv(value).map((item) => item.toLowerCase());
+  const valid = entries.length > 0 && entries.every((item) => META_SOCIAL_DM_CHANNELS.has(item));
+  return { channels: valid ? [...new Set(entries)] : [], invalid: entries.length > 0 && !valid };
+}
+
 function stringListFromEnv(value) {
   return String(value || "")
     .split(/[\s,;]+/)
@@ -168,6 +177,9 @@ function createConfig() {
     metaAppId: process.env.META_APP_ID || "",
     metaAppSecret: process.env.META_APP_SECRET || "",
     metaSocialInboundEnabled: process.env.OFFICE_META_SOCIAL_INBOUND_ENABLED === "true",
+    // Per-channel DM control (C0): Messenger and Instagram DMs are processed only when the global switch is on AND the channel is listed.
+    metaSocialInboundChannels: metaSocialInboundChannelsFromEnv(process.env.OFFICE_META_SOCIAL_INBOUND_CHANNELS).channels,
+    metaSocialInboundChannelsInvalid: metaSocialInboundChannelsFromEnv(process.env.OFFICE_META_SOCIAL_INBOUND_CHANNELS).invalid,
     metaSocialOutboundEnabled: process.env.OFFICE_META_SOCIAL_OUTBOUND_ENABLED === "true",
     // Content → Posts & Comments: public comments on Facebook Page and Instagram posts (ingestion only). Independent of DMs.
     metaSocialCommentsInboundEnabled: process.env.OFFICE_META_COMMENTS_INBOUND_ENABLED === "true",
