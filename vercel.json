@@ -30,7 +30,8 @@
       "codex/whatsapp-media-contract": false,
       "codex/whatsapp-envelope-observation": false,
       "codex/meta-social-staff-replies": false,
-      "codex/meta-social-inbound-channels": false
+      "codex/meta-social-inbound-channels": false,
+      "codex/office-social-manual-outbound-d1": false
     }
   }
 }
