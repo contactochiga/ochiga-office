@@ -22,6 +22,12 @@ function socialOutboundChannelEnabled(config, channel) {
     dmChannelEnabled(config, channel);
 }
 
+function socialRecipientAllowed(config, lead, channel) {
+  const target = replyTarget(config, lead, channel);
+  const bindings = config.metaSocialOutboundRecipientBindings;
+  return Boolean(target && Array.isArray(bindings) && bindings.includes(`${channel}:${target.binding}`));
+}
+
 function socialTakeoverRefusal(state, actorEmail) {
   if (!["human_active", "human_review"].includes(state?.human_status)) return "social_takeover_required";
   const identity = (value) => String(value || "").trim().toLowerCase();
@@ -31,6 +37,7 @@ function socialTakeoverRefusal(state, actorEmail) {
 function replyPolicy(config, lead, channel, now = Date.now()) {
   if (!socialOutboundChannelEnabled(config, channel)) return "social_reply_disabled";
   if (!replyTarget(config, lead, channel)) return "social_recipient_unverified";
+  if (!socialRecipientAllowed(config, lead, channel)) return "social_recipient_not_allowlisted";
   if (lead.meta_social_opted_out !== false || lead.contactability_status === "denied") return "social_opted_out";
   const last = Date.parse(lead.meta_social_last_inbound_at);
   if (!Number.isFinite(last) || last > now || now - last >= WINDOW_MS) return "social_window_closed";
@@ -88,6 +95,7 @@ async function sendSocialReply({ config, store, adapter, lead, channel, actorEma
       const fresh = await store.getMetaSocialReplyLead(lead.id);
       const latest = fresh && replyTarget(config, fresh, channel);
       if (!latest || latest.binding !== target.binding) return { refusal: "social_recipient_unverified" };
+      if (!socialRecipientAllowed(config, fresh, channel)) return { refusal: "social_recipient_not_allowlisted" };
       const refusal = replyPolicy(config, fresh, channel) || await checkTakeover();
       if (refusal) return { refusal };
       const started = performance.now();
@@ -101,4 +109,4 @@ async function sendSocialReply({ config, store, adapter, lead, channel, actorEma
   });
 }
 
-module.exports = { createMetaSocialReplyAdapter, replyPolicy, sendSocialReply, socialOutboundChannelEnabled, socialTakeoverRefusal };
+module.exports = { createMetaSocialReplyAdapter, replyPolicy, sendSocialReply, socialOutboundChannelEnabled, socialRecipientAllowed, socialTakeoverRefusal };

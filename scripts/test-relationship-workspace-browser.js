@@ -32,6 +32,7 @@ async function main() {
     metaSocialGraphVersion: "v26.0", metaSocialOperatorIds: [browserOperator.id],
     metaSocialInboundEnabled: true, metaSocialInboundChannels: ["facebook", "instagram"],
     metaSocialOutboundEnabled: true, metaSocialOutboundChannels: ["facebook"],
+    metaSocialOutboundRecipientBindings: ["facebook:111:333", "instagram:222:333"],
   });
   const socialSends = [];
   const metaSocialReplyAdapter = { sendTextMessage: async (request) => {
