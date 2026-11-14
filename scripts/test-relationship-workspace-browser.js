@@ -5,6 +5,7 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const { spawn } = require("node:child_process");
+const { createHmac } = require("node:crypto");
 const { createConfig } = require("../src/lead-agents/config");
 const { buildServer } = require("../src/lead-agents/server");
 const { MemoryRateLimiter } = require("../src/lead-agents/rate-limit");
@@ -24,8 +25,21 @@ async function main() {
   const config = { ...createConfig(), authMode: "required_api_key", apiKeys: ["rw-browser-key"], allowedOrigins: [], officeBackendBaseUrl: "http://127.0.0.1:1", officeBackendApiKey: "rw-bridge" };
   const { store } = await createTempStore();
   await store.ensureAdminUser({ email: "super@ochiga.local", password_hash: hashPassword("super-pass-123"), role: "super_admin", display_name: "Super", status: "active" });
+  const browserOperator = await store.getAdminUserByEmail("super@ochiga.local");
+  Object.assign(config, {
+    metaAppSecret: "fixture-social-secret", metaSocialVerifyToken: "fixture-social-verify",
+    facebookPageId: "111", instagramBusinessAccountId: "222", facebookPageAccessToken: "fixture-page-token",
+    metaSocialGraphVersion: "v26.0", metaSocialOperatorIds: [browserOperator.id],
+    metaSocialInboundEnabled: true, metaSocialInboundChannels: ["facebook", "instagram"],
+    metaSocialOutboundEnabled: true, metaSocialOutboundChannels: ["facebook"],
+  });
+  const socialSends = [];
+  const metaSocialReplyAdapter = { sendTextMessage: async (request) => {
+    socialSends.push(request);
+    return { delivered: true, external_message_id: "fixture-social-out", response_code: 200 };
+  } };
   const adapter = { verifyWebhook: () => null, verifySignature: () => ({ ok: true }), extractEvents: (b) => b.events || [], isConfigured: () => true, sendTextMessage: async () => ({ delivered: true, external_message_id: "wamid.out.1" }), sendTemplateMessage: async () => ({ delivered: false }), listApprovedTemplates: async () => [] };
-  const server = buildServer({ config, store, rateLimiter: new MemoryRateLimiter({ windowMs: 60000, maxRequests: 5000 }), publicRateLimiter: new MemoryRateLimiter({ windowMs: 60000, maxRequests: 5000 }), officeRateLimiter: new MemoryRateLimiter({ windowMs: 60000, maxRequests: 5000 }), loginRateLimiter: new MemoryRateLimiter({ windowMs: 60000, maxRequests: 100 }), whatsappAdapter: adapter, openaiClient: {}, toolExecutor: new ToolExecutor({ store, config, log: () => {}, webhooks: new WebhookDispatcher({ config }) }) });
+  const server = buildServer({ config, store, rateLimiter: new MemoryRateLimiter({ windowMs: 60000, maxRequests: 5000 }), publicRateLimiter: new MemoryRateLimiter({ windowMs: 60000, maxRequests: 5000 }), officeRateLimiter: new MemoryRateLimiter({ windowMs: 60000, maxRequests: 5000 }), loginRateLimiter: new MemoryRateLimiter({ windowMs: 60000, maxRequests: 100 }), whatsappAdapter: adapter, metaSocialReplyAdapter, openaiClient: {}, toolExecutor: new ToolExecutor({ store, config, log: () => {}, webhooks: new WebhookDispatcher({ config }) }) });
   const port = await listen(server), base = `http://127.0.0.1:${port}`;
 
   // fixtures: a website JV enquiry (form + two opportunities) and a WhatsApp relationship
@@ -60,6 +74,53 @@ async function main() {
     await send("Emulation.setDeviceMetricsOverride", { width: 1440, height: 900, deviceScaleFactor: 1, mobile: false });
 
     // 1. A WhatsApp lead opens the three-column workspace
+    if (process.argv.includes("--social")) {
+      // Use signed callbacks and a fixture provider in a separate browser run.
+      await send("Emulation.setDeviceMetricsOverride", { width: 1440, height: 900, deviceScaleFactor: 1, mobile: false });
+      for (const [object, asset, label] of [["page", "111", "Messenger"], ["instagram", "222", "Instagram"]]) {
+        const raw = JSON.stringify({ object, entry: [{ id: asset, messaging: [{
+          sender: { id: "333" }, recipient: { id: asset }, timestamp: Date.now(), message: { mid: "fixture-in", text: `${label} fixture question` },
+        }] }] });
+        const signature = createHmac("sha256", config.metaAppSecret).update(raw).digest("hex");
+        const callback = await fetch(`${base}/webhooks/meta-social`, { method: "POST", headers: { "x-hub-signature-256": "sha256=" + signature }, body: raw });
+        assert.equal((await callback.json()).accepted, 1);
+        const lead = (await store.listLeads()).find((row) => row.source === (object === "page" ? "facebook" : object));
+        const url = `${base}/office?social=${label}`;
+        const hash = `#/crm/leads/${lead.id}`;
+        await send("Page.navigate", { url: url + hash });
+        await waitFor(`document.querySelector('#relThreadPane')?.textContent.includes("${label} fixture question")`, label + " thread rendered");
+        if (object === "instagram") {
+          assert.ok(await evalJs(`document.querySelector('.rel-locked')?.textContent.includes("Instagram")`), "Instagram shows its locked composer");
+          assert.equal(await evalJs(`document.querySelectorAll('.rel-send').length`), 0);
+          config.metaSocialOutboundChannels = ["instagram"];
+          await send("Page.navigate", { url: url + "&enabled=1" + hash });
+        }
+        await waitFor(`!!document.querySelector('.rel-send textarea[aria-label="${label} reply"]')`, label + " composer");
+        await evalJs(`(() => {
+          window.fixtureToasts = [];
+          new MutationObserver(() => {
+            for (const toast of document.querySelectorAll('#toastHost .toast')) window.fixtureToasts.push(toast.textContent);
+          }).observe(document.body, { subtree: true, childList: true });
+          const textarea = document.querySelector('.rel-send textarea[aria-label="${label} reply"]');
+          textarea.focus();
+          textarea.value = "${label} fixture staff reply";
+          textarea.dispatchEvent(new Event("input", { bubbles: true }));
+          textarea.form.querySelector('button[type="submit"]').click();
+        })()`);
+        await waitFor(`document.querySelector('#relThreadPane')?.textContent.includes("${label} fixture staff reply")`, label + " reply shown in CRM").catch(async (err) => {
+          throw new Error(`${err.message}; fixture calls=${socialSends.length}; browser=${await evalJs(`JSON.stringify({ toasts: [...new Set(window.fixtureToasts || [])], disabled: document.querySelector('.rel-send button')?.disabled, attempts: Object.keys(localStorage).filter(k => k.startsWith("office:social-reply:")).length })`)}`);
+        });
+        await send("Page.navigate", { url: url + "&restored=1" + hash });
+        await waitFor(`document.querySelector('#relThreadPane')?.textContent.includes("${label} fixture staff reply")`, label + " reply survives browser reload");
+      }
+      assert.deepEqual(socialSends, [
+        { to: "333", body: "Messenger fixture staff reply", channel: "facebook" },
+        { to: "333", body: "Instagram fixture staff reply", channel: "instagram" },
+      ]);
+      console.log("D1. Both composers send one mocked reply only when listed, and restore it after reload");
+      assert.deepEqual(errors, []);
+      return;
+    }
     await send("Page.navigate", { url: `${base}/office#/crm/leads/${waLead.id}` });
     await waitFor(`!!document.querySelector('.rel-page .rel-bubble-head')`, "WhatsApp thread rendered");
     assert.equal(await evalJs(`document.querySelectorAll('.rel-page > div').length`), 3, "three columns");

@@ -1,8 +1,10 @@
 const { FileLeadAgentsStore } = require("./store-file");
 const { SupabaseLeadAgentsStore } = require("./store-supabase");
+const { socialOutboundChannelEnabled } = require("./meta-social-replies");
 
 function createStore(config) {
-  if (config.metaSocialOutboundEnabled && config.storeDriver !== "supabase") {
+  if (config.storeDriver !== "supabase" &&
+      ["facebook", "instagram"].some((channel) => socialOutboundChannelEnabled(config, channel))) {
     throw new Error("Social outbound requires the Supabase dispatch fence");
   }
   if (config.storeDriver === "supabase") {

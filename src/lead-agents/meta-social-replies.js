@@ -16,8 +16,20 @@ function replyTarget(config, lead, channel) {
   return { asset, sender, binding: `${asset}:${sender}` };
 }
 
+function socialOutboundChannelEnabled(config, channel) {
+  return ["facebook", "instagram"].includes(channel) && config.metaSocialOutboundEnabled === true &&
+    Array.isArray(config.metaSocialOutboundChannels) && config.metaSocialOutboundChannels.includes(channel) &&
+    dmChannelEnabled(config, channel);
+}
+
+function socialTakeoverRefusal(state, actorEmail) {
+  if (!["human_active", "human_review"].includes(state?.human_status)) return null;
+  const identity = (value) => String(value || "").trim().toLowerCase();
+  return identity(actorEmail) && identity(state.human_owner) === identity(actorEmail) ? null : "social_takeover_owner_required";
+}
+
 function replyPolicy(config, lead, channel, now = Date.now()) {
-  if (!dmChannelEnabled(config, channel) || !config.metaSocialOutboundEnabled) return "social_reply_disabled";
+  if (!socialOutboundChannelEnabled(config, channel)) return "social_reply_disabled";
   if (!replyTarget(config, lead, channel)) return "social_recipient_unverified";
   if (lead.meta_social_opted_out !== false || lead.contactability_status === "denied") return "social_opted_out";
   const last = Date.parse(lead.meta_social_last_inbound_at);
@@ -58,7 +70,14 @@ function createMetaSocialReplyAdapter(config, request = axios.post) {
 
 async function sendSocialReply({ config, store, adapter, lead, channel, actorEmail, clientRequestId, text, audit }) {
   const target = replyTarget(config, lead, channel);
-  const problem = replyPolicy(config, lead, channel);
+  const checkTakeover = async () => {
+    try {
+      return socialTakeoverRefusal(await store.getLeadChannelState(lead.id, channel), actorEmail);
+    } catch {
+      return "social_takeover_state_unavailable";
+    }
+  };
+  const problem = replyPolicy(config, lead, channel) || await checkTakeover();
   if (problem) {
     await audit(`communication.${channel}.manual_reply`, "failure", { failure_reason: problem }).catch(() => null);
     return { httpStatus: 409, body: { ok: false, error: problem } };
@@ -69,7 +88,7 @@ async function sendSocialReply({ config, store, adapter, lead, channel, actorEma
       const fresh = await store.getMetaSocialReplyLead(lead.id);
       const latest = fresh && replyTarget(config, fresh, channel);
       if (!latest || latest.binding !== target.binding) return { refusal: "social_recipient_unverified" };
-      const refusal = replyPolicy(config, fresh, channel);
+      const refusal = replyPolicy(config, fresh, channel) || await checkTakeover();
       if (refusal) return { refusal };
       const started = performance.now();
       // A failed RPC response may conceal a committed grant; never classify it as Meta rejection.
@@ -82,4 +101,4 @@ async function sendSocialReply({ config, store, adapter, lead, channel, actorEma
   });
 }
 
-module.exports = { createMetaSocialReplyAdapter, replyPolicy, sendSocialReply };
+module.exports = { createMetaSocialReplyAdapter, replyPolicy, sendSocialReply, socialOutboundChannelEnabled, socialTakeoverRefusal };

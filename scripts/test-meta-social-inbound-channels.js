@@ -18,11 +18,12 @@ let checks = 0;
 const pass = (text) => { checks += 1; console.log(`PASS ${text}`); };
 const dm = (object, asset, mid, sender = "777000") => ({ object, entry: [{ id: asset, messaging: [{ sender: { id: sender }, recipient: { id: asset }, timestamp: Date.now(), message: { mid, text: "Synthetic DM" } }] }] });
 
-function configFor(value) {
-  const before = process.env.OFFICE_META_SOCIAL_INBOUND_CHANNELS;
-  if (value === undefined) delete process.env.OFFICE_META_SOCIAL_INBOUND_CHANNELS; else process.env.OFFICE_META_SOCIAL_INBOUND_CHANNELS = value;
-  try { const c = createConfig(); return { channels: c.metaSocialInboundChannels, invalid: c.metaSocialInboundChannelsInvalid }; }
-  finally { if (before === undefined) delete process.env.OFFICE_META_SOCIAL_INBOUND_CHANNELS; else process.env.OFFICE_META_SOCIAL_INBOUND_CHANNELS = before; }
+function configFor(value, outbound = false) {
+  const env = outbound ? "OFFICE_META_SOCIAL_OUTBOUND_CHANNELS" : "OFFICE_META_SOCIAL_INBOUND_CHANNELS";
+  const before = process.env[env];
+  if (value === undefined) delete process.env[env]; else process.env[env] = value;
+  try { const c = createConfig(); return outbound ? c.metaSocialOutboundChannels : { channels: c.metaSocialInboundChannels, invalid: c.metaSocialInboundChannelsInvalid }; }
+  finally { if (before === undefined) delete process.env[env]; else process.env[env] = before; }
 }
 
 async function main() {
@@ -42,6 +43,11 @@ async function main() {
   assert.equal(dmChannelEnabled({ metaSocialInboundEnabled: "true", metaSocialInboundChannels: ["facebook"] }, "facebook"), false);
   assert.equal(dmChannelEnabled({ metaSocialInboundEnabled: true }, "facebook"), false);
   pass("config: missing/empty list enables nothing; facebook, instagram, both (case-insensitive, de-duplicated) parse; any unknown entry rejects the whole list (fail-closed); the global switch must be strictly true");
+  for (const bad of [undefined, "", "facebook,whatsapp", "facebook,*", "all", "true"]) assert.deepEqual(configFor(bad, true), []);
+  assert.deepEqual(configFor("facebook", true), ["facebook"]);
+  assert.deepEqual(configFor("instagram", true), ["instagram"]);
+  assert.deepEqual(configFor("Facebook, INSTAGRAM", true), ["facebook", "instagram"]);
+  pass("outbound list: defaults OFF and rejects unknown channels without partial activation");
 
   const { store, tempDir } = await createTempStore();
   await store.ensureAdminUser({ email: "operator@synthetic.invalid", password_hash: hashPassword("synthetic-pass-123"), role: "super_admin", display_name: "Synthetic", status: "active" });
@@ -118,18 +124,29 @@ async function main() {
     assert.equal(store.state.conversations.length, before);
     pass("signature verification: unsigned and wrongly signed deliveries are rejected (403) on an enabled channel; nothing recorded");
 
-    // ---- replies follow the per-channel switch
-    const out = await start({ metaSocialInboundEnabled: true, metaSocialInboundChannels: ["facebook"], metaSocialOutboundEnabled: true });
+    // ---- both inbound channels stay on; only the outbound allowlist changes
+    const replyConfig = { metaSocialInboundEnabled: true, metaSocialInboundChannels: ["facebook", "instagram"], metaSocialOutboundEnabled: true };
+    const out = await start({ ...replyConfig, metaSocialOutboundChannels: ["facebook"] });
     const login = await fetch(`${out}/api/lead-agents/admin/session/login`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ email: "operator@synthetic.invalid", password: "synthetic-pass-123" }) });
     const cookie = login.headers.get("set-cookie").split(";")[0];
     const igLead = store.state.leads.find((l) => l.source === "instagram");
     const rr = await fetch(`${out}/api/lead-agents/admin/leads/${igLead.id}/instagram/reply`, { method: "POST", headers: { "content-type": "application/json", cookie }, body: JSON.stringify({ body: "Synthetic", client_request_id: "synthetic-request-0001" }) });
     assert.equal(rr.status, 403); assert.equal((await rr.json()).error, "social_reply_disabled");
     const fbLead = store.state.leads.find((l) => l.source === "facebook");
+    const reqReply = (base, lead) => fetch(`${base}/api/lead-agents/admin/leads/${lead.id}/${lead.source}/reply`, { method: "POST", headers: { "content-type": "application/json", cookie }, body: JSON.stringify({ body: "Synthetic", client_request_id: "synthetic-request-0003" }) });
+    const globalOnly = await start(replyConfig);
+    assert.equal((await (await reqReply(globalOnly, fbLead)).json()).error, "social_reply_disabled");
+    const igOnly = await start({ ...replyConfig, metaSocialOutboundChannels: ["instagram"] });
+    assert.equal((await (await reqReply(igOnly, fbLead)).json()).error, "social_reply_disabled");
+    const noMaster = await start({ ...replyConfig, metaSocialOutboundEnabled: false, metaSocialOutboundChannels: ["facebook"] });
+    assert.equal((await (await reqReply(noMaster, fbLead)).json()).error, "social_reply_disabled");
+    const noInbound = await start({ ...replyConfig, metaSocialInboundChannels: ["instagram"], metaSocialOutboundChannels: ["facebook"] });
+    assert.equal((await (await reqReply(noInbound, fbLead)).json()).error, "social_reply_disabled");
+    assert.deepEqual(replies, []);
     const fr = await fetch(`${out}/api/lead-agents/admin/leads/${fbLead.id}/facebook/reply`, { method: "POST", headers: { "content-type": "application/json", cookie }, body: JSON.stringify({ body: "Synthetic", client_request_id: "synthetic-request-0002" }) });
     assert.notEqual((await fr.json().catch(() => ({}))).error, "social_reply_disabled", "the listed channel is not blocked by the channel switch");
     assert.ok(replies.every((x) => x.channel !== "instagram"));
-    pass("replies: with only Messenger listed, an Instagram reply is refused (social_reply_disabled) even with outbound on, while a Messenger reply passes the channel switch; nothing sent on Instagram");
+    pass("replies: both inbound channels remain on; outbound allowlists are independent, and the master and matching inbound channel are required");
 
     // ---- comments keep their own flag
     const cm = await start({ metaSocialInboundEnabled: false, metaSocialInboundChannels: [], metaSocialCommentsInboundEnabled: true });

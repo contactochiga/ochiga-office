@@ -8,8 +8,8 @@ const axios = require("axios");
 const { createConfig } = require("./config");
 const { log } = require("./logger");
 const envelopeObservation = require("./whatsapp-envelope-observation");
-const { handleMetaSocialWebhook, dmChannelEnabled } = require("./meta-social-inbound");
-const { createMetaSocialReplyAdapter, replyPolicy, sendSocialReply } = require("./meta-social-replies");
+const { handleMetaSocialWebhook } = require("./meta-social-inbound");
+const { createMetaSocialReplyAdapter, replyPolicy, sendSocialReply, socialOutboundChannelEnabled, socialTakeoverRefusal } = require("./meta-social-replies");
 const { createMetaSocialPostsAdapter } = require("./meta-social-posts");
 const { createMetaSocialModerationAdapter, moderateComment, reconcileModeration } = require("./meta-social-moderation");
 const { demoPosts, isDemoId } = require("./content-social-demo");
@@ -4386,6 +4386,11 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
         }
         if (req.method === "PATCH") {
           authorizePermission(authContext, "manage_takeover");
+          // Social ownership cannot be reassigned through the legacy arbitrary patch.
+          if (channel.trim().toLowerCase() === "facebook" || channel.trim().toLowerCase() === "instagram") {
+            json(res, 403, { error: "social_channel_state_read_only" }, { "x-request-id": ctx.requestId });
+            return;
+          }
           const body = await readJsonBody(req);
           requireObject(body, "body");
           const updated = await store.upsertLeadChannelState(leadId, channel, {
@@ -6974,7 +6979,7 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           store.listTimelineForLead(leadId, 500),
           listCorporateRecords(store, "activities"),
           hasPermission(authContext, "documents.generate") ? store.listOfficeDocuments().catch(() => []) : Promise.resolve([]),
-          store.getLeadChannelState(leadId, inboxChannel).catch(() => null),
+          store.getLeadChannelState(leadId, inboxChannel).catch(() => undefined),
           readWhatsAppAutonomySetting(store),
           social ? store.listSocialManualSends(leadId, inboxChannel).catch(() => []) : store.listManualSendsForLead(leadId, 200).catch(() => []),
           store.listInboundMessageEvents({ leadId, limit: 500 }).catch(() => []),
@@ -6993,8 +6998,10 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
         const canReply = hasPermission(authContext, "manage_takeover");
         const socialOperator = authContext?.type === "session" &&
           config.metaSocialOperatorIds?.includes(String(authContext.userId || "").toLowerCase());
-        const socialLead = social && config.metaSocialOutboundEnabled ? await store.getMetaSocialReplyLead(leadId).catch(() => null) : null;
-        const socialProblem = social ? (unresolved === null ? "send_state_unavailable" : unresolved.length ? "unresolved_send" : replyPolicy(config, socialLead, inboxChannel)) : null;
+        const socialLead = social && socialOutboundChannelEnabled(config, inboxChannel) ? await store.getMetaSocialReplyLead(leadId).catch(() => null) : null;
+        const socialProblem = social ? (unresolved === null ? "send_state_unavailable" : unresolved.length ? "unresolved_send" :
+          replyPolicy(config, socialLead, inboxChannel) || (channelState === undefined ? "social_takeover_state_unavailable" : socialTakeoverRefusal(channelState, authContext.email))) : null;
+        const socialReplyAvailable = Boolean(social && socialOperator && canReply && !socialProblem);
         const autonomy = describeWhatsAppAutonomyStatus(setting, { officialNumber: config.whatsappDisplayNumber });
         const sourceInfo = relationshipWorkspace.leadSourceInfo(lead);
         json(res, 200, {
@@ -7013,7 +7020,7 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           channel_state: channelState ? { human_status: channelState.human_status, human_owner: channelState.human_owner || null, ai_paused: Boolean(channelState.ai_paused), takeover_started_at: channelState.takeover_started_at || null, last_inbound_at: channelState.last_inbound_at || null, last_outbound_at: channelState.last_outbound_at || null } : { human_status: "auto", human_owner: null, ai_paused: false },
           communication: {
             ...(inboxChannel !== "whatsapp" ? { inbound_only_channel: inboxChannel } : {}),
-            ...(social ? { social_reply: { available: Boolean(socialOperator && canReply && !socialProblem), reason: socialProblem || "staff_permission_required" } } : {}),
+            ...(social ? { social_reply: { available: socialReplyAvailable, reason: socialReplyAvailable ? null : socialProblem || "staff_permission_required" } } : {}),
             global_autonomous_responses: autonomy.state === "on" ? "on" : autonomy.state === "off" ? "off" : "unknown",
             takeover_active: takeoverActive,
             mode: takeoverActive ? "human" : autonomy.state === "on" ? "autonomous_allowed" : autonomy.state === "off" ? "autonomous_off" : "autonomous_off_unreadable",
@@ -7101,7 +7108,7 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           return;
         }
         if (req.method !== "POST") { methodNotAllowed(res, "POST"); return; }
-        if (!config.metaSocialOutboundEnabled || !dmChannelEnabled(config, channel)) {
+        if (!socialOutboundChannelEnabled(config, channel)) {
           json(res, 403, { error: "social_reply_disabled" });
           return;
         }

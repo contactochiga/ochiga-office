@@ -33,7 +33,28 @@ async function main() {
   for (const data of [null, { error: { ...known, is_transient: true } }, { error: { ...known, code: 999 } }, { error: { ...known, fbtrace_id: "" } }]) {
     await assert.rejects(graphError(data).sendTextMessage(graphRequest), /meta_provider_outcome_unconfirmed/);
   }
-  assert.throws(() => createStore({ metaSocialOutboundEnabled: true, storeDriver: "file" }), /Supabase dispatch fence/);
+  const channelGates = {
+    metaSocialInboundEnabled: true, metaSocialInboundChannels: ["facebook", "instagram"], metaSocialOutboundEnabled: true,
+  };
+  const fileConfig = { storeDriver: "file", storePath: "unused-fixture-path" };
+  for (const config of [
+    {},
+    channelGates,
+    { ...channelGates, metaSocialOutboundChannels: [] },
+    { ...channelGates, metaSocialOutboundChannels: ["whatsapp"] },
+    { ...channelGates, metaSocialOutboundChannels: "facebook" },
+    { ...channelGates, metaSocialOutboundEnabled: false, metaSocialOutboundChannels: ["facebook"] },
+    { ...channelGates, metaSocialInboundEnabled: false, metaSocialOutboundChannels: ["facebook"] },
+    { ...channelGates, metaSocialInboundChannels: ["instagram"], metaSocialOutboundChannels: ["facebook"] },
+  ]) {
+    assert.ok(createStore({ ...fileConfig, ...config }) instanceof FileLeadAgentsStore);
+  }
+  for (const channels of [["facebook"], ["instagram"], ["facebook", "instagram"]]) {
+    const config = { ...channelGates, metaSocialOutboundChannels: channels };
+    assert.throws(() => createStore({ ...fileConfig, ...config }), /Supabase dispatch fence/);
+    assert.ok(createStore({ ...config, storeDriver: "supabase", supabaseUrl: "http://127.0.0.1:1", supabaseServiceRoleKey: "fixture" }) instanceof SupabaseLeadAgentsStore);
+  }
+  assert.throws(() => createStore({ ...channelGates, metaSocialOutboundChannels: ["facebook"], storeDriver: "supabase" }), /SUPABASE_URL/);
   const supabase = Object.create(SupabaseLeadAgentsStore.prototype);
   const queries = [];
   supabase.client = { get: async (path) => {
@@ -162,15 +183,35 @@ async function main() {
       body: JSON.stringify({ body: "Fixture response", client_request_id: "fixture-request-" + request, ...extra }),
     });
     assert.equal((await reply(restarted, fb, "facebook", "off")).status, 403);
-    const enabled = await start({ metaSocialInboundEnabled: true, metaSocialOutboundEnabled: true }, restored);
+    const pilot = { metaSocialInboundEnabled: true, metaSocialOutboundEnabled: true, metaSocialOutboundChannels: ["facebook", "instagram"] };
+    const enabled = await start(pilot, restored);
     const unapproved = await staffHeaders("unapproved@ochiga.local");
+    const replyAvailability = async (lead, auth = headers) => {
+      const response = await fetch(`${enabled}/api/lead-agents/admin/crm/relationships/${lead.id}`, { headers: auth });
+      assert.equal(response.status, 200);
+      return (await response.json()).communication.social_reply;
+    };
+    for (const lead of [fb, ig]) {
+      assert.deepEqual(await replyAvailability(lead), { available: true, reason: null });
+      assert.deepEqual(await replyAvailability(lead, unapproved), { available: false, reason: "staff_permission_required" });
+    }
     assert.equal((await (await reply(enabled, fb, "facebook", "no-pilot", {}, unapproved)).json()).error, "social_operator_required");
-    const noOperators = await start({ metaSocialInboundEnabled: true, metaSocialOutboundEnabled: true, metaSocialOperatorIds: [] }, restored);
+    const noOperators = await start({ ...pilot, metaSocialOperatorIds: [] }, restored);
     assert.equal((await (await reply(noOperators, fb, "facebook", "empty-pilot")).json()).error, "social_operator_required");
     assert.equal((await reply(enabled, fb, "facebook", "key", {}, { "x-api-key": "fixture-api" })).status, 403);
     assert.equal((await reply(enabled, fb, "instagram", "wrong")).status, 409);
     assert.equal((await reply(enabled, originalLead, "facebook", "wrong")).status, 409);
     assert.equal((await reply(enabled, fb, "facebook", "forged", { recipient: "444" })).status, 400);
+    await restored.upsertLeadChannelState(fb.id, "facebook", { human_status: "human_active", human_owner: "other@ochiga.local" });
+    const blockedOwner = await (await fetch(`${enabled}/api/lead-agents/admin/crm/relationships/${fb.id}`, { headers })).json();
+    assert.deepEqual(blockedOwner.communication.social_reply, { available: false, reason: "social_takeover_owner_required" });
+    assert.equal((await (await reply(enabled, fb, "facebook", "not-owner")).json()).error, "social_takeover_owner_required");
+    assert.equal((await fetch(`${enabled}/api/lead-agents/leads/${fb.id}/channel-state/facebook`, {
+      method: "PATCH", headers: { "content-type": "application/json", ...headers },
+      body: JSON.stringify({ human_status: "auto", human_owner: "social@ochiga.local" }),
+    })).status, 403);
+    await restored.upsertLeadChannelState(fb.id, "facebook", { human_status: "human_active", human_owner: "SOCIAL@ochiga.local" });
+    assert.deepEqual(await replyAvailability(fb), { available: true, reason: null });
     assert.equal(sent.length, 0);
     const duplicate = await Promise.all([reply(enabled, fb, "facebook", "first"), reply(enabled, fb, "facebook", "first")]);
     assert.deepEqual(duplicate.map((r) => r.status).sort(), [200, 409]);
@@ -303,6 +344,27 @@ async function main() {
       assert.equal(restored.state.audit_events.some((row) => row.metadata?.failure_reason === reason), true);
     }
     restored.getMetaSocialReplyLead = lookup;
+    assert.equal(sent.length, 4);
+
+    const ownershipChanged = await newLead("907");
+    const getState = restored.getLeadChannelState.bind(restored);
+    let ownerReads = 0;
+    restored.getLeadChannelState = async (id, channel) => {
+      if (id === ownershipChanged.id && ++ownerReads === 2) {
+        await restored.upsertLeadChannelState(id, channel, { human_status: "human_review", human_owner: "other@ochiga.local" });
+      }
+      return getState(id, channel);
+    };
+    assert.equal((await (await reply(enabled, ownershipChanged, "facebook", "owner-changed")).json()).error, "social_takeover_owner_required");
+    const refusedOwnership = restored.state.whatsapp_manual_sends.find((row) => row.lead_id === ownershipChanged.id);
+    assert.equal(refusedOwnership.status, "not_sent");
+    assert.equal(refusedOwnership.social_dispatch_at, undefined);
+    restored.getLeadChannelState = async (id, channel) => {
+      if (id === ownershipChanged.id) throw new Error("fixture state unavailable");
+      return getState(id, channel);
+    };
+    assert.equal((await (await reply(enabled, ownershipChanged, "facebook", "owner-unavailable")).json()).error, "social_takeover_state_unavailable");
+    restored.getLeadChannelState = getState;
     assert.equal(sent.length, 4);
 
     const ordering = await newLead("905");

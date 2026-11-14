@@ -60,7 +60,59 @@ path with no safe provider idempotency; it remains unchanged.
   delivery state. An unmatched receipt cannot prove acceptance on its own.
   Retention for unmatched receipts requires an operator policy before scale.
 
-## Proposed staging migration and rollout
+## D1 isolated rollout (not authorized by this change)
+
+Deploy only after separate approval, with `OFFICE_META_SOCIAL_OUTBOUND_ENABLED=false` and
+`OFFICE_META_SOCIAL_OUTBOUND_CHANNELS=` (empty). Preserve `OFFICE_META_SOCIAL_INBOUND_ENABLED=true`
+and `OFFICE_META_SOCIAL_INBOUND_CHANNELS=facebook,instagram` in production. Do not change WhatsApp,
+autonomy, Content or website intake. No new migration is introduced by D1.
+
+| Stage | Exact configuration and acceptance |
+| --- | --- |
+| 1. Messenger only | In the approved pilot, set `OFFICE_META_SOCIAL_OUTBOUND_ENABLED=true`, `OFFICE_META_SOCIAL_OUTBOUND_CHANNELS=facebook`, `OFFICE_META_SOCIAL_OPERATOR_IDS` to the approved Office staff UUIDs, `FACEBOOK_PAGE_ACCESS_TOKEN` to the approved Page credential, and `META_SOCIAL_GRAPH_VERSION=v26.0` if validated on the pilot assets. Keep the existing Page/IG IDs and app/verify secrets. A separate eligible Meta app-role test account initiates a fresh DM. The approved operator sends one text reply, verifies its exact-ID delivery callback, checks Instagram's composer and direct POST stay blocked, and confirms reload does not resend. |
+| 2. Instagram only | Keep the same master, operator and tested Graph settings; replace the outbound channel list with `instagram`, not both. Use the linked professional account and eligible Instagram app-role tester, separate from the business. Verify the Page-token grant covers Instagram. Check linked-Page URL and IGSID, exact-ID `messaging_seen` if approved for the pilot, and confirm Messenger sends are blocked but inbound still works. If Meta expands where messages can be delivered beyond app-role testers, use isolated test assets before any production send. |
+| 3. Unified takeover and handback | No new environment variable or Meta grant is proposed. Keep the Stage 2 outbound settings or disable outbound for workflow-only validation. Use two approved staff accounts. Add separate audited claim/release/resume actions with atomic ownership checks at the fence; today D1 honors an existing human owner and bars changes through the legacy social PATCH. The pilot must not install a new social ownership writer until atomic fencing is ready. Verify takeover, owner-only replies, concurrent claims, reload and handback without enabling AI. |
+| 4. Supervised AI | Not implemented. Proposed default-OFF gate: `OFFICE_META_SOCIAL_SUPERVISED_DRAFTS_ENABLED=false` (not read by D1), plus the independently approved manual outbound channel. No new Meta send grant beyond the applicable channel. An approved Oyi Core draft is reviewed and explicitly sent by the allowlisted operator; an edited draft or changed recipient/owner must invalidate stale approval. No automatic sending and no WhatsApp autonomy change. |
+
+For Stages 1 and 2, roll back by setting `OFFICE_META_SOCIAL_OUTBOUND_ENABLED=false` and clearing
+`OFFICE_META_SOCIAL_OUTBOUND_CHANNELS`. Let already-dispatched attempts and callbacks reconcile; never resend an UNKNOWN attempt or
+delete history. Preserve inbound and verify the existing WhatsApp, Messenger and Instagram CRM paths. Stage 3 rollback
+withdraws the new ownership controls with social outbound off; do not clear ownership records. Stage 4 rollback disables
+drafts and revokes outstanding draft approvals, returning to manual-only. These switches apply when the new process
+loads configuration; they cannot revoke a provider request already in flight. Do not roll back to pre-D1 code
+while the old global outbound switch is true.
+
+Confirm the token's app, Page, validity, expiry, allowed asset and scopes via Meta's read-only debugger and asset
+metadata under separate approval, without printing credentials. For Messenger verify `pages_messaging` and
+`pages_manage_metadata` with the applicable Page task; for Instagram also verify `instagram_basic` and
+`instagram_manage_messages` and effective linked-Page access. Confirm accepted role assignments and App Review/Advanced
+Access before any non-role rollout. No actual token or provider sends were exercised for D1. The documented
+Facebook Login Send API is `graph.facebook.com/{version}/{PAGE_ID}/messages` with a PSID for Messenger
+or IGSID for Instagram; the request fixtures pin v26.0, not live approval of a particular API version.
+
+### Messenger-only pilot checklist
+
+- Identify and approve a staging Facebook Page, a separate Meta app-role sender who can DM that Page,
+  and the UUID of a staging Office staff account with `manage_takeover`. These are prerequisites,
+  not values supplied by the release candidate. Do not reuse production threads, credentials, or accounts.
+- Use a separate database and staging-only service-role key, session secret, Meta signing secret and
+  verify token. Confirm the existing schema and dispatch-fence RPC are present before any sends. Keep
+  staging disconnected from production Office, Backend, WhatsApp, email and AI. Use synthetic leads only.
+- Verify that the staging Page token is for the expected app and Page, has `pages_messaging`, and was
+  authorized by a user with the Page messaging task. Confirm `pages_manage_metadata` for subscription and
+  validate the pinned Graph version before sending. Bind a staging-only HTTPS `/webhooks/meta-social`
+  callback to the staging Page's `messages` and `message_deliveries` fields; do not repoint a production
+  callback. If Meta setup cannot isolate that callback and test asset, stop.
+- Keep social outbound off until isolation, the signed callback and the allowed operator are verified.
+  After separate send approval, allow only `facebook`, confirm a direct Instagram send is refused, reply
+  once to the fresh test DM and check the ledger, reload, exact-ID receipt and absence of duplicate sends.
+  If anything differs, disable outbound and preserve all ledger records.
+
+**Mandatory Stage 3 gate:** Keep the legacy social ownership PATCH blocked and add no other social
+ownership writer until owner changes and dispatch claims are serialized by a shared database lock or
+atomic revision check. The current pre-fence recheck is not a replacement for that atomic guarantee.
+
+## Existing staging schema and provider checks
 
 1. Review `20261113_meta_social_inbound.sql` then
    `20261113_meta_social_staff_replies.sql` then

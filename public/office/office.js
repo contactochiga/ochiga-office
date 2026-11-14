@@ -18772,6 +18772,8 @@ function relRenderComposer(data) {
   if (social && !c.social_reply?.available) {
     const reason = {
       social_window_closed: "The 24-hour reply window is closed.",
+      social_takeover_owner_required: "Only the staff member who took over this conversation can send a reply.",
+      social_takeover_state_unavailable: "Conversation ownership could not be verified. No reply was sent.",
       social_opted_out: "The customer has opted out, or consent state could not be verified.",
       social_recipient_unverified: "A new incoming message is needed before staff can reply.",
       unresolved_send: "A previous send is unresolved. Do not resend. Ask an integration operator to review the outcome.",
