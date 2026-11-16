@@ -60,6 +60,75 @@ path with no safe provider idempotency; it remains unchanged.
   delivery state. An unmatched receipt cannot prove acceptance on its own.
   Retention for unmatched receipts requires an operator policy before scale.
 
+## Facebook customer-support eligibility and Meta approval
+
+The production-safe default remains `pilot_allowlist`. If
+`OFFICE_META_SOCIAL_OUTBOUND_RECIPIENT_POLICY` is absent or invalid, only the
+existing exact `OFFICE_META_SOCIAL_OUTBOUND_RECIPIENTS` bindings are eligible.
+The alternative `verified_inbound_support` policy is server configuration, not
+a CRM toggle: it permits only a correctly bound Facebook lead whose recorded
+source channel is Facebook. It does not permit Instagram, unsolicited targets,
+cross-channel identity reuse, opt-outs, expired 24-hour windows, or a send
+without the existing operator, ownership and atomic dispatch checks. Do not
+select this policy in production until Meta access approval and a separate
+operational approval are complete; the current pilot allowlist is unchanged.
+To return to the existing pilot after any future rollout, unset the policy
+while retaining the exact pilot bindings. For an immediate stop, disable
+outbound; an already-dispatched request cannot be recalled.
+
+### App Review checklist for `pages_messaging` Advanced Access
+
+1. In the Ochiga Systems app, confirm the app is connected to the verified
+   Ochiga business and review the current access level for `pages_messaging`.
+   Standard access is limited to people with an applicable role; customer
+   support for ordinary non-role Facebook users requires Advanced Access.
+2. Complete Meta's current business verification, data-handling questions and
+   any required Data Use Checkup. In App Review, request Advanced Access only
+   for `pages_messaging` (and request other permissions only if the dashboard
+   identifies a feature that actually requires them). Keep the Page token
+   tied to the Ochiga Page and an authorizing person with the Page `MESSAGING`
+   task.
+3. Supply a reviewer-ready account and test conversation, plus a screen
+   recording showing: an end-user starts a Messenger conversation; Office
+   receives it under the Facebook channel; an authorized staff member takes
+   ownership; staff sends one human-written reply; the resulting pending,
+   Meta-accepted and exact-ID delivery states are visible; and staff releases
+   ownership. Provide reviewer credentials and reproducible steps in Meta's
+   secure review form, not in source code or logs.
+4. Explain data minimization, channel-scoped identity, retention/deletion,
+   staff access controls, opt-out handling, and that replies are human-authored
+   and limited to the standard customer-care window. Do not describe marketing,
+   bulk messaging, or autonomous replies as part of this use case.
+5. After approval, verify the dashboard explicitly reports Advanced Access
+   before any non-role customer is included. Keep the server policy at
+   `pilot_allowlist` until a separately reviewed production change authorizes
+   broader eligibility. App Review approval does not itself alter Office's
+   allowlists or enable outbound.
+
+### Safe App Review test procedure
+
+- Use a dedicated reviewer/test Facebook account and a fresh inbound message
+  to the Ochiga Page. Confirm the CRM identity is a Page-scoped sender bound to
+  that Page, and the conversation is not opted out and remains within 24 hours.
+- Sign in as an allowlisted Office operator, take over the conversation, send
+  one short human-authored test reply, and record the ledger progression. A
+  Meta API acceptance is not proof of delivery; verify a matching delivery
+  receipt by exact provider message ID. Demonstrate duplicate submission does
+  not call the provider twice and an uncertain outcome stays blocked from
+  retry.
+- Demonstrate the expired-window and opted-out cases are refused before the
+  provider is called, and that another staff member cannot send while not the
+  current owner. Release ownership at the end. Do not enable AI replies.
+- The current implementation intentionally does not use the Human Agent
+  exception: staff sends close at the standard 24-hour window. Meta documents
+  a separate Human Agent permission for qualifying manual support outside
+  that window (up to seven days); it requires its own App Dashboard request
+  and must not be inferred from `pages_messaging` approval.
+
+References: [Meta App Review](https://developers.facebook.com/docs/resp-plat-initiatives/app-review/introduction),
+[data handling and business verification](https://developers.facebook.com/docs/resp-plat-initiatives/individual-processes/data-handling-questions/tutorial),
+and [Page Send API](https://developers.facebook.com/docs/graph-api/reference/page/messages).
+
 ## Social ownership and dispatch fencing (local D2A)
 
 - The CRM exposes explicit session-authenticated `takeover` and `release`
@@ -71,8 +140,7 @@ path with no safe provider idempotency; it remains unchanged.
 - The ownership RPC serializes transitions on the lead/channel state row and
   stores request outcomes for duplicate recovery. Takeover sets `human_active`,
   assigns the session email, and pauses AI. Release clears ownership but keeps
-  `ai_paused` unchanged. There is deliberately no resume-AI action in this
-  feature.
+  ai_paused unchanged. Ordinary release is not AI handback.
 - Dispatch locks the send, lead and ownership rows, then verifies the current
   owner equals the authenticated sender before writing `social_dispatch_at`.
   Release/claim checks the same ownership row and refuses while a fenced send
@@ -87,6 +155,49 @@ path with no safe provider idempotency; it remains unchanged.
   notification subsystem is introduced.
 
 ## D1 isolated rollout (not authorized by this change)
+
+### Local social autonomy candidate
+
+- `OFFICE_META_SOCIAL_AI_CHANNELS` defaults empty. A listed channel still
+  requires its existing inbound and outbound gates, recipient eligibility,
+  a fresh signed inbound text event, and an explicit staff handback on that
+  conversation. No WhatsApp flag controls this path. Keep this setting empty
+  until separately approved; no production allowlists change.
+- Apply `20261118_meta_social_autonomy.sql` after the takeover migration in
+  an isolated database first. It preserves the four-argument staff fence and
+  adds an AI form of the same fence that checks the captured ownership
+  revision and the triggering inbound event. Takeover or pause wins before
+  that fence. An already-dispatched request cannot be recalled; an unresolved
+  outcome blocks new sends and handoffs. Pausing remains possible while an AI
+  outcome is unresolved; ordinary ownership release still leaves AI paused.
+- The same public Corporate Oyi Core call used by WhatsApp generates the
+  answer. Tool proposals are not executed, handoff recommendations are not
+  sent as automated text, and unavailable Core does not fall back to a local
+  model. Both origins share the durable send ledger and receipt path.
+  Generation is best-effort after the signed inbound event is committed;
+  retrying the webhook never replays generation or a send.
+- Office keeps the customer, staff, and accepted Oyi messages in one CRM
+  thread. Before generation, Office reads the same lead/channel's durable
+  customer and staff/assistant messages, orders and deduplicates them, and
+  sends a typed `office_crm` transcript bound to the lead, channel, Oyi thread,
+  and current inbound event. Core validates these bindings and places the
+  transcript in canonical conversation context. If history is unreadable,
+  mismatched, or exceeds 200 messages, generation is suppressed instead of
+  using partial history. This coordinated contract is local-only and still
+  needs release and integration verification; do not enable it in production.
+  Staff notes and unrelated channels are never included.
+- Instagram uses the existing Facebook Login model: Page access token,
+  linked professional account, Page messaging task, and Instagram-scoped
+  sender ID from signed inbound. The linked-Page send endpoint is distinct
+  from the Instagram Login host and token model. Verify effective
+  `instagram_basic`, `instagram_manage_messages`, applicable Page grants and
+  App Review access before a separately approved live test. Existing inbound
+  success is not proof of outbound eligibility. Keep per-message read state
+  limited to exact-ID evidence; do not infer it from a watermark.
+
+Meta references: [Messaging API overview and login-model changes](https://developers.facebook.com/documentation/business-messaging/instagram-messaging/changelog/),
+[linked Page conversations and permissions](https://developers.facebook.com/docs/graph-api/reference/page/conversations),
+and [Page Send API](https://developers.facebook.com/docs/graph-api/reference/page/messages).
 
 Deploy only after separate approval, with `OFFICE_META_SOCIAL_OUTBOUND_ENABLED=false` and
 `OFFICE_META_SOCIAL_OUTBOUND_CHANNELS=` (empty). Preserve `OFFICE_META_SOCIAL_INBOUND_ENABLED=true`

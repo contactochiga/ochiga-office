@@ -365,6 +365,22 @@ class FileLeadAgentsStore {
     return this.state.leads.find((row) => row.id === id) || null;
   }
 
+  async findMetaSocialAiLead(senderKey) {
+    return this.state.leads.find((row) => row.idempotency_key === senderKey) || null;
+  }
+
+  async getSocialAiThread(leadId, channel) {
+    return this.state.timeline_events.findLast((row) => row.lead_id === leadId &&
+      row.event_type === "oyi_core_social_turn" && row.metadata?.channel === channel)?.metadata?.oyi_thread_id || "";
+  }
+
+  async getMetaSocialAiContext(leadId, channel, limit = 201) {
+    return this.state.conversations
+      .filter((row) => row.lead_id === leadId && row.channel === channel && ["user", "assistant"].includes(row.message_role))
+      .sort((a, b) => String(a.created_at).localeCompare(String(b.created_at)) || String(a.id).localeCompare(String(b.id)))
+      .slice(-limit);
+  }
+
   async findLeadByPhone(phone) {
     const normalized = normalizeText(phone);
     if (!normalized) return null;
@@ -896,7 +912,7 @@ class FileLeadAgentsStore {
 
   async transitionMetaSocialOwnership({ leadId, channel, action, actorId, actorEmail, requestId }) {
     return this.withSocialOwnershipLock(async () => {
-    if (!["facebook", "instagram"].includes(channel) || !["takeover", "release"].includes(action) || !actorId || !actorEmail || !requestId) {
+    if (!["facebook", "instagram"].includes(channel) || !["takeover", "release", "resume_ai", "pause_ai"].includes(action) || !actorId || !actorEmail || !requestId) {
       return { outcome: "invalid_request" };
     }
     const prior = this.state.meta_social_ownership_requests.find((r) => r.lead_id === leadId && r.channel === channel && r.request_id === requestId);
@@ -913,7 +929,20 @@ class FileLeadAgentsStore {
     let state = await this.getLeadChannelState(leadId, channel);
     if (!state) state = await this.upsertLeadChannelState(leadId, channel, { human_status: "auto", resume_mode: "manual_only" });
     let outcome;
-    if (unresolvedDispatch) outcome = "send_outcome_unresolved";
+    if (unresolvedDispatch && action !== "pause_ai") outcome = "send_outcome_unresolved";
+    else if (["resume_ai", "pause_ai"].includes(action)) {
+      if (["human_active", "human_review"].includes(state.human_status) && String(state.human_owner || "").toLowerCase() !== actorEmail.toLowerCase()) outcome = "not_owner";
+      else if (action === "pause_ai" && state.human_status !== "auto") outcome = "not_in_ai_mode";
+      else {
+        state = await this.upsertLeadChannelState(leadId, channel, {
+          human_status: "auto", human_owner: null, ai_paused: action === "pause_ai",
+          takeover_started_at: null, takeover_reason: `social_staff_${action}`,
+          resume_mode: action === "resume_ai" ? "social_ai" : "manual_only",
+          social_ownership_revision: Number(state.social_ownership_revision || 0) + 1,
+        });
+        outcome = action === "resume_ai" ? "ai_resumed" : "ai_paused";
+      }
+    }
     else if (action === "takeover" && ["human_active", "human_review"].includes(state.human_status)) {
       outcome = String(state.human_owner || "").toLowerCase() === actorEmail.toLowerCase() ? "already_owned" : "owned_by_another";
     } else if (action === "takeover") {
@@ -933,7 +962,7 @@ class FileLeadAgentsStore {
       outcome = "released";
     }
     const result = { outcome, replayed: false, state: {
-      human_status: state.human_status, human_owner: state.human_owner || null, ai_paused: Boolean(state.ai_paused),
+      human_status: state.human_status, human_owner: state.human_owner || null, ai_paused: Boolean(state.ai_paused), resume_mode: state.resume_mode,
       takeover_started_at: state.takeover_started_at || null, social_ownership_revision: Number(state.social_ownership_revision || 0),
     } };
     this.state.meta_social_ownership_requests.push({ lead_id: leadId, channel, request_id: requestId, action, actor_id: actorId, actor_email: actorEmail, result });
@@ -942,7 +971,7 @@ class FileLeadAgentsStore {
     });
   }
 
-  async fenceMetaSocialDispatch(id, channel, senderKey, actorEmail) {
+  async fenceMetaSocialDispatch(id, channel, senderKey, actorEmail, autonomous) {
     return this.withSocialOwnershipLock(async () => {
     const row = this.state.whatsapp_manual_sends.find((send) => send.id === id && send.channel === channel);
     if (!row || !["facebook", "instagram"].includes(channel) || row.status !== "pending" || row.social_dispatch_at) return "social_dispatch_claim_lost";
@@ -950,8 +979,20 @@ class FileLeadAgentsStore {
     if (!target || target.idempotency_key !== senderKey || !target.meta_social_asset_id || !target.meta_social_sender_id ||
       row.recipient !== `${target.meta_social_asset_id}:${target.meta_social_sender_id}`) return "social_recipient_unverified";
     const ownerState = this.state.lead_channel_states.find((state) => state.lead_id === row.lead_id && state.channel === channel);
-    if (!ownerState || !["human_active", "human_review"].includes(ownerState.human_status)) return "social_takeover_required";
-    if (String(ownerState.human_owner || "").toLowerCase() !== String(actorEmail || "").toLowerCase()) return "social_takeover_owner_required";
+    if (row.actor_email?.toLowerCase() !== actorEmail?.toLowerCase()) return "social_dispatch_claim_lost";
+    if (!ownerState) return "social_takeover_required";
+    if (autonomous) {
+      if (actorEmail !== "oyi_social_autonomy" || row.client_request_id !== `social-ai-${autonomous.eventKey.slice(-64)}` ||
+        ownerState.human_status !== "auto" || ownerState.human_owner || ownerState.ai_paused !== false ||
+        ownerState.resume_mode !== "social_ai" || Number(ownerState.social_ownership_revision) !== autonomous.revision ||
+        !this.state.conversations.some((item) => item.lead_id === row.lead_id && item.channel === channel &&
+          item.message_role === "user" && item.correlation_id === autonomous.eventKey &&
+          Date.parse(item.created_at) === Date.parse(target.meta_social_last_inbound_at))) return "social_ai_state_changed";
+    } else {
+      if (actorEmail === "oyi_social_autonomy") return "social_dispatch_claim_lost";
+      if (!["human_active", "human_review"].includes(ownerState.human_status)) return "social_takeover_required";
+      if (String(ownerState.human_owner || "").toLowerCase() !== String(actorEmail || "").toLowerCase()) return "social_takeover_owner_required";
+    }
     if (target.meta_social_opted_out !== false || target.contactability_status === "denied") return "social_opted_out";
     const now = Date.now();
     const last = Date.parse(target.meta_social_last_inbound_at);

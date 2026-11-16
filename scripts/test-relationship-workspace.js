@@ -90,6 +90,27 @@ async function main() {
     assert.equal(sameProviderTwice.entries.length, 1, "one provider event stored twice is one entry"); assert.equal(sameProviderTwice.entries[0].merged_from.length, 1);
     const wrongDirection = rw.buildThread({ lead: { id: "L" }, conversations: [{ id: "c1", message_role: "assistant", channel: "whatsapp", external_message_id: "wamid.1", agent_name: "oyi", content: "ok", created_at: "2026-01-01T10:00:00Z" }], activities: [{ id: "a1", activity_type: "whatsapp_message", body: "ok", metadata: { direction: "inbound", provider_message_id: "wamid.1" }, occurred_at: "2026-01-01T10:00:01Z" }] });
     assert.equal(wrongDirection.entries.length, 2, "an id match across opposite directions is not merged");
+    const socialStatuses = rw.buildThread({
+      lead: { id: "L" },
+      conversations: [
+        { id: "accepted-conv", correlation_id: "send-accepted", message_role: "assistant", channel: "facebook", agent_name: "staff@example.test", content: "accepted", created_at: "2026-01-01T10:00:00Z" },
+        { id: "unknown-conv", correlation_id: "send-unknown", message_role: "assistant", channel: "facebook", agent_name: "staff@example.test", content: "unknown", created_at: "2026-01-01T10:00:02Z" },
+      ],
+      manualSends: [
+        { id: "send-accepted", lead_id: "L", channel: "facebook", status: "provider_accepted", provider_message_id: "mid-accepted", created_at: "2026-01-01T10:00:00Z" },
+        { id: "send-pending", lead_id: "L", channel: "facebook", status: "pending", body: "pending", created_at: "2026-01-01T10:00:01Z" },
+        { id: "send-unknown", lead_id: "L", channel: "facebook", status: "outcome_unknown", body: "unknown", created_at: "2026-01-01T10:00:02Z" },
+        { id: "send-delivered", lead_id: "L", channel: "facebook", status: "provider_accepted", provider_message_id: "mid-delivered", social_delivery_state: "delivered", body: "delivered", created_at: "2026-01-01T10:00:03Z" },
+        { id: "send-read", lead_id: "L", channel: "instagram", status: "provider_accepted", provider_message_id: "mid-read", social_delivery_state: "read", body: "read", created_at: "2026-01-01T10:00:04Z" },
+      ],
+    });
+    const socialDelivery = Object.fromEntries(socialStatuses.entries.map((entry) => [entry.text, entry.delivery.state]));
+    assert.equal(socialDelivery.accepted, "provider_accepted", "merged send ledger preserves Meta acceptance state");
+    assert.equal(socialDelivery.pending, "pending");
+    assert.equal(socialDelivery.unknown, "outcome_unknown");
+    assert.equal(socialDelivery.delivered, "delivered");
+    assert.equal(socialDelivery.read, "read");
+    assert.equal(socialStatuses.entries.length, 5, "ledger and conversation rows render only once");
     const times = waThread.thread.entries.map((e) => Date.parse(e.occurred_at)); assert.deepEqual(times, [...times].sort((a, b) => a - b), "chronological");
     assert.equal(waThread.source.original_source.kind, "whatsapp");
     assert.equal(waThread.communication.global_autonomous_responses, "off"); assert.equal(waThread.communication.mode, "autonomous_off");

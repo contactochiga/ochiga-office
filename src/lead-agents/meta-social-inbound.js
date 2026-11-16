@@ -131,7 +131,7 @@ function parseComments(body, config) {
   return { comments, skipped };
 }
 
-async function handleMetaSocialWebhook({ req, res, config, store, log }) {
+async function handleMetaSocialWebhook({ req, res, config, store, log, onAcceptedMessage }) {
   if (!dmInboundActive(config) && !config.metaSocialCommentsInboundEnabled) return json(res, 404, { error: "not_found" });
   if (!config.metaAppSecret || !config.metaSocialVerifyToken ||
       ![...CHANNELS.values()].some((channel) => configuredAsset(config, channel))) {
@@ -183,11 +183,13 @@ async function handleMetaSocialWebhook({ req, res, config, store, log }) {
       counts.failed++;
     }
   }
+  const acceptedMessages = [];
   for (const message of parsed.messages) {
     try {
       const result = await store.recordMetaSocialMessage(message);
       if (result !== "accepted" && result !== "duplicate") throw new Error("invalid_store_result");
       counts[result]++;
+      if (result === "accepted" && onAcceptedMessage) acceptedMessages.push(message);
     } catch {
       counts.failed++;
     }
@@ -199,6 +201,12 @@ async function handleMetaSocialWebhook({ req, res, config, store, log }) {
     } catch {
       counts.failed++;
     }
+  }
+  // Persist the whole inbound batch and receipts first. A newer message or
+  // opt-out in this batch must be visible before an earlier reply can dispatch.
+  for (const message of counts.failed ? [] : acceptedMessages) {
+    try { await onAcceptedMessage(message); }
+    catch { log("warn", "meta_social_webhook.ai_turn_unavailable", { channel: message.channel }); }
   }
   log(counts.failed ? "error" : "info", "meta_social_webhook.batch", counts);
   // A partially written batch is retryable; the store deduplicates committed messages.

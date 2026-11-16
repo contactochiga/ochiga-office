@@ -22,7 +22,7 @@ async function main() {
         last_external_message_id text, last_inbound_at timestamptz, last_outbound_at timestamptz, created_at timestamptz default now(),
         updated_at timestamptz default now(), unique (lead_id, channel));
       create table whatsapp_manual_sends (id uuid primary key default gen_random_uuid(), lead_id uuid, channel text, recipient text, provider_message_id text,
-        status text, created_at timestamptz default now(), updated_at timestamptz default now(), failure_reason text, provider_response_code integer);
+        status text, actor_email text, client_request_id text, created_at timestamptz default now(), updated_at timestamptz default now(), failure_reason text, provider_response_code integer);
       grant select, insert, update on leads, conversations, lead_channel_states, whatsapp_manual_sends to service_role;
     `);
     await db.exec(readFileSync(path.join(__dirname, "../db/20261113_meta_social_inbound.sql"), "utf8"));
@@ -166,6 +166,32 @@ async function main() {
     assert.equal((await db.query("select social_dispatch_at from whatsapp_manual_sends where id = $1", [stale.id])).rows[0].social_dispatch_at, null);
     await db.query("update whatsapp_manual_sends set status = 'not_sent' where id = $1 and status = 'pending' and social_dispatch_at is null", [stale.id]);
     assert.equal(await store.fenceMetaSocialDispatch(stale.id, "facebook", input.senderKey, actorEmail), "social_dispatch_claim_lost");
+    await db.exec("reset role");
+    const autonomySql = readFileSync(path.join(__dirname, "../db/20261118_meta_social_autonomy.sql"), "utf8");
+    await db.exec(autonomySql);
+    await db.exec(autonomySql);
+    await db.exec("set role anon");
+    await assert.rejects(db.query("select public.office_fence_meta_social_dispatch(null::uuid,'facebook','','',1,'')"), { code: "42501" });
+    await db.exec("reset role; set role service_role");
+    const aiTransition = (action, n) => store.transitionMetaSocialOwnership({ leadId: socialLead.id, channel: "facebook", action,
+      actorId, actorEmail, requestId: `eeeeeeee-eeee-4eee-8eee-${String(n).padStart(12, "0")}` });
+    const handback = await aiTransition("resume_ai", 1);
+    assert.equal(handback.outcome, "ai_resumed");
+    assert.deepEqual((await aiTransition("resume_ai", 1)).state, handback.state);
+    await db.query("update leads set meta_social_last_inbound_at = (select created_at from conversations where correlation_id = $1)", [input.eventKey]);
+    const aiRequestId = "social-ai-" + input.eventKey.slice(-64);
+    const { rows: [aiIntent] } = await db.query(`insert into whatsapp_manual_sends (lead_id, channel, recipient, status, actor_email, client_request_id)
+      values ($1, 'facebook', '111:333', 'pending', 'oyi_social_autonomy', $2) returning id`, [socialLead.id, aiRequestId]);
+    const aiFence = async (revision) => (await db.query("select public.office_fence_meta_social_dispatch($1,$2,$3,$4,$5,$6) as outcome",
+      [aiIntent.id, "facebook", input.senderKey, "oyi_social_autonomy", revision, input.eventKey])).rows[0].outcome;
+    assert.equal(await aiTransition("takeover", 2).then((x) => x.outcome), "taken_over");
+    const resumed = await aiTransition("resume_ai", 3);
+    assert.equal(await aiFence(handback.state.social_ownership_revision), "social_ai_state_changed", "takeover followed by handback cannot revive a stale grant");
+    assert.equal(await store.fenceMetaSocialDispatch(aiIntent.id, "facebook", input.senderKey, "oyi_social_autonomy"), "social_dispatch_claim_lost");
+    assert.equal(await aiFence(resumed.state.social_ownership_revision), "acquired");
+    assert.equal(await aiFence(resumed.state.social_ownership_revision), "social_dispatch_claim_lost");
+    assert.equal((await aiTransition("takeover", 4)).outcome, "send_outcome_unresolved");
+    assert.equal((await aiTransition("pause_ai", 5)).outcome, "ai_paused");
     console.log("Meta social SQL fixture: service-role scope, dedupe, atomic rollback and timestamps PASS");
   } finally {
     await db.close();

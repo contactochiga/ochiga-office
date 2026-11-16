@@ -172,20 +172,25 @@ function buildThread({ lead, conversations = [], timeline = [], activities = [],
 
   // Manual WhatsApp sends (durable ledger). A send already represented by its conversation row (same correlation id) is merged into it; otherwise the ledger row itself is the
   // record, shown with its honest state (pending / outcome unknown / rejected / not sent / accepted-but-not-yet-recorded).
-  const SEND_DELIVERY = { pending: "pending", outcome_unknown: "outcome_unknown", provider_rejected: "rejected", not_sent: "not_sent" };
+  const SEND_DELIVERY = { pending: "pending", outcome_unknown: "outcome_unknown", provider_accepted: "provider_accepted", provider_rejected: "rejected", not_sent: "not_sent" };
+  const socialDelivery = (send) => send.status === "provider_accepted" && send.provider_message_id
+    ? { state: ["delivered", "read"].includes(send.social_delivery_state) ? send.social_delivery_state : "provider_accepted", verified: true }
+    : { state: send.status === "provider_accepted" ? "unverified" : SEND_DELIVERY[send.status] || "unverified", verified: false };
   for (const send of manualSends) {
+    const social = send.channel === "facebook" || send.channel === "instagram";
     const twin = byKey.get(`corr:${send.id}`);
     if (twin) {
       twin.merged_from.push({ table: "whatsapp_manual_sends", id: send.id });
       twin.manual_send = { id: send.id, status: send.status, resolved_by: send.resolved_by || null };
-      if (send.channel !== "whatsapp") twin.delivery = { state: send.social_delivery_state || (send.provider_message_id ? "sent" : "unverified"), verified: Boolean(send.provider_message_id) };
+      if (social) twin.delivery = socialDelivery(send);
       continue;
     }
-    const social = send.channel && send.channel !== "whatsapp";
     const providerId = social ? "" : clean(send.provider_message_id);
     let delivery;
-    if (send.status === "provider_accepted") {
-      const state = social ? send.social_delivery_state || (send.provider_message_id ? "sent" : null) : deliveryFromStatuses(statusByMessage.get(providerId));
+    if (social) {
+      delivery = socialDelivery(send);
+    } else if (send.status === "provider_accepted") {
+      const state = deliveryFromStatuses(statusByMessage.get(providerId));
       delivery = state ? { state, verified: true } : { state: "unverified", verified: false };
     } else {
       delivery = { state: SEND_DELIVERY[send.status] || "unverified", verified: false };
@@ -195,9 +200,9 @@ function buildThread({ lead, conversations = [], timeline = [], activities = [],
       kind: "message",
       direction: "outbound",
       channel: clean(send.channel) || "whatsapp",
-      sender: clean(send.actor_email),
-      sender_type: "staff",
-      origin: "human",
+      sender: social && send.actor_email === "oyi_social_autonomy" ? "Oyi" : clean(send.actor_email),
+      sender_type: social && send.actor_email === "oyi_social_autonomy" ? "oyi" : "staff",
+      origin: social && send.actor_email === "oyi_social_autonomy" ? "ai" : "human",
       text: clean(send.body),
       occurred_at: send.created_at,
       delivery,

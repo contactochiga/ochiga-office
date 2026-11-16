@@ -6,6 +6,7 @@ const { configuredAsset, senderKeyFor, dmChannelEnabled } = require("./meta-soci
 
 const WINDOW_MS = 24 * 60 * 60_000;
 const idPattern = /^[0-9]{1,32}$/;
+const SOCIAL_AI_ACTOR = "oyi_social_autonomy";
 
 function replyTarget(config, lead, channel) {
   if (!["facebook", "instagram"].includes(channel)) return null;
@@ -22,10 +23,18 @@ function socialOutboundChannelEnabled(config, channel) {
     dmChannelEnabled(config, channel);
 }
 
+function recipientRefusal(config, lead, channel, target) {
+  if (channel === "facebook" && config.metaSocialOutboundRecipientPolicy === "verified_inbound_support") {
+    // Identity metadata is written only by the signed, asset-bound inbound adapter.
+    return lead.source_channel === channel ? null : "social_customer_ineligible";
+  }
+  const bindings = config.metaSocialOutboundRecipientBindings;
+  return Array.isArray(bindings) && bindings.includes(`${channel}:${target.binding}`) ? null : "social_recipient_not_allowlisted";
+}
+
 function socialRecipientAllowed(config, lead, channel) {
   const target = replyTarget(config, lead, channel);
-  const bindings = config.metaSocialOutboundRecipientBindings;
-  return Boolean(target && Array.isArray(bindings) && bindings.includes(`${channel}:${target.binding}`));
+  return Boolean(target && !recipientRefusal(config, lead, channel, target));
 }
 
 function socialTakeoverRefusal(state, actorEmail) {
@@ -36,8 +45,10 @@ function socialTakeoverRefusal(state, actorEmail) {
 
 function replyPolicy(config, lead, channel, now = Date.now()) {
   if (!socialOutboundChannelEnabled(config, channel)) return "social_reply_disabled";
-  if (!replyTarget(config, lead, channel)) return "social_recipient_unverified";
-  if (!socialRecipientAllowed(config, lead, channel)) return "social_recipient_not_allowlisted";
+  const target = replyTarget(config, lead, channel);
+  if (!target) return "social_recipient_unverified";
+  const recipientProblem = recipientRefusal(config, lead, channel, target);
+  if (recipientProblem) return recipientProblem;
   if (lead.meta_social_opted_out !== false || lead.contactability_status === "denied") return "social_opted_out";
   const last = Date.parse(lead.meta_social_last_inbound_at);
   if (!Number.isFinite(last) || last > now || now - last >= WINDOW_MS) return "social_window_closed";
@@ -75,32 +86,43 @@ function createMetaSocialReplyAdapter(config, request = axios.post) {
   };
 }
 
-async function sendSocialReply({ config, store, adapter, lead, channel, actorEmail, clientRequestId, text, audit }) {
+function socialAiEnabled(config, channel) {
+  return socialOutboundChannelEnabled(config, channel) && config.metaSocialAiChannels?.includes(channel) === true;
+}
+
+function socialAiActive(state) {
+  return state?.human_status === "auto" && !state.human_owner && state.ai_paused === false && state.resume_mode === "social_ai";
+}
+
+async function sendSocialReply({ config, store, adapter, lead, channel, actorEmail, clientRequestId, text, audit, autonomous }) {
   const target = replyTarget(config, lead, channel);
   const checkTakeover = async () => {
     try {
-      return socialTakeoverRefusal(await store.getLeadChannelState(lead.id, channel), actorEmail);
+      const state = await store.getLeadChannelState(lead.id, channel);
+      if (!autonomous) return socialTakeoverRefusal(state, actorEmail);
+      return socialAiEnabled(config, channel) && socialAiActive(state) &&
+        Number(state.social_ownership_revision) === autonomous.revision ? null : "social_ai_state_changed";
     } catch {
       return "social_takeover_state_unavailable";
     }
   };
+  if ((actorEmail === SOCIAL_AI_ACTOR) !== Boolean(autonomous)) throw new Error("invalid_social_reply_actor");
   const problem = replyPolicy(config, lead, channel) || await checkTakeover();
   if (problem) {
-    await audit(`communication.${channel}.manual_reply`, "failure", { failure_reason: problem }).catch(() => null);
+    await audit(`communication.${channel}.${autonomous ? "ai_reply" : "manual_reply"}`, "failure", { failure_reason: problem }).catch(() => null);
     return { httpStatus: 409, body: { ok: false, error: problem } };
   }
   return performManualSend({
-    store, adapter, lead, actorEmail, clientRequestId, text, audit, channel, recipient: target.binding,
+    store, adapter, lead, actorEmail, clientRequestId, text, audit, channel, recipient: target.binding, autonomous: Boolean(autonomous),
     send: async (intent) => {
       const fresh = await store.getMetaSocialReplyLead(lead.id);
       const latest = fresh && replyTarget(config, fresh, channel);
       if (!latest || latest.binding !== target.binding) return { refusal: "social_recipient_unverified" };
-      if (!socialRecipientAllowed(config, fresh, channel)) return { refusal: "social_recipient_not_allowlisted" };
       const refusal = replyPolicy(config, fresh, channel) || await checkTakeover();
       if (refusal) return { refusal };
       const started = performance.now();
       // A failed RPC response may conceal a committed grant; never classify it as Meta rejection.
-      const fence = await store.fenceMetaSocialDispatch(intent.id, channel, fresh.idempotency_key, actorEmail)
+      const fence = await store.fenceMetaSocialDispatch(intent.id, channel, fresh.idempotency_key, actorEmail, autonomous)
         .catch(() => { throw new Error("social_dispatch_fence_unconfirmed"); });
       if (fence !== "acquired") return { refusal: fence };
       if (performance.now() - started >= 5_000) throw new Error("social_dispatch_grant_stale");
@@ -109,4 +131,4 @@ async function sendSocialReply({ config, store, adapter, lead, channel, actorEma
   });
 }
 
-module.exports = { createMetaSocialReplyAdapter, replyPolicy, sendSocialReply, socialOutboundChannelEnabled, socialRecipientAllowed, socialTakeoverRefusal };
+module.exports = { createMetaSocialReplyAdapter, replyPolicy, sendSocialReply, socialOutboundChannelEnabled, socialRecipientAllowed, socialTakeoverRefusal, socialAiEnabled, socialAiActive, SOCIAL_AI_ACTOR };
