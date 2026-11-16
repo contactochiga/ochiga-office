@@ -53,9 +53,9 @@ async function persistAcceptedConversation(store, send) {
   return conversation;
 }
 
-async function performManualSend({ store, adapter, lead, actorEmail, clientRequestId, text, audit = async () => {}, log = () => {}, channel = "whatsapp", recipient = String(lead.whatsapp_phone || "").trim(), send: dispatch }) {
+async function performManualSend({ store, adapter, lead, actorEmail, clientRequestId, text, audit = async () => {}, log = () => {}, channel = "whatsapp", recipient = String(lead.whatsapp_phone || "").trim(), send: dispatch, autonomous = false }) {
   const social = channel !== "whatsapp";
-  const action = `communication.${channel}.manual_reply`;
+  const action = `communication.${channel}.${social && autonomous ? "ai_reply" : "manual_reply"}`;
   const requestId = String(clientRequestId || "").trim().slice(0, 80) || `srv-${crypto.randomUUID()}`;
   const bodyHash = sha256(text);
 

@@ -502,6 +502,7 @@ function buildOyiCoreCorporateConversationRequest({ session, message, lead, body
       profile_present: Boolean(safeBody.profile && Object.keys(recordOf(safeBody.profile)).length),
       voice_state: text(safeSession.voice_state),
       proactive_prompt_state: text(safeSession.proactive_prompt_state),
+      ...(safeBody.verified_conversation_context ? { verified_conversation_context: safeBody.verified_conversation_context } : {}),
     },
   };
 }

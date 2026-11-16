@@ -36,10 +36,13 @@ async function main() {
         primary_channel text, status text, idempotency_key text unique, last_contact_at timestamptz, channel_last_seen_at timestamptz, contactability_status text);
       create table conversations (id uuid primary key default gen_random_uuid(), lead_id uuid references leads(id), agent_name text,
         message_role text, channel text, content text, created_at timestamptz);
-      create table lead_channel_states (lead_id uuid references leads(id), channel text, ai_paused boolean, last_inbound_at timestamptz, unique (lead_id, channel));
+      create table lead_channel_states (lead_id uuid references leads(id), channel text, ai_paused boolean, last_inbound_at timestamptz,
+        human_status text not null default 'auto', human_owner text, takeover_started_at timestamptz,
+        takeover_reason text, resume_mode text not null default 'manual_only', unique (lead_id, channel));
       grant select, insert, update on leads, conversations, lead_channel_states to service_role;`);
     for (const name of ["20261017_whatsapp_manual_sends",
-      "20261113_meta_social_inbound", "20261113_meta_social_staff_replies", "20261113_meta_social_dispatch_fence"]) await admin.query(sql(name));
+      "20261113_meta_social_inbound", "20261113_meta_social_staff_replies", "20261113_meta_social_dispatch_fence",
+      "20261117_meta_social_takeover", "20261118_meta_social_autonomy"]) await admin.query(sql(name));
     const a = await connect();
     const b = await connect();
     await admin.query("grant select, insert, update on whatsapp_manual_sends to service_role");
@@ -71,6 +74,42 @@ async function main() {
       assert.equal((await admin.query("select count(*)::int as count from office_meta_social_pending_receipts")).rows[0].count, 0);
     }
     console.log("Meta social receipt/acceptance concurrency (two Postgres connections): PASS");
+    const senderKey = "meta-social:sender:" + "a".repeat(64);
+    const eventKey = "meta-social:event:" + "b".repeat(64);
+    const aiLead = (await admin.query(`insert into leads (source_channel, idempotency_key, meta_social_asset_id,
+      meta_social_sender_id, meta_social_opted_out, meta_social_last_inbound_at)
+      values ('facebook',$1,'111','333',false,now()) returning id`, [senderKey])).rows[0];
+    await admin.query("insert into conversations (lead_id, channel, message_role, correlation_id, created_at) select id,'facebook','user',$2,meta_social_last_inbound_at from leads where id=$1",
+      [aiLead.id, eventKey]);
+    const owner = (db, action, id) => db.query(`select office_transition_meta_social_ownership($1,'facebook',$2,
+      'f0000000-0000-4000-8000-000000000001','operator@example.test',$3) as result`, [aiLead.id, action, id]).then((r) => r.rows[0].result);
+    const resumed = await owner(a, "resume_ai", "f0000000-0000-4000-8000-000000000002");
+    const claim = (id) => admin.query(`insert into whatsapp_manual_sends (lead_id,channel,recipient,status,actor_email,client_request_id,body,body_hash)
+      values ($1,'facebook',$2,'pending','oyi_social_autonomy',$3,'text','hash') returning id`, [aiLead.id, binding, id]).then((r) => r.rows[0].id);
+    const aiIntent = await claim("social-ai-" + "b".repeat(64));
+    const fence = (db, revision) => db.query(`select office_fence_meta_social_dispatch($1,'facebook',$2,'oyi_social_autonomy',$3,$4) as outcome`,
+      [aiIntent, senderKey, revision, eventKey]).then((r) => r.rows[0].outcome);
+    const waitForLock = async () => {
+      for (let i = 0; i < 100; i++) {
+        if ((await admin.query("select wait_event_type = 'Lock' as waiting from pg_stat_activity where pid=$1", [b.processID])).rows[0]?.waiting) return;
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      assert.fail("competing transaction did not wait for the ownership lock");
+    };
+    await a.query("begin");
+    assert.equal((await owner(a, "takeover", "f0000000-0000-4000-8000-000000000003")).outcome, "taken_over");
+    const staleFence = fence(b, resumed.state.social_ownership_revision);
+    await waitForLock();
+    await a.query("commit");
+    assert.equal(await staleFence, "social_ai_state_changed");
+    const fresh = await owner(a, "resume_ai", "f0000000-0000-4000-8000-000000000004");
+    await a.query("begin");
+    assert.equal(await fence(a, fresh.state.social_ownership_revision), "acquired");
+    const blockedTakeover = owner(b, "takeover", "f0000000-0000-4000-8000-000000000005");
+    await waitForLock();
+    await a.query("commit");
+    assert.equal((await blockedTakeover).outcome, "send_outcome_unresolved");
+    console.log("Meta social AI dispatch/ownership concurrency (both lock orderings): PASS");
   } finally {
     await Promise.allSettled(clients.map((client) => client.end()));
     docker("rm", "-f", name);

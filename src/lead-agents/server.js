@@ -9,7 +9,8 @@ const { createConfig } = require("./config");
 const { log } = require("./logger");
 const envelopeObservation = require("./whatsapp-envelope-observation");
 const { handleMetaSocialWebhook } = require("./meta-social-inbound");
-const { createMetaSocialReplyAdapter, replyPolicy, sendSocialReply, socialOutboundChannelEnabled, socialTakeoverRefusal } = require("./meta-social-replies");
+const { createMetaSocialReplyAdapter, replyPolicy, sendSocialReply, socialOutboundChannelEnabled, socialTakeoverRefusal, socialAiEnabled, socialAiActive, SOCIAL_AI_ACTOR } = require("./meta-social-replies");
+const { continueSocialConversation } = require("./meta-social-autonomy");
 const { createMetaSocialPostsAdapter } = require("./meta-social-posts");
 const { createMetaSocialModerationAdapter, moderateComment, reconcileModeration } = require("./meta-social-moderation");
 const { demoPosts, isDemoId } = require("./content-social-demo");
@@ -2084,7 +2085,7 @@ async function enrichAuthContext(authContext, store) {
   };
 }
 
-function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRateLimiter, loginRateLimiter, whatsappAdapter, metaSocialReplyAdapter = createMetaSocialReplyAdapter(config), metaSocialPostsAdapter = createMetaSocialPostsAdapter(config), metaSocialModerationAdapter = createMetaSocialModerationAdapter(config), openaiClient, toolExecutor }) {
+function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRateLimiter, loginRateLimiter, whatsappAdapter, metaSocialReplyAdapter = createMetaSocialReplyAdapter(config), metaSocialPostsAdapter = createMetaSocialPostsAdapter(config), metaSocialModerationAdapter = createMetaSocialModerationAdapter(config), generateSocialReply = callOyiCoreCorporateConversation, openaiClient, toolExecutor }) {
   let socialSyncBusy = false; // one Content social-post sync at a time
   let socialSetupPendingLogged = false; // the "tables not installed yet" state is logged once per process, not on every page view
   const startedAt = Date.now();
@@ -2393,7 +2394,14 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
         pathname === "/api/lead-agents/admin/session/reset/confirm";
       const isPublicWhatsappPath = pathname === "/webhooks/whatsapp";
       if (pathname === "/webhooks/meta-social") {
-        await handleMetaSocialWebhook({ req, res, config, store, log });
+        await handleMetaSocialWebhook({
+          req, res, config, store, log,
+          onAcceptedMessage: (message) => continueSocialConversation({
+            config, store, adapter: metaSocialReplyAdapter, message, generate: generateSocialReply,
+            audit: (leadId, action, status, metadata) =>
+              appendAudit(store, { email: SOCIAL_AI_ACTOR, role: "system" }, action, "lead", leadId, metadata, req, status),
+          }),
+        });
         return;
       }
       // A document share link is meant to be opened by an external
@@ -7023,9 +7031,12 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
             ...(inboxChannel !== "whatsapp" ? { inbound_only_channel: inboxChannel } : {}),
             ...(social ? { social_reply: { available: socialReplyAvailable, reason: socialReplyAvailable ? null : socialProblem || "staff_permission_required" } } : {}),
             ...(social ? { social_takeover: { available: Boolean(socialOperator && canReply), owned_by_me: Boolean(takeoverActive && authContext.email && String(channelState?.human_owner || "").toLowerCase() === String(authContext.email).toLowerCase()) } } : {}),
-            global_autonomous_responses: autonomy.state === "on" ? "on" : autonomy.state === "off" ? "off" : "unknown",
+            ...(social ? { social_ai: { enabled: socialAiEnabled(config, inboxChannel), selected: socialAiActive(channelState),
+              can_resume: socialAiEnabled(config, inboxChannel) && !replyPolicy(config, socialLead, inboxChannel) } } : {}),
+            global_autonomous_responses: social ? (socialAiEnabled(config, inboxChannel) ? "on" : "off") : autonomy.state === "on" ? "on" : autonomy.state === "off" ? "off" : "unknown",
             takeover_active: takeoverActive,
-            mode: takeoverActive ? "human" : autonomy.state === "on" ? "autonomous_allowed" : autonomy.state === "off" ? "autonomous_off" : "autonomous_off_unreadable",
+            mode: takeoverActive ? "human" : social ? (socialAiEnabled(config, inboxChannel) && socialAiActive(channelState) ? "autonomous_allowed" : "autonomous_off") :
+              autonomy.state === "on" ? "autonomous_allowed" : autonomy.state === "off" ? "autonomous_off" : "autonomous_off_unreadable",
             whatsapp_reply: { available: inboxChannel === "whatsapp" && Boolean(lead.whatsapp_phone) && canReply && takeoverActive && whatsappAdapter.isConfigured(), can_reply_permission: canReply, takeover_required: !takeoverActive, whatsapp_number_known: Boolean(lead.whatsapp_phone) },
           },
           integrations: {
@@ -7094,7 +7105,7 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
 
       // Social ownership actions are session-only, operator-allowlisted, and use
       // database RPCs so ownership transitions serialize against dispatch.
-      const socialOwnershipMatch = pathname.match(/^\/api\/lead-agents\/admin\/leads\/([^/]+)\/(facebook|instagram)\/(takeover|release)$/);
+      const socialOwnershipMatch = pathname.match(/^\/api\/lead-agents\/admin\/leads\/([^/]+)\/(facebook|instagram)\/(takeover|release|resume_ai|pause_ai)$/);
       if (socialOwnershipMatch) {
         if (req.method !== "POST") { methodNotAllowed(res, "POST"); return; }
         if (authContext?.type !== "session") { json(res, 403, { error: "staff_session_required" }); return; }
@@ -7113,6 +7124,13 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           json(res, 400, { error: "invalid_social_ownership_request" }, { "x-request-id": ctx.requestId }); return;
         }
         const socialLead = await store.getMetaSocialReplyLead(leadId).catch(() => null);
+        if (action === "resume_ai") {
+          const problem = !socialAiEnabled(config, channel) ? "social_ai_disabled" : replyPolicy(config, socialLead, channel);
+          if (problem) {
+            await appendAudit(store, authContext, `communication.${channel}.${action}`, "lead", leadId, { outcome: problem }, req, "failure").catch(() => null);
+            json(res, 409, { error: problem }, { "x-request-id": ctx.requestId }); return;
+          }
+        }
         const conversations = socialLead ? await store.listConversationsForLead(leadId, 500).catch(() => []) : [];
         if (!socialLead || !conversations.some((row) => row.channel === channel && row.message_role === "user")) {
           await appendAudit(store, authContext, `communication.${channel}.${action}`, "lead", leadId, { outcome: "social_conversation_not_found" }, req, "failure").catch(() => null);
@@ -7128,9 +7146,17 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           json(res, 503, { error: "ownership_state_unavailable" }, { "x-request-id": ctx.requestId }); return;
         }
         const outcome = result?.outcome || "ownership_state_unavailable";
-        const success = ["taken_over", "already_owned", "released"].includes(outcome);
+        const success = ["taken_over", "already_owned", "released", "ai_resumed", "ai_paused"].includes(outcome);
         await appendAudit(store, authContext, `communication.${channel}.${action}`, "lead", leadId,
           { outcome, revision: result?.state?.social_ownership_revision ?? null, request_id: requestId }, req, success ? "success" : "failure").catch(() => null);
+        const timelineTitle = { taken_over: "Staff took over the conversation", released: "Staff released ownership; AI remains paused",
+          ai_resumed: "Staff handed new eligible messages back to Oyi", ai_paused: "Staff paused Oyi replies" }[outcome];
+        if (!result?.replayed && timelineTitle) {
+          await store.appendTimelineEvent({
+            lead_id: leadId, event_type: "social_conversation_ownership", actor: authContext.email,
+            title: timelineTitle, metadata: { channel, outcome, ownership_revision: result.state?.social_ownership_revision, request_id: requestId },
+          }).catch(() => null);
+        }
         if (success && !result.replayed && ["taken_over", "released"].includes(outcome)) {
           await store.createNotification({
             lead_id: leadId, type: "social_conversation_ownership", urgency: "low", channel: "internal",

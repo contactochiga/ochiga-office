@@ -41,6 +41,15 @@ async function main() {
   } };
   const adapter = { verifyWebhook: () => null, verifySignature: () => ({ ok: true }), extractEvents: (b) => b.events || [], isConfigured: () => true, sendTextMessage: async () => ({ delivered: true, external_message_id: "wamid.out.1" }), sendTemplateMessage: async () => ({ delivered: false }), listApprovedTemplates: async () => [] };
   const server = buildServer({ config, store, rateLimiter: new MemoryRateLimiter({ windowMs: 60000, maxRequests: 5000 }), publicRateLimiter: new MemoryRateLimiter({ windowMs: 60000, maxRequests: 5000 }), officeRateLimiter: new MemoryRateLimiter({ windowMs: 60000, maxRequests: 5000 }), loginRateLimiter: new MemoryRateLimiter({ windowMs: 60000, maxRequests: 100 }), whatsappAdapter: adapter, metaSocialReplyAdapter, openaiClient: {}, toolExecutor: new ToolExecutor({ store, config, log: () => {}, webhooks: new WebhookDispatcher({ config }) }) });
+  const replyRequests = [];
+  server.prependListener("request", (req, res) => {
+    const match = req.url.match(/\/(facebook|instagram)\/reply$/);
+    if (req.method !== "POST" || !match) return;
+    const record = { channel: match[1] };
+    replyRequests.push(record);
+    req.on("end", () => { record.bodyRead = true; });
+    res.on("finish", () => { record.status = res.statusCode; });
+  });
   const port = await listen(server), base = `http://127.0.0.1:${port}`;
 
   // fixtures: a website JV enquiry (form + two opportunities) and a WhatsApp relationship
@@ -71,6 +80,17 @@ async function main() {
     const shot = async (name) => { if (!process.env.OFFICE_RW_SHOTS) return; const r = await send("Page.captureScreenshot", { format: "png" }); fs.writeFileSync(path.join(process.env.OFFICE_RW_SHOTS, name), Buffer.from(r.result.data, "base64")); };
     await send("Page.enable"); await send("Runtime.enable"); await send("Network.enable");
     const errors = []; ws.addEventListener("message", (m) => { const d = JSON.parse(m.data); if (d.method === "Runtime.exceptionThrown") errors.push(d.params.exceptionDetails.exception?.description || d.params.exceptionDetails.text); });
+    const replyNetwork = new Map();
+    ws.addEventListener("message", (m) => {
+      const { method, params } = JSON.parse(m.data);
+      if (method === "Network.requestWillBeSent" && /\/(facebook|instagram)\/reply(?:\/|$)/.test(params.request.url)) {
+        replyNetwork.set(params.requestId, { method: params.request.method });
+      } else if (method === "Network.responseReceived" && replyNetwork.has(params.requestId)) {
+        replyNetwork.get(params.requestId).status = params.response.status;
+      } else if (method === "Network.loadingFailed" && replyNetwork.has(params.requestId)) {
+        replyNetwork.get(params.requestId).error = params.errorText;
+      }
+    });
     await send("Network.setCookie", { name: cookieName, value: cookieValue, url: base });
     await send("Emulation.setDeviceMetricsOverride", { width: 1440, height: 900, deviceScaleFactor: 1, mobile: false });
 
@@ -86,10 +106,15 @@ async function main() {
         const callback = await fetch(`${base}/webhooks/meta-social`, { method: "POST", headers: { "x-hub-signature-256": "sha256=" + signature }, body: raw });
         assert.equal((await callback.json()).accepted, 1);
         const lead = (await store.listLeads()).find((row) => row.source === (object === "page" ? "facebook" : object));
-        const url = `${base}/office?social=${label}`;
+        const url = `${base}/office/?social=${label}`;
         const hash = `#/crm/leads/${lead.id}`;
         await send("Page.navigate", { url: url + hash });
         await waitFor(`document.querySelector('#relThreadPane')?.textContent.includes("${label} fixture question")`, label + " thread rendered");
+        await evalJs("navigator.serviceWorker.ready.then(() => true)");
+        await send("Page.navigate", { url: url + "&controlled=1" + hash });
+        await waitFor('document.readyState === "complete" && new URLSearchParams(location.search).get("controlled") === "1"', label + " controlled CRM document");
+        await waitFor('navigator.serviceWorker.controller?.state === "activated"', label + " service worker controls CRM");
+        await waitFor(`document.querySelector('#relThreadPane')?.textContent.includes("${label} fixture question")`, label + " controlled thread rendered");
         await waitFor(`!!document.querySelector('.rel-social-ownership') && document.querySelector('.rel-social-ownership').textContent.includes('Take over')`, label + " takeover control");
         await evalJs(`document.querySelector('.rel-social-ownership').click()`);
         await waitFor(`document.querySelector('.rel-social-ownership')?.textContent.includes('Release ownership')`, label + " ownership claimed");
@@ -98,6 +123,9 @@ async function main() {
           assert.equal(await evalJs(`document.querySelectorAll('.rel-send').length`), 0);
           config.metaSocialOutboundChannels = ["instagram"];
           await send("Page.navigate", { url: url + "&enabled=1" + hash });
+          // The previous document can render an enabled composer via its
+          // normal refresh before the new document commits.
+          await waitFor('document.readyState === "complete" && new URLSearchParams(location.search).get("enabled") === "1"', "Instagram enabled document");
         }
         await waitFor(`!!document.querySelector('.rel-send textarea[aria-label="${label} reply"]')`, label + " composer");
         await evalJs(`(() => {
@@ -112,21 +140,44 @@ async function main() {
           textarea.form.querySelector('button[type="submit"]').click();
         })()`);
         await waitFor(`document.querySelector('#relThreadPane')?.textContent.includes("${label} fixture staff reply")`, label + " reply shown in CRM").catch(async (err) => {
-          throw new Error(`${err.message}; fixture calls=${socialSends.length}; browser=${await evalJs(`JSON.stringify({ toasts: [...new Set(window.fixtureToasts || [])], disabled: document.querySelector('.rel-send button')?.disabled, attempts: Object.keys(localStorage).filter(k => k.startsWith("office:social-reply:")).length })`)}`);
+          throw new Error(`${err.message}; fixture calls=${socialSends.length}; server=${JSON.stringify(replyRequests)}; network=${JSON.stringify([...replyNetwork.values()])}; exceptions=${JSON.stringify(errors)}; browser=${await evalJs(`JSON.stringify({ toasts: [...new Set(window.fixtureToasts || [])], disabled: document.querySelector('.rel-send button')?.disabled, attempts: Object.keys(localStorage).filter(k => k.startsWith("office:social-reply:")).length })`)}`);
         });
         await send("Page.navigate", { url: url + "&restored=1" + hash });
+        await waitFor('document.readyState === "complete" && new URLSearchParams(location.search).get("restored") === "1"', label + " restored document");
         await waitFor(`document.querySelector('#relThreadPane')?.textContent.includes("${label} fixture staff reply")`, label + " reply survives browser reload");
+        assert.ok(await evalJs(`document.querySelector('#relThreadPane').textContent.includes('Accepted by Meta — delivery not confirmed')`), `${label} shows provider acceptance without claiming delivery`);
         assert.ok(await evalJs(`document.querySelector('.rel-social-ownership')?.textContent.includes('Release ownership')`), `${label} ownership survives browser reload`);
         await evalJs(`document.querySelector('.rel-social-ownership').click()`);
         await waitFor(`document.querySelector('.rel-social-ownership')?.textContent.includes('Take over')`, label + " ownership released");
         const releasedState = await store.getLeadChannelState(lead.id, object === "page" ? "facebook" : "instagram");
         assert.equal(releasedState.ai_paused, true, `${label} release does not resume AI`);
+        const channel = object === "page" ? "facebook" : "instagram";
+        config.metaSocialAiChannels = [channel];
+        await send("Page.navigate", { url: url + "&ai-controls=1" + hash });
+        await waitFor('document.readyState === "complete" && new URLSearchParams(location.search).get("ai-controls") === "1"', label + " AI controls document");
+        await waitFor(`document.querySelector('.rel-social-ai')?.textContent.includes('Resume AI')`, label + " AI resume control");
+        await evalJs(`document.querySelector('.rel-social-ai').click()`);
+        await waitFor(`document.querySelector('.rel-social-ai')?.textContent.includes('Pause AI')`, label + " AI resumed");
+        await send("Page.navigate", { url: url + "&ai-restored=1" + hash });
+        await waitFor('document.readyState === "complete" && new URLSearchParams(location.search).get("ai-restored") === "1"', label + " AI restored document");
+        await waitFor(`document.querySelector('.rel-social-ai')?.textContent.includes('Pause AI')`, label + " restored AI mode");
+        await evalJs(`document.querySelector('.rel-social-ai').click()`);
+        await waitFor(`document.querySelector('.rel-social-ai')?.textContent.includes('Resume AI')`, label + " AI paused");
+        config.metaSocialAiChannels = [];
       }
       assert.deepEqual(socialSends, [
         { to: "333", body: "Messenger fixture staff reply", channel: "facebook" },
         { to: "333", body: "Instagram fixture staff reply", channel: "instagram" },
       ]);
-      console.log("D1. Both composers send one mocked reply only when listed, and restore it after reload");
+      assert.deepEqual(replyRequests.map(({ channel, bodyRead, status }) => ({ channel, bodyRead, status })), [
+        { channel: "facebook", bodyRead: true, status: 200 },
+        { channel: "instagram", bodyRead: true, status: 200 },
+      ]);
+      assert.deepEqual([...replyNetwork.values()].map(({ method, status, error }) => ({ method, status, error: error || null })), [
+        { method: "POST", status: 200, error: null },
+        { method: "POST", status: 200, error: null },
+      ]);
+      console.log("D1. Both composers send one mocked reply with an active, controlling service worker and restore after reload");
       assert.deepEqual(errors, []);
       return;
     }

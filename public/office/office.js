@@ -18453,7 +18453,8 @@ function relDeliveryText(entry) {
   if (entry.channel === "facebook" || entry.channel === "instagram") {
     if (d.state === "pending") return "Sending — not yet confirmed by Meta";
     if (d.state === "rejected") return "Not sent — Meta refused it";
-    if (d.state === "sent") return "Accepted by Meta — delivery not confirmed";
+    if (d.state === "provider_accepted" || d.state === "sent") return "Accepted by Meta — delivery not confirmed";
+    if (d.state === "unverified") return "Send status unverified";
   }
   const map = { read: "Read", delivered: "Delivered", sent: "Sent (provider confirmed)", failed: "Failed", unverified: "Accepted by provider — delivery not confirmed", pending: "Sending — not yet confirmed by WhatsApp", outcome_unknown: "Outcome unknown — it may or may not have been sent. Do not resend.", rejected: "Not sent — WhatsApp refused it", not_sent: "Not sent", not_applicable: "" };
   return map[d.state] || "";
@@ -18592,7 +18593,7 @@ function renderRelEntry(entry) {
   const CHANNEL_NAMES = { whatsapp: "WhatsApp", website: "Website", website_form: "Website form", website_widget: "Website widget", email: "Email", linkedin: "LinkedIn" };
   const chan = entry.channel ? (CHANNEL_NAMES[entry.channel] || titleCase(String(entry.channel).replace(/_/g, " "))) : "";
   const row = el(`
-    <div class="messages-bubble-row ${mine ? "mine" : "theirs"}${["pending", "outcome_unknown", "rejected", "not_sent"].includes(entry.delivery && entry.delivery.state) ? " rel-unconfirmed" : ""}">
+    <div class="messages-bubble-row ${mine ? "mine" : "theirs"}${["pending", "provider_accepted", "outcome_unknown", "rejected", "not_sent"].includes(entry.delivery && entry.delivery.state) ? " rel-unconfirmed" : ""}">
       <div class="rel-bubble-head">${escapeHtml(entry.sender === "customer" ? "Customer" : entry.sender)}${chan ? ` · ${escapeHtml(chan)}` : ""}</div>
       <div class="messages-bubble">${escapeHtml(entry.text || "")}</div>
       <div class="messages-bubble-meta"><span>${escapeHtml(relTime(entry.occurred_at))}</span><span>${escapeHtml(relOriginText(entry))}</span>${delivery ? `<span class="rel-delivery rel-delivery-${escapeHtml(entry.delivery.state)}">${escapeHtml(delivery)}</span>` : ""}</div>
@@ -18796,6 +18797,24 @@ function relRenderComposer(data) {
       });
       wrap.appendChild(button);
       if (ownedByMe) wrap.appendChild(el('<div class="rel-note">Releasing ownership does not resume AI replies.</div>'));
+      if (c.social_ai?.selected || c.social_ai?.can_resume) {
+        const pause = c.social_ai.selected;
+        const aiButton = el(`<button type="button" class="btn btn-sm rel-social-ai">${pause ? "Pause AI replies" : ownedByMe ? "Hand back to AI" : "Resume AI replies"}</button>`);
+        aiButton.addEventListener("click", async () => {
+          aiButton.disabled = true;
+          try {
+            await api(`/api/lead-agents/admin/leads/${encodeURIComponent(data.lead.id)}/${channel}/${pause ? "pause_ai" : "resume_ai"}`, {
+              method: "POST", body: { client_request_id: newRelRequestId() },
+            });
+            toast(pause ? "AI replies paused." : "AI can reply to new eligible messages.");
+            await relLoadThread(false);
+          } catch (err) {
+            toast(err.data?.error || "Could not change AI reply mode.", "error");
+            aiButton.disabled = false;
+          }
+        });
+        wrap.appendChild(aiButton);
+      }
     }
   }
   if (social && !c.social_reply?.available) {
@@ -18806,6 +18825,7 @@ function relRenderComposer(data) {
       social_takeover_state_unavailable: "Conversation ownership could not be verified. No reply was sent.",
       social_opted_out: "The customer has opted out, or consent state could not be verified.",
       social_recipient_unverified: "A new incoming message is needed before staff can reply.",
+      social_customer_ineligible: "This conversation is not eligible for Messenger support replies.",
       unresolved_send: "A previous send is unresolved. Do not resend. Ask an integration operator to review the outcome.",
       send_state_unavailable: "Send history could not be verified. Replies are paused.",
     }[c.social_reply?.reason] || "Staff replies are not available for this conversation.";

@@ -1,7 +1,7 @@
 const assert = require("node:assert/strict");
 const { createHmac } = require("node:crypto");
 const { rm } = require("node:fs/promises");
-const { createConfig, metaSocialRecipientBindingsFromEnv } = require("../src/lead-agents/config");
+const { createConfig, metaSocialRecipientBindingsFromEnv, metaSocialRecipientPolicyFromEnv } = require("../src/lead-agents/config");
 const { buildServer } = require("../src/lead-agents/server");
 const { MemoryRateLimiter } = require("../src/lead-agents/rate-limit");
 const { createTempStore } = require("../src/lead-agents/testing");
@@ -9,8 +9,9 @@ const { FileLeadAgentsStore } = require("../src/lead-agents/store-file");
 const { SupabaseLeadAgentsStore } = require("../src/lead-agents/store-supabase");
 const { createStore } = require("../src/lead-agents/store-factory");
 const { hashPassword } = require("../src/lead-agents/auth");
-const { createMetaSocialReplyAdapter } = require("../src/lead-agents/meta-social-replies");
+const { createMetaSocialReplyAdapter, replyPolicy } = require("../src/lead-agents/meta-social-replies");
 const { senderKeyFor } = require("../src/lead-agents/meta-social-inbound");
+const { normalizeVerifiedHistory } = require("../src/lead-agents/meta-social-autonomy");
 const { reconcileManualSends, resolveManualSend } = require("../src/lead-agents/manual-whatsapp-send");
 
 const secret = "local-social-fixture-secret";
@@ -18,6 +19,21 @@ const page = "111";
 const instagram = "222";
 const sender = "333";
 const path = "/webhooks/meta-social";
+const oversizedContextBase = Date.now();
+assert.equal(normalizeVerifiedHistory(Array.from({ length: 201 }, (_, index) => ({
+  id: `context-${index}`, channel: "facebook", message_role: "user", correlation_id: `context-${index}`,
+  content: "Historical message", created_at: new Date(oversizedContextBase + index).toISOString(),
+})), { channel: "facebook", eventKey: "context-200", occurredAt: new Date(oversizedContextBase + 200).toISOString(), currentText: "Historical message" }), null,
+"oversized history is rejected rather than silently truncated");
+const duplicateContextRow = { id: "ctx-event", channel: "instagram", message_role: "user", correlation_id: "ctx-event",
+  content: "Current inbound", created_at: new Date(oversizedContextBase).toISOString() };
+const dedupedContext = normalizeVerifiedHistory([duplicateContextRow, { ...duplicateContextRow }], {
+  channel: "instagram", eventKey: "ctx-event", occurredAt: duplicateContextRow.created_at, currentText: duplicateContextRow.content,
+});
+assert.equal(dedupedContext.length, 1, "duplicate CRM rows collapse by stable message identity");
+assert.equal(normalizeVerifiedHistory([duplicateContextRow, { ...duplicateContextRow, content: "Conflicting body" }], {
+  channel: "instagram", eventKey: "ctx-event", occurredAt: duplicateContextRow.created_at, currentText: duplicateContextRow.content,
+}), null, "conflicting duplicates fail closed");
 const event = (asset, overrides = {}) => ({
   sender: { id: sender }, recipient: { id: asset }, timestamp: Date.now(),
   message: { mid: "m_shared", text: "Fixture inquiry" }, ...overrides,
@@ -42,10 +58,35 @@ async function main() {
     "facebook:111:333", "instagram:222:333",
   ]);
   assert.deepEqual(metaSocialRecipientBindingsFromEnv("facebook:111:*,facebook:bad:333,whatsapp:111:333"), []);
+  assert.equal(metaSocialRecipientPolicyFromEnv(undefined), "pilot_allowlist");
+  assert.equal(metaSocialRecipientPolicyFromEnv("unrecognized"), "pilot_allowlist");
+  assert.equal(metaSocialRecipientPolicyFromEnv("verified_inbound_support"), "verified_inbound_support");
   const priorRecipients = process.env.OFFICE_META_SOCIAL_OUTBOUND_RECIPIENTS;
+  const priorRecipientPolicy = process.env.OFFICE_META_SOCIAL_OUTBOUND_RECIPIENT_POLICY;
   delete process.env.OFFICE_META_SOCIAL_OUTBOUND_RECIPIENTS;
+  delete process.env.OFFICE_META_SOCIAL_OUTBOUND_RECIPIENT_POLICY;
   assert.deepEqual(createConfig().metaSocialOutboundRecipientBindings, []);
+  assert.equal(createConfig().metaSocialOutboundRecipientPolicy, "pilot_allowlist");
   if (priorRecipients !== undefined) process.env.OFFICE_META_SOCIAL_OUTBOUND_RECIPIENTS = priorRecipients;
+  if (priorRecipientPolicy !== undefined) process.env.OFFICE_META_SOCIAL_OUTBOUND_RECIPIENT_POLICY = priorRecipientPolicy;
+  const policyNow = Date.now();
+  const verifiedFbLead = {
+    source_channel: "facebook", idempotency_key: senderKeyFor("facebook", page, sender),
+    meta_social_asset_id: page, meta_social_sender_id: sender,
+    meta_social_last_inbound_at: new Date(policyNow - 60_000).toISOString(),
+    meta_social_opted_out: false, contactability_status: null,
+  };
+  const recipientPolicyBase = {
+    metaSocialInboundEnabled: true, metaSocialInboundChannels: ["facebook"], metaSocialOutboundEnabled: true,
+    metaSocialOutboundChannels: ["facebook"], metaSocialOutboundRecipientBindings: [],
+    facebookPageAccessToken: "fixture-token", facebookPageId: page, metaSocialGraphVersion: "v26.0",
+  };
+  assert.equal(replyPolicy({ ...recipientPolicyBase, metaSocialOutboundRecipientPolicy: "pilot_allowlist" }, verifiedFbLead, "facebook", policyNow), "social_recipient_not_allowlisted");
+  const supportPolicy = { ...recipientPolicyBase, metaSocialOutboundRecipientPolicy: "verified_inbound_support" };
+  assert.equal(replyPolicy(supportPolicy, verifiedFbLead, "facebook", policyNow), null, "verified recent inbound customers qualify without a deployment-time sender list");
+  assert.equal(replyPolicy(supportPolicy, { ...verifiedFbLead, source_channel: "instagram" }, "facebook", policyNow), "social_customer_ineligible");
+  assert.equal(replyPolicy(supportPolicy, { ...verifiedFbLead, meta_social_opted_out: true }, "facebook", policyNow), "social_opted_out");
+  assert.equal(replyPolicy(supportPolicy, { ...verifiedFbLead, meta_social_last_inbound_at: new Date(policyNow - 24 * 60 * 60_000).toISOString() }, "facebook", policyNow), "social_window_closed");
   const fileConfig = { storeDriver: "file", storePath: "unused-fixture-path" };
   for (const config of [
     {},
@@ -74,14 +115,18 @@ async function main() {
   await supabase.listSocialManualSends("lead-x", "facebook", { limit: 200, offset: 200 });
   await supabase.listSocialManualSends("lead-x", "facebook", { unresolved: true });
   await supabase.listSocialManualSends("lead-x", "facebook", { repair: true });
+  await supabase.getMetaSocialAiContext("lead-x", "instagram", 201);
   assert.equal(queries[0].get("offset"), "200");
-  for (const query of queries) {
+  for (const query of queries.slice(0, 3)) {
     assert.equal(query.get("order"), "created_at.desc,id.desc");
     assert.equal(query.get("channel"), "eq.facebook");
     assert.equal(query.get("lead_id"), "eq.lead-x");
   }
   assert.equal(queries[1].get("status"), "in.(pending,outcome_unknown)");
   assert.equal(queries[2].get("conversation_recorded_at"), "is.null");
+  assert.equal(queries[3].get("channel"), "eq.instagram");
+  assert.equal(queries[3].get("lead_id"), "eq.lead-x");
+  assert.equal(queries[3].get("limit"), "201");
   const { store, tempDir, filePath } = await createTempStore();
   await store.ensureAdminUser({ email: "social@ochiga.local", password_hash: hashPassword("fixture-pass-123"), role: "super_admin", display_name: "Fixture", status: "active" });
   await store.ensureAdminUser({ email: "resident@ochiga.local", password_hash: hashPassword("fixture-pass-123"), role: "resident", display_name: "Fixture", status: "active" });
@@ -92,6 +137,8 @@ async function main() {
   const sent = [];
   let providerMode = "accept";
   let providerBarrier;
+  const generation = [];
+  let generationBarrier;
   const mk = () => new MemoryRateLimiter({ windowMs: 60_000, maxRequests: 500 });
   const noCalls = () => { assert.fail("social intake must not call WhatsApp"); };
   const start = async (overrides = {}, db = store) => {
@@ -106,9 +153,15 @@ async function main() {
         response: { status: 403, data: { error: { type: "OAuthException", code: 200, message: "Permission denied", fbtrace_id: "fixture-trace" } } },
       });
       if (providerMode === "ambiguous") throw Object.assign(new Error("mock gateway"), { response: { status: 403 } });
-      return { status: 200, data: { recipient_id: body.recipient.id, message_id: providerMode === "accept" ? "out_shared" : "out_ordered" } };
+      const messageId = providerMode === "accept" ? (sent.length <= 8 ? "out_shared" : `out_shared_${sent.length}`) : "out_ordered";
+      return { status: 200, data: { recipient_id: body.recipient.id, message_id: messageId } };
     });
     const server = buildServer({ config, store: db, rateLimiter: mk(), publicRateLimiter: mk(), officeRateLimiter: mk(),
+      generateSocialReply: async (_config, request) => {
+        generation.push(request);
+        if (generationBarrier) await generationBarrier();
+        return { ok: true, response: { answer: "Fixture Oyi reply", conversation_thread_id: `fixture-${request.source.source_channel}` } };
+      },
       loginRateLimiter: mk(), whatsappAdapter: { extractEvents: noCalls, verifySignature: noCalls, sendTextMessage: noCalls, isConfigured: () => false }, metaSocialReplyAdapter, openaiClient: {}, toolExecutor: {} });
     servers.push(server);
     await new Promise((resolve, reject) => { server.once("error", reject); server.listen(0, "127.0.0.1", resolve); });
@@ -236,6 +289,20 @@ async function main() {
       "11000000-0000-4000-8000-000000000003");
     assert.equal(competingClaim.status, 409);
     assert.equal((await competingClaim.json()).outcome, "owned_by_another");
+    const handoffRelease = await ownershipRequest(`${multiOperator}/api/lead-agents/admin/leads/${fb.id}/facebook/release`, headers,
+      "11000000-0000-4000-8000-000000000013");
+    assert.equal((await handoffRelease.json()).outcome, "released");
+    const handoffTakeover = await ownershipRequest(`${multiOperator}/api/lead-agents/admin/leads/${fb.id}/facebook/takeover`, otherOwner,
+      "11000000-0000-4000-8000-000000000014");
+    assert.equal((await handoffTakeover.json()).outcome, "taken_over", "a second approved operator can take over after explicit release");
+    assert.equal((await (await reply(multiOperator, fb, "facebook", "former-owner", {}, headers)).json()).error, "social_takeover_owner_required");
+    assert.equal(sent.length, 0, "the previous owner cannot send after handoff");
+    const secondOwnerRelease = await ownershipRequest(`${multiOperator}/api/lead-agents/admin/leads/${fb.id}/facebook/release`, otherOwner,
+      "11000000-0000-4000-8000-000000000015");
+    assert.equal((await secondOwnerRelease.json()).outcome, "released");
+    const firstOwnerRestore = await ownershipRequest(`${multiOperator}/api/lead-agents/admin/leads/${fb.id}/facebook/takeover`, headers,
+      "11000000-0000-4000-8000-000000000016");
+    assert.equal((await firstOwnerRestore.json()).outcome, "taken_over");
     assert.equal((await (await reply(enabled, fb, "facebook", "no-pilot", {}, unapproved)).json()).error, "social_operator_required");
     const noOperators = await start({ ...pilot, metaSocialOperatorIds: [] }, restored);
     assert.equal((await (await reply(noOperators, fb, "facebook", "empty-pilot")).json()).error, "social_operator_required");
@@ -267,21 +334,23 @@ async function main() {
     assert.equal(sent[1].body.messaging_type, undefined);
     const thread = async (lead) => (await (await fetch(`${enabled}/api/lead-agents/admin/crm/relationships/${lead.id}`, { headers })).json()).thread.entries;
     const outbound = async (lead) => (await thread(lead)).find((entry) => entry.direction === "outbound");
-    assert.equal((await outbound(fb)).delivery.state, "sent");
+    assert.equal((await outbound(fb)).delivery.state, "provider_accepted");
     const receipt = (object, asset, eventData, peer = sender) => batch(object, asset, { sender: { id: peer }, recipient: { id: asset }, ...eventData });
     await post(enabled, receipt("page", page, { read: { watermark: Date.now() } }));
     await post(enabled, receipt("page", page, { delivery: { watermark: Date.now() } }));
     await post(enabled, receipt("instagram", instagram, { read: { watermark: Date.now() } }));
     await post(enabled, batch("page", page, { sender: { id: page }, recipient: { id: sender }, delivery: { mids: ["out_shared"] } }));
     await post(enabled, receipt("instagram", instagram, { delivery: { mids: ["out_shared"] } }));
-    assert.equal((await outbound(fb)).delivery.state, "sent");
-    assert.equal((await outbound(ig)).delivery.state, "sent");
+    assert.equal((await outbound(fb)).delivery.state, "provider_accepted");
+    assert.equal((await outbound(ig)).delivery.state, "provider_accepted");
     await post(enabled, receipt("page", page, { delivery: { mids: ["out_shared"] } }, "444"));
-    assert.equal((await outbound(fb)).delivery.state, "sent");
+    assert.equal((await outbound(fb)).delivery.state, "provider_accepted");
     await post(enabled, receipt("page", page, { delivery: { mids: ["out_shared"] } }));
     await post(enabled, receipt("page", page, { delivery: { mids: ["out_shared"] } }));
     assert.equal((await outbound(fb)).delivery.state, "delivered");
-    assert.equal((await outbound(ig)).delivery.state, "sent");
+    assert.equal((await outbound(ig)).delivery.state, "provider_accepted");
+    await post(enabled, receipt("page", page, { read: { watermark: Date.now() } }));
+    assert.equal((await outbound(fb)).delivery.state, "delivered", "a watermark-only callback does not prove a specific message was read");
     await post(enabled, receipt("instagram", instagram, { read: { mid: "out_shared" } }));
     assert.equal((await outbound(ig)).delivery.state, "read");
     providerMode = "reject";
@@ -548,7 +617,99 @@ async function main() {
     await assert.rejects(reloadedBrowser.prepare(browserKey, "Fixture response", oldKey), /previous attempt changed/);
     providerBarrier = null;
     assert.equal(sent.length, 6);
+    const support = await start({ ...pilot, metaSocialOutboundRecipientBindings: [],
+      metaSocialOutboundRecipientPolicy: "verified_inbound_support", metaSocialOperatorIds: [operator.id, otherId] }, restored);
+    assert.equal((await (await reply(support, ig, "instagram", "support-cross-channel")).json()).error, "social_recipient_not_allowlisted");
+    const supportOwnership = `${support}/api/lead-agents/admin/leads/${restrictedWrongSender.id}/facebook`;
+    assert.equal((await ownershipRequest(`${supportOwnership}/release`, headers, "11000000-0000-4000-8000-000000000017")).status, 200);
+    assert.equal((await ownershipRequest(`${supportOwnership}/takeover`, otherOwner, "11000000-0000-4000-8000-000000000018")).status, 200);
+    assert.equal((await (await reply(support, restrictedWrongSender, "facebook", "support-former-owner")).json()).error, "social_takeover_owner_required");
+    providerMode = "accept";
+    const supportReply = await reply(support, restrictedWrongSender, "facebook", "support-inbound", {}, otherOwner);
+    assert.equal(supportReply.status, 200);
+    assert.equal(sent.length, 7);
+    assert.equal(sent.at(-1).body.recipient.id, "999");
+    assert.equal((await reply(support, restrictedWrongSender, "facebook", "support-inbound", {}, otherOwner)).status, 409);
+    assert.equal(sent.length, 7);
     assert.equal(await restored.getRuntimeSetting("whatsapp_autonomous_responses_enabled"), null);
+    const aiBase = await start({ ...pilot, metaSocialAiChannels: ["facebook", "instagram"] }, restored);
+    const action = (lead, channel, kind, id, auth = headers) => ownershipRequest(
+      `${aiBase}/api/lead-agents/admin/leads/${lead.id}/${channel}/${kind}`, auth,
+      `33000000-0000-4000-8000-${String(id).padStart(12, "0")}`);
+    const aiMessage = (object, asset, peer, mid, extra = {}) => batch(object, asset, event(asset, {
+      sender: { id: peer }, message: { mid, text: "New message for Oyi" }, ...extra,
+    }));
+    const aiLead = await newLead("908");
+    assert.equal((await action(aiLead, "facebook", "resume_ai", 1, unapproved)).status, 403);
+    assert.equal((await action(aiLead, "facebook", "resume_ai", 2)).status, 200);
+    const sample = aiMessage("page", page, "908", "ai-first");
+    assert.equal((await post(aiBase, sample)).status, 200);
+    assert.equal((await (await post(aiBase, sample)).json()).duplicate, 1);
+    assert.equal(generation.length, 1);
+    assert.deepEqual(generation[0].metadata.verified_conversation_context.messages.map((row) => row.role), ["customer", "customer"]);
+    assert.equal(generation[0].metadata.verified_conversation_context.messages.at(-1).message_id,
+      generation[0].metadata.verified_conversation_context.current_event_id);
+    assert.equal(sent.length, 8);
+    assert.equal((await thread(aiLead)).find((item) => item.text === "Fixture Oyi reply").origin, "ai");
+    await action(aiLead, "facebook", "takeover", 8);
+    await restored.appendConversation({ lead_id: aiLead.id, agent_name: "social@ochiga.local", message_role: "assistant",
+      channel: "facebook", content: "Human-only CRM context for Oyi handback", correlation_id: "human-context-1" });
+    await action(aiLead, "facebook", "release", 9);
+    await action(aiLead, "facebook", "resume_ai", 10);
+    await post(aiBase, aiMessage("page", page, "908", "ai-context-return"));
+    assert.deepEqual(generation[1].metadata.verified_conversation_context.messages.map((row) => row.role), ["customer", "customer", "assistant", "staff", "customer"]);
+    assert.equal(generation[1].metadata.verified_conversation_context.messages[3].text, "Human-only CRM context for Oyi handback");
+    assert.equal(generation[1].metadata.verified_conversation_context.conversation_thread_id, "fixture-facebook");
+    assert.equal(sent.length, 9);
+    assert.equal((await action(aiLead, "facebook", "pause_ai", 3)).status, 200);
+    assert.equal((await action(aiLead, "facebook", "pause_ai", 3)).status, 200);
+    assert.equal((await thread(aiLead)).filter((item) => item.title === "Staff paused Oyi replies").length, 1);
+    await post(aiBase, aiMessage("page", page, "908", "ai-paused"));
+    assert.equal(generation.length, 2);
+    const resumedAgain = await action(aiLead, "facebook", "resume_ai", 4);
+    const resumedAgainBody = await resumedAgain.json();
+    assert.equal(resumedAgain.status, 200, JSON.stringify(resumedAgainBody));
+    const aiEntered = deferred();
+    const aiRelease = deferred();
+    generationBarrier = async () => { aiEntered.release(); await aiRelease.promise; };
+    const duringGeneration = post(aiBase, aiMessage("page", page, "908", "ai-race"));
+    await aiEntered.promise;
+    assert.equal(generation[2].conversation_thread_id, "fixture-facebook");
+    assert.equal((await action(aiLead, "facebook", "takeover", 5)).status, 200);
+    await restored.appendConversation({ lead_id: aiLead.id, agent_name: "social@ochiga.local", message_role: "assistant",
+      channel: "facebook", content: "Late human message after generation began", correlation_id: "human-context-race" });
+    aiRelease.release();
+    await duringGeneration;
+    generationBarrier = null;
+    assert.equal(sent.length, 9, "human takeover invalidates the generated answer");
+    assert.equal((await action(aiLead, "facebook", "release", 6)).status, 200);
+    await post(aiBase, aiMessage("page", page, "908", "ai-release-paused"));
+    assert.equal(generation.length, 3, "plain release does not resume AI");
+    assert.equal((await action(aiLead, "facebook", "resume_ai", 7)).status, 200);
+    await post(aiBase, aiMessage("page", page, "908", "ai-expired", { timestamp: Date.now() - 86_400_001 }));
+    assert.equal(generation.length, 3);
+    await post(aiBase, batch("page", page,
+      event(page, { sender: { id: "908" }, message: { mid: "ai-before-stop", text: "Earlier in the batch" } }),
+      event(page, { sender: { id: "908" }, message: { mid: "ai-stop", text: "STOP" } })));
+    await post(aiBase, aiMessage("page", page, "908", "ai-after-opt-out"));
+    assert.equal(generation.length, 3);
+    const igAiPayload = aiMessage("instagram", instagram, sender, "ig-ai-first");
+    // The existing Instagram fixture opted out. A different binding needs its own pilot entry.
+    await post(aiBase, igAiPayload);
+    assert.equal(generation.length, 3);
+    const igAi = await start({ ...pilot, metaSocialAiChannels: ["instagram"],
+      metaSocialOutboundRecipientBindings: ["instagram:222:909"] }, restored);
+    await post(igAi, aiMessage("instagram", instagram, "909", "ig-ai-seed"));
+    const igAiLead = restored.state.leads.find((row) => row.meta_social_sender_id === "909");
+    assert.equal((await ownershipRequest(`${igAi}/api/lead-agents/admin/leads/${igAiLead.id}/instagram/resume_ai`, headers,
+      "33000000-0000-4000-8000-000000000008")).status, 200);
+    providerMode = "ambiguous";
+    await post(igAi, aiMessage("instagram", instagram, "909", "ig-ai-unknown"));
+    assert.equal(sent.length, 10);
+    assert.equal(sent.at(-1).body.recipient.id, "909");
+    assert.equal(restored.state.whatsapp_manual_sends.find((row) => row.lead_id === igAiLead.id).status, "outcome_unknown");
+    await post(igAi, aiMessage("instagram", instagram, "909", "ig-ai-no-resend"));
+    assert.equal(sent.length, 10);
     console.log("Meta social inbound HTTP, CRM, replay and isolation: PASS");
   } finally {
     for (const server of servers) await new Promise((resolve) => { server.closeAllConnections?.(); server.close(resolve); });

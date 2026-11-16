@@ -306,6 +306,30 @@ class SupabaseLeadAgentsStore {
     return response.data?.[0] || null;
   }
 
+  async findMetaSocialAiLead(senderKey) {
+    const response = await this.client.get(`/leads?idempotency_key=eq.${encodeURIComponent(senderKey)}&select=id,idempotency_key,source_channel,contactability_status,meta_social_asset_id,meta_social_sender_id,meta_social_last_inbound_at,meta_social_opted_out&limit=1`);
+    return response.data?.[0] || null;
+  }
+
+  async getSocialAiThread(leadId, channel) {
+    const query = new URLSearchParams({ lead_id: `eq.${leadId}`, event_type: "eq.oyi_core_social_turn",
+      "metadata->>channel": `eq.${channel}`, select: "metadata", order: "created_at.desc,id.desc", limit: "1" });
+    const response = await this.client.get(`/timeline_events?${query}`);
+    if (!Array.isArray(response.data)) throw new Error("social_ai_thread_unreadable");
+    return response.data[0]?.metadata?.oyi_thread_id || "";
+  }
+
+  async getMetaSocialAiContext(leadId, channel, limit = 201) {
+    const query = new URLSearchParams({
+      lead_id: `eq.${leadId}`, channel: `eq.${channel}`, message_role: "in.(user,assistant)",
+      select: "id,channel,correlation_id,external_message_id,agent_name,message_role,content,created_at",
+      order: "created_at.desc,id.desc", limit: String(limit),
+    });
+    const response = await this.client.get(`/conversations?${query}`);
+    if (!Array.isArray(response.data)) throw new Error("social_ai_context_unreadable");
+    return response.data.reverse();
+  }
+
   async findMetaSocialSend(leadId, channel, actorEmail, requestId) {
     const query = new URLSearchParams({ lead_id: `eq.${leadId}`, channel: `eq.${channel}`,
       actor_email: `eq.${actorEmail}`, client_request_id: `eq.${requestId}`, limit: "1" });
@@ -672,12 +696,14 @@ class SupabaseLeadAgentsStore {
     return response.data;
   }
 
-  async fenceMetaSocialDispatch(id, channel, senderKey, actorEmail) {
+  async fenceMetaSocialDispatch(id, channel, senderKey, actorEmail, autonomous) {
     const response = await this.client.post("/rpc/office_fence_meta_social_dispatch", {
       p_send: id, p_channel: channel, p_sender_key: senderKey, p_actor_email: actorEmail,
+      ...(autonomous ? { p_ai_revision: autonomous.revision, p_ai_event: autonomous.eventKey } : {}),
     });
     if (!["acquired", "social_dispatch_claim_lost", "social_recipient_unverified", "social_opted_out",
-      "social_window_closed", "social_claim_expired", "social_takeover_required", "social_takeover_owner_required"].includes(response.data)) throw new Error("invalid_dispatch_fence_response");
+      "social_window_closed", "social_claim_expired", "social_takeover_required", "social_takeover_owner_required",
+      "social_ai_state_changed"].includes(response.data)) throw new Error("invalid_dispatch_fence_response");
     return response.data;
   }
 

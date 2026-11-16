@@ -30,6 +30,10 @@ function metaSocialRecipientBindingsFromEnv(value) {
   }))];
 }
 
+function metaSocialRecipientPolicyFromEnv(value) {
+  return value === "verified_inbound_support" ? value : "pilot_allowlist";
+}
+
 // intake.submit: website enquiries (POST /api/office/intake). catalogue.public.read: the read-only public catalogue projection
 // (GET /api/public/catalogue/*, Phase 2 stage 4). A website gets a separate key per scope; neither is ever a privileged key.
 const KNOWN_API_KEY_SCOPES = new Set(["intake.submit", "catalogue.public.read"]);
@@ -191,7 +195,10 @@ function createConfig() {
     metaSocialInboundChannelsInvalid: metaSocialChannelsFromEnv(process.env.OFFICE_META_SOCIAL_INBOUND_CHANNELS).invalid,
     metaSocialOutboundEnabled: process.env.OFFICE_META_SOCIAL_OUTBOUND_ENABLED === "true",
     metaSocialOutboundChannels: metaSocialChannelsFromEnv(process.env.OFFICE_META_SOCIAL_OUTBOUND_CHANNELS).channels,
+    metaSocialAiChannels: metaSocialChannelsFromEnv(process.env.OFFICE_META_SOCIAL_AI_CHANNELS).channels,
     metaSocialOutboundRecipientBindings: metaSocialRecipientBindingsFromEnv(process.env.OFFICE_META_SOCIAL_OUTBOUND_RECIPIENTS),
+    // The single-recipient pilot remains the default. The broader mode only covers verified inbound customer conversations.
+    metaSocialOutboundRecipientPolicy: metaSocialRecipientPolicyFromEnv(process.env.OFFICE_META_SOCIAL_OUTBOUND_RECIPIENT_POLICY),
     // Content → Posts & Comments: public comments on Facebook Page and Instagram posts (ingestion only). Independent of DMs.
     metaSocialCommentsInboundEnabled: process.env.OFFICE_META_COMMENTS_INBOUND_ENABLED === "true",
     // Staff-requested, read-only Graph lookups of Page posts and Instagram media for Content → Posts (C2).
@@ -376,4 +383,5 @@ function createConfig() {
 module.exports = {
   createConfig,
   metaSocialRecipientBindingsFromEnv,
+  metaSocialRecipientPolicyFromEnv,
 };
