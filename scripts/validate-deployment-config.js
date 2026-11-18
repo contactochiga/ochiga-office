@@ -47,6 +47,10 @@ assert(vercelConfig.git?.deploymentEnabled?.["codex/office-facebook-pilot-recipi
   "the Messenger pilot release branch must not trigger Vercel preview deployments");
 assert(vercelConfig.git?.deploymentEnabled?.["codex/office-meta-page-connection"] === false,
   "the Meta Page connection review branch must not trigger Vercel preview deployments");
+assert(vercelConfig.git?.deploymentEnabled?.["codex/office-content-social"] === false,
+  "the Content Social feature branch must not trigger Vercel preview deployments");
+assert(!Object.keys(vercelConfig.git?.deploymentEnabled || {}).some((branch) => branch.includes("*")),
+  "Vercel deployment exclusions must not use overlapping wildcard branch patterns");
 assert(vercelConfig.git?.deploymentEnabled?.["codex/office-extraction"] !== false,
   "the production branch must not be disabled by the review-branch preview exclusion");
 
