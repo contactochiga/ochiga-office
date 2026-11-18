@@ -32,7 +32,8 @@
       "codex/meta-social-staff-replies": false,
       "codex/meta-social-inbound-channels": false,
       "codex/office-social-manual-outbound-d1": false,
-      "codex/office-facebook-pilot-recipient-allowlist": false
+      "codex/office-facebook-pilot-recipient-allowlist": false,
+      "codex/office-meta-page-connection": false
     }
   }
 }

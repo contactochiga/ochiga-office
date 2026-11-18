@@ -29,6 +29,7 @@ const commands = [
   "npm run office:team-lifecycle-meetings-trash:test",
   "npm run office:messages-workspace:test",
   "npm run office:meta-social-inbound:test",
+  "npm run office:meta-page-connection:test",
 ];
 
 for (const command of commands) {

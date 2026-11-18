@@ -28,6 +28,7 @@ async function main() {
   if (!CHROME) throw new Error("BLOCKED: Chrome is not installed (this suite fails rather than skipping)");
   const { store, tempDir } = await createTempStore();
   await store.ensureAdminUser({ email: "reviewer@synthetic.invalid", password_hash: hashPassword("synthetic-pass-123"), role: "ochiga_staff", display_name: "Synthetic Reviewer", status: "active" });
+  await store.ensureAdminUser({ email: "meta-admin@synthetic.invalid", password_hash: hashPassword("synthetic-admin-123"), role: "super_admin", display_name: "Synthetic Meta Admin", status: "active" });
   const graphCalls = [];
   const stub = (kind) => async (url) => { graphCalls.push({ kind, url }); throw new Error("graph call attempted"); };
   const mk = () => new MemoryRateLimiter({ windowMs: 60_000, maxRequests: 5000 });
@@ -53,7 +54,9 @@ async function main() {
   await fetch(`${servers.connected.base}/webhooks/meta-social`, { method: "POST", headers: { "content-type": "application/json", "x-hub-signature-256": "sha256=" + createHmac("sha256", SECRET).update(raw).digest("hex") }, body: raw });
   const storedPostId = store.state.office_social_posts[0].id;
   const login = async (base) => { const r = await fetch(`${base}/api/lead-agents/admin/session/login`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ email: "reviewer@synthetic.invalid", password: "synthetic-pass-123" }) }); return r.headers.get("set-cookie").split(";")[0]; };
+  const adminLogin = async (base) => { const r = await fetch(`${base}/api/lead-agents/admin/session/login`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ email: "meta-admin@synthetic.invalid", password: "synthetic-admin-123" }) }); return r.headers.get("set-cookie").split(";")[0]; };
   const cookies = {}; for (const name of Object.keys(servers)) cookies[name] = await login(servers[name].base);
+  const metaAdminCookie = await adminLogin(servers.disconnected.base);
   const api = (name, p, init = {}) => fetch(`${servers[name].base}/api/lead-agents/admin/content/${p}`, { ...init, headers: { cookie: cookies[name], "content-type": "application/json", ...(init.headers || {}) } });
 
   // ---- API: states, demo isolation, nothing outbound
@@ -191,6 +194,11 @@ async function main() {
     await open("connected", `content/social:${storedPostId}`, "!!document.querySelector('.content-social-view .content-comment')", "connected post");
     ok(await evalJs("document.querySelectorAll('.content-moderation-toggle').length === 1 && !document.querySelector('.content-demo-notice')"), "connected: the real post offers Hide to a reviewer (moderation flag on) without any demonstration notice");
     await shot("connection-desktop-connected.png");
+
+    cookies.disconnected = metaAdminCookie;
+    await open("disconnected", "settings", "!![...document.querySelectorAll('h3')].find((h) => h.textContent.includes('Meta accounts and messaging'))", "Meta Settings panel");
+    ok(await evalJs("(() => { const text = document.querySelector('#viewOutlet').textContent; return /Facebook Page/.test(text) && /Instagram professional account/.test(text) && /WhatsApp Business messaging/.test(text) && /Not Connected/.test(text) && !![...document.querySelectorAll('button')].find((b) => b.textContent.includes('Connect Facebook')); })()"),
+      "Settings: administrator sees Facebook, Instagram and WhatsApp states honestly, with a real Connect Facebook action and no fabricated connection");
 
     ok(graphCalls.length === 0, "no Graph request of any kind was made in any state");
     ok(blocked.length === 0, "no request left the machine (nothing external attempted)");

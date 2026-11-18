@@ -9,6 +9,7 @@ const { createConfig } = require("./config");
 const { log } = require("./logger");
 const envelopeObservation = require("./whatsapp-envelope-observation");
 const { handleMetaSocialWebhook } = require("./meta-social-inbound");
+const { createMetaPageConnection, parseCookie: parseMetaCookie, publicConnection: publicMetaConnection, clearStateCookie: clearMetaStateCookie, STATE_COOKIE: META_STATE_COOKIE } = require("./meta-page-connection");
 const { createMetaSocialReplyAdapter, replyPolicy, sendSocialReply, socialOutboundChannelEnabled, socialTakeoverRefusal, socialAiEnabled, socialAiActive, SOCIAL_AI_ACTOR } = require("./meta-social-replies");
 const { continueSocialConversation } = require("./meta-social-autonomy");
 const { createMetaSocialPostsAdapter } = require("./meta-social-posts");
@@ -782,11 +783,11 @@ async function integrationStatus(config, options = {}) {
       key: "meta",
       name: "Meta App",
       configured: Boolean(config.metaAppId && config.metaAppSecret),
-      production_ready: Boolean(config.metaAppId && config.metaAppSecret && config.metaAccessToken),
-      status:
-        config.metaAppId && config.metaAppSecret && config.metaAccessToken
-          ? "connected"
-          : "pending_integration",
+      // Presence of legacy env credentials is not proof of OAuth grants,
+      // Page tasks, or webhook subscriptions. The administrator-facing
+      // Meta connection panel performs and displays those checks separately.
+      production_ready: false,
+      status: config.metaAppId && config.metaAppSecret ? "configured_unverified" : "pending_integration",
       provider: "meta",
       app_ready: Boolean(config.metaAppId && config.metaAppSecret),
       api_token_ready: Boolean(config.metaAccessToken),
@@ -2085,7 +2086,7 @@ async function enrichAuthContext(authContext, store) {
   };
 }
 
-function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRateLimiter, loginRateLimiter, whatsappAdapter, metaSocialReplyAdapter = createMetaSocialReplyAdapter(config), metaSocialPostsAdapter = createMetaSocialPostsAdapter(config), metaSocialModerationAdapter = createMetaSocialModerationAdapter(config), generateSocialReply = callOyiCoreCorporateConversation, openaiClient, toolExecutor }) {
+function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRateLimiter, loginRateLimiter, whatsappAdapter, metaSocialReplyAdapter = createMetaSocialReplyAdapter(config), metaSocialPostsAdapter = createMetaSocialPostsAdapter(config), metaSocialModerationAdapter = createMetaSocialModerationAdapter(config), metaPageConnection = createMetaPageConnection({ config, store }), generateSocialReply = callOyiCoreCorporateConversation, openaiClient, toolExecutor }) {
   let socialSyncBusy = false; // one Content social-post sync at a time
   let socialSetupPendingLogged = false; // the "tables not installed yet" state is logged once per process, not on every page view
   const startedAt = Date.now();
@@ -7312,6 +7313,125 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
         return;
       }
 
+      if (pathname === "/api/lead-agents/admin/meta/status") {
+        if (req.method !== "GET") { methodNotAllowed(res, "GET"); return; }
+        authorizePermission(authContext, "view_integrations");
+        let connection = metaPageConnection.getConnection();
+        let storageStatus = "available";
+        try { connection = await metaPageConnection.loadStoredConnection() || connection; }
+        catch { storageStatus = "unavailable"; }
+        json(res, 200, {
+          meta: publicMetaConnection(connection, config),
+          whatsapp: {
+            status: config.whatsappPhoneNumberId && config.whatsappAccessToken ? "messaging_configured" : "not_configured",
+            phone_number_id: config.whatsappPhoneNumberId || null,
+            business_account_id: config.whatsappBusinessAccountId || null,
+            management_api: "not_verified_by_this_screen",
+          },
+          oauth_ready: Boolean(config.metaAppId && config.metaAppSecret && config.metaOAuthRedirectUri && config.metaTokenEncryptionKey),
+          storage_status: storageStatus,
+        }, { "x-request-id": ctx.requestId, "cache-control": "no-store" });
+        return;
+      }
+
+      if (pathname === "/api/lead-agents/admin/meta/connect") {
+        if (req.method !== "POST") { methodNotAllowed(res, "POST"); return; }
+        authorizePermission(authContext, "manage_integrations");
+        if (authContext?.type !== "session") { json(res, 403, { error: "staff_session_required" }); return; }
+        try {
+          const result = await metaPageConnection.begin(authContext.userId || authContext.email);
+          res.setHeader("set-cookie", result.cookie);
+          json(res, 200, { authorization_url: result.url }, { "x-request-id": ctx.requestId, "cache-control": "no-store" });
+        } catch (error) {
+          const status = error.message === "meta_token_encryption_not_configured" ? 503 : 409;
+          json(res, status, { error: error.message || "meta_oauth_unavailable" }, { "x-request-id": ctx.requestId, "cache-control": "no-store" });
+        }
+        return;
+      }
+
+      if (pathname === "/api/lead-agents/admin/meta/oauth/callback") {
+        if (req.method !== "GET") { methodNotAllowed(res, "GET"); return; }
+        authorizePermission(authContext, "manage_integrations");
+        if (authContext?.type !== "session") { json(res, 403, { error: "staff_session_required" }); return; }
+        const params = new URL(req.url, "http://office.local").searchParams;
+        let outcome = "connected";
+        let metaReference = "";
+        try {
+          if (params.has("error")) throw new Error("meta_authorization_denied");
+          const result = await metaPageConnection.complete({
+            code: params.get("code"), state: params.get("state"),
+            cookie: parseMetaCookie(req.headers.cookie, META_STATE_COOKIE),
+            actorId: authContext.userId || authContext.email,
+          });
+          metaReference = result.reference;
+          await appendAuditRecord({ store, authContext, action: "meta_oauth_authorization_completed", resourceType: "integration", resourceId: "meta", metadata: { page_count: result.pageCount, granted_permissions: result.grantedPermissions }, req, status: "success" }).catch(() => null);
+        } catch (error) {
+          outcome = error.message === "meta_required_permissions_missing" ? "permissions_missing" : error.message === "meta_oauth_state_invalid" ? "state_invalid" : "authorization_failed";
+          await appendAuditRecord({ store, authContext, action: "meta_oauth_authorization_failed", resourceType: "integration", resourceId: "meta", metadata: { reason: outcome, missing_permissions: error.missingPermissions || [] }, req, status: "failure" }).catch(() => null);
+        }
+        const base = config.officeAppUrl || "";
+        const location = `${base}/office/?meta_oauth=${encodeURIComponent(outcome)}${metaReference ? `&meta_ref=${encodeURIComponent(metaReference)}` : ""}#/settings`;
+        res.writeHead(303, { Location: location, "Set-Cookie": clearMetaStateCookie(config), "Cache-Control": "no-store" });
+        res.end();
+        return;
+      }
+
+      if (pathname === "/api/lead-agents/admin/meta/pages") {
+        if (req.method !== "GET") { methodNotAllowed(res, "GET"); return; }
+        authorizePermission(authContext, "manage_integrations");
+        if (authContext?.type !== "session") { json(res, 403, { error: "staff_session_required" }); return; }
+        const params = new URL(req.url, "http://office.local").searchParams;
+        const result = await metaPageConnection.listCandidates(authContext.userId || authContext.email, params.get("ref"));
+        json(res, 200, result, { "x-request-id": ctx.requestId, "cache-control": "no-store" });
+        return;
+      }
+
+      if (pathname === "/api/lead-agents/admin/meta/pages/select") {
+        if (req.method !== "POST") { methodNotAllowed(res, "POST"); return; }
+        authorizePermission(authContext, "manage_integrations");
+        if (authContext?.type !== "session") { json(res, 403, { error: "staff_session_required" }); return; }
+        const body = await readJsonBody(req);
+        requireObject(body, "body");
+        try {
+          const result = await metaPageConnection.selectPage(authContext.userId || authContext.email, String(body.page_id || ""), String(body.reference || ""));
+          await appendAuditRecord({ store, authContext, action: "meta_page_connected", resourceType: "integration", resourceId: "meta", metadata: { page_id: result.facebook.page_id, instagram_linked: result.instagram.status === "linked_to_connected_page" }, req, status: "success" }).catch(() => null);
+          json(res, 200, { meta: result }, { "x-request-id": ctx.requestId, "cache-control": "no-store" });
+        } catch (error) {
+          const known = new Set(["meta_page_selection_expired", "meta_page_not_in_authorized_list", "meta_page_differs_from_active_page", "meta_page_messaging_task_missing", "meta_token_decryption_failed"]);
+          json(res, known.has(error.message) ? 409 : 503, { error: known.has(error.message) ? error.message : "meta_page_connection_failed" }, { "x-request-id": ctx.requestId, "cache-control": "no-store" });
+        }
+        return;
+      }
+
+      if (pathname === "/api/lead-agents/admin/meta/webhooks") {
+        if (req.method !== "GET") { methodNotAllowed(res, "GET"); return; }
+        authorizePermission(authContext, "view_integrations");
+        try {
+          const status = await metaPageConnection.webhookStatus();
+          json(res, 200, { webhook: status }, { "x-request-id": ctx.requestId, "cache-control": "no-store" });
+        } catch (error) {
+          json(res, 200, { webhook: { status: "unverified", reason: error.safeCode || error.message || "verification_failed" } }, { "x-request-id": ctx.requestId, "cache-control": "no-store" });
+        }
+        return;
+      }
+
+      if (pathname === "/api/lead-agents/admin/meta/webhooks/repair") {
+        if (req.method !== "POST") { methodNotAllowed(res, "POST"); return; }
+        authorizePermission(authContext, "manage_integrations");
+        if (authContext?.type !== "session") { json(res, 403, { error: "staff_session_required" }); return; }
+        const body = await readJsonBody(req);
+        requireObject(body, "body");
+        if (body.confirm !== true) { json(res, 400, { error: "explicit_confirmation_required" }); return; }
+        try {
+          const status = await metaPageConnection.repairPageWebhook();
+          await appendAuditRecord({ store, authContext, action: "meta_page_webhook_repaired", resourceType: "integration", resourceId: "meta", metadata: { fields: status.page.subscribed_fields }, req, status: "success" }).catch(() => null);
+          json(res, 200, { webhook: status }, { "x-request-id": ctx.requestId, "cache-control": "no-store" });
+        } catch (error) {
+          json(res, 409, { error: error.safeCode || error.message || "meta_webhook_repair_failed" }, { "x-request-id": ctx.requestId, "cache-control": "no-store" });
+        }
+        return;
+      }
+
       if (pathname === "/api/lead-agents/admin/maps/config") {
         if (req.method !== "GET") {
           methodNotAllowed(res, "GET");
@@ -9730,6 +9850,10 @@ async function start() {
   const store = createStore(config);
   await store.init();
   await bootstrapAdminUser(store, config);
+  const metaPageConnection = createMetaPageConnection({ config, store });
+  await metaPageConnection.loadStoredConnection().catch((error) => {
+    log("warn", "meta_page_connection_restore_failed", { reason: error.message || "restore_failed" });
+  });
 
   const openaiClient = new OpenAIResponsesClient(config);
   const webhooks = new WebhookDispatcher({ config });
@@ -9760,6 +9884,7 @@ async function start() {
     officeRateLimiter,
     loginRateLimiter,
     whatsappAdapter,
+    metaPageConnection,
     openaiClient,
     toolExecutor,
   });

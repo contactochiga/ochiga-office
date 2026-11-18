@@ -260,6 +260,24 @@ async function apiListDemos() {
 async function apiGetIntegrations() {
   return api("/api/lead-agents/admin/integrations");
 }
+async function apiGetMetaConnection() {
+  return api("/api/lead-agents/admin/meta/status");
+}
+async function apiStartMetaConnection() {
+  return api("/api/lead-agents/admin/meta/connect", { method: "POST", body: {} });
+}
+async function apiGetMetaPages(reference) {
+  return api(`/api/lead-agents/admin/meta/pages?ref=${encodeURIComponent(reference || "")}`);
+}
+async function apiSelectMetaPage(pageId, reference) {
+  return api("/api/lead-agents/admin/meta/pages/select", { method: "POST", body: { page_id: pageId, reference } });
+}
+async function apiGetMetaWebhookStatus() {
+  return api("/api/lead-agents/admin/meta/webhooks");
+}
+async function apiRepairMetaWebhook() {
+  return api("/api/lead-agents/admin/meta/webhooks/repair", { method: "POST", body: { confirm: true } });
+}
 async function apiListReports(status) {
   return api(`/api/lead-agents/admin/reports${status ? `?status=${encodeURIComponent(status)}` : ""}`);
 }
@@ -11329,6 +11347,117 @@ async function renderWhatsAppAutonomyPanel(outlet, token) {
   draw();
 }
 
+async function renderMetaConnectionPanel(outlet, token) {
+  const section = el(`<div class="overview-section" style="margin-top:24px;"><h3>Meta accounts and messaging</h3></div>`);
+  const body = el(`<div></div>`);
+  const feedback = el(`<p class="hint" role="status" aria-live="polite"></p>`);
+  section.appendChild(body);
+  section.appendChild(feedback);
+  outlet.appendChild(section);
+  const canManage = hasPermission("integrations.manage");
+  let status = null;
+  let webhook = null;
+  let candidates = [];
+  let candidateReference = "";
+
+  const draw = () => {
+    if (!status) {
+      body.innerHTML = `<p class="hint">Meta connection status could not be verified. No connection is assumed.</p>`;
+      return;
+    }
+    const meta = status.meta || {};
+    const fb = meta.facebook || {};
+    const ig = meta.instagram || {};
+    const wa = status.whatsapp || {};
+    const statusBadge = (value) => badge(titleCase(String(value || "unknown").replaceAll("_", " ")), value === "verified" ? "green" : value === "oauth_saved" || value === "linked_to_page" || value === "legacy_configured_unverified" || value === "configured_link_not_verified" ? "amber" : "default");
+    body.innerHTML = `
+      <div class="fact-grid">
+        <div class="fact"><div class="fact-label">Facebook Page</div><div class="fact-value">${statusBadge(fb.status)}</div><div class="hint">${escapeHtml(fb.page_name || "No OAuth-verified Page")}${fb.page_id ? ` · ${escapeHtml(fb.page_id)}` : ""}</div><div class="hint">${fb.page_tasks?.length ? `Page tasks: ${escapeHtml(fb.page_tasks.join(", "))}` : "Page permissions have not been verified through OAuth."}</div><div class="hint">${fb.permissions?.length ? `Granted permissions: ${escapeHtml(fb.permissions.join(", "))}` : "OAuth permission grants not verified."}</div><div class="hint">${fb.data_access_expires_at ? `Meta data-access expiry: ${escapeHtml(new Date(fb.data_access_expires_at).toLocaleDateString())}` : "No data-access expiry was returned; reconnect remains available."}</div></div>
+        <div class="fact"><div class="fact-label">Instagram professional account</div><div class="fact-value">${statusBadge(ig.status)}</div><div class="hint">${escapeHtml(ig.username ? `@${ig.username}` : "Account link not verified")}${ig.account_id ? ` · ${escapeHtml(ig.account_id)}` : ""}</div></div>
+        <div class="fact"><div class="fact-label">WhatsApp Business messaging</div><div class="fact-value">${statusBadge(wa.status)}</div><div class="hint">${wa.phone_number_id ? `Phone number configured · ${escapeHtml(wa.phone_number_id)}` : "Not configured"}</div><div class="hint">WhatsApp Business account-management operations are not verified here.</div></div>
+      </div>
+      <div class="hint" style="margin-top:12px;">CRM messaging status only. Social publishing and comment tools are separate. Connecting or repairing this Page does not enable outbound replies or AI.</div>
+      ${webhook ? `<div class="fact-grid" style="margin-top:14px;">
+        <div class="fact"><div class="fact-label">Facebook Page webhook</div><div class="fact-value">${webhook.status === "unverified" ? badge("Unverified", "amber") : statusBadge(webhook.page?.complete ? "verified" : "not_connected")}</div><div class="hint">Page fields: ${escapeHtml((webhook.page?.subscribed_fields || []).join(", ") || "none verified")}</div><div class="hint">App callback: ${webhook.app?.callback_matches ? "matches configured callback" : "not verified"}</div></div>
+        <div class="fact"><div class="fact-label">Instagram webhook</div><div class="fact-value">${webhook.instagram?.messages_field_present && webhook.instagram?.callback_matches ? badge("Verified", "green") : badge(webhook.instagram?.app_subscription_configured ? "Check Meta Dashboard" : "Not verified", "amber")}</div><div class="hint">App-level fields: ${escapeHtml((webhook.instagram?.fields || []).join(", ") || "none verified")}</div><div class="hint">Instagram webhook subscriptions are managed in the Meta App Dashboard, not by Page subscription repair.</div></div>
+        <div class="fact"><div class="fact-label">WhatsApp webhook</div><div class="fact-value">${webhook.whatsapp?.app_subscription_configured ? badge("App subscription present", "amber") : badge("Not verified", "default")}</div><div class="hint">App-level fields: ${escapeHtml((webhook.whatsapp?.fields || []).join(", ") || "none verified")}</div><div class="hint">The WhatsApp callback remains separate and is not changed here.</div></div>
+      </div>` : ""}
+      ${status.storage_status === "unavailable" ? `<p class="hint">Saved connection could not be read; existing environment configuration was not changed.</p>` : ""}
+    `;
+    if (canManage) {
+      const row = el(`<div class="inline-form" style="margin-top:12px;"></div>`);
+      const connect = el(`<button class="btn btn-primary btn-sm" type="button">${["oauth_saved", "verified"].includes(fb.status) ? "Reconnect Facebook" : "Connect Facebook"}</button>`);
+      connect.addEventListener("click", async () => {
+        connect.disabled = true;
+        try {
+          const result = await apiStartMetaConnection();
+          window.location.assign(result.authorization_url);
+        } catch (error) { feedback.textContent = error.message || "Could not start Meta authorization."; connect.disabled = false; }
+      });
+      row.appendChild(connect);
+      if (["oauth_saved", "verified"].includes(fb.status)) {
+        const check = el(`<button class="btn btn-ghost btn-sm" type="button">Check Page webhook</button>`);
+        check.addEventListener("click", async () => {
+          check.disabled = true;
+          try { webhook = (await apiGetMetaWebhookStatus()).webhook; status.meta.facebook.status = webhook?.page?.complete ? "verified" : "oauth_saved"; draw(); }
+          catch (error) { feedback.textContent = error.message || "Could not verify Page webhook."; }
+          finally { check.disabled = false; }
+        });
+        row.appendChild(check);
+        const repair = el(`<button class="btn btn-ghost btn-sm" type="button">Repair Page subscription</button>`);
+        repair.disabled = !webhook?.repair_allowed || !webhook?.repair_needed;
+        repair.title = repair.disabled ? "First verify app-level Webhooks callback and fields; only then can Page subscription be repaired." : "Subscribes this Page to the app-level message fields.";
+        repair.addEventListener("click", async () => {
+          if (!window.confirm("Repair the Page-level Messenger webhook subscription using only the fields already configured for the app-level callback?")) return;
+          repair.disabled = true;
+          try { webhook = (await apiRepairMetaWebhook()).webhook; feedback.textContent = "Page subscription check completed."; draw(); }
+          catch (error) { feedback.textContent = error.message || "Page subscription repair was refused."; }
+        });
+        row.appendChild(repair);
+      }
+      body.appendChild(row);
+      if (candidates.length) {
+        const chooser = el(`<div style="margin-top:16px;"><h4>Select an authorized Facebook Page</h4></div>`);
+        candidates.forEach((page) => {
+          const card = el(`<div class="fact" style="margin:8px 0;"><strong>${escapeHtml(page.name)}</strong><div class="hint">Page ID ${escapeHtml(page.id)} · ${page.has_messaging_task ? "Messaging task available" : "Messaging task missing"} · ${page.can_manage_metadata ? "Page management task and permission available" : "Page management authorization missing"}${page.instagram ? ` · Instagram @${escapeHtml(page.instagram.username || "")}` : ""}</div></div>`);
+          const choose = el(`<button class="btn btn-ghost btn-sm" type="button">Connect this Page</button>`);
+          choose.disabled = !page.has_messaging_task || !page.can_show_pages || !page.can_manage_metadata || !page.can_message || (page.connected_instagram && !page.can_instagram_message);
+          choose.addEventListener("click", async () => {
+            choose.disabled = true;
+            try { await apiSelectMetaPage(page.id, candidateReference); feedback.textContent = "Facebook Page connection saved."; location.reload(); }
+            catch (error) { feedback.textContent = error.message || "Could not connect this Page."; choose.disabled = false; }
+          });
+          card.appendChild(choose);
+          chooser.appendChild(card);
+        });
+        body.appendChild(chooser);
+      }
+      if (fb.status === "connected" && webhook && !webhook.repair_allowed) {
+        body.appendChild(el(`<p class="hint">Page subscription repair is unavailable until the app-level Meta Webhooks callback URL and the messages field are verified. No app-level webhook settings were changed.</p>`));
+      }
+    } else {
+      body.appendChild(el(`<p class="hint">Only administrators with integration-management access can connect Pages or repair subscriptions.</p>`));
+    }
+  };
+
+  try {
+    status = await apiGetMetaConnection();
+    const params = new URLSearchParams(window.location.search);
+    const outcome = params.get("meta_oauth");
+    candidateReference = params.get("meta_ref") || "";
+    if (outcome) {
+      feedback.textContent = outcome === "connected" ? "Meta authorization succeeded. Select the Facebook Page to connect it to Office." : `Meta authorization did not complete (${outcome.replaceAll("_", " ")}). No Page was connected.`;
+      params.delete("meta_oauth");
+      params.delete("meta_ref");
+      const query = params.toString();
+      history.replaceState(null, "", `${window.location.pathname}${query ? `?${query}` : ""}${window.location.hash}`);
+      if (outcome === "connected" && canManage) candidates = (await apiGetMetaPages(candidateReference)).pages || [];
+    }
+  } catch (error) { feedback.textContent = error.message || "Meta account information could not be loaded."; }
+  if (token !== state.renderToken) return;
+  draw();
+}
+
 async function renderSettingsView(outlet, token) {
   setTopbar("Settings", "");
   setSelectedObject(null);
@@ -11373,6 +11502,8 @@ async function renderSettingsView(outlet, token) {
   outlet.appendChild(section);
 
   if (hasPermission("integrations.read")) {
+    await renderMetaConnectionPanel(outlet, token);
+    if (token !== state.renderToken) return;
     await renderWhatsAppAutonomyPanel(outlet, token);
     if (token !== state.renderToken) return;
   }
