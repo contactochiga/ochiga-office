@@ -45,6 +45,8 @@ require("node:child_process").execFileSync(process.execPath, ["scripts/test-offi
 assert(vercel.includes('"destination": "/office/"'), "Vercel compatibility root must open the new Office shell");
 assert(vercelConfig.git?.deploymentEnabled?.["codex/office-facebook-pilot-recipient-allowlist"] === false,
   "the Messenger pilot release branch must not trigger Vercel preview deployments");
+assert(vercelConfig.git?.deploymentEnabled?.["codex/office-meta-page-connection"] === false,
+  "the Meta Page connection review branch must not trigger Vercel preview deployments");
 assert(vercelConfig.git?.deploymentEnabled?.["codex/office-extraction"] !== false,
   "the production branch must not be disabled by the review-branch preview exclusion");
 
