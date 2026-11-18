@@ -189,6 +189,10 @@ function createConfig() {
     whatsappDisplayNumber: process.env.WHATSAPP_DISPLAY_NUMBER || "",
     metaAppId: process.env.META_APP_ID || "",
     metaAppSecret: process.env.META_APP_SECRET || "",
+    metaOAuthRedirectUri: process.env.META_OAUTH_REDIRECT_URI || "",
+    metaTokenEncryptionKey: process.env.OFFICE_META_TOKEN_ENCRYPTION_KEY || "",
+    metaSocialWebhookCallbackUrl: process.env.META_SOCIAL_WEBHOOK_CALLBACK_URL || "",
+    whatsappWebhookCallbackUrl: process.env.WHATSAPP_WEBHOOK_CALLBACK_URL || "",
     metaSocialInboundEnabled: process.env.OFFICE_META_SOCIAL_INBOUND_ENABLED === "true",
     // Per-channel DM control (C0): Messenger and Instagram DMs are processed only when the global switch is on AND the channel is listed.
     metaSocialInboundChannels: metaSocialChannelsFromEnv(process.env.OFFICE_META_SOCIAL_INBOUND_CHANNELS).channels,
