@@ -2,7 +2,7 @@
 // against the real Office server (temporary file store, in-memory Sanity fake, fixture posts only). Skips (exit 0) when Chrome is not installed.
 // Writes screenshots to OFFICE_CONTENT_SHOTS if set. Covers layout (desktop, tablet, phone), deep links, search and filters, editor functions,
 // unsaved-changes protection, every workflow outcome (approval withdrawal, stale approval, failed publish + retry, schedule validation, stale
-// review), permissions, Overview / Calendar / Table views, and that no engagement numbers are shown for unconnected channels. Edit / Preview / History are
+// review), permissions, Overview / Calendar / Table views, and that unavailable metrics are not represented as zero. Edit / Preview / History are
 // checked by what is actually rendered at every width, the writer of a post is not offered Approve on it, the header names the creator (Office has no
 // last-editor record), a legacy image link is flagged, and no Content control sits under the floating Oyi orb.
 "use strict";
@@ -205,8 +205,8 @@ async function main() {
 
     // 1. Posts workspace: tabs, three panes, list, default selection, honest publishing/engagement panels
     await open("content", `!!document.querySelector('.content-page .content-form')`, "posts workspace");
-    ok(await evalJs(`[...document.querySelectorAll('.content-tabs .crm-tab')].map((t) => t.textContent.replace(/\\s+/g, ' ').trim()).join('|')`) === "Overview|Posts|Calendar|Comments|Analytics Soon", "tabs: Overview | Posts | Calendar | Comments (shows its connection state) | Analytics (soon)");
-    ok(await evalJs(`document.querySelector('.content-tabs .crm-tab.active').textContent.trim() === 'Posts' && [...document.querySelectorAll('.content-tab-soon')].every((t) => t.disabled) && !!document.querySelector('[data-content-tab=comments]')`), "Posts is active; Comments is available and Analytics is disabled");
+    ok(await evalJs(`[...document.querySelectorAll('.content-tabs .crm-tab')].map((t) => t.textContent.replace(/\\s+/g, ' ').trim()).join('|')`) === "Overview|Posts|Calendar|Comments|Analytics", "tabs: Overview | Posts | Calendar | Comments | Analytics");
+    ok(await evalJs(`document.querySelector('.content-tabs .crm-tab.active').textContent.trim() === 'Posts' && !!document.querySelector('[data-content-tab=comments]') && !!document.querySelector('[data-content-tab=analytics]')`), "Posts is active; Comments and Analytics are available");
     ok(await evalJs(`!!document.querySelector('.content-new-post') && document.querySelector('.content-new-post').textContent.trim() === 'New Post'`), "a simple New Post button");
     ok(await evalJs(`['.content-list-pane', '.content-main-pane', '.content-details-pane'].every((s) => document.querySelector(s).getBoundingClientRect().width > 200)`), "three visible panes at desktop width");
     ok(await evalJs(`document.querySelectorAll('.content-row').length`) === TOTAL && (await text("#contentCount")) === `(${TOTAL})`, "every post is listed, with the count");
@@ -214,9 +214,9 @@ async function main() {
     ok(await evalJs(`document.querySelector('.content-row[data-content-id="${pDraft}"] img.content-thumb')?.naturalWidth === 1 && !!document.querySelector('.content-row[data-content-id="${pPublished}"] .content-thumb-empty')`), "real featured-image thumbnails; a placeholder when a post has none");
     ok(await evalJs(`!!document.querySelector('.content-row[data-content-id="${pPublished}"] .content-web-live') && !!document.querySelector('.content-row[data-content-id="${pScheduled}"] .content-web-pending') && !document.querySelector('.content-row[data-content-id="${pDraft}"] .content-web')`), "website state icon only for live / scheduled posts");
     const destinations = await evalJs(`[...document.querySelectorAll('#contentDetails .content-dest')].map((d) => d.textContent.replace(/\\s+/g, ' ').trim())`);
-    ok(destinations.length === 4 && /Website/.test(destinations[0]) && ["Instagram", "Facebook Page", "LinkedIn"].every((n, i) => destinations[i + 1].includes(n) && destinations[i + 1].includes("Not connected")), "Publish to: Website, then Instagram, Facebook Page and LinkedIn as not connected");
-    ok(await evalJs(`[...document.querySelectorAll('#contentDetails .content-dest-disabled')].every((d) => d.getAttribute('aria-disabled') === 'true' && !d.querySelector('input,button'))`), "unconnected channels are disabled and offer no controls");
-    ok(await evalJs(`[...document.querySelectorAll('[data-panel-kind]')].every((p) => !/\\d/.test(p.textContent) && /Not connected/.test(p.textContent))`), "performance and comments panels show 'Not connected' and no numbers");
+    ok(destinations.length === 3 && destinations[0].includes("Website") && destinations.some((d) => d.includes("Instagram")) && destinations.some((d) => d.includes("Facebook Page")), "post details show the website and both supported social channels");
+    ok(await evalJs(`[...document.querySelectorAll('#contentDetails .content-dest[data-destination]')].every((d) => d.classList.contains('content-dest-disabled') && /Off/.test(d.textContent))`), "social publishing remains visibly off without configured channel access");
+    ok(await evalJs(`[...document.querySelectorAll('[data-panel-kind]')].some((p) => /No linked social publication/.test(p.textContent)) && [...document.querySelectorAll('[data-panel-kind]')].some((p) => /No linked social comments/.test(p.textContent))`), "unlinked content items explain how post metrics and comments become available");
     await waitFor(`document.querySelectorAll('#contentDetails .content-history-item').length > 0`, "recent activity");
     ok(/Created/.test(await text("#contentDetails .content-activity")), "compact recent activity in the details pane");
     await shot("content-posts-desktop.png");
@@ -395,7 +395,7 @@ async function main() {
     ok(kpis["Drafts"] === count("draft") && kpis["Awaiting Review"] === count("in_review") && kpis["Ready to Publish"] === count("approved") && kpis["Scheduled"] === count("scheduled") && kpis["Live on Website"] === count("published"), `overview KPIs equal the real counts (${JSON.stringify(kpis)})`);
     ok(kpis["Published This Week"] === "2 / 2", "published this week counts only posts with a recorded publish date (the legacy post is not guessed)");
     ok(/Needs re-approval/.test(await text(".content-overview-grid")) && /Awaiting review|Approved, not yet published/.test(await text(".content-overview-grid")), "Needs Attention lists real workflow items");
-    ok(await evalJs(`[...document.querySelectorAll('.content-overview-grid .content-dest-disabled')].length === 3 && /Not connected/.test(document.querySelector('[data-panel-kind=engagement]').textContent) && !/\\d/.test(document.querySelector('[data-panel-kind=engagement]').textContent)`), "channels: website connected, three not connected; engagement shows no numbers");
+    ok(await evalJs(`[...document.querySelectorAll('.content-overview-grid .content-dest-disabled')].length === 2 && /synced Facebook and Instagram posts/.test(document.querySelector('[data-panel-kind=engagement]').textContent) && !!document.querySelector('.content-overview-grid button')`), "website and social channel availability are distinct; engagement links to post-level analytics");
     await shot("content-overview.png");
 
     // 13. Calendar: real dates only
@@ -442,6 +442,13 @@ async function main() {
     await evalJs(`document.querySelector('.content-head .rel-back').click()`);
     await waitFor(`getComputedStyle(document.querySelector('.content-list-pane')).display !== 'none'`, "back to list");
     ok(true, "Back returns to the list");
+
+    await open(`content/${pDraft}`, `!!document.querySelector('.content-social-composer')`, "phone social composer");
+    await evalJs(`(() => { const f = document.querySelector('.content-form'); const fb = f.querySelector('[data-social-enabled=facebook]'), ig = f.querySelector('[data-social-enabled=instagram]'); fb.checked = true; fb.dispatchEvent(new Event('change', { bubbles: true })); ig.checked = true; ig.dispatchEvent(new Event('change', { bubbles: true })); f.querySelector('[data-social-caption=facebook]').value = 'Facebook fixture caption'; f.querySelector('[data-social-caption=facebook]').dispatchEvent(new Event('input', { bubbles: true })); f.querySelector('[data-social-caption=instagram]').value = 'Instagram fixture caption'; f.querySelector('[data-social-caption=instagram]').dispatchEvent(new Event('input', { bubbles: true })); })()`);
+    ok(await evalJs(`document.querySelectorAll('.content-social-preview-card').length === 2 && [...document.querySelectorAll('.content-social-preview-card')].some((x) => /Facebook fixture caption/.test(x.textContent)) && [...document.querySelectorAll('.content-social-preview-card')].some((x) => /Instagram fixture caption/.test(x.textContent))`), "phone composer previews independent Facebook and Instagram captions");
+    ok(await evalJs(`document.documentElement.scrollWidth <= window.innerWidth + 1 && getComputedStyle(document.querySelector('.content-social-composer-grid')).gridTemplateColumns.split(' ').length === 1`), "phone social composer stays single-column without horizontal overflow");
+    await viewport(1440, 900);
+    ok(await evalJs(`document.documentElement.scrollWidth <= window.innerWidth + 1 && getComputedStyle(document.querySelector('.content-social-composer-grid')).gridTemplateColumns.split(' ').length === 2`), "desktop social composer presents both platform variants side by side");
 
     ok(errors.length === 0, `no uncaught page errors (${errors.join(" | ").slice(0, 300)})`);
   } finally {

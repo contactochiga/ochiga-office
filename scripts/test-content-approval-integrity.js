@@ -56,7 +56,7 @@ function unitChecks() {
   ok(integrity.contentFingerprint(base) === integrity.contentFingerprint({ ...base, category: "", author: "", seo_title: "" }), "fingerprint: null, undefined and empty string are the same (file vs Supabase store)");
   ok(integrity.contentFingerprint(base) === integrity.contentFingerprint({ ...base, workflow_status: "x", metadata: { a: 1 }, updated_at: "now" }), "fingerprint ignores workflow and bookkeeping fields");
   for (const field of integrity.CONTENT_FIELDS) {
-    const changed = { ...base, [field]: field === "tags" ? ["b"] : "changed" };
+    const changed = { ...base, [field]: field === "tags" ? ["b"] : field === "social_content" ? { facebook: { enabled: true, caption: "changed" } } : "changed" };
     ok(integrity.contentFingerprint(base) !== integrity.contentFingerprint(changed), `fingerprint covers ${field}`);
   }
   ok(integrity.editWithdrawsApproval({ ...base, workflow_status: "approved" }, { ...base, body: "B2" }), "a changing edit withdraws an approval");

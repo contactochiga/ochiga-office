@@ -14,6 +14,11 @@ const { createMetaSocialReplyAdapter, replyPolicy, sendSocialReply, socialOutbou
 const { continueSocialConversation } = require("./meta-social-autonomy");
 const { createMetaSocialPostsAdapter } = require("./meta-social-posts");
 const { createMetaSocialModerationAdapter, moderateComment, reconcileModeration } = require("./meta-social-moderation");
+const { createMetaSocialPublishingAdapter } = require("./meta-social-publishing");
+const { createMetaSocialCommentReplyAdapter } = require("./meta-social-comment-replies");
+const { createMetaSocialAnalyticsAdapter } = require("./meta-social-analytics");
+const socialMedia = require("./content-social-media");
+const { normalizeSocialContent } = require("./social-content");
 const { demoPosts, isDemoId } = require("./content-social-demo");
 const { createStore } = require("./store-factory");
 const { OpenAIResponsesClient } = require("./openai");
@@ -2086,7 +2091,7 @@ async function enrichAuthContext(authContext, store) {
   };
 }
 
-function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRateLimiter, loginRateLimiter, whatsappAdapter, metaSocialReplyAdapter = createMetaSocialReplyAdapter(config), metaSocialPostsAdapter = createMetaSocialPostsAdapter(config), metaSocialModerationAdapter = createMetaSocialModerationAdapter(config), metaPageConnection = createMetaPageConnection({ config, store }), generateSocialReply = callOyiCoreCorporateConversation, openaiClient, toolExecutor }) {
+function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRateLimiter, loginRateLimiter, whatsappAdapter, metaSocialReplyAdapter = createMetaSocialReplyAdapter(config), metaSocialPostsAdapter = createMetaSocialPostsAdapter(config), metaSocialModerationAdapter = createMetaSocialModerationAdapter(config), metaSocialPublishingAdapter = createMetaSocialPublishingAdapter(config), metaSocialCommentReplyAdapter = createMetaSocialCommentReplyAdapter(config), metaSocialAnalyticsAdapter = createMetaSocialAnalyticsAdapter(config), metaPageConnection = createMetaPageConnection({ config, store }), generateSocialReply = callOyiCoreCorporateConversation, openaiClient, toolExecutor }) {
   let socialSyncBusy = false; // one Content social-post sync at a time
   let socialSetupPendingLogged = false; // the "tables not installed yet" state is logged once per process, not on every page view
   const startedAt = Date.now();
@@ -2099,6 +2104,23 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
       maxRequests: config.loginRateLimitMaxAttempts || 10,
     });
   const eventBus = createRealtimeHub();
+  const metaSocialCapabilityReady = (channel, capability) => {
+    const connection = config.metaPageConnection;
+    const page = connection?.page;
+    if (!page?.id || String(page.id) !== String(config.facebookPageId || "")) return false;
+    if (channel === "instagram" && String(page.instagram?.id || "") !== String(config.instagramBusinessAccountId || "")) return false;
+    const permissions = new Set(Array.isArray(connection.grantedPermissions) ? connection.grantedPermissions : []);
+    const tasks = new Set(Array.isArray(page.tasks) ? page.tasks : []);
+    const requirements = {
+      facebook_publish: { permissions: ["pages_show_list", "pages_manage_posts", "pages_read_engagement"], tasks: ["CREATE_CONTENT", "MANAGE"] },
+      instagram_publish: { permissions: ["instagram_basic", "instagram_content_publish", "pages_read_engagement"], tasks: ["CREATE_CONTENT", "MANAGE"] },
+      facebook_comment_reply: { permissions: ["pages_show_list", "pages_read_engagement", "pages_read_user_content", "pages_manage_engagement"], tasks: ["MODERATE", "MANAGE"] },
+      instagram_comment_reply: { permissions: ["instagram_basic", "pages_read_engagement", "instagram_manage_comments"], tasks: ["MODERATE", "MANAGE"] },
+      facebook_analytics: { permissions: ["pages_show_list", "pages_read_engagement", "read_insights"], tasks: ["ANALYZE", "MANAGE"] },
+      instagram_analytics: { permissions: ["instagram_basic", "pages_read_engagement", "instagram_manage_insights"], tasks: ["ANALYZE", "MANAGE"] },
+    }[channel + "_" + capability];
+    return Boolean(requirements && requirements.permissions.every((permission) => permissions.has(permission)) && requirements.tasks.some((task) => tasks.has(task)));
+  };
   // Scheduled-content publisher (Phase 8) — off by default, same
   // precedent as Ochiga Backend's own proactive scheduler (also
   // env-gated, also off unless explicitly enabled). Only touches
@@ -2139,6 +2161,89 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
     return updated;
   }
 
+  async function dispatchSocialPublishAttempt(attempt, actor = { email: "scheduler", role: "system" }) {
+    const item = await store.getContentItemById(attempt.content_item_id);
+    if (!item || !["approved", "scheduled"].includes(item.workflow_status) || contentIntegrity.contentFingerprint(item) !== attempt.content_fingerprint || !contentIntegrity.verifyApprovedVersion(item).ok) {
+      await store.settleSocialPublish({ id: attempt.id, dispatchToken: attempt.dispatch_token, status: "failed", failureCode: "approval_invalid" });
+      return { status: "failed", code: "approval_invalid" };
+    }
+    const assetId = attempt.channel === "facebook" ? config.facebookPageId : config.instagramBusinessAccountId;
+    if (!config.metaSocialPublishingEnabled || !config.metaSocialPublishingChannels.includes(attempt.channel) ||
+        !metaSocialCapabilityReady(attempt.channel, "publish") || !metaSocialPublishingAdapter.configured(attempt.channel) ||
+        String(assetId || "") !== String(attempt.asset_id)) {
+      await store.settleSocialPublish({ id: attempt.id, dispatchToken: attempt.dispatch_token, status: "failed", failureCode: "channel_unavailable" });
+      return { status: "failed", code: "channel_unavailable" };
+    }
+    const draft = item.social_content?.[attempt.channel];
+    if (!draft?.enabled) {
+      await store.settleSocialPublish({ id: attempt.id, dispatchToken: attempt.dispatch_token, status: "failed", failureCode: "channel_not_selected" });
+      return { status: "failed", code: "channel_not_selected" };
+    }
+    if (attempt.channel === "instagram" && draft.media_type === "image") {
+      const file = await store.getOfficeFileByFilename?.(draft.media_filename);
+      if (!file || file.mime_type !== "image/jpeg" || Number(file.size) > 8 * 1024 * 1024) {
+        await store.settleSocialPublish({ id: attempt.id, dispatchToken: attempt.dispatch_token, status: "failed", failureCode: "instagram_image_must_be_jpeg_under_8mb" });
+        return { status: "failed", code: "instagram_image_must_be_jpeg_under_8mb" };
+      }
+    }
+    let mediaUrl = null;
+    if (draft.media_filename) {
+      try { mediaUrl = socialMedia.publicGrantUrl(config.officePublicBaseUrl || config.officeAppUrl, draft.media_filename, config.sessionSecret); }
+      catch {
+        await store.settleSocialPublish({ id: attempt.id, dispatchToken: attempt.dispatch_token, status: "failed", failureCode: "media_grant_unavailable" });
+        return { status: "failed", code: "media_grant_unavailable" };
+      }
+    }
+    let dispatchMarked = false;
+    try { dispatchMarked = await store.markSocialPublishDispatch({ id: attempt.id, dispatchToken: attempt.dispatch_token,
+      actorId: String(actor?.userId || ""), actorEmail: String(actor?.email || "scheduler") }); }
+    catch {
+      await store.settleSocialPublish({ id: attempt.id, dispatchToken: attempt.dispatch_token, status: "failed", failureCode: "dispatch_fence_unavailable" }).catch(() => false);
+      return { status: "failed", code: "dispatch_fence_unavailable" };
+    }
+    if (!dispatchMarked) return { status: "unknown", code: "dispatch_claim_lost", attempt_id: attempt.id, channel: attempt.channel };
+    let result;
+    try { result = await metaSocialPublishingAdapter.publish(attempt.channel, { caption: draft.caption || "", mediaUrl, mediaType: draft.media_type || "none" }); }
+    catch { result = { status: "unknown", code: "provider_outcome_unknown" }; }
+    let settled = false;
+    try {
+      settled = await store.settleSocialPublish({ id: attempt.id, dispatchToken: attempt.dispatch_token, status: result.status,
+        providerPostId: result.providerPostId, providerMediaId: result.providerMediaId, permalink: result.permalink, failureCode: result.code });
+    } catch { /* Keep the one-way claim fenced if persistence is unavailable. */ }
+    if (!settled) {
+      await store.settleSocialPublish({ id: attempt.id, dispatchToken: attempt.dispatch_token, status: "unknown", failureCode: "ledger_settlement_failed" }).catch(() => false);
+      return { status: "unknown", code: "ledger_settlement_failed", attempt_id: attempt.id, channel: attempt.channel };
+    }
+    await appendAudit(store, actor, `content.social_publish_${result.status}`, "office_content_item", item.id,
+      { attempt_id: attempt.id, channel: attempt.channel, state: result.status, failure_code: result.code || null }).catch(() => null);
+    return { ...result, attempt_id: attempt.id, channel: attempt.channel };
+  }
+
+  async function recoverStaleSocialPublishClaims() {
+    const before = new Date(Date.now() - config.metaSocialPublishingRecoveryThresholdMs).toISOString();
+    const recovered = await store.recoverStaleSocialPublishes(before);
+    for (const attempt of recovered) {
+      await appendAudit(store, { email: "system", role: "system" }, `content.social_publish_${attempt.failure_code}`, "office_content_item", attempt.content_item_id,
+        { attempt_id: attempt.id, channel: attempt.channel, state: attempt.status, provider_dispatch_started: Boolean(attempt.provider_dispatch_started_at) }).catch(() => null);
+    }
+    return recovered;
+  }
+
+  async function runSocialPublishingSchedulerTick(now = new Date()) {
+    await recoverStaleSocialPublishClaims();
+    if (!config.metaSocialPublishingEnabled || !config.metaSocialPublishingSchedulerEnabled) return [];
+    const claimed = await store.claimDueSocialPublishes(now, 20);
+    const results = [];
+    for (const attempt of claimed) {
+      try { results.push(await dispatchSocialPublishAttempt(attempt)); }
+      catch (error) {
+        await store.settleSocialPublish({ id: attempt.id, dispatchToken: attempt.dispatch_token, status: "unknown", failureCode: "scheduler_runtime_unknown" }).catch(() => false);
+        results.push({ status: "unknown", code: "scheduler_runtime_unknown" });
+      }
+    }
+    return results;
+  }
+
   // One scheduler pass. A due item that is no longer the approved version is taken off the schedule and returned to review (audited) instead of being retried
   // every tick; a Sanity/transport failure leaves it scheduled for the next tick, as before.
   async function runContentSchedulerTick(now = new Date()) {
@@ -2172,6 +2277,11 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
   if (process.env.OFFICE_CONTENT_SCHEDULER_ENABLED === "true") {
     const intervalMs = Number(process.env.OFFICE_CONTENT_SCHEDULER_INTERVAL_MS || 5 * 60 * 1000);
     contentSchedulerTimer = setInterval(() => runContentSchedulerTick(), intervalMs);
+  }
+  let socialPublishingTimer = null;
+  if (config.metaSocialPublishingEnabled && config.metaSocialPublishingSchedulerEnabled) {
+    const intervalMs = Number(process.env.OFFICE_META_PUBLISHING_SCHEDULER_INTERVAL_MS || 60_000);
+    socialPublishingTimer = setInterval(() => runSocialPublishingSchedulerTick(), Math.max(10_000, intervalMs));
   }
   const storageService = createStorageService(config);
   // Covers reach Sanity only from Office storage (content-images.js); no cover URL is ever fetched.
@@ -2410,6 +2520,8 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
       // itself (validated inside the route handler) is what gates
       // access here, not a staff session.
       const isPublicDocumentSharePath = /^\/api\/lead-agents\/documents\/shared\/[^/]+\/[^/]+$/.test(pathname);
+      const socialMediaPath = pathname.match(/^\/api\/office\/content\/social-media\/([^/]+)$/);
+      const isSignedSocialMediaPath = Boolean(socialMediaPath);
       // Backend->Office Communication Runtime bridge (Oyi Communication
       // Runtime's WhatsAppAdapter calling out to reuse the existing
       // WhatsAppCloudAdapter here, since credentials/webhook live only
@@ -2449,6 +2561,7 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
         !isPublicAdminSessionPath &&
         !isPublicWhatsappPath &&
         !isPublicDocumentSharePath &&
+        !isSignedSocialMediaPath &&
         !isBackendBridgePath
       ) {
         authContext = tryEdgeAuth(req, config) || enforceAuth(req, config);
@@ -2464,6 +2577,21 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           "x-ratelimit-reset",
           new Date(rateLimitState.resetAt).toISOString()
         );
+      }
+
+      // Meta fetches only an HMAC-signed, short-lived URL for an approved Office upload.
+      // The grant is bound to a random storage filename and expires; ordinary Office files remain authenticated.
+      if (isSignedSocialMediaPath) {
+        if (req.method !== "GET") { methodNotAllowed(res, "GET"); return; }
+        let filename = "";
+        try { filename = decodeURIComponent(socialMediaPath[1]); } catch { json(res, 404, { error: "not_found" }); return; }
+        const query = new URL(req.url, "http://localhost").searchParams;
+        if (!socialMedia.verifySocialMediaGrant(filename, query.get("expires"), query.get("sig"), config.sessionSecret)) { json(res, 404, { error: "not_found" }); return; }
+        const file = await storageService.getObject(filename);
+        if (!file || !filename.startsWith("content_social_media_")) { json(res, 404, { error: "not_found" }); return; }
+        res.writeHead(200, { "content-type": file.mime_type || "application/octet-stream", "content-length": String(file.buffer.length), "cache-control": "private, no-store", "x-content-type-options": "nosniff" });
+        res.end(file.buffer);
+        return;
       }
 
       // Product catalogue (Office-managed GetOyi hardware): self-contained, staff-session-only module (catalogue-api.js)
@@ -7474,6 +7602,29 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
         return;
       }
 
+      if (pathname === "/api/lead-agents/admin/content/social-media") {
+        if (req.method !== "POST") { methodNotAllowed(res, "POST"); return; }
+        authorizePermission(authContext, "content.write");
+        if (authContext?.type !== "session") { json(res, 403, { error: "staff_session_required" }); return; }
+        const body = await readJsonBody(req, 140 * 1024 * 1024);
+        requireObject(body, "body");
+        if (Object.keys(body).some((key) => !["data_url", "filename", "mime_type", "channels"].includes(key)) ||
+            (body.channels !== undefined && (!Array.isArray(body.channels) || body.channels.some((channel) => !["facebook", "instagram"].includes(channel))))) {
+          json(res, 400, { error: "invalid_social_media_request" }); return;
+        }
+        const channels = Array.isArray(body.channels) ? body.channels : ["facebook"];
+        const parsed = parseDataUrl(body.data_url || "");
+        let media;
+        try { media = socialMedia.validateSocialMedia(parsed?.buffer, parsed?.mimeType, { channels }); }
+        catch (error) { json(res, error.statusCode || 400, { error: error.message }); return; }
+        const stored = await storageService.putBuffer({ buffer: parsed.buffer, purpose: "content_social_media", mime_type: media.mimeType, extension: media.extension,
+          resource_type: "content_social_media", resource_id: "draft", metadata: { uploaded_by: authContext?.email || "" } });
+        const file = typeof store.createOfficeFile === "function" ? await store.createOfficeFile(stored) : stored;
+        await appendAudit(store, authContext, "content_social_media_uploaded", "office_file", file.id, { mime_type: media.mimeType, size: file.size });
+        json(res, 201, { file: { filename: file.filename, mime_type: media.mimeType, size: file.size, media_type: media.mediaType } }, { "x-request-id": ctx.requestId });
+        return;
+      }
+
       if (pathname === "/api/lead-agents/admin/storage") {
         if (req.method !== "POST") {
           methodNotAllowed(res, "POST");
@@ -8700,7 +8851,9 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
             json(res, 400, imageRefusal, { "x-request-id": ctx.requestId });
             return;
           }
-          const item = await store.createContentItem({ ...body, slug: body.slug || slugify(body.title), created_by: authContext?.email || "office" });
+          const socialDraft = normalizeSocialContent(body.social_content);
+          if (!socialDraft.ok) { json(res, 400, { error: socialDraft.error }, { "x-request-id": ctx.requestId }); return; }
+          const item = await store.createContentItem({ ...body, social_content: socialDraft.value || {}, slug: body.slug || slugify(body.title), created_by: authContext?.email || "office" });
           const sanityResult = await saveDraftToSanity(item, { readStoredImage: readOfficeCoverImage }).catch(() => ({ ok: false }));
           const updated = sanityResult.ok
             ? await store.updateContentItem(item.id, { sanity_document_id: sanityResult.document_id, metadata: { ...item.metadata, ...sanityWarningsMetadata(sanityResult.warnings, "draft_sync") } })
@@ -8713,9 +8866,155 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
         return;
       }
 
+      const socialPublishMatch = pathname.match(/^\/api\/lead-agents\/admin\/content\/([^/]+)\/social-publish$/);
+      const socialPublishRecoverMatch = pathname.match(/^\/api\/lead-agents\/admin\/content\/([^/]+)\/social-publish\/([^/]+)\/recover$/);
+      if (socialPublishRecoverMatch) {
+        if (req.method !== "POST") { methodNotAllowed(res, "POST"); return; }
+        authorizePermission(authContext, "content.publish");
+        if (authContext?.type !== "session") { json(res, 403, { error: "staff_session_required" }); return; }
+        const [, contentId, attemptId] = socialPublishRecoverMatch;
+        const body = await readJsonBody(req, 4096); requireObject(body, "body");
+        if (Object.keys(body).some((key) => key !== "acknowledge_uncertain_outcome") || body.acknowledge_uncertain_outcome !== true) {
+          json(res, 400, { error: "explicit_uncertainty_acknowledgement_required" }); return;
+        }
+        const item = await store.getContentItemById(contentId);
+        const attempt = await store.getSocialPublishAttempt(attemptId, contentId);
+        if (!item || !attempt) { notFound(res); return; }
+        if (attempt.status !== "unknown" || attempt.recovery_authorized_at) { json(res, 409, { error: "attempt_not_recoverable" }); return; }
+        if (!metaSocialCapabilityReady(attempt.channel, "publish") || String(attempt.asset_id) !== String(attempt.channel === "facebook" ? config.facebookPageId : config.instagramBusinessAccountId)) {
+          json(res, 403, { error: "social_asset_not_authorized" }); return;
+        }
+        if (!contentIntegrity.verifyApprovedVersion(item).ok || contentIntegrity.contentFingerprint(item) !== attempt.content_fingerprint || !["approved", "scheduled"].includes(item.workflow_status)) {
+          json(res, 409, { error: "content_requires_current_approval" }); return;
+        }
+        const authorized = await store.authorizeSocialPublishRetry({ id: attempt.id, actorId: String(authContext.userId || ""),
+          actorEmail: String(authContext.email || ""), acknowledgeUncertainty: true });
+        if (!authorized) { json(res, 409, { error: "attempt_not_recoverable" }); return; }
+        await appendAudit(store, authContext, "content.social_publish_manual_retry_authorized", "office_content_item", item.id,
+          { attempt_id: attempt.id, channel: attempt.channel, acknowledged_possible_duplicate: true });
+        json(res, 200, { ok: true, attempt_id: attempt.id, status: "unknown", retry_authorized: true, requires_new_manual_publish_request: true }, { "x-request-id": ctx.requestId });
+        return;
+      }
+      if (socialPublishMatch) {
+        const contentId = socialPublishMatch[1];
+        const item = await store.getContentItemById(contentId);
+        if (!item) { notFound(res); return; }
+        if (req.method === "GET") {
+          authorizePermission(authContext, "content.write");
+          await recoverStaleSocialPublishClaims();
+          const attempts = await store.listSocialPublishAttempts(contentId);
+          const events = await store.listSocialPublishEvents(attempts.map((attempt) => attempt.id));
+          json(res, 200, { attempts, events }, { "x-request-id": ctx.requestId });
+          return;
+        }
+        if (req.method !== "POST") { methodNotAllowed(res, "GET,POST"); return; }
+        authorizePermission(authContext, "content.publish");
+        if (authContext?.type !== "session") { json(res, 403, { error: "staff_session_required" }); return; }
+        await recoverStaleSocialPublishClaims();
+        if (!config.metaSocialPublishingEnabled) { json(res, 403, { error: "social_publishing_disabled" }); return; }
+        const body = await readJsonBody(req, 16_384);
+        requireObject(body, "body");
+        if (Object.keys(body).some((key) => !["channels", "client_request_id", "scheduled_at"].includes(key)) ||
+            !Array.isArray(body.channels) || !body.channels.length || body.channels.some((c) => !["facebook", "instagram"].includes(c)) ||
+            new Set(body.channels).size !== body.channels.length || typeof body.client_request_id !== "string" || !/^[A-Za-z0-9_-]{16,64}$/.test(body.client_request_id)) {
+          json(res, 400, { error: "invalid_social_publish_request" }); return;
+        }
+        if (item.workflow_status !== "approved") { json(res, 409, { error: "content_requires_current_approval" }); return; }
+        const approved = contentIntegrity.verifyApprovedVersion(item);
+        if (!approved.ok) { json(res, 409, { error: "content_requires_current_approval", reason: approved.reason }); return; }
+        let scheduledAt = null;
+        if (body.scheduled_at) {
+          const when = contentIntegrity.validateScheduledPublishAt(body.scheduled_at);
+          if (!when.ok) { json(res, 400, { error: when.error, reason: "invalid_scheduled_at" }); return; }
+          scheduledAt = when.iso;
+        }
+        const outcomes = [];
+        for (const channel of body.channels) {
+          if (!config.metaSocialPublishingChannels.includes(channel) || !metaSocialPublishingAdapter.configured(channel) || !item.social_content?.[channel]?.enabled) {
+            outcomes.push({ channel, status: "failed", code: "channel_not_enabled_or_configured" }); continue;
+          }
+          if (!metaSocialCapabilityReady(channel, "publish")) {
+            outcomes.push({ channel, status: "failed", code: "meta_permissions_not_verified" }); continue;
+          }
+          const assetId = channel === "facebook" ? config.facebookPageId : config.instagramBusinessAccountId;
+          const attempt = await store.startSocialPublish({ contentItemId: item.id, channel, assetId,
+            contentFingerprint: contentIntegrity.contentFingerprint(item), requestId: body.client_request_id,
+            actorId: String(authContext.userId || ""), actorEmail: String(authContext.email || ""), scheduledAt });
+          if (attempt.duplicate) { outcomes.push({ channel, attempt_id: attempt.id, status: attempt.status, duplicate: true }); continue; }
+          if (attempt.status === "scheduled") {
+            await appendAudit(store, authContext, "content.social_publish_scheduled", "office_content_item", item.id, { attempt_id: attempt.id, channel, scheduled_at: scheduledAt });
+            outcomes.push({ channel, attempt_id: attempt.id, status: "scheduled" }); continue;
+          }
+          outcomes.push(await dispatchSocialPublishAttempt(attempt, authContext));
+        }
+        const uncertain = outcomes.some((row) => row.status === "unknown" || row.status === "publishing");
+        json(res, uncertain ? 202 : 200, { outcomes }, { "x-request-id": ctx.requestId });
+        return;
+      }
+
       // Editorial history of ONE article: only audit events whose target is this exact content item, gated like reading the article itself (content.write).
       // Only workflow fields are returned -- the request ip / user agent and any other audit metadata stay server-side.
       // Content → Posts & Comments, C3: staff hide/unhide of a public comment, and read-back reconciliation of an uncertain outcome.
+      const replyMatch = pathname.match(/^\/api\/lead-agents\/admin\/content\/social-posts\/([^/]+)\/comments\/([^/]+)\/replies$/);
+      if (replyMatch) {
+        if (req.method !== "POST") { methodNotAllowed(res, "POST"); return; }
+        authorizePermission(authContext, "content.publish");
+        if (authContext?.type !== "session") { json(res, 403, { error: "staff_session_required" }); return; }
+        const [, postId, commentId] = replyMatch;
+        const found = await store.getSocialPost(postId);
+        const comment = found?.comments.find((row) => row.id === commentId);
+        if (!found || !comment || comment.post_id !== found.post.id || comment.channel !== found.post.channel || comment.asset_id !== found.post.asset_id) { json(res, 404, { error: "comment_not_found" }); return; }
+        if (!config.metaSocialCommentRepliesEnabled || !config.metaSocialCommentReplyChannels.includes(comment.channel)) { json(res, 403, { error: "comment_replies_disabled" }); return; }
+        if (!metaSocialCapabilityReady(comment.channel, "comment_reply")) { json(res, 403, { error: "meta_permissions_not_verified" }); return; }
+        if (found.post.asset_id !== (comment.channel === "facebook" ? config.facebookPageId : config.instagramBusinessAccountId) || comment.deleted_at || comment.author_is_page) { json(res, 409, { error: "comment_not_actionable" }); return; }
+        if (!metaSocialCommentReplyAdapter.configured(comment.channel)) { json(res, 503, { error: "comment_reply_not_configured" }); return; }
+        const body = await readJsonBody(req, 12_288); requireObject(body, "body");
+        const message = typeof body.message === "string" ? body.message.trim() : "";
+        if (Object.keys(body).some((key) => !["message", "client_request_id"].includes(key)) || !message || message.length > 8000 || typeof body.client_request_id !== "string" || !/^[A-Za-z0-9_-]{16,64}$/.test(body.client_request_id)) {
+          json(res, 400, { error: "invalid_comment_reply" }); return;
+        }
+        const attempt = await store.startSocialCommentReply({ commentId, channel: comment.channel, assetId: comment.asset_id,
+          requestId: body.client_request_id, actorId: String(authContext.userId || ""), actorEmail: String(authContext.email || ""), body: message });
+        if (attempt.duplicate || attempt.status === "blocked") { json(res, 202, { duplicate: true, attempt_id: attempt.id || null, status: attempt.status || "blocked" }); return; }
+        let result;
+        try { result = await metaSocialCommentReplyAdapter.reply(comment.channel, comment.provider_comment_id, message); }
+        catch { result = { status: "unknown", code: "provider_outcome_unknown" }; }
+        let settled = false;
+        try { settled = await store.settleSocialCommentReply({ id: attempt.id, dispatchToken: attempt.dispatch_token, status: result.status,
+          providerReplyId: result.providerReplyId, failureCode: result.code }); } catch { /* The original claim remains a duplicate-send fence. */ }
+        if (!settled) await store.settleSocialCommentReply({ id: attempt.id, dispatchToken: attempt.dispatch_token, status: "unknown", failureCode: "ledger_settlement_failed" }).catch(() => false);
+        await appendAudit(store, authContext, `content.social_comment_reply_${settled ? result.status : "unknown"}`, "content_social_comment", comment.id,
+          { reply_attempt_id: attempt.id, channel: comment.channel, failure_code: settled ? result.code || null : "ledger_settlement_failed" }).catch(() => null);
+        json(res, result.status === "unknown" || !settled ? 202 : 200, { attempt_id: attempt.id, status: settled ? result.status : "unknown", failure_code: settled ? result.code || null : "ledger_settlement_failed" }, { "x-request-id": ctx.requestId });
+        return;
+      }
+
+      const analyticsMatch = pathname.match(/^\/api\/lead-agents\/admin\/content\/social-posts\/([^/]+)\/analytics$/);
+      if (analyticsMatch) {
+        const postId = analyticsMatch[1];
+        const found = await store.getSocialPost(postId);
+        if (!found) { json(res, 404, { error: "social_post_not_found" }); return; }
+        authorizePermission(authContext, "content.write");
+        const channel = found.post.channel;
+        const expectedAsset = channel === "facebook" ? config.facebookPageId : config.instagramBusinessAccountId;
+        if (String(found.post.asset_id || "") !== String(expectedAsset || "")) { json(res, 403, { error: "foreign_asset" }); return; }
+        if (req.method === "GET") {
+          json(res, 200, { analytics: await store.getSocialPostAnalytics(postId), history: await store.listSocialPostAnalytics(postId, 12), enabled: config.metaSocialAnalyticsEnabled &&
+            config.metaSocialAnalyticsChannels.includes(channel) && metaSocialCapabilityReady(channel, "analytics") && metaSocialAnalyticsAdapter.configured(channel) });
+          return;
+        }
+        if (req.method !== "POST") { methodNotAllowed(res, "GET,POST"); return; }
+        if (authContext?.type !== "session") { json(res, 403, { error: "staff_session_required" }); return; }
+        if (!config.metaSocialAnalyticsEnabled || !config.metaSocialAnalyticsChannels.includes(channel)) { json(res, 403, { error: "analytics_disabled" }); return; }
+        if (!metaSocialCapabilityReady(channel, "analytics")) { json(res, 403, { error: "meta_permissions_not_verified" }); return; }
+        if (!metaSocialAnalyticsAdapter.configured(channel)) { json(res, 503, { error: "analytics_not_configured" }); return; }
+        const result = await metaSocialAnalyticsAdapter.read(channel, found.post.provider_post_id, found.post.media_type);
+        const analytics = await store.upsertSocialPostAnalytics({ postId, channel, metrics: result.metrics, unavailable: result.unavailable, fetchedAt: new Date().toISOString() });
+        await appendAudit(store, authContext, "content.social_analytics_refreshed", "office_social_posts", postId, { channel, available_count: Object.keys(result.metrics).length, unavailable_count: result.unavailable.length }).catch(() => null);
+        json(res, 200, { analytics }, { "x-request-id": ctx.requestId });
+        return;
+      }
+
       const moderationMatch = pathname.match(/^\/api\/lead-agents\/admin\/content\/social-posts\/([^/]+)\/comments\/([^/]+)\/moderation(?:\/([^/]+)\/reconcile)?$/);
       if (moderationMatch) {
         if (req.method !== "POST") { methodNotAllowed(res, "POST"); return; }
@@ -8783,7 +9082,10 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
         // setup_pending = the Content social tables are not installed yet (before the production migration). Detected below.
         const connection = { state: live ? "connected" : demo ? "demonstration" : "disconnected", channels,
           comments_inbound: !demo && Boolean(config.metaSocialCommentsInboundEnabled), post_sync: !demo && Boolean(config.metaSocialPostsSyncEnabled),
-          moderation: !demo && Boolean(config.metaSocialCommentsModerationEnabled) && live, replies: false, publishing: false };
+          moderation: !demo && Boolean(config.metaSocialCommentsModerationEnabled) && live,
+          comment_replies: Object.fromEntries(["facebook", "instagram"].map((channel) => [channel, !demo && config.metaSocialCommentRepliesEnabled && config.metaSocialCommentReplyChannels.includes(channel) && metaSocialCommentReplyAdapter.configured(channel) && metaSocialCapabilityReady(channel, "comment_reply")])),
+          publishing: Object.fromEntries(["facebook", "instagram"].map((channel) => [channel, !demo && config.metaSocialPublishingEnabled && config.metaSocialPublishingChannels.includes(channel) && metaSocialPublishingAdapter.configured(channel) && metaSocialCapabilityReady(channel, "publish")])),
+          analytics: Object.fromEntries(["facebook", "instagram"].map((channel) => [channel, !demo && config.metaSocialAnalyticsEnabled && config.metaSocialAnalyticsChannels.includes(channel) && metaSocialAnalyticsAdapter.configured(channel) && metaSocialCapabilityReady(channel, "analytics")])) };
 
         if (isSync) {
           if (req.method !== "POST") { methodNotAllowed(res, "POST"); return; }
@@ -8856,14 +9158,22 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
         const found = isUuid(postId) && !isDemoId(postId) ? await store.getSocialPost(postId).catch((error) => { if (error?.code === "social_setup_pending") return null; throw error; }) : null;
         if (!found) { json(res, 404, { error: "social_post_not_found" }, { "x-request-id": ctx.requestId }); return; }
         const actions = await store.listCommentModerationActions(found.comments.map((c) => c.id)).catch(() => []);
+        const replies = await store.listSocialCommentReplies(found.comments.map((c) => c.id)).catch(() => []);
+        const repliesByComment = new Map();
+        for (const reply of replies) { if (!repliesByComment.has(reply.comment_id)) repliesByComment.set(reply.comment_id, []); repliesByComment.get(reply.comment_id).push(reply); }
+        const analytics = await store.getSocialPostAnalytics(postId).catch(() => null);
         const latest = new Map();
         for (const a of actions) if (!latest.has(a.comment_id)) latest.set(a.comment_id, a);
         json(res, 200, {
           enabled: Boolean(config.metaSocialCommentsInboundEnabled),
           sync_enabled: Boolean(config.metaSocialPostsSyncEnabled),
           moderation_enabled: Boolean(config.metaSocialCommentsModerationEnabled),
+          comment_replies_enabled: Boolean(connection.comment_replies[found.post.channel]),
+          analytics_enabled: Boolean(connection.analytics[found.post.channel]),
+          publishing_enabled: Boolean(connection.publishing[found.post.channel]),
           connection,
           post: postView(found.post, found.comments),
+          analytics,
           comments: found.comments.map((c) => {
             const a = latest.get(c.id);
             return { id: c.id, provider_comment_id: c.provider_comment_id, provider_parent_id: c.provider_parent_id || null,
@@ -8871,6 +9181,7 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
               visibility: c.visibility, deleted: Boolean(c.deleted_at), edited_at: c.edited_at || null,
               created_at: c.provider_created_at || c.first_seen_at,
               actionable: !c.deleted_at && !c.author_is_page,
+              replies: (repliesByComment.get(c.id) || []).map((reply) => ({ id: reply.id, body: reply.body, state: reply.status, by: reply.actor_email, at: reply.updated_at || reply.created_at, failure_reason: reply.failure_code || null })),
               moderation: a ? { id: a.id, action: a.action, state: a.status, failure_reason: a.failure_reason || null, by: a.actor_email, at: a.updated_at || a.created_at } : null };
           }),
         }, { "x-request-id": ctx.requestId });
@@ -8955,6 +9266,11 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           if (!before) {
             notFound(res);
             return;
+          }
+          if (patch.social_content !== undefined) {
+            const socialDraft = normalizeSocialContent(patch.social_content);
+            if (!socialDraft.ok) { json(res, 400, { error: socialDraft.error }, { "x-request-id": ctx.requestId }); return; }
+            patch.social_content = socialDraft.value;
           }
           // a changed cover must be an Office upload; an unchanged legacy link is left as it is (and reported when it is synced)
           const imageRefusal = patch.featured_image_url !== undefined && patch.featured_image_url !== before.featured_image_url ? coverImageUrlRefusal(patch.featured_image_url, "content") : null;
@@ -9838,6 +10154,7 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
     server.on("close", () => communicationOutboxWorkerHandle.stop());
   }
   if (contentSchedulerTimer) server.on("close", () => clearInterval(contentSchedulerTimer));
+  if (socialPublishingTimer) server.on("close", () => clearInterval(socialPublishingTimer));
   // one scheduler pass on demand (tests); the timer above is the only production caller
   server.runContentSchedulerTick = runContentSchedulerTick;
   return server;

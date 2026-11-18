@@ -1317,6 +1317,7 @@ class SupabaseLeadAgentsStore {
         featured_image_url: input.featured_image_url || "",
         seo_title: input.seo_title || "",
         seo_description: input.seo_description || "",
+        social_content: input.social_content && typeof input.social_content === "object" ? input.social_content : {},
         workflow_status: "draft",
         created_by: input.created_by || "office",
         metadata: input.metadata || {},
@@ -1351,6 +1352,109 @@ class SupabaseLeadAgentsStore {
       `/office_content_items?workflow_status=eq.scheduled&scheduled_publish_at=lte.${now.toISOString()}`
     );
     return response.data;
+  }
+
+  async startSocialPublish(input) {
+    const response = await this.client.post("/rpc/office_start_social_publish", {
+      p_content_item_id: input.contentItemId, p_channel: input.channel, p_asset_id: input.assetId,
+      p_content_fingerprint: input.contentFingerprint, p_request_id: input.requestId,
+      p_actor_id: input.actorId || null, p_actor_email: input.actorEmail || null,
+      p_scheduled_at: input.scheduledAt || null,
+    });
+    return response.data;
+  }
+
+  async claimDueSocialPublishes(now, limit = 20) {
+    const response = await this.client.post("/rpc/office_claim_due_social_publishes", { p_now: now.toISOString(), p_limit: limit });
+    return Array.isArray(response.data) ? response.data : [];
+  }
+
+  async markSocialPublishDispatch(input) {
+    const response = await this.client.post("/rpc/office_mark_social_publish_dispatch", {
+      p_id: input.id, p_dispatch_token: input.dispatchToken, p_actor_id: input.actorId || null, p_actor_email: input.actorEmail || null,
+    });
+    return response.data === true;
+  }
+
+  async recoverStaleSocialPublishes(before) {
+    const response = await this.client.post("/rpc/office_recover_stale_social_publishes", { p_before: before, p_limit: 100 });
+    return Array.isArray(response.data) ? response.data : [];
+  }
+
+  async authorizeSocialPublishRetry(input) {
+    const response = await this.client.post("/rpc/office_authorize_social_publish_retry", {
+      p_id: input.id, p_actor_id: input.actorId, p_actor_email: input.actorEmail, p_acknowledge_uncertainty: input.acknowledgeUncertainty === true,
+    });
+    return response.data === true;
+  }
+
+  async getSocialPublishAttempt(id, contentItemId) {
+    const response = await this.client.get(`/office_social_publish_attempts?id=eq.${encodeURIComponent(id)}&content_item_id=eq.${encodeURIComponent(contentItemId)}&limit=1`);
+    return response.data?.[0] || null;
+  }
+
+  async listSocialPublishEvents(attemptIds) {
+    if (!attemptIds.length) return [];
+    const ids = attemptIds.map((id) => `"${String(id).replace(/"/g, "")}"`).join(",");
+    const response = await this.client.get(`/office_social_publish_events?publish_attempt_id=in.(${ids})&order=created_at.asc&limit=500`);
+    return Array.isArray(response.data) ? response.data : [];
+  }
+
+  async settleSocialPublish(input) {
+    const response = await this.client.post("/rpc/office_settle_social_publish", {
+      p_id: input.id, p_dispatch_token: input.dispatchToken, p_status: input.status,
+      p_provider_post_id: input.providerPostId || null, p_provider_media_id: input.providerMediaId || null, p_permalink: input.permalink || null,
+      p_failure_code: input.failureCode || null,
+    });
+    return response.data === true;
+  }
+
+  async listSocialPublishAttempts(contentItemId) {
+    const response = await this.client.get(`/office_social_publish_attempts?content_item_id=eq.${encodeURIComponent(contentItemId)}&order=created_at.desc&limit=50`);
+    return response.data;
+  }
+
+  async startSocialCommentReply(input) {
+    const response = await this.client.post("/rpc/office_start_social_comment_reply", {
+      p_comment_id: input.commentId, p_channel: input.channel, p_asset_id: input.assetId,
+      p_request_id: input.requestId, p_actor_id: input.actorId, p_actor_email: input.actorEmail,
+      p_body: input.body,
+    });
+    return response.data;
+  }
+
+  async settleSocialCommentReply(input) {
+    const response = await this.client.post("/rpc/office_settle_social_comment_reply", {
+      p_id: input.id, p_dispatch_token: input.dispatchToken, p_status: input.status,
+      p_provider_reply_id: input.providerReplyId || null, p_failure_code: input.failureCode || null,
+    });
+    return response.data === true;
+  }
+
+  async listSocialCommentReplies(commentIds) {
+    if (!commentIds.length) return [];
+    const ids = commentIds.map((id) => `"${String(id).replace(/"/g, "")}"`).join(",");
+    const response = await this.client.get(`/office_social_comment_replies?comment_id=in.(${ids})&order=created_at.asc&limit=500`);
+    return response.data;
+  }
+
+  async upsertSocialPostAnalytics(input) {
+    const response = await this.client.post("/rpc/office_upsert_social_post_analytics", {
+      p_post_id: input.postId, p_channel: input.channel, p_metrics: input.metrics,
+      p_unavailable: input.unavailable, p_fetched_at: input.fetchedAt,
+    });
+    return response.data;
+  }
+
+  async getSocialPostAnalytics(postId) {
+    const response = await this.client.get(`/office_social_post_analytics?post_id=eq.${encodeURIComponent(postId)}&order=fetched_at.desc&limit=1`);
+    return response.data?.[0] || null;
+  }
+
+  async listSocialPostAnalytics(postId, limit = 12) {
+    const bounded = Math.min(Math.max(Number(limit) || 12, 1), 50);
+    const response = await this.client.get("/office_social_post_analytics?post_id=eq." + encodeURIComponent(postId) + "&order=fetched_at.desc&limit=" + bounded);
+    return Array.isArray(response.data) ? response.data : [];
   }
 
   async createDevelopmentProject(input) {
@@ -1967,6 +2071,11 @@ class SupabaseLeadAgentsStore {
 
   async listOfficeFilesByResourceType(resourceType) {
     return this.safeGet(`/office_files?resource_type=eq.${encodeURIComponent(resourceType)}&select=size`);
+  }
+
+  async getOfficeFileByFilename(filename) {
+    const response = await this.client.get(`/office_files?filename=eq.${encodeURIComponent(filename)}&select=id,filename,mime_type,size&limit=1`);
+    return response.data?.[0] || null;
   }
 
   // Documents Workspace -- folders are a lightweight organizational
