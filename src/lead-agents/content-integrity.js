@@ -11,13 +11,14 @@
 const crypto = require("crypto");
 
 // Exactly the fields a writer can change (the PATCH allow-list) -- every one of them reaches the published Sanity document.
-const CONTENT_FIELDS = Object.freeze(["title", "slug", "excerpt", "category", "author", "tags", "body", "featured_image_url", "seo_title", "seo_description"]);
+const CONTENT_FIELDS = Object.freeze(["title", "slug", "excerpt", "category", "author", "tags", "body", "featured_image_url", "seo_title", "seo_description", "social_content"]);
 const APPROVAL_BOUND_STATUSES = Object.freeze(["approved", "scheduled"]);
 const MAX_SCHEDULE_AHEAD_MS = 366 * 24 * 60 * 60 * 1000;
 
 // Stores differ in how an empty field comes back (file store "", Supabase null); both mean "empty" and must fingerprint identically.
 function canonicalValue(field, value) {
   if (field === "tags") return Array.isArray(value) ? value.map((tag) => String(tag ?? "")) : [];
+  if (field === "social_content") return value && typeof value === "object" && !Array.isArray(value) ? value : {};
   return value === null || value === undefined ? "" : String(value);
 }
 

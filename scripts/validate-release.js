@@ -30,6 +30,8 @@ const commands = [
   "npm run office:messages-workspace:test",
   "npm run office:meta-social-inbound:test",
   "npm run office:meta-page-connection:test",
+  "npm run office:content-social-management:test",
+  "npm run office:content-social-routes:test",
 ];
 
 for (const command of commands) {

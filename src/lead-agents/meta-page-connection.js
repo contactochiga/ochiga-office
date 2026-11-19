@@ -8,7 +8,8 @@ const PENDING_PREFIX = "office_meta_oauth_candidates_v1:";
 const STATE_COOKIE = "office_meta_oauth_state";
 const REQUIRED_PERMISSIONS = Object.freeze(["pages_show_list", "pages_manage_metadata"]);
 const REQUESTED_PERMISSIONS = Object.freeze([
-  "pages_show_list", "pages_manage_metadata", "pages_messaging", "instagram_basic", "instagram_manage_messages",
+  "pages_show_list", "pages_manage_metadata", "pages_messaging", "pages_manage_posts", "pages_read_engagement", "pages_read_user_content", "pages_manage_engagement", "read_insights",
+  "instagram_basic", "instagram_manage_messages", "instagram_content_publish", "instagram_manage_comments", "instagram_manage_insights",
 ]);
 const PAGE_WEBHOOK_FIELDS = Object.freeze(["messages", "message_deliveries", "message_reads"]);
 const MAX_AGE_MS = 10 * 60 * 1000;

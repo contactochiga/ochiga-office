@@ -62,7 +62,9 @@ async function run() {
   const started = await integration.begin("admin-user-1");
   const authUrl = new URL(started.url);
   assert.equal(authUrl.searchParams.get("redirect_uri"), cfg.metaOAuthRedirectUri);
-  assert.ok(authUrl.searchParams.get("scope").split(",").includes("pages_show_list"));
+  const requestedScopes = authUrl.searchParams.get("scope").split(",");
+  assert.ok(requestedScopes.includes("pages_show_list"));
+  assert.ok(["pages_manage_posts", "pages_read_engagement", "pages_read_user_content", "pages_manage_engagement", "read_insights", "instagram_content_publish", "instagram_manage_comments", "instagram_manage_insights"].every((scope) => requestedScopes.includes(scope)), "OAuth requests the Meta permissions needed for publishing, public comment replies and analytics");
   assert.ok(started.cookie.includes("HttpOnly") && started.cookie.includes("SameSite=Lax"));
   const state = authUrl.searchParams.get("state");
   assert.ok(verifyState(state, state, cfg, "admin-user-1", now));

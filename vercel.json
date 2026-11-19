@@ -33,7 +33,8 @@
       "codex/meta-social-inbound-channels": false,
       "codex/office-social-manual-outbound-d1": false,
       "codex/office-facebook-pilot-recipient-allowlist": false,
-      "codex/office-meta-page-connection": false
+      "codex/office-meta-page-connection": false,
+      "codex/office-content-social": false
     }
   }
 }

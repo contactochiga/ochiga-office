@@ -209,6 +209,14 @@ function createConfig() {
     metaSocialPostsSyncEnabled: process.env.OFFICE_META_POSTS_SYNC_ENABLED === "true",
     // Staff hide/unhide of public comments with read-back confirmation (C3). No deletion, no replies, nothing automatic.
     metaSocialCommentsModerationEnabled: process.env.OFFICE_META_COMMENTS_MODERATION_ENABLED === "true",
+    metaSocialPublishingEnabled: process.env.OFFICE_META_PUBLISHING_ENABLED === "true",
+    metaSocialPublishingChannels: metaSocialChannelsFromEnv(process.env.OFFICE_META_PUBLISHING_CHANNELS).channels,
+    metaSocialPublishingSchedulerEnabled: process.env.OFFICE_META_PUBLISHING_SCHEDULER_ENABLED === "true",
+    metaSocialPublishingRecoveryThresholdMs: Math.max(60_000, Math.min(numberFromEnv(process.env.OFFICE_META_PUBLISHING_RECOVERY_THRESHOLD_MS, 5 * 60 * 1000), 24 * 60 * 60 * 1000)),
+    metaSocialCommentRepliesEnabled: process.env.OFFICE_META_COMMENT_REPLIES_ENABLED === "true",
+    metaSocialCommentReplyChannels: metaSocialChannelsFromEnv(process.env.OFFICE_META_COMMENT_REPLY_CHANNELS).channels,
+    metaSocialAnalyticsEnabled: process.env.OFFICE_META_ANALYTICS_ENABLED === "true",
+    metaSocialAnalyticsChannels: metaSocialChannelsFromEnv(process.env.OFFICE_META_ANALYTICS_CHANNELS).channels,
     // Sample Facebook/Instagram posts in Content, clearly marked, only while no Page or Instagram account is connected. Never stored or sent.
     contentSocialDemoEnabled: process.env.OFFICE_CONTENT_SOCIAL_DEMO_ENABLED === "true",
     metaSocialOperatorIds: stringListFromEnv(process.env.OFFICE_META_SOCIAL_OPERATOR_IDS)

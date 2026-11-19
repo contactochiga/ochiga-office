@@ -67,8 +67,8 @@ async function main() {
     "API: disconnected without credentials, demonstration only while nothing is connected, connected when the Page is configured (demo flag ignored)");
   ok(dis.posts.length === 1 && dis.posts[0].id === storedPostId && demo.posts.length === 3 && demo.posts.every((p) => p.demo && !p.permalink_url && !p.media_preview_url) && !con.posts.some((p) => p.demo),
     "API: demonstration serves only marked sample posts (no links or images) and never mixes them with stored posts; connected never shows samples");
-  ok([dis, demo, con].every((r) => r.connection.replies === false && r.connection.publishing === false) && demo.connection.moderation === false && demo.connection.post_sync === false && dis.connection.moderation === false,
-    "API: replies and publishing are reported off everywhere; demonstration reports sync and moderation off even with their flags on");
+  ok([dis, demo, con].every((r) => r.connection.comment_replies?.facebook === false && r.connection.comment_replies?.instagram === false && r.connection.publishing?.facebook === false && r.connection.publishing?.instagram === false && r.connection.analytics?.facebook === false && r.connection.analytics?.instagram === false) && demo.connection.moderation === false && demo.connection.post_sync === false && dis.connection.moderation === false,
+    "API: comment replies, publishing and analytics are reported off everywhere; demonstration reports sync and moderation off even with their flags on");
   const sample = demo.posts[0];
   const sampleDetail = await (await api("demonstration", `social-posts/${sample.id}`)).json();
   const sampleComment = sampleDetail.comments.find((c) => !c.author_is_page);

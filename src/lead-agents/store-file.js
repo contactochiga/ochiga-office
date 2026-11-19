@@ -69,6 +69,10 @@ class FileLeadAgentsStore {
       staff_message_attachments: [],
       staff_message_reactions: [],
       office_content_items: [],
+        office_social_publish_attempts: [],
+        office_social_publish_events: [],
+        office_social_comment_replies: [],
+        office_social_post_analytics: [],
       office_social_posts: [],
       office_social_comments: [],
       office_social_comment_events: [],
@@ -163,6 +167,10 @@ class FileLeadAgentsStore {
         staff_message_attachments: Array.isArray(parsed.staff_message_attachments) ? parsed.staff_message_attachments : [],
         staff_message_reactions: Array.isArray(parsed.staff_message_reactions) ? parsed.staff_message_reactions : [],
         office_content_items: Array.isArray(parsed.office_content_items) ? parsed.office_content_items : [],
+        office_social_publish_attempts: Array.isArray(parsed.office_social_publish_attempts) ? parsed.office_social_publish_attempts : [],
+        office_social_publish_events: Array.isArray(parsed.office_social_publish_events) ? parsed.office_social_publish_events : [],
+        office_social_comment_replies: Array.isArray(parsed.office_social_comment_replies) ? parsed.office_social_comment_replies : [],
+        office_social_post_analytics: Array.isArray(parsed.office_social_post_analytics) ? parsed.office_social_post_analytics : [],
         office_social_posts: Array.isArray(parsed.office_social_posts) ? parsed.office_social_posts : [],
         office_social_comments: Array.isArray(parsed.office_social_comments) ? parsed.office_social_comments : [],
         office_social_comment_events: Array.isArray(parsed.office_social_comment_events) ? parsed.office_social_comment_events : [],
@@ -1613,6 +1621,7 @@ class FileLeadAgentsStore {
       featured_image_url: input.featured_image_url || "",
       seo_title: input.seo_title || "",
       seo_description: input.seo_description || "",
+      social_content: input.social_content && typeof input.social_content === "object" ? input.social_content : {},
       workflow_status: "draft",
       scheduled_publish_at: null,
       sanity_document_id: null,
@@ -1656,6 +1665,130 @@ class FileLeadAgentsStore {
     return this.state.office_content_items.filter(
       (item) => item.workflow_status === "scheduled" && item.scheduled_publish_at && new Date(item.scheduled_publish_at).getTime() <= now.getTime()
     );
+  }
+
+  async startSocialPublish(input) {
+    const prior = this.state.office_social_publish_attempts.find((row) => row.channel === input.channel && row.request_id === input.requestId);
+    if (prior) {
+      if (prior.content_item_id !== input.contentItemId || prior.asset_id !== input.assetId || prior.content_fingerprint !== input.contentFingerprint) throw new Error("social_publish_request_id_reused");
+      return { ...prior, duplicate: true };
+    }
+    const open = this.state.office_social_publish_attempts.find((row) => row.content_item_id === input.contentItemId && row.channel === input.channel && ["scheduled", "publishing", "published"].includes(row.status) ||
+      (row.content_item_id === input.contentItemId && row.channel === input.channel && row.status === "unknown" && !row.recovery_authorized_at));
+    if (open) return { ...open, duplicate: true };
+    const row = { id: crypto.randomUUID(), content_item_id: input.contentItemId, channel: input.channel, asset_id: input.assetId,
+      content_fingerprint: input.contentFingerprint, request_id: input.requestId, actor_id: input.actorId || null, actor_email: input.actorEmail || null,
+      status: input.scheduledAt ? "scheduled" : "publishing", scheduled_at: input.scheduledAt || null,
+      dispatch_token: input.scheduledAt ? null : crypto.randomUUID(), dispatched_at: input.scheduledAt ? null : this.nowIso(),
+      provider_dispatch_started_at: null, recovery_authorized_at: null, recovery_authorized_by: null,
+      created_at: this.nowIso(), updated_at: this.nowIso() };
+    this.state.office_social_publish_attempts.push(row); await this.persist(); return row;
+  }
+
+  async claimDueSocialPublishes(now, limit = 20) {
+    const rows = this.state.office_social_publish_attempts.filter((row) => row.status === "scheduled" && row.scheduled_at && new Date(row.scheduled_at) <= now).slice(0, limit);
+    for (const row of rows) { row.status = "publishing"; row.dispatch_token = crypto.randomUUID(); row.dispatched_at = this.nowIso(); row.updated_at = this.nowIso(); }
+    if (rows.length) await this.persist(); return rows;
+  }
+
+  async markSocialPublishDispatch(input) {
+    const row = this.state.office_social_publish_attempts.find((item) => item.id === input.id && item.dispatch_token === input.dispatchToken && item.status === "publishing" && !item.provider_dispatch_started_at);
+    if (!row) return false;
+    row.provider_dispatch_started_at = this.nowIso(); row.updated_at = this.nowIso();
+    this.state.office_social_publish_events.push({ id: crypto.randomUUID(), publish_attempt_id: row.id, event_type: "provider_dispatch_started",
+      actor_id: input.actorId || null, actor_email: input.actorEmail || null, details: {}, created_at: this.nowIso() });
+    await this.persist(); return true;
+  }
+
+  async recoverStaleSocialPublishes(before) {
+    const cutoff = new Date(before).getTime();
+    const recovered = [];
+    for (const row of this.state.office_social_publish_attempts) {
+      const boundary = row.provider_dispatch_started_at || row.dispatched_at;
+      if (row.status !== "publishing" || !boundary || new Date(boundary).getTime() > cutoff) continue;
+      const dispatched = Boolean(row.provider_dispatch_started_at);
+      row.status = dispatched ? "unknown" : "failed";
+      row.failure_code = dispatched ? "stale_dispatch_unknown" : "dispatch_not_started";
+      row.updated_at = this.nowIso();
+      this.state.office_social_publish_events.push({ id: crypto.randomUUID(), publish_attempt_id: row.id,
+        event_type: dispatched ? "stale_dispatch_unknown" : "stale_pre_dispatch_failed", actor_id: null, actor_email: null,
+        details: { recovered_at: row.updated_at, provider_dispatch_started: dispatched }, created_at: row.updated_at });
+      recovered.push({ ...row });
+    }
+    if (recovered.length) await this.persist();
+    return recovered;
+  }
+
+  async authorizeSocialPublishRetry(input) {
+    const row = this.state.office_social_publish_attempts.find((item) => item.id === input.id && item.status === "unknown" && !item.recovery_authorized_at);
+    if (!row || input.acknowledgeUncertainty !== true) return false;
+    row.recovery_authorized_at = this.nowIso(); row.recovery_authorized_by = input.actorId; row.updated_at = row.recovery_authorized_at;
+    this.state.office_social_publish_events.push({ id: crypto.randomUUID(), publish_attempt_id: row.id, event_type: "manual_retry_authorized",
+      actor_id: input.actorId, actor_email: input.actorEmail, details: { acknowledged_possible_duplicate: true }, created_at: row.updated_at });
+    await this.persist(); return true;
+  }
+
+  async getSocialPublishAttempt(id, contentItemId) {
+    return this.state.office_social_publish_attempts.find((row) => row.id === id && row.content_item_id === contentItemId) || null;
+  }
+
+  async listSocialPublishEvents(attemptIds) {
+    return this.state.office_social_publish_events.filter((row) => attemptIds.includes(row.publish_attempt_id));
+  }
+
+  async settleSocialPublish(input) {
+    const row = this.state.office_social_publish_attempts.find((item) => item.id === input.id && item.dispatch_token === input.dispatchToken && item.status === "publishing");
+    if (!row) return false;
+    Object.assign(row, { status: input.status, provider_post_id: input.providerPostId || null, permalink_url: input.permalink || null,
+      provider_media_id: input.providerMediaId || null, failure_code: input.failureCode || null, updated_at: this.nowIso() });
+    if (input.status === "published") {
+      const item = this.state.office_content_items.find((content) => content.id === row.content_item_id);
+      const existing = this.state.office_social_posts.find((post) => post.channel === row.channel && post.asset_id === row.asset_id && post.provider_post_id === input.providerPostId);
+      const snapshot = { channel: row.channel, asset_id: row.asset_id, provider_post_id: input.providerPostId, provider_media_id: input.providerMediaId || null, content_item_id: row.content_item_id,
+        origin: "office", caption: item?.social_content?.[row.channel]?.caption || null, media_type: item?.social_content?.[row.channel]?.media_type || null,
+        permalink_url: input.permalink || null, published_at: this.nowIso(), sync_status: "synced", synced_at: this.nowIso() };
+      if (existing) Object.assign(existing, snapshot);
+      else this.state.office_social_posts.push({ id: crypto.randomUUID(), ...snapshot });
+    }
+    await this.persist(); return true;
+  }
+
+  async listSocialPublishAttempts(contentItemId) { return this.state.office_social_publish_attempts.filter((row) => row.content_item_id === contentItemId); }
+
+  async startSocialCommentReply(input) {
+    const prior = this.state.office_social_comment_replies.find((row) => row.channel === input.channel && row.request_id === input.requestId);
+    if (prior) {
+      if (prior.comment_id !== input.commentId || prior.asset_id !== input.assetId || prior.body !== input.body) throw new Error("social_comment_reply_request_id_reused");
+      return { ...prior, duplicate: true };
+    }
+    const open = this.state.office_social_comment_replies.find((row) => row.comment_id === input.commentId && ["publishing", "unknown", "published"].includes(row.status));
+    if (open) return { ...open, duplicate: true };
+    const row = { id: crypto.randomUUID(), comment_id: input.commentId, channel: input.channel, asset_id: input.assetId,
+      request_id: input.requestId, actor_id: input.actorId, actor_email: input.actorEmail, body: input.body,
+      status: "publishing", dispatch_token: crypto.randomUUID(), created_at: this.nowIso(), updated_at: this.nowIso() };
+    this.state.office_social_comment_replies.push(row); await this.persist(); return row;
+  }
+
+  async settleSocialCommentReply(input) {
+    const row = this.state.office_social_comment_replies.find((item) => item.id === input.id && item.dispatch_token === input.dispatchToken && item.status === "publishing");
+    if (!row) return false;
+    Object.assign(row, { status: input.status, provider_reply_id: input.providerReplyId || null, failure_code: input.failureCode || null, updated_at: this.nowIso() });
+    await this.persist(); return true;
+  }
+
+  async listSocialCommentReplies(commentIds) { return this.state.office_social_comment_replies.filter((row) => commentIds.includes(row.comment_id)); }
+
+  async upsertSocialPostAnalytics(input) {
+    const row = { id: crypto.randomUUID(), post_id: input.postId, channel: input.channel, metrics: input.metrics,
+      unavailable_metrics: input.unavailable || [], fetched_at: input.fetchedAt, created_at: this.nowIso() };
+    this.state.office_social_post_analytics = this.state.office_social_post_analytics || [];
+    this.state.office_social_post_analytics.unshift(row); await this.persist(); return row;
+  }
+
+  async getSocialPostAnalytics(postId) { return (this.state.office_social_post_analytics || []).find((row) => row.post_id === postId) || null; }
+  async listSocialPostAnalytics(postId, limit = 12) {
+    return (this.state.office_social_post_analytics || []).filter((row) => row.post_id === postId)
+      .sort((a, b) => String(b.fetched_at).localeCompare(String(a.fetched_at))).slice(0, Math.min(Math.max(Number(limit) || 12, 1), 50));
   }
 
   async createOfficeReport(input) {
@@ -2264,6 +2397,10 @@ class FileLeadAgentsStore {
 
   async listOfficeFilesByResourceType(resourceType) {
     return this.state.office_files.filter((f) => f.resource_type === resourceType).map((f) => ({ size: f.size }));
+  }
+
+  async getOfficeFileByFilename(filename) {
+    return (this.state.office_files || []).find((file) => file.filename === filename) || null;
   }
 
   async listOfficeDocumentFolders() {
