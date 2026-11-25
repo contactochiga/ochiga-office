@@ -3,6 +3,8 @@
 # (20261113_meta_social_*) must run inbound -> staff_replies -> dispatch_fence; takeover fencing then runs
 # after the existing Meta schema migrations. Alphabetical order would
 # run dispatch_fence first and then let staff_replies replace its office_record_meta_social_receipt.
+# The WhatsApp autonomous dispatch fence is last because it locks the already-created inbound claims,
+# channel state and runtime autonomy setting at its dispatch authorization boundary.
 # The security baseline runs first (so default privileges cover every later object) and again at the end
 # (RLS on new tables), followed by the read-only verification gate.
 security/office-security-baseline.sql
@@ -42,5 +44,6 @@ lead-agents-schema.sql
 20261118_meta_social_autonomy.sql
 20261119_content_social_management.sql
 20261125_social_autonomy_setting_fence.sql
+20261126_whatsapp_autonomous_dispatch_fence.sql
 security/office-security-baseline.sql
 security/office-security-verify.sql

@@ -11664,8 +11664,22 @@ async function renderWhatsAppAutonomyPanel(outlet, token) {
             draw();
             feedback.textContent = `${status.label} setting refreshed from the server.`;
           } catch (err) {
-            feedback.textContent = `Not saved — ${err.message || "the setting could not be changed"}. Displayed state remains server-confirmed.`;
-            button.disabled = false;
+            try {
+              channels = (await apiGetChannelAutonomy()).channels;
+              loadError = "";
+              draw();
+              if (err.data?.error === "setting_saved_audit_failed") {
+                feedback.textContent = `The server confirms ${status.label} is ${channels[channel]?.enabled ? "ON" : "OFF"}, but failed to record the audit event. Do not retry blindly; contact an administrator.`;
+              } else if (err.data?.error === "setting_save_outcome_unknown" || err.data?.error === "setting_readback_mismatch") {
+                feedback.textContent = `The save result was uncertain. The control now shows the value read back from the server (${channels[channel]?.enabled ? "ON" : "OFF"}). Verify it before trying again.`;
+              } else {
+                feedback.textContent = `The save failed. The control shows the current server value (${channels[channel]?.enabled ? "ON" : "OFF"}).`;
+              }
+            } catch (readError) {
+              channels = null;
+              loadError = `Could not verify the saved state: ${readError.message || "settings read failed"}. All channels are treated as OFF until verified.`;
+              draw();
+            }
           }
         });
         card.appendChild(button);

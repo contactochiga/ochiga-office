@@ -970,14 +970,37 @@ class SupabaseLeadAgentsStore {
     if (inserted.data.length === 1) return { status: "claimed", reply_sent: false };
     const staleBefore = new Date(Date.now() - staleAfterMs).toISOString();
     const takeover = await this.client.patch(
-      `/whatsapp_inbound_claims?provider_message_id=eq.${encodeURIComponent(key)}&status=eq.processing&claimed_at=lt.${encodeURIComponent(staleBefore)}`,
+      `/whatsapp_inbound_claims?provider_message_id=eq.${encodeURIComponent(key)}&status=eq.processing&claimed_at=lt.${encodeURIComponent(staleBefore)}&autonomous_dispatch_at=is.null`,
       { claimed_at: new Date().toISOString(), request_id: requestId || null },
       { headers: this.selectHeaders() }
     );
     if (!Array.isArray(takeover.data)) throw new Error("claim_response_malformed");
     if (takeover.data.length === 1) return { status: "takeover", reply_sent: Boolean(takeover.data[0].reply_sent_at) };
-    const current = await this.client.get(`/whatsapp_inbound_claims?provider_message_id=eq.${encodeURIComponent(key)}&select=reply_sent_at&limit=1`);
-    return { status: "duplicate", reply_sent: Boolean(Array.isArray(current.data) && current.data[0]?.reply_sent_at) };
+    const current = await this.client.get(`/whatsapp_inbound_claims?provider_message_id=eq.${encodeURIComponent(key)}&select=reply_sent_at,autonomous_dispatch_at,autonomous_dispatch_state&limit=1`);
+    return { status: "duplicate", reply_sent: Boolean(Array.isArray(current.data) && current.data[0]?.reply_sent_at),
+      dispatch_state: Array.isArray(current.data) ? current.data[0]?.autonomous_dispatch_state || null : null,
+      dispatch_in_flight: Boolean(Array.isArray(current.data) && current.data[0]?.autonomous_dispatch_at) };
+  }
+
+  async authorizeWhatsAppAutonomousDispatch({ providerMessageId, leadId, expectedStateUpdatedAt }) {
+    const response = await this.client.post("/rpc/office_authorize_whatsapp_autonomous_dispatch", {
+      p_provider_message_id: providerMessageId, p_lead_id: leadId, p_expected_state_updated_at: expectedStateUpdatedAt,
+    });
+    const result = response.data;
+    if (!["authorized", "whatsapp_dispatch_claim_unavailable", "whatsapp_ownership_changed", "whatsapp_takeover_active", "autonomous_whatsapp_disabled"].includes(result)) {
+      throw new Error("invalid_whatsapp_dispatch_authorization_response");
+    }
+    return result;
+  }
+
+  async settleWhatsAppAutonomousDispatch(providerMessageId, state) {
+    const response = await this.client.post("/rpc/office_settle_whatsapp_autonomous_dispatch", {
+      p_provider_message_id: providerMessageId, p_state: state,
+    });
+    if (!["settled", "already_settled", "dispatch_not_authorized", "invalid_state"].includes(response.data)) {
+      throw new Error("invalid_whatsapp_dispatch_settlement_response");
+    }
+    return response.data;
   }
 
   async updateInboundClaim(providerMessageId, patch) {

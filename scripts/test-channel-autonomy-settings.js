@@ -76,6 +76,60 @@ async function main() {
     assert.equal(current.facebook.enabled, false);
     assert.equal(current.instagram.enabled, true, "disabling Facebook leaves Instagram enabled");
 
+    const originalSet = store.setRuntimeSetting.bind(store);
+    const originalAudit = store.appendAuditEvent.bind(store);
+    const originalGet = store.getRuntimeSetting.bind(store);
+    const savedState = async (response, expectedStatus, expectedEnabled, expectedAudit) => {
+      assert.equal(response.status, expectedStatus);
+      const body = await response.json();
+      assert.equal(body.channel?.enabled, expectedEnabled);
+      assert.equal(body.audit_recorded, expectedAudit);
+      return body;
+    };
+
+    // The API reports the committed setting and audit outcome, never a generic
+    // failure that could leave the UI showing a stale switch value.
+    store.setRuntimeSetting = (...args) => originalSet(...args);
+    store.appendAuditEvent = (...args) => originalAudit(...args);
+    await savedState(await put(adminCookie, "facebook", true), 200, true, undefined);
+    assert.ok(store.state.audit_events.some((row) => row.action === "channel_autonomy_setting_changed" && row.resource_id === CHANNELS.facebook.key && row.status === "success"),
+      "successful setting persistence has its corresponding success audit");
+
+    store.setRuntimeSetting = async () => { throw new Error("fixture save failed"); };
+    let outcome = await (await put(adminCookie, "facebook", false)).json();
+    assert.equal(outcome.setting_saved, "unknown");
+    assert.equal(outcome.actual.enabled, true, "failed write reads back the unchanged persisted value");
+
+    store.setRuntimeSetting = async (...args) => { await originalSet(...args); throw new Error("lost write response"); };
+    outcome = await (await put(adminCookie, "facebook", false)).json();
+    assert.equal(outcome.setting_saved, "unknown", "ambiguous write is not called a definite failure");
+    assert.equal(outcome.actual.enabled, false, "ambiguous write returns actual persisted state");
+
+    store.setRuntimeSetting = (...args) => originalSet(...args);
+    store.appendAuditEvent = async () => { throw new Error("fixture audit failure"); };
+    outcome = await (await put(adminCookie, "facebook", true)).json();
+    assert.equal(outcome.error, "setting_saved_audit_failed");
+    assert.equal(outcome.setting_saved, true);
+    assert.equal(outcome.audit_recorded, false);
+    assert.equal(outcome.channel.enabled, true, "audit failure reports saved backend state");
+
+    store.appendAuditEvent = (...args) => originalAudit(...args);
+    store.getRuntimeSetting = async () => { throw new Error("fixture readback failure"); };
+    outcome = await (await put(adminCookie, "facebook", false)).json();
+    assert.equal(outcome.error, "setting_readback_mismatch");
+    assert.equal(outcome.setting_saved, "unknown");
+    assert.equal(outcome.audit_recorded, true);
+
+    store.setRuntimeSetting = async () => { throw new Error("ambiguous write"); };
+    outcome = await (await put(adminCookie, "facebook", false)).json();
+    assert.equal(outcome.error, "setting_state_unverified");
+    assert.equal(outcome.setting_saved, "unknown");
+    assert.equal(outcome.actual, null, "unreadable state is not guessed");
+
+    store.setRuntimeSetting = originalSet;
+    store.appendAuditEvent = originalAudit;
+    store.getRuntimeSetting = originalGet;
+
     await store.setRuntimeSetting(CHANNELS.instagram.key, "true", "fixture-corruption");
     const malformed = await readChannelAutonomySetting(store, "instagram");
     assert.equal(malformed.known, false);

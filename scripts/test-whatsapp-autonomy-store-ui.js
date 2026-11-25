@@ -101,7 +101,9 @@ const { evaluateAutonomousWhatsAppPolicy, readWhatsAppAutonomySetting, WHATSAPP_
   assert.match(ui, /Account connection/); assert.match(ui, /Manual staff handling/); assert.match(ui, /Inbound/);
   assert.match(ui, /hasPermission\("integrations\.manage"\)/, "only administrators get the control");
   assert.match(ui, /channels = \(await apiGetChannelAutonomy\(\)\)\.channels/, "successful saves are re-read from the backend");
-  assert.match(ui, /Displayed state remains server-confirmed/, "a failed save does not invent a successful state");
+  assert.match(ui, /The control shows the current server value/, "a failed save refreshes and reports the actual persisted setting");
+  assert.match(ui, /Could not verify the saved state:[\s\S]*All channels are treated as OFF until verified/, "unreadable post-save state is visibly fail-closed");
+  assert.match(ui, /setting_saved_audit_failed/, "audit failure is distinct from a setting-save failure");
   assert.doesNotMatch(ui, /localStorage[^\n]*whatsapp_autonom/i, "the setting is never frontend-only state");
   assert.ok(ui.indexOf("await renderWhatsAppAutonomyPanel(outlet, token)") > ui.indexOf("async function renderSettingsView") && ui.indexOf("await renderWhatsAppAutonomyPanel(outlet, token)") < ui.indexOf("const syncSection", ui.indexOf("async function renderSettingsView")), "rendered inside Settings -> Integrations");
   console.log(JSON.stringify({ status: "PASS", suite: "whatsapp-autonomy-store-ui" }));

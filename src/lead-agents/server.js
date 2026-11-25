@@ -1753,6 +1753,13 @@ const AUTOMATIC_REPLY_CONTENT_REASONS = Object.freeze({
   conversation_ownership_unavailable: "Conversation ownership could not be verified, so no automatic reply was sent.",
   conversation_ownership_changed: "Conversation ownership changed while the reply was being prepared, so no automatic reply was sent.",
   conversation_thread_mismatch: "The Oyi Core conversation thread could not be verified, so no automatic reply was sent.",
+  oyi_core_unavailable: "Oyi Core was unavailable, so no automatic WhatsApp reply was sent.",
+  oyi_core_response_invalid: "Oyi Core did not return a valid reply, so no automatic WhatsApp response was sent.",
+  whatsapp_dispatch_authorization_unavailable: "WhatsApp dispatch authorization could not be confirmed, so no automatic reply was sent.",
+  whatsapp_dispatch_claim_unavailable: "The WhatsApp message claim was no longer available for a safe reply.",
+  whatsapp_takeover_active: "A staff member paused or took over the conversation before dispatch authorization.",
+  whatsapp_provider_outcome_unknown: "WhatsApp did not confirm the reply outcome. It will not be resent automatically; a person should review it.",
+  whatsapp_provider_not_sent: "WhatsApp was not configured to send this reply; no provider request was made.",
   attachment_notice_unconfirmed: "The customer sent media with a caption, but Oyi's reply could not be confirmed to say the media was not opened, so it was not sent; a team member should review it.",
   media_without_text: "The customer sent media without any text. Oyi cannot see media, so no automatic reply was sent; a team member should review it.",
   no_customer_text: "The message has no text Oyi can read (for example a location, contact card or reaction), so no automatic reply was sent; a team member should review it.",
@@ -1994,15 +2001,22 @@ async function processWhatsAppMessageEvent({ event, store, adapter, config, requ
   });
   // the turn's media is described structurally (never as words in the customer's message): Oyi answers the caption and can tell media was attached
   if (described.attachments.length) oyiCoreRequest.metadata.inbound_message = { message_type: described.message_type, caption_present: Boolean(described.caption), attachment_kinds: described.attachments.map((a) => a.kind) };
-  const oyiCoreResult = await callOyiCoreCorporateConversation(config, oyiCoreRequest);
+  let oyiCoreResult;
+  try {
+    oyiCoreResult = await callOyiCoreCorporateConversation(config, oyiCoreRequest);
+  } catch {
+    return withCrmStatus(await suppressAutonomousWhatsAppReply({ store, lead, event, requestId, reason: "oyi_core_unavailable", stage: "before_send" }));
+  }
   // Oyi never receives the media, so its answer must say so and claim nothing about it: Backend's answer builder guarantees that and confirms it
   // (safe_metadata.inbound_attachments.notice_applied). Without that confirmation (an older Backend) the answer is not sent.
   if (described.attachments.length && oyiCoreResult.ok && oyiCoreResult.response?.safe_metadata?.inbound_attachments?.notice_applied !== true) {
     return withCrmStatus(await suppressAutonomousWhatsAppReply({ store, lead, event, requestId, reason: "attachment_notice_unconfirmed", stage: "before_send" }));
   }
-  const assistantMessage = oyiCoreResult.ok
-    ? oyiCoreResult.response.answer
-    : "Ochiga Intelligence is temporarily unavailable. We have your WhatsApp message and the Office team can follow up, but I cannot continue the automated conversation right now.";
+  const assistantMessage = oyiCoreResult?.ok && typeof oyiCoreResult?.response?.answer === "string" ? oyiCoreResult.response.answer.trim() : "";
+  if (!oyiCoreResult?.ok || !assistantMessage || assistantMessage.length > 4000) {
+    const reason = !oyiCoreResult?.ok ? "oyi_core_unavailable" : "oyi_core_response_invalid";
+    return withCrmStatus(await suppressAutonomousWhatsAppReply({ store, lead, event, requestId, reason, stage: "before_send" }));
+  }
 
   // Re-resolve the conversation and provenance after generation. A new message, CRM reassignment, takeover, or edited history suppresses this response.
   let latestContext;
@@ -2055,11 +2069,54 @@ async function processWhatsAppMessageEvent({ event, store, adapter, config, requ
     return withCrmStatus(await suppressAutonomousWhatsAppReply({ store, lead, event, requestId, reason: !finalPolicy.allowed ? finalPolicy.reason : finalTakeover ? "human_takeover_active" : "conversation_ownership_changed", stage: "before_send", paused: finalTakeover && finalPolicy.allowed }));
   }
 
-  const sendResult = await adapter.sendTextMessage({
-    to: event.from,
-    body: assistantMessage,
-    contextMessageId: event.message_id,
-  });
+  // Linearization point: the database locks the inbound claim and channel-state row,
+  // rechecks autonomy/ownership, then durably marks this provider message in-flight.
+  // A later takeover is ordered after this authorization; it cannot cancel an HTTP
+  // request already in flight, and a crash after this point is never auto-replayed.
+  let dispatchAuthorization;
+  try {
+    dispatchAuthorization = await store.authorizeWhatsAppAutonomousDispatch({
+      providerMessageId: event.message_id,
+      leadId: lead.id,
+      expectedStateUpdatedAt: finalState.updated_at,
+    });
+  } catch {
+    return withCrmStatus(await suppressAutonomousWhatsAppReply({ store, lead, event, requestId,
+      reason: "whatsapp_dispatch_authorization_unavailable", stage: "before_dispatch" }));
+  }
+  if (dispatchAuthorization !== "authorized") {
+    return withCrmStatus(await suppressAutonomousWhatsAppReply({ store, lead, event, requestId,
+      reason: dispatchAuthorization, stage: "before_dispatch" }));
+  }
+
+  let sendResult;
+  try {
+    sendResult = await adapter.sendTextMessage({
+      to: event.from,
+      body: assistantMessage,
+      contextMessageId: event.message_id,
+    });
+  } catch {
+    await store.settleWhatsAppAutonomousDispatch(event.message_id, "unknown").catch(() => null);
+    await store.appendTimelineEvent({ lead_id: lead.id, event_type: "whatsapp_autonomous_dispatch_unknown",
+      actor: "ochiga_intelligence", title: "WhatsApp reply outcome is unknown",
+      body: "The provider request may have reached WhatsApp, so it will not be retried automatically.",
+      metadata: { request_id: requestId, provider_message_id: event.message_id } }).catch(() => null);
+    await inboundVisibility.annotateInboundActivity(store, { lead, event, inboundEvent: inboundEventRow, requestId,
+      patch: { ai_replied: false, suppressed_reason: "whatsapp_provider_outcome_unknown" }, log });
+    return withCrmStatus({ kind: "message", lead_id: lead.id, suppressed: true, reason: "whatsapp_provider_outcome_unknown" });
+  }
+  if (!sendResult?.delivered) {
+    await store.settleWhatsAppAutonomousDispatch(event.message_id, "not_sent").catch(() => null);
+    return withCrmStatus(await suppressAutonomousWhatsAppReply({ store, lead, event, requestId,
+      reason: "whatsapp_provider_not_sent", stage: "provider_response" }));
+  }
+  const settlement = await store.settleWhatsAppAutonomousDispatch(event.message_id, "accepted").catch(() => "unknown");
+  if (!["settled", "already_settled"].includes(settlement)) {
+    // The provider accepted the request but persistence did not confirm the settlement.
+    // The authorization marker remains, so the event cannot be dispatched again.
+    log("error", "whatsapp_autonomous_dispatch_settlement_unconfirmed", { request_id: requestId, message_id: event.message_id });
+  }
 
   await store.appendTimelineEvent({
     lead_id: lead.id,
@@ -7136,13 +7193,38 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           } catch (error) {
             await appendAuditRecord({ store, authContext, action: "channel_autonomy_setting_changed", resourceType: "runtime_setting", resourceId: settingKey,
               metadata: { channel, requested: body.enabled, error: String(error?.message || error).slice(0, 200) }, req, status: "failure" }).catch(() => null);
-            json(res, 503, { error: "setting_not_saved", detail: "The setting could not be saved. Nothing was changed." }, { "x-request-id": ctx.requestId });
+            const actual = await readChannelAutonomySetting(store, channel);
+            json(res, 503, { error: actual.known ? "setting_save_outcome_unknown" : "setting_state_unverified",
+              setting_saved: "unknown", audit_recorded: false,
+              actual: actual.known ? { enabled: actual.enabled, source: actual.source, updated_at: actual.updated_at || null } : null,
+              detail: "The write result was not confirmed. The returned actual state is read back from storage; check it before trying again." }, { "x-request-id": ctx.requestId });
             return;
           }
-          await appendAuditRecord({ store, authContext, action: "channel_autonomy_setting_changed", resourceType: "runtime_setting", resourceId: settingKey,
-            metadata: { channel, old_value: change.previous?.value ?? null, new_value: change.current.value, previous_updated_by: change.previous?.updated_by || null }, req, status: "success" });
+          try {
+            await appendAuditRecord({ store, authContext, action: "channel_autonomy_setting_changed", resourceType: "runtime_setting", resourceId: settingKey,
+              metadata: { channel, old_value: change.previous?.value ?? null, new_value: change.current.value, previous_updated_by: change.previous?.updated_by || null }, req, status: "success" });
+          } catch {
+            const actual = await readChannelAutonomySetting(store, channel);
+            const channelState = actual.known ? { channel, label: AUTONOMY_CHANNELS[channel].label, enabled: actual.enabled,
+              effective: Boolean(actual.enabled && (channel === "whatsapp" || socialAiEnabled(config, channel))),
+              state: actual.enabled ? (channel === "whatsapp" || socialAiEnabled(config, channel) ? "on" : "configured_but_unavailable") : "off",
+              source: actual.source, reason: actual.enabled && channel !== "whatsapp" && !socialAiEnabled(config, channel) ? "channel_not_configured" : null,
+              updated_by: actual.updated_by || null, updated_at: actual.updated_at || null } : null;
+            json(res, 503, { error: "setting_saved_audit_failed", setting_saved: true, audit_recorded: false,
+              channel: channelState, state_verified: Boolean(actual.known),
+              detail: "The setting was saved, but its audit record failed. The persisted value is returned when readable; do not retry blindly." }, { "x-request-id": ctx.requestId });
+            return;
+          }
           const policy = await evaluateChannelAutonomy(store, channel, { configured: channel === "whatsapp" || socialAiEnabled(config, channel) });
           const setting = policy.setting;
+          if (!setting.known || Boolean(setting.enabled) !== body.enabled) {
+            json(res, 503, { error: "setting_readback_mismatch", setting_saved: "unknown", audit_recorded: true,
+              channel: { channel, label: AUTONOMY_CHANNELS[channel].label, enabled: Boolean(setting.known && setting.enabled),
+                effective: policy.allowed, state: policy.state, source: setting.source, reason: policy.reason,
+                updated_by: setting.updated_by || null, updated_at: setting.updated_at || null },
+              detail: "The write was acknowledged but the subsequent persisted read did not confirm the requested value." }, { "x-request-id": ctx.requestId });
+            return;
+          }
           json(res, 200, { channel: { channel, label: AUTONOMY_CHANNELS[channel].label,
             enabled: Boolean(setting.known && setting.enabled), effective: policy.allowed, state: policy.state,
             source: setting.source, reason: policy.reason, updated_by: setting.updated_by || null, updated_at: setting.updated_at || null } },

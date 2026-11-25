@@ -1287,13 +1287,40 @@ class FileLeadAgentsStore {
       await this.persist();
       return { status: "claimed", reply_sent: false };
     }
-    if (existing.status === "processing" && now - Date.parse(existing.claimed_at) > staleAfterMs) {
+    if (existing.status === "processing" && !existing.autonomous_dispatch_at && now - Date.parse(existing.claimed_at) > staleAfterMs) {
       existing.claimed_at = new Date(now).toISOString();
       existing.request_id = requestId;
       await this.persist();
       return { status: "takeover", reply_sent: Boolean(existing.reply_sent_at) };
     }
-    return { status: "duplicate", reply_sent: Boolean(existing.reply_sent_at) };
+    return { status: "duplicate", reply_sent: Boolean(existing.reply_sent_at),
+      dispatch_state: existing.autonomous_dispatch_state || null, dispatch_in_flight: Boolean(existing.autonomous_dispatch_at) };
+  }
+
+  async authorizeWhatsAppAutonomousDispatch({ providerMessageId, leadId, expectedStateUpdatedAt }) {
+    const claim = this.state.whatsapp_inbound_claims[String(providerMessageId || "")];
+    if (!claim || claim.channel !== "whatsapp" || claim.status !== "processing" || claim.lead_id !== leadId ||
+        claim.reply_sent_at || claim.autonomous_dispatch_at) return "whatsapp_dispatch_claim_unavailable";
+    const state = this.state.lead_channel_states.find((row) => row.lead_id === leadId && row.channel === "whatsapp");
+    if (!state || state.updated_at !== expectedStateUpdatedAt) return "whatsapp_ownership_changed";
+    if (state.ai_paused !== false || ["human_active", "human_review"].includes(state.human_status)) return "whatsapp_takeover_active";
+    if (this.state.runtime_settings.whatsapp_autonomous_responses_enabled?.value !== true) return "autonomous_whatsapp_disabled";
+    claim.autonomous_dispatch_at = this.nowIso();
+    claim.autonomous_dispatch_revision = Number(state.social_ownership_revision || 0);
+    claim.autonomous_dispatch_state = "authorized";
+    await this.persist();
+    return "authorized";
+  }
+
+  async settleWhatsAppAutonomousDispatch(providerMessageId, state) {
+    const claim = this.state.whatsapp_inbound_claims[String(providerMessageId || "")];
+    if (!claim || !["accepted", "unknown", "not_sent"].includes(state)) return "dispatch_not_authorized";
+    if (claim.autonomous_dispatch_state === state) return "already_settled";
+    if (claim.autonomous_dispatch_state !== "authorized") return "dispatch_not_authorized";
+    claim.autonomous_dispatch_state = state;
+    if (state === "accepted") claim.reply_sent_at = this.nowIso();
+    await this.persist();
+    return "settled";
   }
 
   async updateInboundClaim(providerMessageId, patch) {

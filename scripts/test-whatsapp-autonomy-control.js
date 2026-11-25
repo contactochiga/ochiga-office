@@ -16,7 +16,7 @@ const listen = (server) => new Promise((resolve, reject) => { server.once("error
 const close = (server) => new Promise((resolve) => server.close(resolve));
 
 async function main() {
-  let goalActive = false, coreCalls = 0, coreDelayMs = 0, backendOptedOut = false, failConsentCheck = false, consentChecks = 0, corePayload = null;
+  let goalActive = false, coreCalls = 0, coreDelayMs = 0, backendOptedOut = false, failConsentCheck = false, consentChecks = 0, corePayload = null, coreMode = "success";
   const backend = http.createServer((req, res) => {
     let raw = ""; req.on("data", (c) => (raw += c)); req.on("end", async () => {
       res.setHeader("content-type", "application/json");
@@ -28,7 +28,12 @@ async function main() {
         }
         return res.end(JSON.stringify({ ok: true, goal_active: body.replay ? false : goalActive, opted_out: backendOptedOut, opt_out_status: backendOptedOut ? "opted_out" : "not_opted_out" }));
       }
-      if (req.url === "/office/conversation/corporate") { coreCalls++; corePayload = JSON.parse(raw || "{}"); if (coreDelayMs) await new Promise((r) => setTimeout(r, coreDelayMs)); return res.end(JSON.stringify({ ok: true, answer: "Hello from Oyi", conversation_thread_id: "oyi-thread-1" })); }
+      if (req.url === "/office/conversation/corporate") {
+        coreCalls++; corePayload = JSON.parse(raw || "{}"); if (coreDelayMs) await new Promise((r) => setTimeout(r, coreDelayMs));
+        if (coreMode === "failure") { res.statusCode = 503; return res.end(JSON.stringify({ ok: false, error: "unavailable" })); }
+        if (coreMode === "invalid") return res.end(JSON.stringify({ ok: true, conversation_thread_id: "oyi-thread-1" }));
+        return res.end(JSON.stringify({ ok: true, answer: "Hello from Oyi", conversation_thread_id: "oyi-thread-1" }));
+      }
       res.statusCode = 404; res.end("{}");
     });
   });
@@ -159,6 +164,23 @@ async function main() {
     assert.equal(corePayload.metadata.verified_conversation_context.messages.at(-1).text, "One more question");
     const allowedBridge = await bridge({ to: "+2348011111111", body: "goal follow up", lead_id: lead1.id, communication_id: "c4", send_origin: "autonomous" });
     assert.equal(allowedBridge.body.delivered, true);
+    const sentBeforeCoreFailure = sent.length;
+    coreMode = "failure";
+    const coreFailure = await inbound("2348011111222", "Please help");
+    coreMode = "success";
+    assert.equal(coreFailure.suppressed, true);
+    assert.equal(coreFailure.reason, "oyi_core_unavailable");
+    assert.equal(sent.length, sentBeforeCoreFailure, "provider is never called for an unavailable Oyi Core response");
+    const failedCoreLead = await leadFor("2348011111222");
+    assert.ok(store.state.inbound_events.some((row) => row.external_event_id === "wamid.in." + msgSeq), "inbound remains durably visible");
+    assert.ok(store.state.timeline_events.some((row) => row.lead_id === failedCoreLead.id && row.metadata?.reason === "oyi_core_unavailable"));
+    coreMode = "invalid";
+    const invalidCore = await inbound("2348011111333", "Please help too");
+    coreMode = "success";
+    assert.equal(invalidCore.suppressed, true);
+    assert.equal(invalidCore.reason, "oyi_core_response_invalid");
+    assert.equal(sent.length, sentBeforeCoreFailure, "invalid Core response never reaches the WhatsApp adapter");
+    console.log("Oyi Core failure/invalid response: inbound is retained and provider is never called — PASS");
     console.log("5. ON permits eligible replies and bridge sends; no replay when switching ON — PASS");
 
     // 11. duplicate delivery of the same inbound message id is acknowledged without a second reply.
