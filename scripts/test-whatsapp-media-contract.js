@@ -121,7 +121,7 @@ async function main() {
   const login = await fetch(`${base}/api/lead-agents/admin/session/login`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ email: "super@ochiga.local", password: "super-pass-123" }) });
   const cookie = login.headers.get("set-cookie").split(";")[0];
   assert.equal((await fetch(`${base}/api/lead-agents/admin/settings/whatsapp-autonomy`, { method: "PUT", headers: { "content-type": "application/json", cookie }, body: JSON.stringify({ enabled: true }) })).status, 200);
-  const bodyFor = (id) => webhookBodies.filter((b) => b.provider_message_id === id);
+  const bodyFor = (id) => webhookBodies.filter((b) => b.provider_message_id === id && b.replay !== true);
   const activityFor = async (id) => store.findCrmActivityByProviderMessageId(id);
   const counts = () => ({ sent: sent.length, core: coreRequests.length });
 
@@ -149,15 +149,21 @@ async function main() {
     const row2 = (inbox.relationships || []).find((r) => r.lead_id === lead2.id);
     ok(row2 && row2.unread === true, "media only: the inbox keeps the conversation unread (awaiting a person)");
 
-    // 3. Image with caption: caption answered, media described structurally
+    // 3. A caption after media-only history is suppressed because that earlier
+    // event cannot be represented as a verified text transcript.
     before = counts();
     const r3 = await deliver(metaImage("wamid.i2", "2348022222222", "Here is my site plan"));
     const b3 = bodyFor("wamid.i2")[0];
     ok(b3.text === "" && b3.caption === "Here is my site plan" && b3.attachments.length === 1, "caption: forwarded as caption (not as text)");
+    ok(counts().core === before.core && counts().sent === before.sent && r3.suppressed && r3.reason === "conversation_content_unavailable", "caption: prior media-only history makes verified AI context incomplete, so no reply is generated");
+
+    // A fresh conversation with a captioned image has complete, verifiable text context.
+    before = counts();
+    const r3fresh = await deliver(metaImage("wamid.i2fresh", "2348022222333", "Here is my site plan"));
     const core3 = coreRequests.at(-1);
-    ok(counts().core === before.core + 1 && core3.message === "Here is my site plan" && core3.metadata.inbound_message.message_type === "image" && core3.metadata.inbound_message.caption_present === true && core3.metadata.inbound_message.attachment_kinds.join() === "image" && counts().sent === before.sent + 1 && r3.outbound, "caption: Oyi answers the caption; the attachment is described in metadata, not in the message");
-    ok(/haven't seen the photo you sent/.test(sent.at(-1).body), "caption: the reply sent to the customer says the media was not opened (Backend-confirmed notice)");
-    ok((await activityFor("wamid.i2")).body === "Here is my site plan" && (await activityFor("wamid.i2")).metadata.caption === "Here is my site plan", "caption: shown in the CRM record and kept in its own field");
+    ok(counts().core === before.core + 1 && core3.message === "Here is my site plan" && core3.metadata.inbound_message.message_type === "image" && core3.metadata.inbound_message.caption_present === true && core3.metadata.inbound_message.attachment_kinds.join() === "image" && counts().sent === before.sent + 1 && r3fresh.outbound, "caption: verified fresh conversation is answered; attachment is described in metadata");
+    ok(/haven't seen the photo you sent/.test(sent.at(-1).body), "caption: reply says the media was not opened (Backend-confirmed notice)");
+    ok((await activityFor("wamid.i2fresh")).body === "Here is my site plan" && (await activityFor("wamid.i2fresh")).metadata.caption === "Here is my site plan", "caption: shown in CRM and kept in its own field");
 
     // 4. STOP as a video caption, and as text: no automatic reply
     before = counts();

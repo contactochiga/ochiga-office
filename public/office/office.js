@@ -11603,78 +11603,91 @@ async function toggleTeamEditRow(user, canonicalRoles) {
 // ---------------------------------------------------------------
 
 // ---------------------------------------------------------------
-// Settings -> Integrations -> WhatsApp: the ONE global switch for autonomous
-// AI replies. The server's persisted setting is the only truth: the control
-// shows what the server returned, never an optimistic local value, and a
-// failed save leaves the displayed state unchanged and says so.
+// Per-channel autonomy controls use the persisted Office settings as their
+// source of truth. Connectivity and AI permission are shown independently.
 // ---------------------------------------------------------------
-async function apiGetWhatsAppAutonomy() {
-  return api("/api/lead-agents/admin/settings/whatsapp-autonomy");
+async function apiGetChannelAutonomy() {
+  return api("/api/lead-agents/admin/settings/channel-autonomy", { cache: "no-store" });
 }
-async function apiSetWhatsAppAutonomy(enabled) {
-  return api("/api/lead-agents/admin/settings/whatsapp-autonomy", { method: "PUT", body: { enabled } });
-}
-function whatsAppAutonomyStatusText(status) {
-  if (!status) return "The current status could not be read.";
-  if (status.state === "unknown_fail_closed") return "Status unknown — treated as OFF. No autonomous WhatsApp reply will be sent until the setting can be read.";
-  if (status.enabled) return "ON — Oyi may reply to WhatsApp messages automatically, except where a conversation is paused or a staff member has taken over.";
-  return "OFF — WhatsApp messages are still received and saved to the CRM, but no automatic reply is sent. Staff can reply manually.";
+async function apiSetChannelAutonomy(channel, enabled) {
+  return api("/api/lead-agents/admin/settings/channel-autonomy", { method: "PUT", body: { channel, enabled } });
 }
 async function renderWhatsAppAutonomyPanel(outlet, token) {
-  const section = el(`<div class="overview-section" style="margin-top:24px;"><h3>WhatsApp</h3></div>`);
+  const section = el(`<div class="overview-section" style="margin-top:24px;"><h3>Oyi conversational responses</h3></div>`);
   outlet.appendChild(section);
-  let status = null;
+  let channels = null;
   let loadError = "";
   try {
-    status = (await apiGetWhatsAppAutonomy()).whatsapp_autonomy;
+    channels = (await apiGetChannelAutonomy()).channels;
   } catch (err) {
-    loadError = err.message || "Could not read the WhatsApp setting.";
+    loadError = err.message || "Could not read channel autonomy settings.";
   }
   if (token !== state.renderToken) return;
   const canManage = hasPermission("integrations.manage");
   const body = el(`<div></div>`);
   section.appendChild(body);
-  const feedback = el(`<div class="hint" role="status" aria-live="polite" id="waAutonomyFeedback"></div>`);
+  const feedback = el(`<div class="hint" role="status" aria-live="polite"></div>`);
   const draw = () => {
-    const known = Boolean(status) && status.state !== "unknown_fail_closed";
-    const on = Boolean(status && status.enabled);
-    const changed = status && status.updated_at
-      ? `${escapeHtml(status.updated_by || "unknown")} · ${escapeHtml(new Date(status.updated_at).toLocaleString())}`
-      : "Never changed (default OFF)";
-    const bannerText = loadError ? "AUTONOMOUS RESPONSES — STATE UNAVAILABLE (TREATED AS OFF)" : !known ? "AUTONOMOUS RESPONSES UNKNOWN — TREATED AS OFF" : on ? "AUTONOMOUS RESPONSES ON" : "AUTONOMOUS RESPONSES OFF";
-    const bannerColor = !loadError && known && on ? "#0a7d3b" : "#b42318";
-    body.innerHTML = `
-      <div id="waAutonomyBanner" role="status" style="font-weight:700;letter-spacing:.04em;padding:10px 14px;margin:8px 0 14px;border-radius:8px;border:2px solid ${bannerColor};color:${bannerColor};display:inline-block;">${escapeHtml(bannerText)}</div>
-      <div class="fact-grid">
-        <div class="fact"><div class="fact-label">Official WhatsApp number</div><div class="fact-value">${status && status.official_number ? escapeHtml(status.official_number) : "Not shown (display value not configured)"}</div></div>
-        <div class="fact"><div class="fact-label">Autonomous AI Responses</div><div class="fact-value">${known ? badge(on ? "ON" : "OFF", on ? "green" : "default") : badge("Unknown (OFF)", "amber")}</div></div>
-        <div class="fact"><div class="fact-label">Last changed by / at</div><div class="fact-value">${changed}</div></div>
-      </div>
-      <p class="hint" id="waAutonomyEffective">${loadError ? escapeHtml(loadError) : escapeHtml(whatsAppAutonomyStatusText(status))}</p>
-    `;
-    if (canManage && !loadError) {
-      const row = el(`<div class="inline-form"></div>`);
-      const btn = el(`<button class="btn ${on ? "btn-ghost" : ""}" type="button" id="waAutonomyToggle">${on ? "Turn OFF" : "Turn ON"}</button>`);
-      btn.addEventListener("click", async () => {
-        const target = !on;
-        if (target && !window.confirm("Turn ON autonomous WhatsApp replies? Oyi will reply to incoming WhatsApp messages automatically (paused and taken-over conversations are excluded). Messages received while OFF are not answered retroactively.")) return;
-        btn.disabled = true;
-        feedback.textContent = "Saving…";
-        try {
-          const result = await apiSetWhatsAppAutonomy(target);
-          status = result.whatsapp_autonomy;
-          draw();
-          feedback.textContent = `Saved. ${status.enabled === target ? "The server confirms the setting is now " + (status.enabled ? "ON" : "OFF") + "." : "The server reports a different value; it is shown above."}`;
-        } catch (err) {
-          draw();
-          feedback.textContent = `Not saved — ${err.message || "the setting could not be changed"}. The setting above is unchanged.`;
-        }
-      });
-      row.appendChild(btn);
-      body.appendChild(row);
-    } else if (!canManage) {
-      body.appendChild(el(`<p class="hint">Only administrators can change this setting.</p>`));
+    body.innerHTML = "";
+    if (loadError || !channels) {
+      body.appendChild(el(`<p class="rel-locked" role="status">Autonomy settings unavailable — all channels are treated as OFF. ${escapeHtml(loadError || "No settings were returned.")}</p>`));
+      return;
     }
+    const grid = el(`<div class="fact-grid" style="grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:14px;"></div>`);
+    for (const channel of ["whatsapp", "facebook", "instagram"]) {
+      const status = channels[channel];
+      if (!status) continue;
+      const known = status.state !== "unknown_fail_closed";
+      const card = el(`<div class="crm-metrics-strip" style="border-color:rgba(179,36,27,.48);padding:16px;"></div>`);
+      const connectionText = status.connection?.status === "configured" ? "Configured" : status.connection?.status === "configured_unverified" ? "Configured · not independently verified" : "Not configured";
+      const inboundText = status.inbound_enabled ? "Enabled/configured" : "Disabled";
+      const stateText = !known ? "UNKNOWN · FAIL-CLOSED" : status.effective ? "ON · ACTIVE" : status.enabled ? "ON · BLOCKED BY CHANNEL CONFIGURATION" : "OFF";
+      card.innerHTML = `<h4 style="margin:0 0 12px;color:var(--warmwhite);">${escapeHtml(status.label)}</h4>
+        <div class="fact-grid" style="grid-template-columns:1fr 1fr;">
+          <div class="fact"><div class="fact-label">Account connection</div><div class="fact-value">${escapeHtml(connectionText)}</div></div>
+          <div class="fact"><div class="fact-label">Inbound</div><div class="fact-value">${escapeHtml(inboundText)}</div></div>
+          <div class="fact"><div class="fact-label">Autonomous responses</div><div class="fact-value">${badge(stateText, !known ? "amber" : status.effective ? "green" : "default")}</div></div>
+          <div class="fact"><div class="fact-label">Manual staff handling</div><div class="fact-value">${status.manual_staff_handling ? "Available subject to conversation policy" : "Unavailable by current channel gates"}</div></div>
+        </div>
+        <p class="hint">${escapeHtml(status.reason || (status.effective ? "Eligible new inbound messages may use Oyi Core, subject to consent, ownership and delivery checks." : "Inbound handling and staff replies are controlled separately; this AI switch does not disable them."))}</p>
+        <p class="hint">Last changed: ${status.updated_at ? `${escapeHtml(status.updated_by || "unknown")} · ${escapeHtml(new Date(status.updated_at).toLocaleString())}` : "Never · default OFF"}</p>`;
+      if (canManage && known) {
+        const button = el(`<button class="btn ${status.enabled ? "btn-ghost" : "btn-primary"}" type="button">${status.enabled ? "Turn OFF" : "Turn ON"}</button>`);
+        button.addEventListener("click", async () => {
+          const target = !status.enabled;
+          if (target && !window.confirm(`Turn ON autonomous ${status.label} replies? Existing conversation-level pauses and safety checks continue to apply. Messages received while OFF are not replayed.`)) return;
+          button.disabled = true;
+          feedback.textContent = `Saving ${status.label} setting…`;
+          try {
+            await apiSetChannelAutonomy(channel, target);
+            channels = (await apiGetChannelAutonomy()).channels;
+            draw();
+            feedback.textContent = `${status.label} setting refreshed from the server.`;
+          } catch (err) {
+            try {
+              channels = (await apiGetChannelAutonomy()).channels;
+              loadError = "";
+              draw();
+              if (err.data?.error === "setting_saved_audit_failed") {
+                feedback.textContent = `The server confirms ${status.label} is ${channels[channel]?.enabled ? "ON" : "OFF"}, but failed to record the audit event. Do not retry blindly; contact an administrator.`;
+              } else if (err.data?.error === "setting_save_outcome_unknown" || err.data?.error === "setting_readback_mismatch") {
+                feedback.textContent = `The save result was uncertain. The control now shows the value read back from the server (${channels[channel]?.enabled ? "ON" : "OFF"}). Verify it before trying again.`;
+              } else {
+                feedback.textContent = `The save failed. The control shows the current server value (${channels[channel]?.enabled ? "ON" : "OFF"}).`;
+              }
+            } catch (readError) {
+              channels = null;
+              loadError = `Could not verify the saved state: ${readError.message || "settings read failed"}. All channels are treated as OFF until verified.`;
+              draw();
+            }
+          }
+        });
+        card.appendChild(button);
+      }
+      grid.appendChild(card);
+    }
+    body.appendChild(grid);
+    if (!canManage) body.appendChild(el(`<p class="hint">You can view channel status, but changing autonomous-response settings requires integration-management permission.</p>`));
     body.appendChild(feedback);
   };
   draw();

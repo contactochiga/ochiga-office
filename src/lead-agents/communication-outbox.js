@@ -111,6 +111,25 @@ async function defaultPost(config, body, timeoutMs) {
   }
 }
 
+// Read the Backend's current consent decision without enqueueing or replaying a message through the outbox.
+// Backend replay semantics persist/classify the event but do not wake goals or initiate customer sends.
+async function verifyWhatsAppConsent(config, payload, { post = defaultPost, timeoutMs = 8_000 } = {}) {
+  if (!config?.officeBackendBaseUrl || !config?.officeBackendApiKey || !payload || payload.channel !== "whatsapp" ||
+      payload.provider_event_type !== "message" || !clean(payload.provider_message_id) || !clean(payload.from)) {
+    return { status: "unknown", reason: "consent_verification_unavailable" };
+  }
+  try {
+    const result = await post(config, { ...payload, replay: true }, timeoutMs);
+    if (result?.status !== 200 || result?.data?.ok !== true) return { status: "unknown", reason: "consent_verification_unavailable" };
+    const status = optOutStatusFrom(result.data);
+    return status === "not_opted_out"
+      ? { status, reason: null }
+      : { status: status === "opted_out" ? status : "unknown", reason: status === "opted_out" ? "opted_out" : "consent_verification_unavailable" };
+  } catch {
+    return { status: "unknown", reason: "consent_verification_unavailable" };
+  }
+}
+
 // One delivery attempt for one entry (lease -> POST -> record outcome). Safe to call concurrently from any number of workers/instances for the same entry.
 async function attemptDelivery(store, config, entry, { workerId = `worker-${process.pid}`, timeoutMs, now = Date.now, post = defaultPost, random = Math.random, log = () => {} } = {}) {
   const s = settings(config);
@@ -208,4 +227,4 @@ async function recoverMessage(store, config, { providerMessageId, now, post, log
   return { ok: true, entry_id: entry.id, delivered: Boolean(outcome.delivered), attempts: outcome.attempts || entry.attempts, replay: true, error: outcome.error || outcome.reason || null, source_event_id: message.id, occurred_at: payload.occurred_at };
 }
 
-module.exports = { DEFAULTS, settings, deliveryKey, backoffDelayMs, payloadFromInboundEvent, enqueueDelivery, attemptDelivery, enqueueAndAttempt, drainOutbox, startOutboxWorker, reconcileOutbox, recoverMessage, classify, PERMANENT_REASONS };
+module.exports = { DEFAULTS, settings, deliveryKey, backoffDelayMs, payloadFromInboundEvent, enqueueDelivery, attemptDelivery, enqueueAndAttempt, verifyWhatsAppConsent, drainOutbox, startOutboxWorker, reconcileOutbox, recoverMessage, classify, PERMANENT_REASONS };

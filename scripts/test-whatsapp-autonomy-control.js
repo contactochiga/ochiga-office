@@ -16,12 +16,24 @@ const listen = (server) => new Promise((resolve, reject) => { server.once("error
 const close = (server) => new Promise((resolve) => server.close(resolve));
 
 async function main() {
-  let goalActive = false, coreCalls = 0, coreDelayMs = 0;
+  let goalActive = false, coreCalls = 0, coreDelayMs = 0, backendOptedOut = false, failConsentCheck = false, consentChecks = 0, corePayload = null, coreMode = "success", coreAnswer = "Hello from Oyi";
   const backend = http.createServer((req, res) => {
     let raw = ""; req.on("data", (c) => (raw += c)); req.on("end", async () => {
       res.setHeader("content-type", "application/json");
-      if (req.url === "/office/communications/webhook-event") return res.end(JSON.stringify({ ok: true, goal_active: goalActive, opted_out: false, opt_out_status: "not_opted_out" }));
-      if (req.url === "/office/conversation/corporate") { coreCalls++; if (coreDelayMs) await new Promise((r) => setTimeout(r, coreDelayMs)); return res.end(JSON.stringify({ ok: true, answer: "Hello from Oyi", conversation_thread_id: "oyi-thread-1" })); }
+      if (req.url === "/office/communications/webhook-event") {
+        const body = JSON.parse(raw || "{}");
+        if (body.replay) {
+          consentChecks++;
+          if (failConsentCheck) { res.statusCode = 503; return res.end(JSON.stringify({ ok: false })); }
+        }
+        return res.end(JSON.stringify({ ok: true, goal_active: body.replay ? false : goalActive, opted_out: backendOptedOut, opt_out_status: backendOptedOut ? "opted_out" : "not_opted_out" }));
+      }
+      if (req.url === "/office/conversation/corporate") {
+        coreCalls++; corePayload = JSON.parse(raw || "{}"); if (coreDelayMs) await new Promise((r) => setTimeout(r, coreDelayMs));
+        if (coreMode === "failure") { res.statusCode = 503; return res.end(JSON.stringify({ ok: false, error: "unavailable" })); }
+        if (coreMode === "invalid") return res.end(JSON.stringify({ ok: true, conversation_thread_id: "oyi-thread-1" }));
+        return res.end(JSON.stringify({ ok: true, answer: coreAnswer, conversation_thread_id: "oyi-thread-1" }));
+      }
       res.statusCode = 404; res.end("{}");
     });
   });
@@ -59,7 +71,9 @@ async function main() {
   let msgSeq = 0;
   const inbound = async (from, text, id) => {
     const message_id = id || `wamid.in.${++msgSeq}`;
-    const res = await fetch(`${base}/webhooks/whatsapp`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ events: [{ kind: "message", from, message_id, message_type: "text", timestamp: String(Math.floor(Date.now() / 1000)), text, raw: { id: message_id }, metadata: {}, contacts: [] }] }) });
+    const timestamp = String(Math.floor(Date.now() / 1000));
+    const raw = { id: message_id, from, type: "text", timestamp, text: { body: text } };
+    const res = await fetch(`${base}/webhooks/whatsapp`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ events: [{ kind: "message", from, message_id, message_type: "text", timestamp, text, raw, metadata: {}, contacts: [] }] }) });
     assert.equal(res.status, 200); return (await res.json()).results[0];
   };
   const bridge = (payload, headers = {}) => fetch(`${base}/api/lead-agents/admin/communications/whatsapp/send`, { method: "POST", headers: { "content-type": "application/json", "x-office-api-key": KEY, ...headers }, body: JSON.stringify(payload) }).then(async (r) => ({ status: r.status, body: await r.json() }));
@@ -131,10 +145,57 @@ async function main() {
     assert.equal(onBody.whatsapp_autonomy.enabled, true); assert.equal(onBody.whatsapp_autonomy.updated_by, "super@ochiga.local");
     assert.equal(sent.length, 0, "switching ON sends nothing by itself (no replay of suppressed replies)");
     assert.equal(coreCalls, suppressedBefore);
+    await new Promise((resolve) => setTimeout(resolve, 1100)); // provider timestamps have one-second precision; keep the prior staff turns unambiguously earlier
     const r5 = await inbound("2348011111111", "Are you still there?");
     assert.equal(r5.outbound?.delivered, true); assert.equal(sent.length, 1); assert.equal(sent[0].body, "Hello from Oyi");
+    assert.equal(corePayload.metadata.verified_conversation_context.version, 1);
+    assert.equal(corePayload.metadata.verified_conversation_context.channel, "whatsapp");
+    assert.equal(corePayload.metadata.verified_conversation_context.lead_ref, lead1.id);
+    assert.equal(corePayload.metadata.verified_conversation_context.current_event_id, "wamid.in.2");
+    assert.equal(corePayload.metadata.verified_conversation_context.messages.at(-1).text, "Are you still there?");
+    assert.equal(corePayload.metadata.verified_conversation_context.conversation_thread_id, null, "first verified turn has no fabricated Oyi thread");
+    assert.ok(consentChecks >= 1, "fresh replay consent check occurred before dispatch");
+    await new Promise((resolve) => setTimeout(resolve, 1100));
+    const continued = await inbound("2348011111111", "One more question");
+    assert.equal(continued.outbound?.delivered, true);
+    assert.equal(corePayload.conversation_thread_id, "oyi-thread-1");
+    assert.equal(corePayload.metadata.verified_conversation_context.conversation_thread_id, "oyi-thread-1");
+    assert.ok(corePayload.metadata.verified_conversation_context.messages.some((row) => row.role === "assistant" && row.text === "Hello from Oyi"));
+    assert.equal(corePayload.metadata.verified_conversation_context.messages.at(-1).text, "One more question");
+    coreAnswer = "Long governed answer ".padEnd(1200, "L");
+    await new Promise((resolve) => setTimeout(resolve, 1100));
+    const longReply = await inbound("2348011111111", "Please continue from that detailed answer");
+    assert.equal(longReply.outbound?.delivered, true);
+    assert.equal(sent.at(-1).body, coreAnswer);
+    const persistedLongTurn = store.state.timeline_events.find((row) => row.event_type === "oyi_core_whatsapp_turn" && row.body === coreAnswer);
+    assert.ok(persistedLongTurn, "the complete accepted answer is stored in the timeline");
+    assert.equal(persistedLongTurn.metadata.assistant_text_length, coreAnswer.length);
+    await new Promise((resolve) => setTimeout(resolve, 1100));
+    const afterLongReply = await inbound("2348011111111", "I have a follow-up about your detailed answer");
+    assert.equal(afterLongReply.outbound?.delivered, true);
+    assert.equal(corePayload.metadata.verified_conversation_context.messages.filter((row) => row.role === "assistant").at(-1)?.text, coreAnswer,
+      "the next Oyi Core request receives the entire verified long answer");
+    coreAnswer = "Hello from Oyi";
+    console.log("WhatsApp accepted long answer persists intact and is verified in the next turn — PASS");
     const allowedBridge = await bridge({ to: "+2348011111111", body: "goal follow up", lead_id: lead1.id, communication_id: "c4", send_origin: "autonomous" });
     assert.equal(allowedBridge.body.delivered, true);
+    const sentBeforeCoreFailure = sent.length;
+    coreMode = "failure";
+    const coreFailure = await inbound("2348011111222", "Please help");
+    coreMode = "success";
+    assert.equal(coreFailure.suppressed, true);
+    assert.equal(coreFailure.reason, "oyi_core_unavailable");
+    assert.equal(sent.length, sentBeforeCoreFailure, "provider is never called for an unavailable Oyi Core response");
+    const failedCoreLead = await leadFor("2348011111222");
+    assert.ok(store.state.inbound_events.some((row) => row.external_event_id === "wamid.in." + msgSeq), "inbound remains durably visible");
+    assert.ok(store.state.timeline_events.some((row) => row.lead_id === failedCoreLead.id && row.metadata?.reason === "oyi_core_unavailable"));
+    coreMode = "invalid";
+    const invalidCore = await inbound("2348011111333", "Please help too");
+    coreMode = "success";
+    assert.equal(invalidCore.suppressed, true);
+    assert.equal(invalidCore.reason, "oyi_core_response_invalid");
+    assert.equal(sent.length, sentBeforeCoreFailure, "invalid Core response never reaches the WhatsApp adapter");
+    console.log("Oyi Core failure/invalid response: inbound is retained and provider is never called — PASS");
     console.log("5. ON permits eligible replies and bridge sends; no replay when switching ON — PASS");
 
     // 11. duplicate delivery of the same inbound message id is acknowledged without a second reply.
@@ -183,7 +244,49 @@ async function main() {
     assert.ok(!racedTimeline.some((e) => e.event_type === "oyi_core_whatsapp_turn"), "a blocked reply is never recorded as an Oyi turn that was delivered");
     console.log("9. Concurrent inbound cannot bypass OFF; a switch-off during generation blocks the send — PASS");
 
+    // Fresh Backend consent must win when the sender opts out while Oyi Core is generating.
+    assert.equal((await setSwitch(superCookie, true)).status, 200);
+    backendOptedOut = false; coreDelayMs = 220; sent.length = 0;
+    const optOutRace = inbound("2348044444555", "Please send details");
+    await new Promise((r) => setTimeout(r, 70));
+    backendOptedOut = true;
+    const optedOutResult = await optOutRace; coreDelayMs = 0; backendOptedOut = false;
+    assert.equal(optedOutResult.suppressed, true); assert.equal(optedOutResult.reason, "opted_out");
+    assert.equal(sent.length, 0, "a fresh opt-out suppresses a reply already generated");
+    const optOutLead = await leadFor("2348044444555");
+    assert.ok(store.state.timeline_events.some((row) => row.lead_id === optOutLead.id && row.event_type === "whatsapp_autonomous_reply_suppressed" && row.metadata.reason === "opted_out"));
+    console.log("Customer opt-out during generation is rechecked before dispatch and suppresses the reply — PASS");
+
+    // Unavailable fresh consent verification must not be treated as consent.
+    failConsentCheck = true; sent.length = 0;
+    const unknownConsent = await inbound("2348044444666", "I need information");
+    failConsentCheck = false;
+    assert.equal(unknownConsent.suppressed, true); assert.equal(unknownConsent.reason, "opt_out_unverified");
+    assert.equal(sent.length, 0, "unknown fresh consent fails closed");
+    console.log("Consent service unavailable immediately before dispatch fails closed — PASS");
+
+    // Ownership and transcript changes during generation invalidate the pending response.
+    coreDelayMs = 220; sent.length = 0;
+    const ownershipRace = inbound("2348044444777", "Wait for human");
+    await new Promise((r) => setTimeout(r, 70));
+    const ownershipLead = await leadFor("2348044444777");
+    await store.upsertLeadChannelState(ownershipLead.id, "whatsapp", { human_status: "human_active", human_owner: "super@ochiga.local", ai_paused: true });
+    const ownershipResult = await ownershipRace; coreDelayMs = 0;
+    assert.equal(ownershipResult.suppressed, true); assert.equal(sent.length, 0);
+    await store.upsertLeadChannelState(ownershipLead.id, "whatsapp", { human_status: "auto", human_owner: "", ai_paused: false });
+
+    coreDelayMs = 220;
+    const transcriptRace = inbound("2348044444888", "Transcript may change");
+    await new Promise((r) => setTimeout(r, 70));
+    const transcriptEvent = store.state.inbound_events.find((row) => row.external_event_id === "wamid.in." + msgSeq);
+    transcriptEvent.payload.text.body = "Changed after generation started";
+    const transcriptResult = await transcriptRace; coreDelayMs = 0;
+    assert.equal(transcriptResult.suppressed, true); assert.equal(transcriptResult.reason, "conversation_context_changed");
+    assert.equal(sent.length, 0);
+    console.log("Takeover and transcript changes during generation suppress pending responses — PASS");
+
     // ---- Negative controls (switch OFF unless stated) ----
+    assert.equal((await setSwitch(superCookie, false)).status, 200);
     assert.equal((await getSwitch(superCookie)).enabled, false);
     sent.length = 0;
     // A. missing lead_id   B. autonomous template (also unlabelled)   D. Backend automation   E. unresolved CRM identity (unknown recipient, no lead)
@@ -239,7 +342,11 @@ async function main() {
     assert.equal(store.state.inbound_events.filter((e) => e.external_event_id === "wamid.concurrent.1" && e.event_type === "message").length, 1, "stored exactly once");
     assert.equal((await store.listLeads()).filter((l) => l.whatsapp_phone === "2348066666666").length, 1, "concurrent first-contact deliveries of one message id create exactly one lead");
     // idempotency edge cases (switch ON): no provider id, a late retry of a message processed long ago, stale-claim takeover with and without a reply already sent
-    const rawEvent = (from, id, text) => fetch(`${base}/webhooks/whatsapp`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ events: [{ kind: "message", from, message_id: id, message_type: "text", timestamp: String(Math.floor(Date.now() / 1000)), text, raw: {}, metadata: {}, contacts: [] }] }) }).then(async (r) => (await r.json()).results[0]);
+    const rawEvent = (from, id, text) => {
+      const timestamp = String(Math.floor(Date.now() / 1000));
+      const raw = { id, from, type: "text", timestamp, text: { body: text } };
+      return fetch(`${base}/webhooks/whatsapp`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ events: [{ kind: "message", from, message_id: id, message_type: "text", timestamp, text, raw, metadata: {}, contacts: [] }] }) }).then(async (r) => (await r.json()).results[0]);
+    };
     sent.length = 0;
     const noId = await rawEvent("2348077777777", undefined, "message without a provider id");
     assert.equal(noId.suppressed, true); assert.equal(noId.reason, "no_provider_message_id"); assert.equal(sent.length, 0, "no autonomous reply can be made idempotent without a provider id");

@@ -389,6 +389,20 @@ class FileLeadAgentsStore {
       .slice(-limit);
   }
 
+  async getWhatsAppAiContext(leadId, limit = 201) {
+    const cap = Math.min(Math.max(Number(limit) || 201, 1), 201);
+    const chronological = (rows, timeField) => rows
+      .sort((a, b) => String(a[timeField] || a.created_at || "").localeCompare(String(b[timeField] || b.created_at || "")) || String(a.id || "").localeCompare(String(b.id || "")))
+      .slice(-cap)
+      .map((row) => ({ ...row, metadata: row.metadata ? { ...row.metadata } : row.metadata }));
+    return {
+      inboundEvents: chronological(this.state.inbound_events.filter((row) => row.channel === "whatsapp" && row.event_type === "message" && row.lead_id === leadId), "created_at"),
+      activities: chronological(this.state.crm_activities.filter((row) => row.lead_id === leadId && row.activity_type === "whatsapp_message"), "occurred_at"),
+      manualSends: chronological(this.state.whatsapp_manual_sends.filter((row) => row.lead_id === leadId && row.channel === "whatsapp"), "created_at"),
+      aiTurns: chronological(this.state.timeline_events.filter((row) => row.lead_id === leadId && ["oyi_core_whatsapp_turn", "oyi_core_whatsapp_unavailable"].includes(row.event_type)), "created_at"),
+    };
+  }
+
   async findLeadByPhone(phone) {
     const normalized = normalizeText(phone);
     if (!normalized) return null;
@@ -996,6 +1010,8 @@ class FileLeadAgentsStore {
         !this.state.conversations.some((item) => item.lead_id === row.lead_id && item.channel === channel &&
           item.message_role === "user" && item.correlation_id === autonomous.eventKey &&
           Date.parse(item.created_at) === Date.parse(target.meta_social_last_inbound_at))) return "social_ai_state_changed";
+      const settingKey = channel === "facebook" ? "facebook_messenger_autonomous_responses_enabled" : "instagram_direct_autonomous_responses_enabled";
+      if (this.state.runtime_settings[settingKey]?.value !== true) return "social_ai_state_changed";
     } else {
       if (actorEmail === "oyi_social_autonomy") return "social_dispatch_claim_lost";
       if (!["human_active", "human_review"].includes(ownerState.human_status)) return "social_takeover_required";
@@ -1271,13 +1287,40 @@ class FileLeadAgentsStore {
       await this.persist();
       return { status: "claimed", reply_sent: false };
     }
-    if (existing.status === "processing" && now - Date.parse(existing.claimed_at) > staleAfterMs) {
+    if (existing.status === "processing" && !existing.autonomous_dispatch_at && now - Date.parse(existing.claimed_at) > staleAfterMs) {
       existing.claimed_at = new Date(now).toISOString();
       existing.request_id = requestId;
       await this.persist();
       return { status: "takeover", reply_sent: Boolean(existing.reply_sent_at) };
     }
-    return { status: "duplicate", reply_sent: Boolean(existing.reply_sent_at) };
+    return { status: "duplicate", reply_sent: Boolean(existing.reply_sent_at),
+      dispatch_state: existing.autonomous_dispatch_state || null, dispatch_in_flight: Boolean(existing.autonomous_dispatch_at) };
+  }
+
+  async authorizeWhatsAppAutonomousDispatch({ providerMessageId, leadId, expectedStateUpdatedAt }) {
+    const claim = this.state.whatsapp_inbound_claims[String(providerMessageId || "")];
+    if (!claim || claim.channel !== "whatsapp" || claim.status !== "processing" || claim.lead_id !== leadId ||
+        claim.reply_sent_at || claim.autonomous_dispatch_at) return "whatsapp_dispatch_claim_unavailable";
+    const state = this.state.lead_channel_states.find((row) => row.lead_id === leadId && row.channel === "whatsapp");
+    if (!state || state.updated_at !== expectedStateUpdatedAt) return "whatsapp_ownership_changed";
+    if (state.ai_paused !== false || ["human_active", "human_review"].includes(state.human_status)) return "whatsapp_takeover_active";
+    if (this.state.runtime_settings.whatsapp_autonomous_responses_enabled?.value !== true) return "autonomous_whatsapp_disabled";
+    claim.autonomous_dispatch_at = this.nowIso();
+    claim.autonomous_dispatch_revision = Number(state.social_ownership_revision || 0);
+    claim.autonomous_dispatch_state = "authorized";
+    await this.persist();
+    return "authorized";
+  }
+
+  async settleWhatsAppAutonomousDispatch(providerMessageId, state) {
+    const claim = this.state.whatsapp_inbound_claims[String(providerMessageId || "")];
+    if (!claim || !["accepted", "unknown", "not_sent"].includes(state)) return "dispatch_not_authorized";
+    if (claim.autonomous_dispatch_state === state) return "already_settled";
+    if (claim.autonomous_dispatch_state !== "authorized") return "dispatch_not_authorized";
+    claim.autonomous_dispatch_state = state;
+    if (state === "accepted") claim.reply_sent_at = this.nowIso();
+    await this.persist();
+    return "settled";
   }
 
   async updateInboundClaim(providerMessageId, patch) {

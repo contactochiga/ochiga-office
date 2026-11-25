@@ -8,7 +8,7 @@ const axios = require("axios");
 const { createConfig } = require("./config");
 const { log } = require("./logger");
 const envelopeObservation = require("./whatsapp-envelope-observation");
-const { handleMetaSocialWebhook } = require("./meta-social-inbound");
+const { handleMetaSocialWebhook, dmChannelEnabled, configuredAsset } = require("./meta-social-inbound");
 const { createMetaPageConnection, parseCookie: parseMetaCookie, publicConnection: publicMetaConnection, clearStateCookie: clearMetaStateCookie, STATE_COOKIE: META_STATE_COOKIE } = require("./meta-page-connection");
 const { createMetaSocialReplyAdapter, replyPolicy, sendSocialReply, socialOutboundChannelEnabled, socialTakeoverRefusal, socialAiEnabled, socialAiActive, SOCIAL_AI_ACTOR } = require("./meta-social-replies");
 const { continueSocialConversation } = require("./meta-social-autonomy");
@@ -136,6 +136,7 @@ const {
 const { DEFAULT_CAPABILITIES } = require("./communications-handoff");
 const { WhatsAppCloudAdapter } = require("./whatsapp");
 const { evaluateAutonomousWhatsAppPolicy, readWhatsAppAutonomySetting, verifyStaffConfirmedSend, describeWhatsAppAutonomyStatus, WHATSAPP_AUTONOMY_SETTING_KEY } = require("./whatsapp-autonomy");
+const { CHANNELS: AUTONOMY_CHANNELS, readChannelAutonomySetting, evaluateChannelAutonomy } = require("./channel-autonomy");
 const { resolveRecipient, resolveRecipientByEntity } = require("./recipient-resolution");
 const { buildCalendarLinks, parsePreferredSchedule } = require("./scheduling");
 const { buildProposal, inferCommercialFacts } = require("./commercial");
@@ -152,6 +153,7 @@ const { handlePublicCatalogueRequest } = require("./catalogue-public-api");
 const signatureStats = require("./webhook-signature-stats");
 const inboundVisibility = require("./whatsapp-inbound-visibility");
 const communicationOutbox = require("./communication-outbox");
+const { buildVerifiedWhatsAppContext, ownershipFingerprint } = require("./whatsapp-ai-context");
 const { performManualSend, reconcileManualSends, resolveManualSend } = require("./manual-whatsapp-send");
 const { recallCrmMemory } = require("./crm-memory-access");
 const { createRealtimeHub } = require("./realtime");
@@ -1743,6 +1745,21 @@ const AUTOMATIC_REPLY_CONTENT_REASONS = Object.freeze({
   opt_out_requested: "The customer asked not to be contacted, so no automatic reply was sent.",
   opted_out: "This customer has opted out of messages, so no automatic reply was sent.",
   opt_out_unverified: "This customer's messaging consent could not be confirmed (the Oyi Backend was unavailable or could not check), so no automatic reply was sent; a team member should review it.",
+  conversation_context_unavailable: "The verified CRM conversation history could not be loaded, so no automatic reply was sent.",
+  conversation_context_recheck_unavailable: "The CRM conversation history could not be reverified after generation, so no automatic reply was sent.",
+  conversation_context_changed: "The CRM conversation changed while the reply was being prepared, so no automatic reply was sent.",
+  conversation_context_incomplete: "The CRM conversation history was incomplete, so no automatic reply was sent.",
+  conversation_content_unavailable: "A prior WhatsApp message has no customer-authored text available to Oyi, so no automatic reply was sent.",
+  conversation_ownership_unavailable: "Conversation ownership could not be verified, so no automatic reply was sent.",
+  conversation_ownership_changed: "Conversation ownership changed while the reply was being prepared, so no automatic reply was sent.",
+  conversation_thread_mismatch: "The Oyi Core conversation thread could not be verified, so no automatic reply was sent.",
+  oyi_core_unavailable: "Oyi Core was unavailable, so no automatic WhatsApp reply was sent.",
+  oyi_core_response_invalid: "Oyi Core did not return a valid reply, so no automatic WhatsApp response was sent.",
+  whatsapp_dispatch_authorization_unavailable: "WhatsApp dispatch authorization could not be confirmed, so no automatic reply was sent.",
+  whatsapp_dispatch_claim_unavailable: "The WhatsApp message claim was no longer available for a safe reply.",
+  whatsapp_takeover_active: "A staff member paused or took over the conversation before dispatch authorization.",
+  whatsapp_provider_outcome_unknown: "WhatsApp did not confirm the reply outcome. It will not be resent automatically; a person should review it.",
+  whatsapp_provider_not_sent: "WhatsApp was not configured to send this reply; no provider request was made.",
   attachment_notice_unconfirmed: "The customer sent media with a caption, but Oyi's reply could not be confirmed to say the media was not opened, so it was not sent; a team member should review it.",
   media_without_text: "The customer sent media without any text. Oyi cannot see media, so no automatic reply was sent; a team member should review it.",
   no_customer_text: "The message has no text Oyi can read (for example a location, contact card or reaction), so no automatic reply was sent; a team member should review it.",
@@ -1855,11 +1872,11 @@ async function processWhatsAppMessageEvent({ event, store, adapter, config, requ
   // canonical thread (Phase 5) -- correlated by phone number so it lands
   // in the SAME thread as any prior outbound send to this person.
   let forwardResult = { forwarded: false, goalActive: false };
+  let backendInboundPayload = null;
   if (event.message_id) {
     // Durable delivery to Backend: the first attempt is inline and LIVE (Backend may wake a goal exactly as before, so the single-responder rule below still works);
     // if it fails or times out the entry stays queued and is retried in the background with non-sending replay semantics.
-    forwardResult = await communicationOutbox.enqueueAndAttempt(store, config, {
-      payload: {
+    backendInboundPayload = {
         channel: "whatsapp",
         provider_event_type: "message",
         provider_message_id: event.message_id,
@@ -1869,7 +1886,9 @@ async function processWhatsAppMessageEvent({ event, store, adapter, config, requ
         ...whatsappMedia.backendMessageFields(described),
         lead_id: lead.id,
         occurred_at: new Date(Number(event.timestamp || 0) * 1000 || Date.now()).toISOString(),
-      },
+      };
+    forwardResult = await communicationOutbox.enqueueAndAttempt(store, config, {
+      payload: backendInboundPayload,
       sourceEventId: inboundEventRow?.id || null,
       log,
     });
@@ -1939,12 +1958,33 @@ async function processWhatsAppMessageEvent({ event, store, adapter, config, requ
     return withCrmStatus(await suppressAutonomousWhatsAppReply({ store, lead, event, requestId, reason: "opt_out_unverified", stage: "before_generation" }));
   }
 
+  let initialContext;
+  let ownershipRevision;
+  try {
+    const [sources, state] = await Promise.all([
+      store.getWhatsAppAiContext(lead.id, 201),
+      store.getLeadChannelState(lead.id, "whatsapp"),
+    ]);
+    initialContext = buildVerifiedWhatsAppContext({
+      lead,
+      event: { message_id: event.message_id, from: event.from, text: customerText, request_id: requestId },
+      sources,
+    });
+    ownershipRevision = ownershipFingerprint(state);
+  } catch {
+    initialContext = { ok: false, reason: "conversation_context_unavailable" };
+  }
+  if (!initialContext?.ok || !ownershipRevision) {
+    return withCrmStatus(await suppressAutonomousWhatsAppReply({ store, lead, event, requestId, reason: initialContext?.reason || "conversation_ownership_unavailable", stage: "before_generation" }));
+  }
+
   const session = buildPublicIntelligenceSession({
     source_site: "whatsapp",
     source_channel: "whatsapp",
     lead_id: lead.id,
     message: customerText,
     lead_stage: lead.status || lead.commercial_stage || "exploring",
+    conversation_thread_id: initialContext.context.conversation_thread_id,
   });
   const oyiCoreRequest = buildOyiCoreCorporateConversationRequest({
     session,
@@ -1952,45 +1992,144 @@ async function processWhatsAppMessageEvent({ event, store, adapter, config, requ
     lead,
     body: {
       source: "whatsapp",
+      source_channel: "whatsapp",
+      conversation_thread_id: initialContext.context.conversation_thread_id,
       profile: { phone: event.from },
+      verified_conversation_context: initialContext.context,
     },
     requestId,
   });
   // the turn's media is described structurally (never as words in the customer's message): Oyi answers the caption and can tell media was attached
   if (described.attachments.length) oyiCoreRequest.metadata.inbound_message = { message_type: described.message_type, caption_present: Boolean(described.caption), attachment_kinds: described.attachments.map((a) => a.kind) };
-  const oyiCoreResult = await callOyiCoreCorporateConversation(config, oyiCoreRequest);
+  let oyiCoreResult;
+  try {
+    oyiCoreResult = await callOyiCoreCorporateConversation(config, oyiCoreRequest);
+  } catch {
+    return withCrmStatus(await suppressAutonomousWhatsAppReply({ store, lead, event, requestId, reason: "oyi_core_unavailable", stage: "before_send" }));
+  }
   // Oyi never receives the media, so its answer must say so and claim nothing about it: Backend's answer builder guarantees that and confirms it
   // (safe_metadata.inbound_attachments.notice_applied). Without that confirmation (an older Backend) the answer is not sent.
   if (described.attachments.length && oyiCoreResult.ok && oyiCoreResult.response?.safe_metadata?.inbound_attachments?.notice_applied !== true) {
     return withCrmStatus(await suppressAutonomousWhatsAppReply({ store, lead, event, requestId, reason: "attachment_notice_unconfirmed", stage: "before_send" }));
   }
-  const assistantMessage = oyiCoreResult.ok
-    ? oyiCoreResult.response.answer
-    : "Ochiga Intelligence is temporarily unavailable. We have your WhatsApp message and the Office team can follow up, but I cannot continue the automated conversation right now.";
-  // The setting and the takeover state are read again IMMEDIATELY before the send: a switch-off or takeover that happened while the reply was being generated wins.
+  const assistantMessage = oyiCoreResult?.ok && typeof oyiCoreResult?.response?.answer === "string" ? oyiCoreResult.response.answer.trim() : "";
+  if (!oyiCoreResult?.ok || !assistantMessage || assistantMessage.length > 4000) {
+    const reason = !oyiCoreResult?.ok ? "oyi_core_unavailable" : "oyi_core_response_invalid";
+    return withCrmStatus(await suppressAutonomousWhatsAppReply({ store, lead, event, requestId, reason, stage: "before_send" }));
+  }
+
+  // Re-resolve the conversation and provenance after generation. A new message, CRM reassignment, takeover, or edited history suppresses this response.
+  let latestContext;
+  let latestLead;
+  try {
+    const [sources, currentLead] = await Promise.all([
+      store.getWhatsAppAiContext(lead.id, 201),
+      store.findLeadByPhone(event.from),
+    ]);
+    latestLead = currentLead;
+    latestContext = buildVerifiedWhatsAppContext({
+      lead: currentLead,
+      event: { message_id: event.message_id, from: event.from, text: customerText, request_id: requestId },
+      sources,
+    });
+  } catch {
+    latestContext = { ok: false, reason: "conversation_context_recheck_unavailable" };
+  }
+  if (!latestContext?.ok || latestLead?.id !== lead.id ||
+      latestContext.integrity !== initialContext.integrity ||
+      JSON.stringify(latestContext.context) !== JSON.stringify(initialContext.context)) {
+    return withCrmStatus(await suppressAutonomousWhatsAppReply({ store, lead, event, requestId, reason: "conversation_context_changed", stage: "before_send" }));
+  }
+  if (oyiCoreResult.ok) {
+    const returnedThread = String(oyiCoreResult.response?.conversation_thread_id || "");
+    if (!returnedThread || (initialContext.context.conversation_thread_id && returnedThread !== initialContext.context.conversation_thread_id)) {
+      return withCrmStatus(await suppressAutonomousWhatsAppReply({ store, lead, event, requestId, reason: "conversation_thread_mismatch", stage: "before_send" }));
+    }
+  }
+
+  // Recheck the persisted autonomy setting and ownership revision. Unreadable state or a changed revision fails closed.
   const sendPolicy = await evaluateAutonomousWhatsAppPolicy(store);
   const freshState = await store.getLeadChannelState(lead.id, "whatsapp").catch(() => null);
   const takeoverNow = !freshState || freshState.ai_paused || ["human_active", "human_review"].includes(freshState.human_status);
-  if (!sendPolicy.allowed || takeoverNow) {
-    return withCrmStatus(await suppressAutonomousWhatsAppReply({ store, lead, event, requestId, reason: !sendPolicy.allowed ? sendPolicy.reason : "human_takeover_active", stage: "before_send", paused: takeoverNow && sendPolicy.allowed }));
+  if (!sendPolicy.allowed || takeoverNow || ownershipFingerprint(freshState) !== ownershipRevision) {
+    return withCrmStatus(await suppressAutonomousWhatsAppReply({ store, lead, event, requestId, reason: !sendPolicy.allowed ? sendPolicy.reason : takeoverNow ? "human_takeover_active" : "conversation_ownership_changed", stage: "before_send", paused: takeoverNow && sendPolicy.allowed }));
   }
 
-  const sendResult = await adapter.sendTextMessage({
-    to: event.from,
-    body: assistantMessage,
-    contextMessageId: event.message_id,
-  });
+  // Backend replay returns current opt-out state but cannot wake a goal or send a customer message.
+  const freshConsent = await communicationOutbox.verifyWhatsAppConsent(config, backendInboundPayload);
+  if (freshConsent.status !== "not_opted_out") {
+    return withCrmStatus(await suppressAutonomousWhatsAppReply({ store, lead, event, requestId, reason: freshConsent.status === "opted_out" ? "opted_out" : "opt_out_unverified", stage: "before_send" }));
+  }
+
+  // The local checks follow the consent request so ownership/autonomy changes during that request also win.
+  const finalPolicy = await evaluateAutonomousWhatsAppPolicy(store);
+  const finalState = await store.getLeadChannelState(lead.id, "whatsapp").catch(() => null);
+  const finalTakeover = !finalState || finalState.ai_paused || ["human_active", "human_review"].includes(finalState.human_status);
+  if (!finalPolicy.allowed || finalTakeover || ownershipFingerprint(finalState) !== ownershipRevision) {
+    return withCrmStatus(await suppressAutonomousWhatsAppReply({ store, lead, event, requestId, reason: !finalPolicy.allowed ? finalPolicy.reason : finalTakeover ? "human_takeover_active" : "conversation_ownership_changed", stage: "before_send", paused: finalTakeover && finalPolicy.allowed }));
+  }
+
+  // Linearization point: the database locks the inbound claim and channel-state row,
+  // rechecks autonomy/ownership, then durably marks this provider message in-flight.
+  // A later takeover is ordered after this authorization; it cannot cancel an HTTP
+  // request already in flight, and a crash after this point is never auto-replayed.
+  let dispatchAuthorization;
+  try {
+    dispatchAuthorization = await store.authorizeWhatsAppAutonomousDispatch({
+      providerMessageId: event.message_id,
+      leadId: lead.id,
+      expectedStateUpdatedAt: finalState.updated_at,
+    });
+  } catch {
+    return withCrmStatus(await suppressAutonomousWhatsAppReply({ store, lead, event, requestId,
+      reason: "whatsapp_dispatch_authorization_unavailable", stage: "before_dispatch" }));
+  }
+  if (dispatchAuthorization !== "authorized") {
+    return withCrmStatus(await suppressAutonomousWhatsAppReply({ store, lead, event, requestId,
+      reason: dispatchAuthorization, stage: "before_dispatch" }));
+  }
+
+  let sendResult;
+  try {
+    sendResult = await adapter.sendTextMessage({
+      to: event.from,
+      body: assistantMessage,
+      contextMessageId: event.message_id,
+    });
+  } catch {
+    await store.settleWhatsAppAutonomousDispatch(event.message_id, "unknown").catch(() => null);
+    await store.appendTimelineEvent({ lead_id: lead.id, event_type: "whatsapp_autonomous_dispatch_unknown",
+      actor: "ochiga_intelligence", title: "WhatsApp reply outcome is unknown",
+      body: "The provider request may have reached WhatsApp, so it will not be retried automatically.",
+      metadata: { request_id: requestId, provider_message_id: event.message_id } }).catch(() => null);
+    await inboundVisibility.annotateInboundActivity(store, { lead, event, inboundEvent: inboundEventRow, requestId,
+      patch: { ai_replied: false, suppressed_reason: "whatsapp_provider_outcome_unknown" }, log });
+    return withCrmStatus({ kind: "message", lead_id: lead.id, suppressed: true, reason: "whatsapp_provider_outcome_unknown" });
+  }
+  if (!sendResult?.delivered) {
+    await store.settleWhatsAppAutonomousDispatch(event.message_id, "not_sent").catch(() => null);
+    return withCrmStatus(await suppressAutonomousWhatsAppReply({ store, lead, event, requestId,
+      reason: "whatsapp_provider_not_sent", stage: "provider_response" }));
+  }
+  const settlement = await store.settleWhatsAppAutonomousDispatch(event.message_id, "accepted").catch(() => "unknown");
+  if (!["settled", "already_settled"].includes(settlement)) {
+    // The provider accepted the request but persistence did not confirm the settlement.
+    // The authorization marker remains, so the event cannot be dispatched again.
+    log("error", "whatsapp_autonomous_dispatch_settlement_unconfirmed", { request_id: requestId, message_id: event.message_id });
+  }
 
   await store.appendTimelineEvent({
     lead_id: lead.id,
     event_type: oyiCoreResult.ok ? "oyi_core_whatsapp_turn" : "oyi_core_whatsapp_unavailable",
     actor: "ochiga_intelligence",
     title: oyiCoreResult.ok ? "WhatsApp intelligence turn" : "WhatsApp intelligence unavailable",
-    body: String(assistantMessage || "").slice(0, 500),
+    body: assistantMessage,
     metadata: {
       request_id: requestId,
       public_session_id: session.session_id,
       oyi_thread_id: oyiCoreResult.ok ? oyiCoreResult.response.conversation_thread_id : "",
+      assistant_text_length: assistantMessage.length,
+      assistant_text_sha256: crypto.createHash("sha256").update(assistantMessage, "utf8").digest("hex"),
       reason: oyiCoreResult.ok ? "" : oyiCoreResult.reason,
     },
   });
@@ -7012,6 +7151,92 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
       }
 
       // Global WhatsApp autonomous-response switch. The server's persisted setting is the only source of truth; the response always reports what is actually stored.
+      if (pathname === "/api/lead-agents/admin/settings/channel-autonomy") {
+        if (req.method === "GET") {
+          authorizePermission(authContext, "view_integrations");
+          const channels = {};
+          for (const channel of Object.keys(AUTONOMY_CHANNELS)) {
+            const configAllowed = channel === "whatsapp" || socialAiEnabled(config, channel);
+            const policy = await evaluateChannelAutonomy(store, channel, { configured: configAllowed });
+            const setting = policy.setting;
+            channels[channel] = {
+              channel, label: AUTONOMY_CHANNELS[channel].label,
+              enabled: Boolean(setting.known && setting.enabled), effective: policy.allowed,
+              state: policy.state, source: setting.source, reason: policy.reason,
+              updated_by: setting.updated_by || null, updated_at: setting.updated_at || null,
+              connection: channel === "whatsapp"
+                ? { status: whatsappAdapter.isConfigured() ? "configured" : "not_configured" }
+                : { status: configuredAsset(config, channel) && config.facebookPageAccessToken ? "configured_unverified" : "not_configured" },
+              inbound_enabled: channel === "whatsapp" ? whatsappAdapter.isConfigured() : dmChannelEnabled(config, channel),
+              autonomous_channel_gate: channel === "whatsapp" ? "persisted_setting" : configAllowed ? "allowlisted_and_configured" : "disabled_or_unavailable",
+              manual_staff_handling: channel === "whatsapp" ? whatsappAdapter.isConfigured() : Boolean(socialOutboundChannelEnabled(config, channel)),
+            };
+          }
+          json(res, 200, { channels }, { "x-request-id": ctx.requestId });
+          return;
+        }
+        if (req.method === "PUT") {
+          authorizePermission(authContext, "manage_integrations");
+          const body = await readJsonBody(req);
+          requireObject(body, "body");
+          const channel = String(body.channel || "");
+          if (!AUTONOMY_CHANNELS[channel] || typeof body.enabled !== "boolean" || Object.keys(body).some((key) => !["channel", "enabled"].includes(key))) {
+            json(res, 400, { error: "channel_and_boolean_enabled_required" }, { "x-request-id": ctx.requestId });
+            return;
+          }
+          if (body.enabled && ["facebook", "instagram"].includes(channel) && !socialAiEnabled(config, channel)) {
+            json(res, 409, { error: "channel_not_configured", detail: "Inbound, outbound and the social AI channel allowlist must be explicitly enabled first. The setting was not changed." }, { "x-request-id": ctx.requestId });
+            return;
+          }
+          const settingKey = AUTONOMY_CHANNELS[channel].key;
+          let change;
+          try {
+            change = await store.setRuntimeSetting(settingKey, body.enabled, authContext.email || "");
+          } catch (error) {
+            await appendAuditRecord({ store, authContext, action: "channel_autonomy_setting_changed", resourceType: "runtime_setting", resourceId: settingKey,
+              metadata: { channel, requested: body.enabled, error: String(error?.message || error).slice(0, 200) }, req, status: "failure" }).catch(() => null);
+            const actual = await readChannelAutonomySetting(store, channel);
+            json(res, 503, { error: actual.known ? "setting_save_outcome_unknown" : "setting_state_unverified",
+              setting_saved: "unknown", audit_recorded: false,
+              actual: actual.known ? { enabled: actual.enabled, source: actual.source, updated_at: actual.updated_at || null } : null,
+              detail: "The write result was not confirmed. The returned actual state is read back from storage; check it before trying again." }, { "x-request-id": ctx.requestId });
+            return;
+          }
+          try {
+            await appendAuditRecord({ store, authContext, action: "channel_autonomy_setting_changed", resourceType: "runtime_setting", resourceId: settingKey,
+              metadata: { channel, old_value: change.previous?.value ?? null, new_value: change.current.value, previous_updated_by: change.previous?.updated_by || null }, req, status: "success" });
+          } catch {
+            const actual = await readChannelAutonomySetting(store, channel);
+            const channelState = actual.known ? { channel, label: AUTONOMY_CHANNELS[channel].label, enabled: actual.enabled,
+              effective: Boolean(actual.enabled && (channel === "whatsapp" || socialAiEnabled(config, channel))),
+              state: actual.enabled ? (channel === "whatsapp" || socialAiEnabled(config, channel) ? "on" : "configured_but_unavailable") : "off",
+              source: actual.source, reason: actual.enabled && channel !== "whatsapp" && !socialAiEnabled(config, channel) ? "channel_not_configured" : null,
+              updated_by: actual.updated_by || null, updated_at: actual.updated_at || null } : null;
+            json(res, 503, { error: "setting_saved_audit_failed", setting_saved: true, audit_recorded: false,
+              channel: channelState, state_verified: Boolean(actual.known),
+              detail: "The setting was saved, but its audit record failed. The persisted value is returned when readable; do not retry blindly." }, { "x-request-id": ctx.requestId });
+            return;
+          }
+          const policy = await evaluateChannelAutonomy(store, channel, { configured: channel === "whatsapp" || socialAiEnabled(config, channel) });
+          const setting = policy.setting;
+          if (!setting.known || Boolean(setting.enabled) !== body.enabled) {
+            json(res, 503, { error: "setting_readback_mismatch", setting_saved: "unknown", audit_recorded: true,
+              channel: { channel, label: AUTONOMY_CHANNELS[channel].label, enabled: Boolean(setting.known && setting.enabled),
+                effective: policy.allowed, state: policy.state, source: setting.source, reason: policy.reason,
+                updated_by: setting.updated_by || null, updated_at: setting.updated_at || null },
+              detail: "The write was acknowledged but the subsequent persisted read did not confirm the requested value." }, { "x-request-id": ctx.requestId });
+            return;
+          }
+          json(res, 200, { channel: { channel, label: AUTONOMY_CHANNELS[channel].label,
+            enabled: Boolean(setting.known && setting.enabled), effective: policy.allowed, state: policy.state,
+            source: setting.source, reason: policy.reason, updated_by: setting.updated_by || null, updated_at: setting.updated_at || null } },
+          { "x-request-id": ctx.requestId });
+          return;
+        }
+        methodNotAllowed(res, "GET,PUT");
+        return;
+      }
+
       if (pathname === "/api/lead-agents/admin/settings/whatsapp-autonomy") {
         if (req.method === "GET") {
           authorizePermission(authContext, "view_integrations");
@@ -7111,7 +7336,7 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
         const inboxChannel = relationshipWorkspace.inboxChannel(lead);
         const social = inboxChannel !== "whatsapp";
         await reconcileManualSends(store, leadId, { log, channel: inboxChannel }).catch(() => null);
-        const [conversations, timeline, activities, documents, channelState, setting, manualSends, inboundMessageEvents, unresolved] = await Promise.all([
+        const [conversations, timeline, activities, documents, channelState, setting, manualSends, inboundMessageEvents, unresolved, socialAutonomy] = await Promise.all([
           store.listConversationsForLead(leadId, 500),
           store.listTimelineForLead(leadId, 500),
           listCorporateRecords(store, "activities"),
@@ -7121,6 +7346,7 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
           social ? store.listSocialManualSends(leadId, inboxChannel).catch(() => []) : store.listManualSendsForLead(leadId, 200).catch(() => []),
           store.listInboundMessageEvents({ leadId, limit: 500 }).catch(() => []),
           social ? store.listSocialManualSends(leadId, inboxChannel, { unresolved: true }).catch(() => null) : null,
+          social ? evaluateChannelAutonomy(store, inboxChannel, { configured: socialAiEnabled(config, inboxChannel) }) : Promise.resolve(null),
         ]);
         const leadActivities = activities.filter((a) => a.lead_id === leadId);
         const leadOpportunities = opportunities.filter((o) => o.lead_id === leadId);
@@ -7160,11 +7386,11 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
             ...(inboxChannel !== "whatsapp" ? { inbound_only_channel: inboxChannel } : {}),
             ...(social ? { social_reply: { available: socialReplyAvailable, reason: socialReplyAvailable ? null : socialProblem || "staff_permission_required" } } : {}),
             ...(social ? { social_takeover: { available: Boolean(socialOperator && canReply), owned_by_me: Boolean(takeoverActive && authContext.email && String(channelState?.human_owner || "").toLowerCase() === String(authContext.email).toLowerCase()) } } : {}),
-            ...(social ? { social_ai: { enabled: socialAiEnabled(config, inboxChannel), selected: socialAiActive(channelState),
-              can_resume: socialAiEnabled(config, inboxChannel) && !replyPolicy(config, socialLead, inboxChannel) } } : {}),
-            global_autonomous_responses: social ? (socialAiEnabled(config, inboxChannel) ? "on" : "off") : autonomy.state === "on" ? "on" : autonomy.state === "off" ? "off" : "unknown",
+            ...(social ? { social_ai: { enabled: Boolean(socialAutonomy?.allowed), setting_enabled: Boolean(socialAutonomy?.setting?.known && socialAutonomy.setting.enabled), state: socialAutonomy?.state || "unknown_fail_closed", reason: socialAutonomy?.reason || null, selected: socialAiActive(channelState),
+              can_resume: Boolean(socialAutonomy?.allowed && !replyPolicy(config, socialLead, inboxChannel)) } } : {}),
+            global_autonomous_responses: social ? (socialAutonomy?.allowed ? "on" : socialAutonomy?.state === "unknown_fail_closed" ? "unknown" : "off") : autonomy.state === "on" ? "on" : autonomy.state === "off" ? "off" : "unknown",
             takeover_active: takeoverActive,
-            mode: takeoverActive ? "human" : social ? (socialAiEnabled(config, inboxChannel) && socialAiActive(channelState) ? "autonomous_allowed" : "autonomous_off") :
+            mode: takeoverActive ? "human" : social ? (socialAutonomy?.allowed && socialAiActive(channelState) ? "autonomous_allowed" : "autonomous_off") :
               autonomy.state === "on" ? "autonomous_allowed" : autonomy.state === "off" ? "autonomous_off" : "autonomous_off_unreadable",
             whatsapp_reply: { available: inboxChannel === "whatsapp" && Boolean(lead.whatsapp_phone) && canReply && takeoverActive && whatsappAdapter.isConfigured(), can_reply_permission: canReply, takeover_required: !takeoverActive, whatsapp_number_known: Boolean(lead.whatsapp_phone) },
           },
@@ -7254,7 +7480,8 @@ function buildServer({ config, store, rateLimiter, publicRateLimiter, officeRate
         }
         const socialLead = await store.getMetaSocialReplyLead(leadId).catch(() => null);
         if (action === "resume_ai") {
-          const problem = !socialAiEnabled(config, channel) ? "social_ai_disabled" : replyPolicy(config, socialLead, channel);
+          const channelPolicy = await evaluateChannelAutonomy(store, channel, { configured: socialAiEnabled(config, channel) });
+          const problem = !channelPolicy.allowed ? channelPolicy.reason || "social_ai_disabled" : replyPolicy(config, socialLead, channel);
           if (problem) {
             await appendAudit(store, authContext, `communication.${channel}.${action}`, "lead", leadId, { outcome: problem }, req, "failure").catch(() => null);
             json(res, 409, { error: problem }, { "x-request-id": ctx.requestId }); return;

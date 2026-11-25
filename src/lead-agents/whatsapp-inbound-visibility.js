@@ -139,7 +139,7 @@ async function annotateInboundActivity(store, { lead, event, inboundEvent, reque
       const recorded = await recordInboundActivity(store, { lead, event, inboundEvent, requestId, log });
       activity = recorded.activity;
     }
-    if (activity && activity.id) await store.mergeCrmActivityMetadata(activity.id, patch);
+    if (activity && activity.id) await store.mergeCrmActivityMetadata(activity.id, { ...patch, ...(requestId ? { request_id: requestId } : {}) });
     return Boolean(activity);
   } catch (error) {
     log("error", "whatsapp_webhook.crm_annotation_failed", { request_id: requestId, message_id: providerId || null, error: String(error?.message || error).slice(0, 240) });

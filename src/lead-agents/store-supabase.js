@@ -330,6 +330,24 @@ class SupabaseLeadAgentsStore {
     return response.data.reverse();
   }
 
+  async getWhatsAppAiContext(leadId, limit = 201) {
+    const cap = Math.min(Math.max(Number(limit) || 201, 1), 201);
+    const queries = [
+      `/inbound_events?channel=eq.whatsapp&event_type=eq.message&lead_id=eq.${encodeURIComponent(leadId)}&select=id,channel,event_type,lead_id,external_event_id,payload,created_at&order=created_at.desc,id.desc&limit=${cap}`,
+      `/crm_activities?lead_id=eq.${encodeURIComponent(leadId)}&activity_type=eq.whatsapp_message&select=id,lead_id,activity_type,body,occurred_at,created_at,metadata&order=occurred_at.desc,id.desc&limit=${cap}`,
+      `/whatsapp_manual_sends?lead_id=eq.${encodeURIComponent(leadId)}&channel=eq.whatsapp&select=id,lead_id,channel,actor_email,body,recipient,provider_message_id,status,created_at&order=created_at.desc,id.desc&limit=${cap}`,
+      `/timeline_events?lead_id=eq.${encodeURIComponent(leadId)}&event_type=in.(oyi_core_whatsapp_turn,oyi_core_whatsapp_unavailable)&select=id,lead_id,event_type,body,created_at,metadata&order=created_at.desc,id.desc&limit=${cap}`,
+    ];
+    const [inbound, activities, manualSends, aiTurns] = await Promise.all(queries.map((path) => this.client.get(path)));
+    for (const response of [inbound, activities, manualSends, aiTurns]) {
+      if (!Array.isArray(response.data)) throw new Error("whatsapp_ai_context_unreadable");
+    }
+    return {
+      inboundEvents: inbound.data.reverse(), activities: activities.data.reverse(),
+      manualSends: manualSends.data.reverse(), aiTurns: aiTurns.data.reverse(),
+    };
+  }
+
   async findMetaSocialSend(leadId, channel, actorEmail, requestId) {
     const query = new URLSearchParams({ lead_id: `eq.${leadId}`, channel: `eq.${channel}`,
       actor_email: `eq.${actorEmail}`, client_request_id: `eq.${requestId}`, limit: "1" });
@@ -697,10 +715,16 @@ class SupabaseLeadAgentsStore {
   }
 
   async fenceMetaSocialDispatch(id, channel, senderKey, actorEmail, autonomous) {
-    const response = await this.client.post("/rpc/office_fence_meta_social_dispatch", {
-      p_send: id, p_channel: channel, p_sender_key: senderKey, p_actor_email: actorEmail,
-      ...(autonomous ? { p_ai_revision: autonomous.revision, p_ai_event: autonomous.eventKey } : {}),
-    });
+    let response;
+    try {
+      response = await this.client.post("/rpc/office_fence_meta_social_dispatch", {
+        p_send: id, p_channel: channel, p_sender_key: senderKey, p_actor_email: actorEmail,
+        ...(autonomous ? { p_ai_revision: autonomous.revision, p_ai_event: autonomous.eventKey } : {}),
+      });
+    } catch (error) {
+      if (error?.response?.data?.message === "social_ai_setting_off") return "social_ai_state_changed";
+      throw error;
+    }
     if (!["acquired", "social_dispatch_claim_lost", "social_recipient_unverified", "social_opted_out",
       "social_window_closed", "social_claim_expired", "social_takeover_required", "social_takeover_owner_required",
       "social_ai_state_changed"].includes(response.data)) throw new Error("invalid_dispatch_fence_response");
@@ -946,14 +970,37 @@ class SupabaseLeadAgentsStore {
     if (inserted.data.length === 1) return { status: "claimed", reply_sent: false };
     const staleBefore = new Date(Date.now() - staleAfterMs).toISOString();
     const takeover = await this.client.patch(
-      `/whatsapp_inbound_claims?provider_message_id=eq.${encodeURIComponent(key)}&status=eq.processing&claimed_at=lt.${encodeURIComponent(staleBefore)}`,
+      `/whatsapp_inbound_claims?provider_message_id=eq.${encodeURIComponent(key)}&status=eq.processing&claimed_at=lt.${encodeURIComponent(staleBefore)}&autonomous_dispatch_at=is.null`,
       { claimed_at: new Date().toISOString(), request_id: requestId || null },
       { headers: this.selectHeaders() }
     );
     if (!Array.isArray(takeover.data)) throw new Error("claim_response_malformed");
     if (takeover.data.length === 1) return { status: "takeover", reply_sent: Boolean(takeover.data[0].reply_sent_at) };
-    const current = await this.client.get(`/whatsapp_inbound_claims?provider_message_id=eq.${encodeURIComponent(key)}&select=reply_sent_at&limit=1`);
-    return { status: "duplicate", reply_sent: Boolean(Array.isArray(current.data) && current.data[0]?.reply_sent_at) };
+    const current = await this.client.get(`/whatsapp_inbound_claims?provider_message_id=eq.${encodeURIComponent(key)}&select=reply_sent_at,autonomous_dispatch_at,autonomous_dispatch_state&limit=1`);
+    return { status: "duplicate", reply_sent: Boolean(Array.isArray(current.data) && current.data[0]?.reply_sent_at),
+      dispatch_state: Array.isArray(current.data) ? current.data[0]?.autonomous_dispatch_state || null : null,
+      dispatch_in_flight: Boolean(Array.isArray(current.data) && current.data[0]?.autonomous_dispatch_at) };
+  }
+
+  async authorizeWhatsAppAutonomousDispatch({ providerMessageId, leadId, expectedStateUpdatedAt }) {
+    const response = await this.client.post("/rpc/office_authorize_whatsapp_autonomous_dispatch", {
+      p_provider_message_id: providerMessageId, p_lead_id: leadId, p_expected_state_updated_at: expectedStateUpdatedAt,
+    });
+    const result = response.data;
+    if (!["authorized", "whatsapp_dispatch_claim_unavailable", "whatsapp_ownership_changed", "whatsapp_takeover_active", "autonomous_whatsapp_disabled"].includes(result)) {
+      throw new Error("invalid_whatsapp_dispatch_authorization_response");
+    }
+    return result;
+  }
+
+  async settleWhatsAppAutonomousDispatch(providerMessageId, state) {
+    const response = await this.client.post("/rpc/office_settle_whatsapp_autonomous_dispatch", {
+      p_provider_message_id: providerMessageId, p_state: state,
+    });
+    if (!["settled", "already_settled", "dispatch_not_authorized", "invalid_state"].includes(response.data)) {
+      throw new Error("invalid_whatsapp_dispatch_settlement_response");
+    }
+    return response.data;
   }
 
   async updateInboundClaim(providerMessageId, patch) {

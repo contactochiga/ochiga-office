@@ -22,8 +22,9 @@ async function main() {
         last_external_message_id text, last_inbound_at timestamptz, last_outbound_at timestamptz, created_at timestamptz default now(),
         updated_at timestamptz default now(), unique (lead_id, channel));
       create table whatsapp_manual_sends (id uuid primary key default gen_random_uuid(), lead_id uuid, channel text, recipient text, provider_message_id text,
-        status text, actor_email text, client_request_id text, created_at timestamptz default now(), updated_at timestamptz default now(), failure_reason text, provider_response_code integer);
-      grant select, insert, update on leads, conversations, lead_channel_states, whatsapp_manual_sends to service_role;
+        status text, actor_email text, client_request_id text, social_dispatch_at timestamptz, created_at timestamptz default now(), updated_at timestamptz default now(), failure_reason text, provider_response_code integer);
+      create table office_runtime_settings (key text primary key, value jsonb not null, updated_by text, updated_at timestamptz default now());
+      grant select, insert, update on leads, conversations, lead_channel_states, whatsapp_manual_sends, office_runtime_settings to service_role;
     `);
     await db.exec(readFileSync(path.join(__dirname, "../db/20261113_meta_social_inbound.sql"), "utf8"));
     await db.exec(readFileSync(path.join(__dirname, "../db/20261113_meta_social_staff_replies.sql"), "utf8"));
@@ -56,9 +57,18 @@ async function main() {
         return { data: rows[0].outcome };
       }
       if (route === "/rpc/office_fence_meta_social_dispatch") {
-        const { rows } = await db.query("select public.office_fence_meta_social_dispatch($1,$2,$3,$4) as outcome",
-          [payload.p_send, payload.p_channel, payload.p_sender_key, payload.p_actor_email]);
-        return { data: rows[0].outcome };
+        try {
+          const ai = Object.hasOwn(payload, "p_ai_revision");
+          const sql = ai ? "select public.office_fence_meta_social_dispatch($1,$2,$3,$4,$5,$6) as outcome"
+            : "select public.office_fence_meta_social_dispatch($1,$2,$3,$4) as outcome";
+          const args = [payload.p_send, payload.p_channel, payload.p_sender_key, payload.p_actor_email,
+            ...(ai ? [payload.p_ai_revision, payload.p_ai_event] : [])];
+          const { rows } = await db.query(sql, args);
+          return { data: rows[0].outcome };
+        } catch (error) {
+          error.response = { data: { message: error.message } };
+          throw error;
+        }
       }
       if (route === "/rpc/office_transition_meta_social_ownership") {
         const { rows } = await db.query("select public.office_transition_meta_social_ownership($1,$2,$3,$4,$5,$6) as outcome",
@@ -170,6 +180,7 @@ async function main() {
     const autonomySql = readFileSync(path.join(__dirname, "../db/20261118_meta_social_autonomy.sql"), "utf8");
     await db.exec(autonomySql);
     await db.exec(autonomySql);
+    await db.exec(readFileSync(path.join(__dirname, "../db/20261125_social_autonomy_setting_fence.sql"), "utf8"));
     await db.exec("set role anon");
     await assert.rejects(db.query("select public.office_fence_meta_social_dispatch(null::uuid,'facebook','','',1,'')"), { code: "42501" });
     await db.exec("reset role; set role service_role");
@@ -182,14 +193,19 @@ async function main() {
     const aiRequestId = "social-ai-" + input.eventKey.slice(-64);
     const { rows: [aiIntent] } = await db.query(`insert into whatsapp_manual_sends (lead_id, channel, recipient, status, actor_email, client_request_id)
       values ($1, 'facebook', '111:333', 'pending', 'oyi_social_autonomy', $2) returning id`, [socialLead.id, aiRequestId]);
-    const aiFence = async (revision) => (await db.query("select public.office_fence_meta_social_dispatch($1,$2,$3,$4,$5,$6) as outcome",
-      [aiIntent.id, "facebook", input.senderKey, "oyi_social_autonomy", revision, input.eventKey])).rows[0].outcome;
+    const aiFence = (revision) => store.fenceMetaSocialDispatch(aiIntent.id, "facebook", input.senderKey, "oyi_social_autonomy", { revision, eventKey: input.eventKey });
     assert.equal(await aiTransition("takeover", 2).then((x) => x.outcome), "taken_over");
     const resumed = await aiTransition("resume_ai", 3);
     assert.equal(await aiFence(handback.state.social_ownership_revision), "social_ai_state_changed", "takeover followed by handback cannot revive a stale grant");
     assert.equal(await store.fenceMetaSocialDispatch(aiIntent.id, "facebook", input.senderKey, "oyi_social_autonomy"), "social_dispatch_claim_lost");
+    assert.equal(await aiFence(resumed.state.social_ownership_revision), "social_ai_state_changed", "a missing persisted channel setting fails closed at dispatch");
+    await db.query("insert into office_runtime_settings(key,value) values ('facebook_messenger_autonomous_responses_enabled','true'::jsonb),('instagram_direct_autonomous_responses_enabled','false'::jsonb)");
     assert.equal(await aiFence(resumed.state.social_ownership_revision), "acquired");
     assert.equal(await aiFence(resumed.state.social_ownership_revision), "social_dispatch_claim_lost");
+    const { rows: [instagramIntent] } = await db.query(`insert into whatsapp_manual_sends (lead_id, channel, recipient, status, actor_email, client_request_id)
+      values ($1, 'instagram', '222:444', 'pending', 'oyi_social_autonomy', 'social-ai-independent-instagram') returning id`, [socialLead.id]);
+    await assert.rejects(db.query("update whatsapp_manual_sends set social_dispatch_at = now() where id = $1", [instagramIntent.id]),
+      { code: "P0001", message: "social_ai_setting_off" }, "Facebook ON does not activate Instagram");
     assert.equal((await aiTransition("takeover", 4)).outcome, "send_outcome_unresolved");
     assert.equal((await aiTransition("pause_ai", 5)).outcome, "ai_paused");
     console.log("Meta social SQL fixture: service-role scope, dedupe, atomic rollback and timestamps PASS");
