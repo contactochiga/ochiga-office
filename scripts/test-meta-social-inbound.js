@@ -641,6 +641,8 @@ async function main() {
     }));
     const aiLead = await newLead("908");
     assert.equal((await action(aiLead, "facebook", "resume_ai", 1, unapproved)).status, 403);
+    assert.equal((await action(aiLead, "facebook", "resume_ai", 11)).status, 409, "conversation handback cannot override default-OFF channel autonomy");
+    await restored.setRuntimeSetting("facebook_messenger_autonomous_responses_enabled", true, "social@ochiga.local");
     assert.equal((await action(aiLead, "facebook", "resume_ai", 2)).status, 200);
     const sample = aiMessage("page", page, "908", "ai-first");
     assert.equal((await post(aiBase, sample)).status, 200);
@@ -686,21 +688,52 @@ async function main() {
     await post(aiBase, aiMessage("page", page, "908", "ai-release-paused"));
     assert.equal(generation.length, 3, "plain release does not resume AI");
     assert.equal((await action(aiLead, "facebook", "resume_ai", 7)).status, 200);
+
+    const beforeSettingRace = sent.length;
+    const settingEntered = deferred(); const settingRelease = deferred();
+    generationBarrier = async () => { settingEntered.release(); await settingRelease.promise; };
+    const settingRace = post(aiBase, aiMessage("page", page, "908", "ai-setting-off-race"));
+    await settingEntered.promise;
+    await restored.setRuntimeSetting("facebook_messenger_autonomous_responses_enabled", false, "fixture-admin");
+    settingRelease.release(); await settingRace; generationBarrier = null;
+    assert.equal(sent.length, beforeSettingRace, "turning the Facebook autonomy setting OFF during generation suppresses dispatch");
+    await restored.setRuntimeSetting("facebook_messenger_autonomous_responses_enabled", true, "fixture-admin");
+
+    const setAiLeadOptOut = async (value) => {
+      const row = restored.state.leads.find((item) => item.id === aiLead.id);
+      row.meta_social_opted_out = value;
+      await restored.persist();
+    };
+    await setAiLeadOptOut(false);
+    const beforeOptOutRace = sent.length;
+    const consentEntered = deferred(); const consentRelease = deferred();
+    generationBarrier = async () => { consentEntered.release(); await consentRelease.promise; };
+    const consentRace = post(aiBase, aiMessage("page", page, "908", "ai-opt-out-race"));
+    await consentEntered.promise;
+    await setAiLeadOptOut(true);
+    consentRelease.release(); await consentRace; generationBarrier = null;
+    assert.equal(sent.length, beforeOptOutRace, "an opt-out during generation suppresses social dispatch");
+    await setAiLeadOptOut(false);
+
     await post(aiBase, aiMessage("page", page, "908", "ai-expired", { timestamp: Date.now() - 86_400_001 }));
-    assert.equal(generation.length, 3);
+    assert.equal(generation.length, 5);
     await post(aiBase, batch("page", page,
       event(page, { sender: { id: "908" }, message: { mid: "ai-before-stop", text: "Earlier in the batch" } }),
       event(page, { sender: { id: "908" }, message: { mid: "ai-stop", text: "STOP" } })));
     await post(aiBase, aiMessage("page", page, "908", "ai-after-opt-out"));
-    assert.equal(generation.length, 3);
+    assert.equal(generation.length, 5);
     const igAiPayload = aiMessage("instagram", instagram, sender, "ig-ai-first");
     // The existing Instagram fixture opted out. A different binding needs its own pilot entry.
     await post(aiBase, igAiPayload);
-    assert.equal(generation.length, 3);
+    assert.equal(generation.length, 5);
     const igAi = await start({ ...pilot, metaSocialAiChannels: ["instagram"],
       metaSocialOutboundRecipientBindings: ["instagram:222:909"] }, restored);
     await post(igAi, aiMessage("instagram", instagram, "909", "ig-ai-seed"));
     const igAiLead = restored.state.leads.find((row) => row.meta_social_sender_id === "909");
+    const igResume = (id) => ownershipRequest(`${igAi}/api/lead-agents/admin/leads/${igAiLead.id}/instagram/resume_ai`, headers,
+      `33000000-0000-4000-8000-${String(id).padStart(12, "0")}`);
+    assert.equal((await igResume(12)).status, 409, "Facebook setting cannot enable Instagram autonomy");
+    await restored.setRuntimeSetting("instagram_direct_autonomous_responses_enabled", true, "social@ochiga.local");
     assert.equal((await ownershipRequest(`${igAi}/api/lead-agents/admin/leads/${igAiLead.id}/instagram/resume_ai`, headers,
       "33000000-0000-4000-8000-000000000008")).status, 200);
     providerMode = "ambiguous";

@@ -3,6 +3,7 @@
 const axios = require("axios");
 const { performManualSend } = require("./manual-whatsapp-send");
 const { configuredAsset, senderKeyFor, dmChannelEnabled } = require("./meta-social-inbound");
+const { evaluateChannelAutonomy } = require("./channel-autonomy");
 
 const WINDOW_MS = 24 * 60 * 60_000;
 const idPattern = /^[0-9]{1,32}$/;
@@ -100,7 +101,8 @@ async function sendSocialReply({ config, store, adapter, lead, channel, actorEma
     try {
       const state = await store.getLeadChannelState(lead.id, channel);
       if (!autonomous) return socialTakeoverRefusal(state, actorEmail);
-      return socialAiEnabled(config, channel) && socialAiActive(state) &&
+      const policy = await evaluateChannelAutonomy(store, channel, { configured: socialAiEnabled(config, channel) });
+      return policy.allowed && socialAiActive(state) &&
         Number(state.social_ownership_revision) === autonomous.revision ? null : "social_ai_state_changed";
     } catch {
       return "social_takeover_state_unavailable";

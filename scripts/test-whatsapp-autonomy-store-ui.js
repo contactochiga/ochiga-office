@@ -87,16 +87,21 @@ const { evaluateAutonomousWhatsAppPolicy, readWhatsAppAutonomySetting, WHATSAPP_
   assert.match(claimsSql, /provider_message_id text primary key/); assert.match(claimsSql, /on conflict \(provider_message_id\) do nothing/); assert.doesNotMatch(claimsSql, /\b(delete|truncate|update)\b\s+(from\s+)?(public\.)?inbound_events/i, "history is never modified");
   assert.match(fs.readFileSync(path.join(__dirname, "..", "db", "lead-agents-schema.sql"), "utf8"), /create table if not exists whatsapp_inbound_claims/);
   assert.match(fs.readFileSync(path.join(__dirname, "..", "db", "lead-agents-schema.sql"), "utf8"), /create table if not exists office_runtime_settings/);
+  const socialSettingFence = fs.readFileSync(path.join(__dirname, "..", "db", "20261125_social_autonomy_setting_fence.sql"), "utf8");
+  assert.match(socialSettingFence, /facebook_messenger_autonomous_responses_enabled/);
+  assert.match(socialSettingFence, /instagram_direct_autonomous_responses_enabled/);
+  assert.match(socialSettingFence, /for share/);
+  assert.match(socialSettingFence, /office_social_autonomy_setting_before_dispatch/);
 
   // shipped Office UI
   const ui = fs.readFileSync(path.join(__dirname, "..", "public", "office", "office.js"), "utf8");
-  assert.match(ui, /\/api\/lead-agents\/admin\/settings\/whatsapp-autonomy/, "the control talks to the real backend setting");
-  assert.match(ui, /method: "PUT", body: \{ enabled \}/);
-  for (const text of ["AUTONOMOUS RESPONSES ON", "AUTONOMOUS RESPONSES OFF", "TREATED AS OFF"]) assert.ok(ui.includes(text), `the state banner says: ${text}`);
-  assert.match(ui, /Autonomous AI Responses/); assert.match(ui, /Official WhatsApp number/); assert.match(ui, /Last changed by \/ at/);
+  assert.match(ui, /\/api\/lead-agents\/admin\/settings\/channel-autonomy/, "the unified control reads persisted server state");
+  assert.match(ui, /method: "PUT", body: \{ channel, enabled \}/);
+  assert.match(ui, /for \(const channel of \["whatsapp", "facebook", "instagram"\]\)/, "three channel cards are rendered independently");
+  assert.match(ui, /Account connection/); assert.match(ui, /Manual staff handling/); assert.match(ui, /Inbound/);
   assert.match(ui, /hasPermission\("integrations\.manage"\)/, "only administrators get the control");
-  assert.match(ui, /status = result\.whatsapp_autonomy;[\s\S]*?draw\(\);/, "success renders the value the server returned");
-  assert.match(ui, /Not saved —[\s\S]*The setting above is unchanged/, "a failed save never reports success and leaves the displayed state alone");
+  assert.match(ui, /channels = \(await apiGetChannelAutonomy\(\)\)\.channels/, "successful saves are re-read from the backend");
+  assert.match(ui, /Displayed state remains server-confirmed/, "a failed save does not invent a successful state");
   assert.doesNotMatch(ui, /localStorage[^\n]*whatsapp_autonom/i, "the setting is never frontend-only state");
   assert.ok(ui.indexOf("await renderWhatsAppAutonomyPanel(outlet, token)") > ui.indexOf("async function renderSettingsView") && ui.indexOf("await renderWhatsAppAutonomyPanel(outlet, token)") < ui.indexOf("const syncSection", ui.indexOf("async function renderSettingsView")), "rendered inside Settings -> Integrations");
   console.log(JSON.stringify({ status: "PASS", suite: "whatsapp-autonomy-store-ui" }));

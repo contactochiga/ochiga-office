@@ -1010,6 +1010,8 @@ class FileLeadAgentsStore {
         !this.state.conversations.some((item) => item.lead_id === row.lead_id && item.channel === channel &&
           item.message_role === "user" && item.correlation_id === autonomous.eventKey &&
           Date.parse(item.created_at) === Date.parse(target.meta_social_last_inbound_at))) return "social_ai_state_changed";
+      const settingKey = channel === "facebook" ? "facebook_messenger_autonomous_responses_enabled" : "instagram_direct_autonomous_responses_enabled";
+      if (this.state.runtime_settings[settingKey]?.value !== true) return "social_ai_state_changed";
     } else {
       if (actorEmail === "oyi_social_autonomy") return "social_dispatch_claim_lost";
       if (!["human_active", "human_review"].includes(ownerState.human_status)) return "social_takeover_required";

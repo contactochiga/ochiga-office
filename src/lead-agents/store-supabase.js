@@ -715,10 +715,16 @@ class SupabaseLeadAgentsStore {
   }
 
   async fenceMetaSocialDispatch(id, channel, senderKey, actorEmail, autonomous) {
-    const response = await this.client.post("/rpc/office_fence_meta_social_dispatch", {
-      p_send: id, p_channel: channel, p_sender_key: senderKey, p_actor_email: actorEmail,
-      ...(autonomous ? { p_ai_revision: autonomous.revision, p_ai_event: autonomous.eventKey } : {}),
-    });
+    let response;
+    try {
+      response = await this.client.post("/rpc/office_fence_meta_social_dispatch", {
+        p_send: id, p_channel: channel, p_sender_key: senderKey, p_actor_email: actorEmail,
+        ...(autonomous ? { p_ai_revision: autonomous.revision, p_ai_event: autonomous.eventKey } : {}),
+      });
+    } catch (error) {
+      if (error?.response?.data?.message === "social_ai_setting_off") return "social_ai_state_changed";
+      throw error;
+    }
     if (!["acquired", "social_dispatch_claim_lost", "social_recipient_unverified", "social_opted_out",
       "social_window_closed", "social_claim_expired", "social_takeover_required", "social_takeover_owner_required",
       "social_ai_state_changed"].includes(response.data)) throw new Error("invalid_dispatch_fence_response");

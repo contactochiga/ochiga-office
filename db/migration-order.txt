@@ -41,5 +41,6 @@ lead-agents-schema.sql
 20261117_meta_social_takeover.sql
 20261118_meta_social_autonomy.sql
 20261119_content_social_management.sql
+20261125_social_autonomy_setting_fence.sql
 security/office-security-baseline.sql
 security/office-security-verify.sql
