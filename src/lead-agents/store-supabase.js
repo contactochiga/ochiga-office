@@ -330,6 +330,24 @@ class SupabaseLeadAgentsStore {
     return response.data.reverse();
   }
 
+  async getWhatsAppAiContext(leadId, limit = 201) {
+    const cap = Math.min(Math.max(Number(limit) || 201, 1), 201);
+    const queries = [
+      `/inbound_events?channel=eq.whatsapp&event_type=eq.message&lead_id=eq.${encodeURIComponent(leadId)}&select=id,channel,event_type,lead_id,external_event_id,payload,created_at&order=created_at.desc,id.desc&limit=${cap}`,
+      `/crm_activities?lead_id=eq.${encodeURIComponent(leadId)}&activity_type=eq.whatsapp_message&select=id,lead_id,activity_type,body,occurred_at,created_at,metadata&order=occurred_at.desc,id.desc&limit=${cap}`,
+      `/whatsapp_manual_sends?lead_id=eq.${encodeURIComponent(leadId)}&channel=eq.whatsapp&select=id,lead_id,channel,actor_email,body,recipient,provider_message_id,status,created_at&order=created_at.desc,id.desc&limit=${cap}`,
+      `/timeline_events?lead_id=eq.${encodeURIComponent(leadId)}&event_type=in.(oyi_core_whatsapp_turn,oyi_core_whatsapp_unavailable)&select=id,lead_id,event_type,body,created_at,metadata&order=created_at.desc,id.desc&limit=${cap}`,
+    ];
+    const [inbound, activities, manualSends, aiTurns] = await Promise.all(queries.map((path) => this.client.get(path)));
+    for (const response of [inbound, activities, manualSends, aiTurns]) {
+      if (!Array.isArray(response.data)) throw new Error("whatsapp_ai_context_unreadable");
+    }
+    return {
+      inboundEvents: inbound.data.reverse(), activities: activities.data.reverse(),
+      manualSends: manualSends.data.reverse(), aiTurns: aiTurns.data.reverse(),
+    };
+  }
+
   async findMetaSocialSend(leadId, channel, actorEmail, requestId) {
     const query = new URLSearchParams({ lead_id: `eq.${leadId}`, channel: `eq.${channel}`,
       actor_email: `eq.${actorEmail}`, client_request_id: `eq.${requestId}`, limit: "1" });

@@ -27,6 +27,7 @@
     "office:whatsapp-inbound-visibility:test": "node scripts/test-whatsapp-inbound-crm-visibility.js && node scripts/test-whatsapp-inbound-visibility-store.js && node scripts/test-whatsapp-visibility-repair-dedup.js",
     "office:webhook-signature:test": "node scripts/test-whatsapp-webhook-signature.js",
     "office:whatsapp-autonomy:test": "node scripts/test-whatsapp-autonomy-control.js && node scripts/test-whatsapp-autonomy-store-ui.js",
+    "office:whatsapp-ai-context:test": "node scripts/test-whatsapp-ai-context.js",
     "office:whatsapp-inbound-claims-postgres:test": "node scripts/test-whatsapp-inbound-claims-postgres.js",
     "office:contract-hardening:test": "node scripts/test-office-contract-hardening.js",
     "office:rate-limit:test": "node scripts/test-office-rate-limit.js",

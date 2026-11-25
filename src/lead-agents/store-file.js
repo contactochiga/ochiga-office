@@ -389,6 +389,20 @@ class FileLeadAgentsStore {
       .slice(-limit);
   }
 
+  async getWhatsAppAiContext(leadId, limit = 201) {
+    const cap = Math.min(Math.max(Number(limit) || 201, 1), 201);
+    const chronological = (rows, timeField) => rows
+      .sort((a, b) => String(a[timeField] || a.created_at || "").localeCompare(String(b[timeField] || b.created_at || "")) || String(a.id || "").localeCompare(String(b.id || "")))
+      .slice(-cap)
+      .map((row) => ({ ...row, metadata: row.metadata ? { ...row.metadata } : row.metadata }));
+    return {
+      inboundEvents: chronological(this.state.inbound_events.filter((row) => row.channel === "whatsapp" && row.event_type === "message" && row.lead_id === leadId), "created_at"),
+      activities: chronological(this.state.crm_activities.filter((row) => row.lead_id === leadId && row.activity_type === "whatsapp_message"), "occurred_at"),
+      manualSends: chronological(this.state.whatsapp_manual_sends.filter((row) => row.lead_id === leadId && row.channel === "whatsapp"), "created_at"),
+      aiTurns: chronological(this.state.timeline_events.filter((row) => row.lead_id === leadId && ["oyi_core_whatsapp_turn", "oyi_core_whatsapp_unavailable"].includes(row.event_type)), "created_at"),
+    };
+  }
+
   async findLeadByPhone(phone) {
     const normalized = normalizeText(phone);
     if (!normalized) return null;
