@@ -65,7 +65,7 @@ async function main() {
   const [cookieName, cookieValue] = login.headers.get("set-cookie").split(";")[0].split("=");
 
   const userDir = fs.mkdtempSync(path.join(os.tmpdir(), "rw-chrome-"));
-  const chrome = spawn(CHROME, ["--headless=new", "--remote-debugging-port=9347", `--user-data-dir=${userDir}`, "--no-first-run", "--disable-gpu", "--hide-scrollbars", "about:blank"], { stdio: "ignore" });
+  const chrome = spawn(CHROME, ["--headless=new", "--remote-debugging-port=9347", `--user-data-dir=${userDir}`, "--no-first-run", "--disable-gpu", "--hide-scrollbars", "--disable-features=BackForwardCache", "about:blank"], { stdio: "ignore" });
   let ws, id = 0; const pending = new Map();
   try {
     let targets;
@@ -153,6 +153,12 @@ async function main() {
         assert.equal(releasedState.ai_paused, true, `${label} release does not resume AI`);
         const channel = object === "page" ? "facebook" : "instagram";
         config.metaSocialAiChannels = [channel];
+        const autonomyKey = channel === "facebook" ? "facebook_messenger_autonomous_responses_enabled" : "instagram_direct_autonomous_responses_enabled";
+        await store.setRuntimeSetting(autonomyKey, false, "browser-fixture");
+        await send("Page.navigate", { url: url + "&ai-controls-off=1" + hash });
+        await waitFor('document.readyState === "complete" && new URLSearchParams(location.search).get("ai-controls-off") === "1"', label + " AI OFF controls document");
+        assert.equal(await evalJs("!!document.querySelector('.rel-social-ai')"), false, `${label} AI resume control is unavailable while its persisted setting is OFF`);
+        await store.setRuntimeSetting(autonomyKey, true, "browser-fixture");
         await send("Page.navigate", { url: url + "&ai-controls=1" + hash });
         await waitFor('document.readyState === "complete" && new URLSearchParams(location.search).get("ai-controls") === "1"', label + " AI controls document");
         await waitFor(`document.querySelector('.rel-social-ai')?.textContent.includes('Resume AI')`, label + " AI resume control");
@@ -161,8 +167,10 @@ async function main() {
         await send("Page.navigate", { url: url + "&ai-restored=1" + hash });
         await waitFor('document.readyState === "complete" && new URLSearchParams(location.search).get("ai-restored") === "1"', label + " AI restored document");
         await waitFor(`document.querySelector('.rel-social-ai')?.textContent.includes('Pause AI')`, label + " restored AI mode");
+        await waitFor(`document.querySelector('.rel-social-ai') && !document.querySelector('.rel-social-ai').disabled`, label + " restored AI control ready");
         await evalJs(`document.querySelector('.rel-social-ai').click()`);
         await waitFor(`document.querySelector('.rel-social-ai')?.textContent.includes('Resume AI')`, label + " AI paused");
+        await store.setRuntimeSetting(autonomyKey, false, "browser-fixture-cleanup");
         config.metaSocialAiChannels = [];
       }
       assert.deepEqual(socialSends, [

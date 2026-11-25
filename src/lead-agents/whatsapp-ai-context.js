@@ -2,6 +2,7 @@
 
 const { normalizePhone } = require("./normalize-lead");
 const { describeInboundMessage, customerAuthoredText } = require("./whatsapp-media");
+const crypto = require("node:crypto");
 
 const MAX_MESSAGES = 200;
 const MAX_CURRENT_AGE_MS = 24 * 60 * 60 * 1000;
@@ -150,8 +151,22 @@ function buildVerifiedWhatsAppContext({ lead, event, sources, now = Date.now() }
     if (!Number.isFinite(sentAt) || sentAt <= Date.parse(inbound.row.created_at)) {
       return { ok: false, reason: "conversation_ai_turn_order_invalid" };
     }
-    const row = messageRow(turn.id, "assistant", text(turn.body), turn.created_at);
-    if (!row || row.text.length >= 500) return { ok: false, reason: "conversation_ai_turn_truncated" };
+    const assistantText = text(turn.body);
+    const row = messageRow(turn.id, "assistant", assistantText, turn.created_at);
+    if (!row) return { ok: false, reason: "conversation_ai_turn_invalid" };
+    const storedLength = metadata.assistant_text_length;
+    const storedHash = metadata.assistant_text_sha256;
+    const hasIntegrityMetadata = storedLength !== undefined || storedHash !== undefined;
+    if (hasIntegrityMetadata) {
+      const actualHash = crypto.createHash("sha256").update(assistantText, "utf8").digest("hex");
+      if (!Number.isInteger(storedLength) || storedLength !== assistantText.length ||
+          typeof storedHash !== "string" || !/^[a-f0-9]{64}$/.test(storedHash) || storedHash !== actualHash) {
+        return { ok: false, reason: "conversation_ai_turn_truncated" };
+      }
+    } else if (assistantText.length >= 500) {
+      // Older records at the historical storage cap are ambiguous: they may be truncated.
+      return { ok: false, reason: "conversation_ai_turn_truncated" };
+    }
     const previous = messagesById.get(row.message_id);
     if (previous && !sameMessage(previous, row)) return { ok: false, reason: "conversation_provider_id_conflict" };
     messagesById.set(row.message_id, row);

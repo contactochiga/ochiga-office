@@ -1,4 +1,5 @@
 const assert = require("node:assert/strict");
+const crypto = require("node:crypto");
 const { buildVerifiedWhatsAppContext, ownershipFingerprint } = require("../src/lead-agents/whatsapp-ai-context");
 const { verifyWhatsAppConsent } = require("../src/lead-agents/communication-outbox");
 
@@ -82,6 +83,39 @@ assert.equal(staffContext.context.messages.find((row) => row.message_id === "wam
 withStaff.manualSends[0].status = "outcome_unknown";
 assert.equal(check(withStaff, latest).ok, false);
 console.log("Accepted staff sends are included; unresolved sends invalidate the transcript — PASS");
+
+function contextWithAssistantTurn(answer, { storedBody = answer, metadata = {} } = {}) {
+  const earlier = inbound("wamid.long-answer-source", now - 60, "Question for a detailed answer");
+  const currentEvent = inbound("wamid.long-answer-followup", now - 10, "Follow up after the answer");
+  const sources = sourcesFor(earlier, currentEvent);
+  const earlierActivity = sources.activities.find((row) => row.metadata.provider_message_id === earlier.external_event_id);
+  earlierActivity.metadata.ai_replied = true;
+  sources.aiTurns.push({
+    id: "turn-long-answer", lead_id: lead.id, event_type: "oyi_core_whatsapp_turn", body: storedBody,
+    created_at: at(now - 30),
+    metadata: { request_id: earlier.requestId, oyi_thread_id: "thread-long-answer", ...metadata },
+  });
+  return check(sources, currentEvent);
+}
+
+for (const answer of ["A".repeat(499), "B".repeat(500), "C".repeat(501), "D".repeat(4000)]) {
+  const result = contextWithAssistantTurn(answer, {
+    metadata: { assistant_text_length: answer.length, assistant_text_sha256: crypto.createHash("sha256").update(answer, "utf8").digest("hex") },
+  });
+  assert.equal(result.ok, true, `complete ${answer.length}-character answer is retained: ${result.reason}`);
+  assert.equal(result.context.conversation_thread_id, "thread-long-answer");
+  assert.equal(result.context.messages.find((row) => row.role === "assistant")?.text, answer);
+}
+const truncatedAnswer = "E".repeat(700);
+assert.equal(contextWithAssistantTurn(truncatedAnswer, {
+  storedBody: truncatedAnswer.slice(0, 500),
+  metadata: { assistant_text_length: truncatedAnswer.length, assistant_text_sha256: crypto.createHash("sha256").update(truncatedAnswer, "utf8").digest("hex") },
+}).reason, "conversation_ai_turn_truncated");
+assert.equal(contextWithAssistantTurn("F".repeat(500)).reason, "conversation_ai_turn_truncated", "ambiguous legacy records at the old cap fail closed");
+assert.equal(contextWithAssistantTurn("G".repeat(500), {
+  metadata: { assistant_text_length: 499, assistant_text_sha256: crypto.createHash("sha256").update("G".repeat(499), "utf8").digest("hex") },
+}).reason, "conversation_ai_turn_truncated", "length/hash mismatch fails closed");
+console.log("Assistant transcript persistence verifies 499, 500, 501 and 4000 characters; truncated/legacy-ambiguous records fail closed — PASS");
 
 const revisionA = ownershipFingerprint({ id: "state-1", updated_at: at(now), human_status: "auto", social_ownership_revision: 4 });
 const revisionB = ownershipFingerprint({ id: "state-1", updated_at: at(now), human_status: "auto", social_ownership_revision: 5 });

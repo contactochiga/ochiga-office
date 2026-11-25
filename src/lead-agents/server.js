@@ -2123,11 +2123,13 @@ async function processWhatsAppMessageEvent({ event, store, adapter, config, requ
     event_type: oyiCoreResult.ok ? "oyi_core_whatsapp_turn" : "oyi_core_whatsapp_unavailable",
     actor: "ochiga_intelligence",
     title: oyiCoreResult.ok ? "WhatsApp intelligence turn" : "WhatsApp intelligence unavailable",
-    body: String(assistantMessage || "").slice(0, 500),
+    body: assistantMessage,
     metadata: {
       request_id: requestId,
       public_session_id: session.session_id,
       oyi_thread_id: oyiCoreResult.ok ? oyiCoreResult.response.conversation_thread_id : "",
+      assistant_text_length: assistantMessage.length,
+      assistant_text_sha256: crypto.createHash("sha256").update(assistantMessage, "utf8").digest("hex"),
       reason: oyiCoreResult.ok ? "" : oyiCoreResult.reason,
     },
   });

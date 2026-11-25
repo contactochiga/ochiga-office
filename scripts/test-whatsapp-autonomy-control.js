@@ -16,7 +16,7 @@ const listen = (server) => new Promise((resolve, reject) => { server.once("error
 const close = (server) => new Promise((resolve) => server.close(resolve));
 
 async function main() {
-  let goalActive = false, coreCalls = 0, coreDelayMs = 0, backendOptedOut = false, failConsentCheck = false, consentChecks = 0, corePayload = null, coreMode = "success";
+  let goalActive = false, coreCalls = 0, coreDelayMs = 0, backendOptedOut = false, failConsentCheck = false, consentChecks = 0, corePayload = null, coreMode = "success", coreAnswer = "Hello from Oyi";
   const backend = http.createServer((req, res) => {
     let raw = ""; req.on("data", (c) => (raw += c)); req.on("end", async () => {
       res.setHeader("content-type", "application/json");
@@ -32,7 +32,7 @@ async function main() {
         coreCalls++; corePayload = JSON.parse(raw || "{}"); if (coreDelayMs) await new Promise((r) => setTimeout(r, coreDelayMs));
         if (coreMode === "failure") { res.statusCode = 503; return res.end(JSON.stringify({ ok: false, error: "unavailable" })); }
         if (coreMode === "invalid") return res.end(JSON.stringify({ ok: true, conversation_thread_id: "oyi-thread-1" }));
-        return res.end(JSON.stringify({ ok: true, answer: "Hello from Oyi", conversation_thread_id: "oyi-thread-1" }));
+        return res.end(JSON.stringify({ ok: true, answer: coreAnswer, conversation_thread_id: "oyi-thread-1" }));
       }
       res.statusCode = 404; res.end("{}");
     });
@@ -162,6 +162,21 @@ async function main() {
     assert.equal(corePayload.metadata.verified_conversation_context.conversation_thread_id, "oyi-thread-1");
     assert.ok(corePayload.metadata.verified_conversation_context.messages.some((row) => row.role === "assistant" && row.text === "Hello from Oyi"));
     assert.equal(corePayload.metadata.verified_conversation_context.messages.at(-1).text, "One more question");
+    coreAnswer = "Long governed answer ".padEnd(1200, "L");
+    await new Promise((resolve) => setTimeout(resolve, 1100));
+    const longReply = await inbound("2348011111111", "Please continue from that detailed answer");
+    assert.equal(longReply.outbound?.delivered, true);
+    assert.equal(sent.at(-1).body, coreAnswer);
+    const persistedLongTurn = store.state.timeline_events.find((row) => row.event_type === "oyi_core_whatsapp_turn" && row.body === coreAnswer);
+    assert.ok(persistedLongTurn, "the complete accepted answer is stored in the timeline");
+    assert.equal(persistedLongTurn.metadata.assistant_text_length, coreAnswer.length);
+    await new Promise((resolve) => setTimeout(resolve, 1100));
+    const afterLongReply = await inbound("2348011111111", "I have a follow-up about your detailed answer");
+    assert.equal(afterLongReply.outbound?.delivered, true);
+    assert.equal(corePayload.metadata.verified_conversation_context.messages.filter((row) => row.role === "assistant").at(-1)?.text, coreAnswer,
+      "the next Oyi Core request receives the entire verified long answer");
+    coreAnswer = "Hello from Oyi";
+    console.log("WhatsApp accepted long answer persists intact and is verified in the next turn — PASS");
     const allowedBridge = await bridge({ to: "+2348011111111", body: "goal follow up", lead_id: lead1.id, communication_id: "c4", send_origin: "autonomous" });
     assert.equal(allowedBridge.body.delivered, true);
     const sentBeforeCoreFailure = sent.length;
